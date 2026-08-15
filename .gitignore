@@ -1,0 +1,14 @@
+.DS_Store
+.env
+.env.*
+!.env.example
+*.log
+.build/
+build/
+DerivedData/
+xcuserdata/
+server/data/
+server/secrets/
+infra/data/
+ops/backups/
+tmp/
