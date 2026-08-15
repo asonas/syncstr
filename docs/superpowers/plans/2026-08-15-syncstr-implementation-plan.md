@@ -78,6 +78,7 @@ git commit -m "Establish syncstr server foundation"
 - Create: contracts/sync/vectors/rejections/missing-required-field.json
 - Create: contracts/sync/vectors/rejections/missing-server-seq.json
 - Test: contracts/tests/contract_test.py
+- Create: scripts/contract-test
 
 **Interfaces:**
 - Consumes: 技術検証で固定した7ベクトルとdocs/design-spec.md
@@ -192,6 +193,7 @@ git commit -m "Add non-destructive music library migration"
 - Create: server/src/projections.rs
 - Create: server/migrations/0005_sync_operations.sql
 - Test: server/tests/sync_tests.rs
+- Create: scripts/sync-conformance-test
 
 **Interfaces:**
 - Consumes: /v1/syncの操作batchとTask 2の7ベクトル
@@ -308,7 +310,7 @@ git commit -m "Add syncstr operations and recovery"
 - Create: docs/acceptance/mvp-checklist.md
 - Create: docs/acceptance/failure-log.md
 - Modify: docs/design-spec.md
-- Test: scripts/mvp-test
+- Create: scripts/mvp-test
 
 **Interfaces:**
 - Consumes: サーバー、macOS、iPhone、移行、運用の全成果物

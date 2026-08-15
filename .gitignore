@@ -12,3 +12,4 @@ server/secrets/
 infra/data/
 ops/backups/
 tmp/
+.worktrees/
