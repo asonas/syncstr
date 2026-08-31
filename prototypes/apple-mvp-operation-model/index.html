@@ -1,0 +1,108 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>syncstr Apple MVP prototype</title>
+  <style>
+    :root { color-scheme: light dark; font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif; --accent:#4776e6; --line:color-mix(in srgb, CanvasText 14%, transparent); }
+    * { box-sizing:border-box; }
+    body { margin:0; background:Canvas; color:CanvasText; }
+    button, input { font:inherit; }
+    button { min-height:44px; border:0; border-radius:10px; padding:.55rem .85rem; background:color-mix(in srgb, CanvasText 9%, Canvas); color:CanvasText; }
+    button:focus-visible, input:focus-visible { outline:3px solid color-mix(in srgb, var(--accent) 70%, white); outline-offset:2px; }
+    .shell { min-height:100vh; padding-bottom:92px; }
+    .sidebar { border-right:1px solid var(--line); padding:20px 14px; }
+    .variant-a { display:grid; grid-template-columns:220px minmax(0,1fr); transition:grid-template-columns .18s ease; }
+    .variant-a.sidebar-collapsed { grid-template-columns:0 minmax(0,1fr); }
+    .variant-a.sidebar-collapsed .sidebar { overflow:hidden; padding-inline:0; border:0; }
+    .brand { font-size:1.25rem; font-weight:750; padding:0 10px 18px; }
+    .nav { display:grid; gap:4px; }
+    .nav-label { padding:15px 10px 4px; font-size:.72rem; font-weight:700; text-transform:uppercase; letter-spacing:.05em; color:color-mix(in srgb, CanvasText 52%, transparent); }
+    .nav button { text-align:left; background:transparent; }
+    .nav button[aria-current="page"] { background:color-mix(in srgb, var(--accent) 18%, Canvas); color:color-mix(in srgb, var(--accent) 80%, CanvasText); font-weight:650; }
+    .content { min-width:0; padding:24px clamp(18px,4vw,48px); }
+    .topline { display:flex; align-items:center; justify-content:space-between; gap:16px; margin-bottom:22px; }
+    h1,h2,p { margin-top:0; }
+    h1 { font-size:clamp(1.8rem,4vw,2.8rem); margin-bottom:4px; }
+    h2 { font-size:1.05rem; }
+    .muted { color:color-mix(in srgb, CanvasText 62%, transparent); }
+    .status { display:flex; gap:8px; flex-wrap:wrap; align-items:center; }
+    .pill { border:1px solid var(--line); border-radius:999px; padding:6px 10px; font-size:.82rem; }
+    .offline { background:color-mix(in srgb, #f0a000 17%, Canvas); }
+    .recovery { border:1px solid color-mix(in srgb, #f0a000 55%, var(--line)); background:color-mix(in srgb, #f0a000 12%, Canvas); border-radius:16px; padding:14px; display:flex; gap:12px; align-items:center; flex-wrap:wrap; }
+    .search { width:min(420px,100%); min-height:44px; border:1px solid var(--line); border-radius:12px; padding:0 14px; background:Canvas; color:CanvasText; }
+    .list { border:1px solid var(--line); border-radius:16px; overflow:hidden; }
+    .track { display:grid; grid-template-columns:36px minmax(0,1fr) minmax(110px,.7fr) auto; gap:12px; align-items:center; min-height:64px; padding:8px 14px; border-bottom:1px solid var(--line); }
+    .track:last-child { border:0; }
+    .art { width:36px; height:36px; border-radius:7px; background:linear-gradient(135deg,#6b8cff,#b76ee8); }
+    .title { font-weight:650; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+    .grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(170px,1fr)); gap:14px; }
+    .card { border:1px solid var(--line); border-radius:18px; padding:16px; background:color-mix(in srgb, CanvasText 3%, Canvas); }
+    .cover { aspect-ratio:1; border-radius:14px; background:linear-gradient(145deg,#355cdd,#d65fa9); margin-bottom:14px; }
+    .player { border:1px solid var(--line); border-radius:22px; padding:20px; display:grid; gap:18px; background:color-mix(in srgb, var(--accent) 8%, Canvas); }
+    .hero { display:grid; grid-template-columns:minmax(180px,320px) minmax(260px,1fr); gap:30px; align-items:center; }
+    .hero-cover { aspect-ratio:1; border-radius:24px; background:linear-gradient(145deg,#233b91,#dc5d97); box-shadow:0 18px 50px #0004; }
+    .controls { display:flex; justify-content:center; gap:12px; }
+    .play { width:56px; height:56px; border-radius:50%; background:var(--accent); color:white; font-size:1.2rem; }
+    .queue { border-top:1px solid var(--line); padding-top:14px; }
+    .split { display:grid; grid-template-columns:minmax(320px,1.3fr) minmax(260px,.7fr); gap:18px; }
+    .activity { border:1px solid var(--line); border-radius:16px; padding:16px; }
+    .activity li { margin-bottom:10px; }
+    .toolbar { position:sticky; top:0; z-index:2; padding:12px 18px; border-bottom:1px solid var(--line); background:color-mix(in srgb, Canvas 90%, transparent); backdrop-filter:blur(16px); display:flex; gap:12px; align-items:center; }
+    .tabbar { display:none; }
+    .switcher { position:fixed; z-index:10; left:50%; bottom:18px; transform:translateX(-50%); display:flex; align-items:center; gap:8px; padding:8px; background:#171717; color:#fff; border-radius:999px; box-shadow:0 10px 35px #0008; }
+    .switcher button { background:#333; color:white; width:44px; padding:0; }
+    .switcher output { min-width:180px; text-align:center; font-weight:650; }
+    .prototype-note { font-size:.75rem; opacity:.72; text-align:center; }
+    @media (max-width:760px) {
+      .desktop-sidebar { display:none !important; }
+      .shell { padding-bottom:150px; }
+      .content { padding:18px 16px; }
+      .topline { align-items:flex-start; flex-direction:column; }
+      .track { grid-template-columns:36px minmax(0,1fr) auto; }
+      .track .album { display:none; }
+      .hero,.split { grid-template-columns:1fr; }
+      .hero-cover { width:min(72vw,340px); margin:auto; }
+      .tabbar { display:grid; position:fixed; z-index:5; bottom:0; left:0; right:0; grid-template-columns:repeat(4,1fr); border-top:1px solid var(--line); background:Canvas; padding:7px 6px 30px; }
+      .tabbar button { min-width:0; padding:6px 2px; font-size:.72rem; background:transparent; }
+      .switcher { bottom:82px; }
+    }
+  </style>
+</head>
+<body>
+  <!-- Three variants of the Apple MVP library and playback experience, switchable via ?variant=. -->
+  <main id="app"></main>
+  <div class="switcher" aria-label="プロトタイプ案の切り替え">
+    <button id="prev" aria-label="前の案">←</button>
+    <output id="variant-label"></output>
+    <button id="next" aria-label="次の案">→</button>
+  </div>
+  <script>
+    const tracks = [
+      ['Blue Train','John Coltrane','Blue Train','保存済み'],
+      ['Teardrop','Massive Attack','Mezzanine','接続時に再生可能'],
+      ['A Case of You','Joni Mitchell','Blue','保存済み'],
+      ['Windowlicker','Aphex Twin','Windowlicker','接続時に再生可能']
+    ];
+    const names = { A:'Library first', B:'Now Playing first', C:'Search & activity' };
+    const nav = `<aside class="sidebar desktop-sidebar"><div class="brand">syncstr</div><nav class="nav"><div class="nav-label">ライブラリ</div><button aria-current="page">アルバム</button><button>アーティスト</button><button>曲</button><div class="nav-label">コレクション</div><button>プレイリスト</button><button>ダウンロード</button><button>履歴</button><div class="nav-label">syncstr</div><button>設定</button></nav></aside>`;
+    const tabs = `<nav class="tabbar" aria-label="主要ナビゲーション"><button>ライブラリ</button><button>検索</button><button>再生中</button><button>設定</button></nav>`;
+    const status = `<div class="status"><span class="pill">オフライン・変更3件を端末に保存</span><span class="pill">最終同期 12分前</span></div>`;
+    const rows = tracks.map((t,i)=>`<div class="track"><div class="art"></div><div><div class="title">${t[0]}</div><div class="muted">${t[1]}・${t[3]}</div></div><div class="album muted">${t[2]}</div><div style="display:flex;gap:6px"><button aria-label="${t[0]}をお気に入りに追加">♡</button><button aria-label="${t[0]}の操作">•••</button></div></div>`).join('');
+    function variantA(){const nowPlaying=new URLSearchParams(location.search).get('mode')==='now-playing';const interrupted=new URLSearchParams(location.search).get('state')==='interrupted';const recovery=interrupted?`<div class="recovery"><strong>接続が切れました</strong><span>1:42で停止。位置とキューはこの端末に保存されています。</span><button>再試行</button><button>保存済みの曲を見る</button></div>`:'';const main=nowPlaying?`<section class="content"><button data-action="back-library">← ライブラリへ戻る</button>${recovery}<div class="hero" style="margin-top:22px"><div class="hero-cover"></div><div><p class="muted">再生中・ローカル音源</p><h1>Blue Train</h1><p>John Coltrane — Blue Train</p><div class="controls"><button aria-label="前の曲">◀︎</button><button class="play" aria-label="一時停止">Ⅱ</button><button aria-label="次の曲">▶︎</button></div><button data-action="simulate-interruption" style="margin-top:14px">接続切断を試す</button></div></div><div class="queue"><div class="topline"><h2>次に再生</h2><span class="pill">この端末のキュー</span></div><div class="list">${rows}</div></div></section>`:`<section class="content"><div class="topline"><div><button data-action="toggle-sidebar" aria-label="サイドバーを開閉">サイドバー</button><h1 style="margin-top:18px">アルバム</h1><p class="muted">NASを正本とする全12,438曲</p></div>${status}</div><input class="search" aria-label="ライブラリを検索" placeholder="曲、アルバム、アーティストを検索"><h2 style="margin-top:28px">最近追加したアルバム</h2><div class="grid"><div class="card"><div class="cover"></div><strong>Blue Train</strong><p class="muted">John Coltrane</p></div><div class="card"><div class="cover" style="background:linear-gradient(145deg,#c96b2d,#28221e)"></div><strong>Blue</strong><p class="muted">Joni Mitchell</p></div><div class="card"><div class="cover" style="background:linear-gradient(145deg,#4a4a4a,#d7c6b0)"></div><strong>Mezzanine</strong><p class="muted">Massive Attack</p></div></div><h2 style="margin-top:28px">最近再生した曲</h2><div class="list">${rows}</div><button class="player" data-action="open-now-playing" style="margin-top:18px;width:100%;grid-template-columns:auto 1fr auto;align-items:center;text-align:left"><div class="art"></div><div><strong>Blue Train</strong><div class="muted">John Coltrane</div></div><span class="play" style="display:grid;place-items:center" aria-hidden="true">Ⅱ</span></button></section>`;return `<div class="shell variant-a">${nav}${main}${tabs}</div>`}
+    function variantB(){return `<div class="shell"><header class="toolbar"><strong>syncstr</strong><span style="flex:1"></span>${status}</header><section class="content"><div class="hero"><div class="hero-cover"></div><div><p class="muted">再生中・ローカル音源</p><h1>Blue Train</h1><p>John Coltrane — Blue Train</p><div class="controls"><button aria-label="前の曲">◀︎</button><button class="play" aria-label="一時停止">Ⅱ</button><button aria-label="次の曲">▶︎</button></div><p class="prototype-note">評価、ダウンロード、出力先は「•••」に集約</p></div></div><div class="split" style="margin-top:28px"><div><h2>次に再生</h2><div class="list">${rows}</div></div><div class="activity"><h2>続きから</h2><div class="grid"><div class="card"><div class="cover"></div><strong>Mezzanine</strong><p class="muted">46分前</p></div><div class="card"><strong>オフライン用</strong><p>128曲・8.4 GB</p><button>管理</button></div></div></div></div></section>${tabs}</div>`}
+    function variantC(){return `<div class="shell" style="display:grid;grid-template-columns:250px minmax(0,1fr)">${nav}<section><header class="toolbar"><input class="search" aria-label="すべてを検索" placeholder="ライブラリ全体を検索"><button>フィルタ</button></header><div class="content"><div class="topline"><div><h1>見つける</h1><p class="muted">検索、履歴、同期状態を一画面で確認</p></div>${status}</div><div class="split"><div><h2>検索結果</h2><div class="list">${rows}</div></div><aside class="activity"><h2>アクティビティ</h2><ol><li>評価「5」を端末内に保存</li><li>プレイリスト変更を送信待ち</li><li>Blue Trainをダウンロード済み</li></ol><button>同期の詳細</button><hr style="border:0;border-top:1px solid var(--line);margin:20px 0"><h2>クイック操作</h2><div class="nav"><button>ダウンロード済み</button><button>最近再生した曲</button><button>評価5の曲</button></div></aside></div></div></section>${tabs}</div>`}
+    const variants=['A','B','C'];
+    function current(){const v=new URLSearchParams(location.search).get('variant')?.toUpperCase();return variants.includes(v)?v:'A'}
+    function render(){const v=current();document.querySelector('#app').innerHTML=({A:variantA,B:variantB,C:variantC})[v]();document.querySelector('#variant-label').textContent=`${v} — ${names[v]}`;document.title=`${v}: ${names[v]} — syncstr prototype`;document.querySelector('[data-action="toggle-sidebar"]')?.addEventListener('click',()=>document.querySelector('.variant-a')?.classList.toggle('sidebar-collapsed'));document.querySelector('[data-action="open-now-playing"]')?.addEventListener('click',()=>setMode('now-playing'));document.querySelector('[data-action="back-library"]')?.addEventListener('click',()=>setMode(null));document.querySelector('[data-action="simulate-interruption"]')?.addEventListener('click',()=>setState('interrupted'))}
+    function setMode(mode){const url=new URL(location);if(mode)url.searchParams.set('mode',mode);else url.searchParams.delete('mode');history.replaceState({},'',url);render()}
+    function setState(state){const url=new URL(location);if(state)url.searchParams.set('state',state);else url.searchParams.delete('state');history.replaceState({},'',url);render()}
+    function move(delta){const i=variants.indexOf(current());const v=variants[(i+delta+variants.length)%variants.length];const url=new URL(location);url.searchParams.set('variant',v);history.replaceState({},'',url);render()}
+    document.querySelector('#prev').addEventListener('click',()=>move(-1));
+    document.querySelector('#next').addEventListener('click',()=>move(1));
+    addEventListener('keydown',event=>{if(['INPUT','TEXTAREA'].includes(document.activeElement?.tagName)||document.activeElement?.isContentEditable)return;if(event.key==='ArrowLeft')move(-1);if(event.key==='ArrowRight')move(1)});
+    addEventListener('popstate',render);render();
+  </script>
+</body>
+</html>
