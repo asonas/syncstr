@@ -28,6 +28,8 @@ For server API work, read `server/README.md` and `server/src/lib.rs` at the ref 
 
 Use Xcode's Swift compiler, macOS SDK, and XcodeGen. The build fetches TagLib 2.3.0 through Swift Package Manager. Find your development signing identity with `security find-identity -v -p codesigning` and supply it through `CODE_SIGN_IDENTITY`. Keep the same certificate and bundle ID across rebuilds to preserve Keychain access permissions. Switching from an ad-hoc build may require approving Keychain access once.
 
+Local macOS builds use `as.ason.syncstr.macos` across worktrees. TestFlight and App Store builds use `as.ason.syncstr.ios`. The Keychain service names stay the same; switching from the former local bundle ID may require approving access again on the first launch.
+
 Run from the repository root:
 
 ```sh
