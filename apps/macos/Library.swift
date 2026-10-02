@@ -31,7 +31,7 @@ enum LibraryDestination: String, CaseIterable {
 
 @MainActor
 final class Library: ObservableObject {
-    @Published var server = "https://navidrome.jkte.ch"
+    @Published var server = ""
     @Published var username = ""
     @Published var password = ""
     @Published var tracks: [Track] = []

@@ -18,7 +18,7 @@ private struct UploadItem: Identifiable {
 struct UploadView: View {
     let onUploaded: (LibraryUpload) -> Void
     @Environment(\.dismiss) private var dismiss
-    @State private var server = "https://syncstr-uploader.jkte.ch"
+    @State private var server = ""
     @State private var token = ""
     @State private var items: [UploadItem] = []
     @State private var picker = false
@@ -216,7 +216,7 @@ struct UploadView: View {
     @MainActor private func loadSettings() async {
         do {
             let saved = try await store.load()
-            server = saved?.server ?? "https://syncstr-uploader.jkte.ch"
+            server = saved?.server ?? ""
             token = saved?.password ?? ""
         } catch { token = ""; message = "保存した接続情報を読み込めませんでした。" }
     }

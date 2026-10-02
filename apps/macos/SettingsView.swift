@@ -4,7 +4,7 @@ struct SettingsView: View {
     var library: Library? = nil
     @Environment(\.dismiss) private var dismiss
     @State private var tab = "upload"
-    @State private var server = "https://syncstr-uploader.jkte.ch"
+    @State private var server = ""
     @State private var token = ""
     @State private var message: String?
     @State private var working = false
@@ -46,7 +46,7 @@ struct SettingsView: View {
             tab = library == nil ? "upload" : "connection"
             do {
                 let saved = try await store.load()
-                server = saved?.server ?? "https://syncstr-uploader.jkte.ch"
+                server = saved?.server ?? ""
                 token = saved?.password ?? ""
                 hasSavedCredentials = saved != nil
                 loaded = true
