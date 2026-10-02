@@ -94,7 +94,7 @@ struct LibraryView: View {
             if library.connected {
                 ToolbarItem(placement: .primaryAction) {
                     LibrarySearchField(text: $library.search, placeholder: "\(library.destination.rawValue)を検索")
-                        .frame(width: 280, height: 38)
+                        .frame(width: 280)
                 }
             }
         }
@@ -431,7 +431,11 @@ private struct LibrarySearchField: NSViewRepresentable {
 
     func makeNSView(context: Context) -> NSSearchField {
         let field = NSSearchField()
-        field.controlSize = .large
+        if #available(macOS 26.0, *) {
+            field.controlSize = .extraLarge
+        } else {
+            field.controlSize = .large
+        }
         field.font = .systemFont(ofSize: 13)
         field.placeholderString = placeholder
         field.setAccessibilityLabel(placeholder)
@@ -446,6 +450,10 @@ private struct LibrarySearchField: NSViewRepresentable {
         field.placeholderString = placeholder
         field.setAccessibilityLabel(placeholder)
         if field.stringValue != text { field.stringValue = text }
+    }
+
+    func sizeThatFits(_ proposal: ProposedViewSize, nsView: NSSearchField, context: Context) -> CGSize? {
+        CGSize(width: proposal.width ?? 280, height: nsView.intrinsicContentSize.height)
     }
 
     final class Coordinator: NSObject {
