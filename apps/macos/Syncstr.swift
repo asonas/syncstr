@@ -54,8 +54,6 @@ struct LibraryView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            header
-            rule
             if library.connected {
                 HStack(spacing: 0) {
                     sidebar
@@ -91,24 +89,20 @@ struct LibraryView: View {
         .preferredColorScheme(.dark)
         .frame(minWidth: 640, minHeight: 560)
         .navigationTitle("")
+        .toolbar {
+            if library.connected {
+                ToolbarItem(placement: .primaryAction) {
+                    LibrarySearchField(text: $library.search, placeholder: "\(library.destination.rawValue)を検索")
+                        .frame(width: 280, height: 26)
+                }
+            }
+        }
+        .toolbarBackground(.hidden, for: .windowToolbar)
         .task { await library.restoreCredentials() }
         .sheet(isPresented: $showingUpload) { UploadView() }
     }
 
     private var rule: some View { Rectangle().fill(Studio.iron).frame(height: 1) }
-
-    private var header: some View {
-        HStack(spacing: 16) {
-            Spacer(minLength: 16)
-            if library.connected {
-                LibrarySearchField(text: $library.search).frame(width: 300, height: 30)
-            } else {
-                Text("音楽ライブラリ").foregroundStyle(Studio.fog)
-            }
-        }
-        .padding(.horizontal, 24).padding(.vertical, 12)
-        .background(Color.black)
-    }
 
     private var sidebar: some View {
         VStack(alignment: .leading, spacing: 4) {
@@ -150,14 +144,9 @@ struct LibraryView: View {
 
     @ViewBuilder
     private var content: some View {
-        if !library.search.isEmpty {
-            VStack(alignment: .leading, spacing: 0) {
-                pageTitle("検索結果", detail: "\(library.visibleTracks.count)曲")
-                trackRows(library.visibleTracks)
-            }
-        } else if library.showingNowPlaying {
+        if library.showingNowPlaying && library.search.isEmpty {
             nowPlaying
-        } else if let albumID = library.selectedAlbum,
+        } else if library.search.isEmpty, let albumID = library.selectedAlbum,
                   let album = library.albums.first(where: { $0.id == albumID }) {
             VStack(alignment: .leading, spacing: 0) {
                 Button { library.selectedAlbum = nil } label: { Label("アルバムへ戻る", systemImage: "chevron.left") }
@@ -174,7 +163,7 @@ struct LibraryView: View {
                 }.padding(24)
                 trackRows(album.tracks)
             }
-        } else if let artist = library.selectedArtist {
+        } else if library.search.isEmpty, let artist = library.selectedArtist {
             VStack(alignment: .leading, spacing: 0) {
                 Button { library.selectedArtist = nil } label: { Label("アーティストへ戻る", systemImage: "chevron.left") }
                     .buttonStyle(.plain).foregroundStyle(Studio.signal).padding([.top, .horizontal], 24)
@@ -187,8 +176,8 @@ struct LibraryView: View {
                 VStack(alignment: .leading, spacing: 0) {
                     ScrollView {
                         LazyVGrid(columns: [GridItem(.adaptive(minimum: 180, maximum: 240), spacing: 20, alignment: .top)], alignment: .leading, spacing: 24) {
-                            ForEach(library.albums) { album in
-                                Button { library.selectedAlbum = album.id } label: {
+                            ForEach(library.visibleAlbums) { album in
+                                Button { library.selectedAlbum = album.id; library.search = "" } label: {
                                     VStack(alignment: .leading, spacing: 8) {
                                         Artwork(url: artworkURL(album.coverArt))
                                         VStack(alignment: .leading, spacing: 4) {
@@ -208,14 +197,14 @@ struct LibraryView: View {
                                     .accessibilityLabel("\(album.title)、\(album.artist)")
                             }
                         }.padding(24)
-                        if library.albums.isEmpty { emptyLibrary }
+                        if library.visibleAlbums.isEmpty { emptyLibrary }
                     }
                 }
             case .artists:
                 VStack(alignment: .leading, spacing: 0) {
                     pageTitle("アーティスト", detail: "\(library.artists.count)組")
                     List(library.artists, id: \.self) { artist in
-                        Button { library.selectedArtist = artist } label: {
+                        Button { library.selectedArtist = artist; library.search = "" } label: {
                             HStack {
                                 Image(systemName: "person.crop.circle").foregroundStyle(Studio.fog)
                                 Text(artist)
@@ -227,8 +216,8 @@ struct LibraryView: View {
                 }
             case .songs:
                 VStack(alignment: .leading, spacing: 0) {
-                    pageTitle("曲", detail: "\(library.tracks.count)曲")
-                    trackRows(library.tracks)
+                    pageTitle("曲", detail: "\(library.visibleTracks.count)曲")
+                    trackRows(library.visibleTracks)
                 }
             }
         }
@@ -429,13 +418,14 @@ struct LibraryView: View {
 
 private struct LibrarySearchField: NSViewRepresentable {
     @Binding var text: String
+    let placeholder: String
 
     func makeCoordinator() -> Coordinator { Coordinator(text: $text) }
 
     func makeNSView(context: Context) -> NSSearchField {
         let field = NSSearchField()
-        field.placeholderString = "ライブラリを検索"
-        field.setAccessibilityLabel("ライブラリを検索")
+        field.placeholderString = placeholder
+        field.setAccessibilityLabel(placeholder)
         field.sendsSearchStringImmediately = true
         field.target = context.coordinator
         field.action = #selector(Coordinator.search(_:))
@@ -444,6 +434,8 @@ private struct LibrarySearchField: NSViewRepresentable {
 
     func updateNSView(_ field: NSSearchField, context: Context) {
         context.coordinator.text = $text
+        field.placeholderString = placeholder
+        field.setAccessibilityLabel(placeholder)
         if field.stringValue != text { field.stringValue = text }
     }
 
@@ -480,7 +472,9 @@ private struct Artwork: View {
 struct SyncstrApp: App {
     @StateObject private var library = Library()
     var body: some Scene {
-        WindowGroup("syncstr") { LibraryView(library: library) }.defaultSize(width: 1080, height: 740)
+        WindowGroup("syncstr") { LibraryView(library: library) }
+            .defaultSize(width: 1080, height: 740)
+            .windowToolbarStyle(.unifiedCompact)
         Settings { SettingsView(library: library) }
     }
 }

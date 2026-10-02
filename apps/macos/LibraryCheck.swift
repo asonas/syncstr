@@ -105,6 +105,15 @@ struct LibraryCheck {
 
             try require(library.destination == .albums)
             try require(library.albums.map(\.title) == ["Album A", "Album B"])
+            library.search = "Album B"
+            try require(library.visibleAlbums.map(\.title) == ["Album B"])
+            library.search = "Artist A"
+            try require(library.visibleAlbums.map(\.title) == ["Album A"])
+            try require(library.artists == ["Artist A"])
+            library.search = "Third"
+            try require(library.visibleAlbums.isEmpty)
+            try require(library.artists.isEmpty)
+            library.search = ""
             let albumTracks = library.albums[0].tracks
             try require(albumTracks.map(\.id) == ["first", "second"])
             library.selectedAlbum = "album-a"

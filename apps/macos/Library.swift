@@ -93,6 +93,11 @@ final class Library: ObservableObject {
         }.sorted { $0.title.localizedStandardCompare($1.title) == .orderedAscending }
     }
 
+    var visibleAlbums: [Album] {
+        albums.filter { search.isEmpty || $0.title.localizedStandardContains(search)
+            || $0.artist.localizedStandardContains(search) }
+    }
+
     var artists: [String] {
         Set(tracks.map { $0.artist ?? "アーティスト不明" }).sorted {
             $0.localizedStandardCompare($1) == .orderedAscending
