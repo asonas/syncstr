@@ -243,15 +243,13 @@ struct LibraryView: View {
                         Text(track.artist ?? "アーティスト不明").font(.system(size: 12)).foregroundStyle(Studio.fog)
                     }
                     Spacer(minLength: 8)
-                    if library.current?.id == track.id {
-                        Text(library.playing ? "再生中" : "選択中").font(.system(size: 12)).foregroundStyle(Studio.signal)
-                    }
                     Text(time(track.duration ?? 0))
                         .font(.system(size: 12)).monospacedDigit().foregroundStyle(Studio.fog)
                 }
                 .padding(.horizontal, 12).padding(.vertical, 12).contentShape(Rectangle())
             }
             .buttonStyle(.plain)
+            .accessibilityAddTraits(library.current?.id == track.id ? .isSelected : [])
             .listRowInsets(EdgeInsets())
             .listRowBackground(library.current?.id == track.id ? Studio.carbon : Color.clear)
             .listRowSeparatorTint(Studio.iron)
@@ -273,7 +271,6 @@ struct LibraryView: View {
                 HStack(alignment: .center, spacing: 24) {
                     Artwork(url: artworkURL(current.coverArt)).frame(width: 128, height: 128)
                     VStack(alignment: .leading, spacing: 12) {
-                        Text("再生中").font(.system(size: 12)).foregroundStyle(Studio.fog)
                         Text(current.title).font(.system(size: 28, weight: .regular)).lineLimit(3)
                             .accessibilityAddTraits(.isHeader)
                         Text(current.artist ?? "アーティスト不明").foregroundStyle(Studio.fog)
