@@ -12,6 +12,9 @@ HTTPS 接続のみ受け付けます。ログイン成功時に接続先・ユ�
 ## 起動
 
 Command Line Tools の Swift と macOS SDK を使用します。
+署名には、この Mac の Keychain にある `Apple Development: Yuya Fujiwara (55CYFEJC5B)` 証明書と秘密鍵が必要です。
+再ビルド後も Keychain のアクセス許可を引き継ぐため、同じ証明書と bundle ID で署名します。
+アドホック署名のビルドから切り替えた初回は、保存済みログイン情報へのアクセス確認で「常に許可」を選んでください。
 
 ```sh
 sh apps/macos/build.sh
