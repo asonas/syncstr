@@ -50,6 +50,7 @@ private struct StudioInput: ViewModifier {
 
 struct LibraryView: View {
     @StateObject private var library = Library()
+    @State private var showingUpload = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -93,6 +94,7 @@ struct LibraryView: View {
         .frame(minWidth: 640, minHeight: 560)
         .navigationTitle("syncstr")
         .task { await library.restoreCredentials() }
+        .sheet(isPresented: $showingUpload) { UploadView() }
     }
 
     private var rule: some View { Rectangle().fill(Studio.iron).frame(height: 1) }
@@ -134,6 +136,9 @@ struct LibraryView: View {
                 Spacer()
                 Text("音楽ライブラリ").foregroundStyle(Studio.fog)
             }
+            Button { showingUpload = true } label: { Image(systemName: "arrow.up.doc") }
+                .buttonStyle(StudioButton(primary: false))
+                .accessibilityLabel("音楽をアップロード").help("音楽をアップロード")
         }
         .padding(.horizontal, 24).padding(.vertical, 12)
         .background(Color.black)

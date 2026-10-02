@@ -9,9 +9,11 @@ struct LoginCredentials: Codable, Equatable, Sendable {
 
 actor CredentialStore {
     private let service: String
+    private let label: String
 
-    init(service: String = "as.ason.syncstr.navidrome") {
+    init(service: String = "as.ason.syncstr.navidrome", label: String = "syncstr Navidrome") {
         self.service = service
+        self.label = label
     }
 
     private var query: [String: Any] {
@@ -42,7 +44,7 @@ actor CredentialStore {
         if status == errSecItemNotFound {
             var item = query
             item[kSecValueData as String] = data
-            item[kSecAttrLabel as String] = "syncstr Navidrome"
+            item[kSecAttrLabel as String] = label
             item[kSecAttrSynchronizable as String] = false
             status = SecItemAdd(item as CFDictionary, nil)
         }
