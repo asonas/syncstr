@@ -1,0 +1,55 @@
+name: Syncstr
+options:
+  bundleIdPrefix: as.ason.syncstr
+  deploymentTarget:
+    iOS: "26.0"
+settings:
+  base:
+    SWIFT_VERSION: "5.0"
+    TARGETED_DEVICE_FAMILY: "1"
+    CODE_SIGN_STYLE: Automatic
+    DEVELOPMENT_TEAM: QYP65434UW
+targets:
+  Syncstr:
+    type: application
+    platform: iOS
+    sources:
+      - path: Sources
+      - path: ../macos/Library.swift
+      - path: ../macos/Navidrome.swift
+      - path: ../macos/CredentialStore.swift
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: as.ason.syncstr.ios
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        MARKETING_VERSION: "0.1.0"
+        CURRENT_PROJECT_VERSION: "1"
+    info:
+      path: Info.plist
+      properties:
+        CFBundleDisplayName: syncstr
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        ITSAppUsesNonExemptEncryption: false
+        UILaunchScreen: {}
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+        UIBackgroundModes: [audio]
+  SyncstrTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources: [Tests]
+    settings:
+      base:
+        GENERATE_INFOPLIST_FILE: YES
+    dependencies:
+      - target: Syncstr
+schemes:
+  Syncstr:
+    build:
+      targets:
+        Syncstr: all
+    test:
+      targets: [SyncstrTests]
