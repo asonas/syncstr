@@ -100,7 +100,9 @@ struct LibraryView: View {
         }
         .toolbarBackground(.hidden, for: .windowToolbar)
         .task { await library.restoreCredentials() }
-        .sheet(isPresented: $showingUpload) { UploadView() }
+        .sheet(isPresented: $showingUpload) {
+            UploadView(onUploaded: { library.pollForLibraryUpdates(uploads: [$0]) })
+        }
     }
 
     private var rule: some View { Rectangle().fill(Studio.iron).frame(height: 1) }

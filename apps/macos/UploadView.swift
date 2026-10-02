@@ -13,6 +13,7 @@ private struct UploadItem: Identifiable {
 }
 
 struct UploadView: View {
+    let onUploaded: (LibraryUpload) -> Void
     @Environment(\.dismiss) private var dismiss
     @State private var server = "https://syncstr-uploader.jkte.ch"
     @State private var token = ""
@@ -197,8 +198,9 @@ struct UploadView: View {
                 guard let index = items.firstIndex(where: { $0.id == id }) else { continue }
                 items[index].state = .uploading
                 do {
-                    _ = try await client.upload(items[index].file)
+                    let receipt = try await client.upload(items[index].file)
                     items[index].state = .completed
+                    onUploaded(LibraryUpload(filename: receipt.filename, bytes: receipt.bytes, sha256: receipt.sha256))
                 } catch { items[index].state = .failed(error.localizedDescription) }
             }
             message = pendingCount == 0 ? "すべてのアップロードが完了しました。" : "失敗したファイルは、アップロードボタンから再試行できます。"

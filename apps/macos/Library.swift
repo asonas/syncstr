@@ -9,6 +9,12 @@ struct Album: Identifiable {
     var coverArt: String? { tracks.compactMap(\.coverArt).first }
 }
 
+struct LibraryUpload {
+    let filename: String
+    let bytes: UInt64
+    let sha256: String
+}
+
 enum LibraryDestination: String, CaseIterable {
     case albums = "アルバム"
     case artists = "アーティスト"
@@ -63,20 +69,27 @@ final class Library: ObservableObject {
     private var timeObserver: Any?
     private var finishObserver: NSObjectProtocol?
     private var task: Task<Void, Never>?
+    private var pollingTask: Task<Void, Never>?
+    private var pendingUploads: [String: LibraryUpload] = [:]
+    private var excludedTrackIDs: Set<String> = []
+    private var checkedChecksums: [String: String] = [:]
     private var seeking: UUID?
     private var restoredCredentials = false
     private let session: URLSession
     private let credentials: CredentialStore
     private let makePlayer: (URL) -> AVPlayer
+    private let pollingSleep: (Duration) async throws -> Void
 
     init(
         session: URLSession = URLSession(configuration: .ephemeral, delegate: NoRedirects(), delegateQueue: nil),
         credentials: CredentialStore = CredentialStore(),
-        makePlayer: @escaping (URL) -> AVPlayer = { AVPlayer(url: $0) }
+        makePlayer: @escaping (URL) -> AVPlayer = { AVPlayer(url: $0) },
+        pollingSleep: @escaping (Duration) async throws -> Void = { try await Task.sleep(for: $0) }
     ) {
         self.session = session
         self.credentials = credentials
         self.makePlayer = makePlayer
+        self.pollingSleep = pollingSleep
     }
 
     var albums: [Album] {
@@ -156,6 +169,10 @@ final class Library: ObservableObject {
     }
 
     func connect(server: String, username: String, password: String) {
+        pollingTask?.cancel()
+        pendingUploads = [:]
+        excludedTrackIDs = []
+        checkedChecksums = [:]
         message = nil
         do {
             let client = try Navidrome(server: server, username: username, password: password)
@@ -165,6 +182,58 @@ final class Library: ObservableObject {
     }
 
     func reload() { if let client { load(client) } }
+
+    @discardableResult
+    func pollForLibraryUpdates(uploads: [LibraryUpload]) -> Task<Void, Never>? {
+        pollingTask?.cancel()
+        guard connected, !uploads.isEmpty else { return nil }
+        if pendingUploads.isEmpty {
+            excludedTrackIDs = Set(tracks.map(\.id))
+            checkedChecksums = [:]
+        }
+        for upload in uploads { pendingUploads[upload.filename] = upload }
+        pollingTask = Task { [weak self] in
+            for attempt in 0..<10 {
+                guard let sleep = self?.pollingSleep else { return }
+                do { try await sleep(.seconds(1 << attempt)) }
+                catch { return }
+                guard !Task.isCancelled, let self, self.connected else { return }
+                if self.refreshing { await self.task?.value }
+                guard !Task.isCancelled, self.connected else { return }
+                self.reload()
+                await self.task?.value
+                guard !Task.isCancelled else { return }
+                await self.resolvePendingUploads()
+                guard !Task.isCancelled else { return }
+                if self.pendingUploads.isEmpty { return }
+            }
+        }
+        return pollingTask
+    }
+
+    private func resolvePendingUploads() async {
+        guard let client else { return }
+        for track in tracks where !excludedTrackIDs.contains(track.id) {
+            guard !Task.isCancelled else { return }
+            let candidates = pendingUploads.values.filter { $0.bytes == track.size }
+            guard !candidates.isEmpty else { continue }
+            do {
+                let checksum: String
+                if let cached = checkedChecksums[track.id] { checksum = cached }
+                else {
+                    checksum = try await client.checksum(track, session: session)
+                    try Task.checkCancellation()
+                    checkedChecksums[track.id] = checksum
+                }
+                if let upload = candidates.first(where: { $0.sha256 == checksum }) {
+                    pendingUploads[upload.filename] = nil
+                    excludedTrackIDs.insert(track.id)
+                }
+            } catch {
+                if Task.isCancelled { return }
+            }
+        }
+    }
 
     private func load(_ client: Navidrome, saving login: LoginCredentials? = nil) {
         task?.cancel()
@@ -337,6 +406,10 @@ final class Library: ObservableObject {
     }
 
     func disconnect() {
+        pollingTask?.cancel()
+        pendingUploads = [:]
+        excludedTrackIDs = []
+        checkedChecksums = [:]
         task?.cancel()
         stop()
 #if os(iOS)

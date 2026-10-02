@@ -12,6 +12,7 @@ struct Track: Decodable, Identifiable, Equatable {
     var track: Int? = nil
     var discNumber: Int? = nil
     var suffix: String? = nil
+    var size: UInt64? = nil
 
     var albumKey: String { albumId ?? "\(artist ?? "")\u{1f}\(album ?? "")" }
 }
@@ -69,6 +70,20 @@ struct Navidrome {
             if page.count < 100 { return tracks }
             offset += page.count
         }
+    }
+
+    func checksum(_ track: Track, session: URLSession) async throws -> String {
+        let (bytes, response) = try await session.bytes(from: url("download", parameters: [URLQueryItem(name: "id", value: track.id)]))
+        guard let http = response as? HTTPURLResponse, http.statusCode == 200 else { throw ClientError.connection }
+        var digest = SHA256()
+        var buffer = Data()
+        for try await byte in bytes {
+            try Task.checkCancellation()
+            buffer.append(byte)
+            if buffer.count == 65536 { digest.update(data: buffer); buffer.removeAll(keepingCapacity: true) }
+        }
+        digest.update(data: buffer)
+        return digest.finalize().map { String(format: "%02x", $0) }.joined()
     }
 
     private func response(_ endpoint: String, parameters: [URLQueryItem] = [], session: URLSession) async throws -> Response {
