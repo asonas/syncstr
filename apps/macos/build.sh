@@ -4,7 +4,7 @@ cd "$(dirname "$0")"
 app="$PWD/.build/Syncstr.app"
 mkdir -p "$app/Contents/MacOS" "$PWD/.build/module-cache"
 xcrun swiftc -parse-as-library -module-cache-path "$PWD/.build/module-cache" \
-  -o "$app/Contents/MacOS/Syncstr" Syncstr.swift Library.swift Navidrome.swift
+  -o "$app/Contents/MacOS/Syncstr" Syncstr.swift Library.swift Navidrome.swift CredentialStore.swift
 command cp Info.plist "$app/Contents/Info.plist"
 codesign --force --sign - "$app"
 printf '%s\n' "$app"
