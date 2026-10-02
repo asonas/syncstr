@@ -1,6 +1,6 @@
 import SwiftUI
 
-private enum Studio {
+enum Studio {
     static let carbon = Color(red: 18 / 255, green: 18 / 255, blue: 20 / 255)
     static let graphite = Color(red: 35 / 255, green: 36 / 255, blue: 38 / 255)
     static let iron = Color(red: 69 / 255, green: 70 / 255, blue: 77 / 255)
@@ -9,7 +9,7 @@ private enum Studio {
     static let button = Color(red: 18 / 255, green: 83 / 255, blue: 1)
 }
 
-private struct StudioButton: ButtonStyle {
+struct StudioButton: ButtonStyle {
     let primary: Bool
     @Environment(\.isEnabled) private var enabled
 
@@ -29,7 +29,7 @@ private struct StudioButton: ButtonStyle {
     }
 }
 
-private struct StudioInput: ViewModifier {
+struct StudioInput: ViewModifier {
     @FocusState private var focused: Bool
 
     func body(content: Content) -> some View {

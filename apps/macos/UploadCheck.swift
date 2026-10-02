@@ -6,6 +6,16 @@ final class UploadFixture: URLProtocol {
     override func startLoading() {
         let url = request.url!
         precondition(request.httpMethod == "PUT")
+        if url.path.hasSuffix("/v1/uploads/connection-check") {
+            precondition(request.httpBody?.isEmpty != false)
+            let accepted = request.value(forHTTPHeaderField: "Authorization") == "Bearer fixture-upload-token-0123456789abcdef"
+            let status = url.path.hasPrefix("/unexpected/") ? 200 : (accepted ? 400 : 401)
+            client?.urlProtocol(self, didReceive: HTTPURLResponse(url: url, statusCode: status,
+                                                                httpVersion: nil, headerFields: nil)!, cacheStoragePolicy: .notAllowed)
+            client?.urlProtocol(self, didLoad: Data((accepted ? "{\"error\":\"invalid_filename\"}" : "{\"error\":\"unauthorized\"}").utf8))
+            client?.urlProtocolDidFinishLoading(self)
+            return
+        }
         precondition(request.value(forHTTPHeaderField: "Authorization") == "Bearer fixture-upload-token-0123456789abcdef")
         precondition(request.value(forHTTPHeaderField: "Content-Length") == "3")
         precondition(request.value(forHTTPHeaderField: "X-Content-SHA256") == "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad")
@@ -38,6 +48,13 @@ struct UploadChecks {
         defer { session.invalidateAndCancel() }
         let token = "fixture-upload-token-0123456789abcdef"
         let client = try UploadClient(server: "https://upload.example/base/", token: token)
+        try await client.checkConnection(session: session)
+        let rejected = try UploadClient(server: "https://upload.example/base/", token: "invalid-upload-token-0123456789abcdef")
+        do { try await rejected.checkConnection(session: session); fatalError("Invalid token accepted") }
+        catch UploadError.rejected(401, _) {}
+        let unexpected = try UploadClient(server: "https://upload.example/unexpected", token: token)
+        do { try await unexpected.checkConnection(session: session); fatalError("Unexpected response accepted") }
+        catch UploadError.rejected(200, _) {}
         let receipt = try await client.upload(file, session: session)
         precondition(receipt.bytes == 3 && receipt.filename == file.lastPathComponent)
         let original = try Data(contentsOf: file)
@@ -47,6 +64,6 @@ struct UploadChecks {
         catch UploadError.rejected(409, _) {}
         do { _ = try UploadClient(server: "http://upload.example", token: token); fatalError("HTTP accepted") }
         catch UploadError.invalidServer {}
-        print("PASS: upload headers, SHA-256, encoded filename, receipt, conflict and HTTPS requirement")
+        print("PASS: connection authentication, upload headers, SHA-256, encoded filename, receipt, conflict and HTTPS requirement")
     }
 }

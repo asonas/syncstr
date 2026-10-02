@@ -31,6 +31,27 @@ struct UploadClient: Sendable {
         self.token = token
     }
 
+    func checkConnection(session suppliedSession: URLSession? = nil) async throws {
+        // Authentication precedes filename validation; this invalid name cannot create a file.
+        let url = server.appendingPathComponent("v1/uploads/connection-check")
+        var request = URLRequest(url: url)
+        request.httpMethod = "PUT"
+        request.httpBody = Data()
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        let config = URLSessionConfiguration.ephemeral
+        config.httpShouldSetCookies = false
+        config.timeoutIntervalForRequest = 15
+        config.timeoutIntervalForResource = 15
+        let session = suppliedSession ?? URLSession(configuration: config, delegate: UploadRedirectPolicy(), delegateQueue: nil)
+        defer { if suppliedSession == nil { session.invalidateAndCancel() } }
+        let (data, response) = try await session.data(for: request)
+        guard let http = response as? HTTPURLResponse else { throw UploadError.invalidResponse }
+        let code = (try? JSONDecoder().decode(UploadFailure.self, from: data))?.error
+        guard http.statusCode == 400 && code == "invalid_filename" else {
+            throw UploadError.rejected(http.statusCode, code)
+        }
+    }
+
     func upload(_ source: URL, session suppliedSession: URLSession? = nil) async throws -> UploadReceipt {
         let scoped = source.startAccessingSecurityScopedResource()
         defer { if scoped { source.stopAccessingSecurityScopedResource() } }

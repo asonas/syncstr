@@ -119,10 +119,7 @@ struct UploadView: View {
             return !urls.isEmpty
         } isTargeted: { dropTargeted = $0 && !sending }
         .sheet(isPresented: $showingSettings, onDismiss: { Task { await loadSettings() } }) {
-            VStack {
-                UploadSettingsView()
-                Button("閉じる") { showingSettings = false }.padding(.bottom, 16)
-            }
+            SettingsView()
         }
         .fileImporter(isPresented: $picker, allowedContentTypes: [.audio], allowsMultipleSelection: true) { result in
             switch result {
