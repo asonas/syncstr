@@ -1,5 +1,8 @@
 ## Agent skills
 
+- UIの配置・文言・寸法・状態表現を変更するときは [DESIGN.md](DESIGN.md) のmacOS方針を先に読む。
+- 変更をレビューするときは [CODING_STANDARDS.md](CODING_STANDARDS.md) を読み、変更した操作と表示状態を確認する。
+
 ### Issue tracker
 
 Issues are tracked in this repository's GitHub Issues. See `docs/agents/issue-tracker.md`.
