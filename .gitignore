@@ -13,3 +13,4 @@ infra/data/
 ops/backups/
 tmp/
 .worktrees/
+server/target/
