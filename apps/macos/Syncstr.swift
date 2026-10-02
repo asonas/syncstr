@@ -49,7 +49,7 @@ private struct StudioInput: ViewModifier {
 }
 
 struct LibraryView: View {
-    @StateObject private var library = Library()
+    @ObservedObject var library: Library
     @State private var showingUpload = false
 
     var body: some View {
@@ -129,9 +129,6 @@ struct LibraryView: View {
                     .disabled(library.refreshing)
                     .buttonStyle(StudioButton(primary: false))
                     .accessibilityLabel("再読み込み").help("再読み込み")
-                Button(action: library.disconnect) { Image(systemName: "rectangle.portrait.and.arrow.right") }
-                    .buttonStyle(StudioButton(primary: false))
-                    .accessibilityLabel("ログアウト").help("ログアウトして保存情報を削除")
             } else {
                 Spacer()
                 Text("音楽ライブラリ").foregroundStyle(Studio.fog)
@@ -474,7 +471,9 @@ private struct Artwork: View {
 
 @main
 struct SyncstrApp: App {
+    @StateObject private var library = Library()
     var body: some Scene {
-        WindowGroup("syncstr") { LibraryView() }.defaultSize(width: 1080, height: 740)
+        WindowGroup("syncstr") { LibraryView(library: library) }.defaultSize(width: 1080, height: 740)
+        Settings { SettingsView(library: library) }
     }
 }
