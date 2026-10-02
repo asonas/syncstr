@@ -17,7 +17,19 @@ For a physical device, set the signing team and bundle ID in `project.yml` to ma
 
 ## TestFlight and Xcode Cloud
 
-Keep `project.yml` under version control. Generated project files, workspaces, and shared schemes are excluded. [ci_post_clone.sh](ci_scripts/ci_post_clone.sh), next to the generated project, installs XcodeGen if needed and generates the project after cloning. The Xcode Cloud connection manifest remains tracked.
+Keep `project.yml` and `Syncstr.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved` under version control. Other generated project files, workspace files, and shared schemes are excluded. [ci_post_clone.sh](ci_scripts/ci_post_clone.sh), next to the generated project, installs XcodeGen if needed and generates the project after cloning. The Xcode Cloud connection manifest remains tracked.
+
+Xcode Cloud disables automatic package resolution. After changing package dependencies, resolve them locally and commit the updated `Package.resolved`. Before pushing, regenerate the project and verify resolution with an empty package checkout directory:
+
+```sh
+mise exec -- xcodegen generate --spec apps/ios/project.yml
+package_checkouts=$(mktemp -d)
+DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer xcodebuild \
+  -resolvePackageDependencies -project apps/ios/Syncstr.xcodeproj \
+  -scheme SyncstrMac -disableAutomaticPackageResolution \
+  -onlyUsePackageVersionsFromResolvedFile \
+  -clonedSourcePackagesDirPath "$package_checkouts"
+```
 
 Connect the repository through Xcode's Integrate → Create Workflow. Configure:
 
