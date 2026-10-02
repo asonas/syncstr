@@ -1,4 +1,34 @@
-# Splice — Style Reference
+# Syncstr — Design
+
+## 採用したブランド／アイコン配色
+
+2026-10-02に、アイコンの意匠 **A2.3「水平のリズム」**、配色 **C2**、残像 **F2** を採用しました。[Figmaの採用案](https://www.figma.com/design/KtfBubkg9KiK5LuLHIm8Qt?node-id=12-2)を参照してください。
+
+| 用途 | 色 | 適用範囲 |
+|---|---|---|
+| ブランドの藍色 | `#4338ca` | 採用アイコンの背景 |
+| ブランドの淡い白 | `#eef2ff` | 採用アイコンのSと残像 |
+
+この2色はアイコン用の組み合わせです。既存UIのSignal Blue `#528fff`、Button Blue `#1253ff`、Carbon／Graphiteの背景色を置き換える決定ではありません。以下のSplice参照資料にある「新しいアクセントカラーを追加しない」という規範はUIに適用し、採用アイコンにはこの配色を適用します。
+
+### 残像の設定
+
+256 × 256の座標系で、手前のSは不透明度100%・ブラーなしとし、背後に同じ形・同じ色のSを2層重ねます。
+
+| レイヤー | 手前のSからの位置 | 不透明度 | ブラー半径 |
+|---|---|---|---|
+| 近い残像 | 右6・下6 | 42% | 2 |
+| 遠い残像 | 右12・下12 | 20% | 4 |
+
+重なり全体を中央に置くため、手前のSを単層時の位置から左6・上6へ移動します。サイズ変更時は、位置とブラー半径も同じ倍率で拡縮します。
+
+### 判断の根拠と実装状態
+
+- 不透明な `#eef2ff` と `#4338ca` の輝度コントラスト比は約7.07:1です。これは[WCAGの相対輝度とコントラスト比の定義](https://www.w3.org/TR/WCAG22/#dfn-relative-luminance)による計算値であり、ブランドの独自性や美しさを評価する点数ではありません。半透明の残像には同じ値を適用できません。
+- 藍色 `#4338ca` をGraphite `#232426` 上のマークに使うと約1.97:1になるため、採用アイコンでは淡い白と組み合わせます。
+- Figma上で意匠を選定済みです。OS別素材への仕上げとアプリへの組み込みは未実施です。Apple向けの仕上げでは、[Icon Composerの公式説明](https://developer.apple.com/videos/play/wwdc2025/361/)に沿って原図形のレイヤーを保ち、ブラーなどの効果を別途調整します。
+
+## Splice — Style Reference
 > midnight recording studio — a dark, weightless space where the only thing that ever gets loud is the music.
 
 **Theme:** dark
