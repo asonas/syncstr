@@ -152,6 +152,7 @@ struct LibraryView: View {
                         .background(library.destination == destination && !library.showingNowPlaying ? Studio.graphite : Color.clear)
                         .foregroundStyle(library.destination == destination && !library.showingNowPlaying ? Studio.signal : Color.white)
                         .clipShape(RoundedRectangle(cornerRadius: 4))
+                        .contentShape(Rectangle())
                 }.buttonStyle(.plain)
                 .accessibilityAddTraits(library.destination == destination && !library.showingNowPlaying ? .isSelected : [])
             }
@@ -161,6 +162,7 @@ struct LibraryView: View {
                     .frame(maxWidth: .infinity, minHeight: 40, alignment: .leading)
                     .padding(.horizontal, 12)
                     .foregroundStyle(library.showingNowPlaying ? Studio.signal : Studio.fog)
+                    .contentShape(Rectangle())
             }
             .buttonStyle(.plain).disabled(library.current == nil)
             Spacer()
