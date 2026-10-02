@@ -22,3 +22,4 @@ apps/ios/Syncstr.xcodeproj/project.xcworkspace/xcshareddata/*
 apps/ios/Syncstr.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/*
 !apps/ios/Syncstr.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved
 apps/ios/Syncstr.xcodeproj/xcshareddata/xcschemes/
+server/target/
