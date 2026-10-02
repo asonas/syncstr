@@ -142,8 +142,6 @@ struct LibraryView: View {
             }
             .buttonStyle(.plain).disabled(library.refreshing)
             Spacer()
-            Text("\(library.tracks.count)曲")
-                .font(.system(size: 12)).foregroundStyle(Studio.fog).padding(12)
         }
         .padding(.horizontal, 12).padding(.top, 20)
         .frame(width: 200)
