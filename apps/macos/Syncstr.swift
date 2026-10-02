@@ -58,6 +58,7 @@ struct LibraryView: View {
                 HStack(spacing: 0) {
                     sidebar
                     Rectangle().fill(Studio.iron).frame(width: 1)
+                        .ignoresSafeArea(.container, edges: .top)
                     content.frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
             } else if library.restoringSession {
@@ -106,9 +107,6 @@ struct LibraryView: View {
 
     private var sidebar: some View {
         VStack(alignment: .leading, spacing: 4) {
-            Text("ライブラリ")
-                .font(.system(size: 12)).foregroundStyle(Studio.fog)
-                .padding(.horizontal, 12).padding(.bottom, 4)
             ForEach(LibraryDestination.allCases, id: \.self) { destination in
                 Button { library.navigate(destination); library.search = "" } label: {
                     Label(destination.rawValue, systemImage: destination.symbol)
