@@ -11,7 +11,7 @@ final class PhoneAPIProtocol: URLProtocol {
             payload = ["status": "ok"]
         } else {
             payload = ["status": "ok", "searchResult3": ["song": [
-                ["id": "voyager", "title": "Voyager", "artist": "Daft Punk", "album": "Remix", "albumId": "remix"]
+                ["id": "voyager", "title": "Voyager", "artist": "Daft Punk", "album": "Remix", "albumId": "remix", "suffix": "wav"]
             ]]]
         }
         let data = try! JSONSerialization.data(withJSONObject: ["subsonic-response": payload])

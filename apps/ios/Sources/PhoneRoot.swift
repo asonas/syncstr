@@ -1,4 +1,3 @@
-import AVFoundation
 import SwiftUI
 
 enum PhoneStyle {
@@ -197,29 +196,53 @@ struct PhoneRoot: View {
 
     private func songList(_ tracks: [Track]) -> some View {
         List(tracks) { track in
-            Button {
-                start(track, in: tracks)
-            } label: {
-                HStack(spacing: 12) {
-                    VStack(alignment: .leading, spacing: 6) {
-                        Text(track.title).foregroundStyle(.primary)
-                        Text(track.artist ?? "アーティスト不明")
-                            .font(.subheadline).foregroundStyle(.secondary)
+            HStack(spacing: 8) {
+                Button {
+                    start(track, in: tracks)
+                } label: {
+                    HStack(spacing: 12) {
+                        VStack(alignment: .leading, spacing: 6) {
+                            Text(track.title).foregroundStyle(.primary)
+                            Text(track.artist ?? "アーティスト不明")
+                                .font(.subheadline).foregroundStyle(.secondary)
+                        }
+                        Spacer(minLength: 8)
+                        if library.current?.id == track.id {
+                            if library.loading {
+                                ProgressView().accessibilityLabel("再生を準備中")
+                            } else {
+                                Image(systemName: library.playing ? "speaker.wave.2" : "pause.circle")
+                                    .accessibilityLabel(library.playing ? "再生中" : "選択中")
+                            }
+                        }
+                        if let duration = track.duration {
+                            Text(time(duration)).font(.caption).monospacedDigit().foregroundStyle(.secondary)
+                        }
                     }
-                    Spacer(minLength: 8)
-                    if library.current?.id == track.id {
-                        Image(systemName: library.playing ? "speaker.wave.2" : "pause.circle")
-                            .accessibilityLabel(library.playing ? "再生中" : "選択中")
-                    }
-                    if let duration = track.duration {
-                        Text(time(duration)).font(.caption).monospacedDigit().foregroundStyle(.secondary)
-                    }
+                    .padding(.vertical, 8)
+                    .contentShape(Rectangle())
                 }
-                .padding(.vertical, 8)
-                .contentShape(Rectangle())
+                .buttonStyle(.plain)
+                .accessibilityIdentifier("track-\(track.id)")
+                if library.downloading.contains(track.id) {
+                    ProgressView().frame(width: 44, height: 44)
+                        .accessibilityLabel("ダウンロード中")
+                } else if library.downloaded.contains(track.id) {
+                    Image("regen-circle-check").renderingMode(.template)
+                        .resizable().frame(width: 24, height: 24)
+                        .foregroundStyle(.secondary)
+                        .frame(width: 44, height: 44)
+                        .accessibilityLabel("ダウンロード済み")
+                } else {
+                    Button { library.download(track) } label: {
+                        Image("regen-cloud-download").renderingMode(.template)
+                            .resizable().frame(width: 24, height: 24)
+                            .frame(width: 44, height: 44)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("\(track.title)、未ダウンロード。端末に保存")
+                }
             }
-            .buttonStyle(.plain)
-            .accessibilityIdentifier("track-\(track.id)")
         }
         .scrollContentBackground(.hidden)
         .background(PhoneStyle.graphite)
@@ -282,12 +305,12 @@ struct PhoneRoot: View {
             if library.current != nil {
                 HStack(spacing: 16) {
                     Spacer(minLength: 0)
-                    Button { withAudioSession { library.previous() } } label: {
+                    Button { library.previous() } label: {
                         Image(systemName: "backward.end.fill").frame(minWidth: 44, minHeight: 44)
                     }
                     .disabled(!library.canGoPrevious).accessibilityLabel("前の曲")
                     playbackButton
-                    Button { withAudioSession { library.next() } } label: {
+                    Button { library.next() } label: {
                         Image(systemName: "forward.end.fill").frame(minWidth: 44, minHeight: 44)
                     }
                     .disabled(!library.canGoNext).accessibilityLabel("次の曲")
@@ -306,8 +329,7 @@ struct PhoneRoot: View {
 
     private var playbackButton: some View {
         Button {
-            if library.playing || library.loading { library.togglePlayback() }
-            else { withAudioSession { library.togglePlayback() } }
+            library.togglePlayback()
         } label: {
             Image(systemName: library.playing || library.loading ? "pause.fill" : "play.fill")
                 .frame(minWidth: 44, minHeight: 44)
@@ -346,18 +368,7 @@ struct PhoneRoot: View {
     }
 
     private func start(_ track: Track, in tracks: [Track]) {
-        withAudioSession { library.play(track, in: tracks) }
-    }
-
-    private func withAudioSession(_ action: () -> Void) {
-        do {
-            let session = AVAudioSession.sharedInstance()
-            try session.setCategory(.playback, mode: .default)
-            try session.setActive(true)
-            action()
-        } catch {
-            library.message = "音声出力を開始できませんでした。再生をもう一度お試しください。"
-        }
+        library.play(track, in: tracks)
     }
 
     private func time(_ seconds: Double) -> String {

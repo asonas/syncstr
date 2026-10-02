@@ -46,6 +46,14 @@ final class Library: ObservableObject {
     @Published var sidebarVisible = true
     @Published var showingNowPlaying = false
     @Published private(set) var artworkURLs: [String: URL] = [:]
+#if os(iOS)
+    @Published private(set) var downloaded: Set<String> = []
+    @Published private(set) var downloading: Set<String> = []
+    var offlineTracks = OfflineTracks()
+    private var downloadTasks: [String: Task<Void, Never>] = [:]
+    private var downloadAccount = ""
+    private var downloadGeneration = UUID()
+#endif
 
     private var client: Navidrome?
     private var player: AVPlayer?
@@ -163,6 +171,17 @@ final class Library: ObservableObject {
                 guard !Task.isCancelled else { return }
                 self.client = client
                 self.tracks = tracks
+#if os(iOS)
+                let account = client.server.absoluteString + "\u{1f}" + username
+                if downloadAccount != account {
+                    downloadGeneration = UUID()
+                    downloadTasks.values.forEach { $0.cancel() }
+                    downloadTasks = [:]
+                    downloading = []
+                }
+                downloadAccount = account
+                downloaded = Set(tracks.filter { offlineTracks.contains(account: account, id: $0.id, suffix: $0.suffix) }.map(\.id))
+#endif
                 artworkURLs = Dictionary(uniqueKeysWithValues: Set(tracks.compactMap(\.coverArt)).map {
                     ($0, client.url("getCoverArt", parameters: [
                         URLQueryItem(name: "id", value: $0), URLQueryItem(name: "size", value: "400")
@@ -188,16 +207,26 @@ final class Library: ObservableObject {
 
     func play(_ track: Track, in tracks: [Track]? = nil) {
         guard let client else { return }
+#if os(iOS)
+        guard activateAudio() else { return }
+#endif
         if let tracks { queue = tracks }
         if !queue.contains(where: { $0.id == track.id }) { queue = [track] }
         stop()
         current = track
         duration = max(0, track.duration ?? 0)
         message = nil
-        let player = makePlayer(client.url("stream", parameters: [
+        var url = client.url("stream", parameters: [
             URLQueryItem(name: "id", value: track.id),
             URLQueryItem(name: "format", value: "raw")
-        ]))
+        ])
+#if os(iOS)
+        if offlineTracks.contains(account: downloadAccount, id: track.id, suffix: track.suffix) {
+            url = offlineTracks.url(account: downloadAccount, id: track.id, suffix: track.suffix)
+        }
+#endif
+        loading = true
+        let player = makePlayer(url)
         guard let item = player.currentItem else { return }
         self.player = player
         observation = player.observe(\.timeControlStatus, options: [.initial, .new]) { [weak self] player, _ in
@@ -267,13 +296,22 @@ final class Library: ObservableObject {
 
     func togglePlayback() {
         guard let player else { return }
-        if player.rate != 0 { player.pause() }
+        if player.rate != 0 || loading { pause() }
         else {
+#if os(iOS)
+            guard activateAudio() else { return }
+#endif
             if duration > 0 && position >= duration {
                 seek(to: 0)
             }
             player.play()
         }
+    }
+
+    func pause() {
+        player?.pause()
+        playing = false
+        loading = false
     }
 
     private func stop() {
@@ -296,6 +334,14 @@ final class Library: ObservableObject {
     func disconnect() {
         task?.cancel()
         stop()
+#if os(iOS)
+        downloadTasks.values.forEach { $0.cancel() }
+        downloadTasks = [:]
+        downloading = []
+        downloaded = []
+        downloadAccount = ""
+        downloadGeneration = UUID()
+#endif
         client = nil
         current = nil
         tracks = []
@@ -313,4 +359,47 @@ final class Library: ObservableObject {
             refreshing = false
         }
     }
+
+#if os(iOS)
+    func download(_ track: Track) {
+        guard let client, !downloading.contains(track.id), !downloaded.contains(track.id) else { return }
+        let account = downloadAccount
+        let generation = downloadGeneration
+        downloading.insert(track.id)
+        downloadTasks[track.id] = Task {
+            defer {
+                if downloadGeneration == generation {
+                    downloading.remove(track.id)
+                    downloadTasks[track.id] = nil
+                }
+            }
+            do {
+                let (temporary, response) = try await session.download(from: client.url("download", parameters: [URLQueryItem(name: "id", value: track.id)]))
+                defer { try? FileManager.default.removeItem(at: temporary) }
+                try Task.checkCancellation()
+                guard let response = response as? HTTPURLResponse, response.statusCode == 200,
+                      response.mimeType?.hasPrefix("audio/") == true || response.mimeType == "application/octet-stream" else {
+                    throw ClientError.response
+                }
+                try offlineTracks.save(temporary, account: account, id: track.id, suffix: track.suffix)
+                if downloadGeneration == generation { downloaded.insert(track.id) }
+            } catch {
+                if !Task.isCancelled && downloadGeneration == generation {
+                    message = "「\(track.title)」を保存できませんでした。接続と端末の空き容量を確認して、もう一度お試しください。"
+                }
+            }
+        }
+    }
+
+    private func activateAudio() -> Bool {
+        do {
+            try AVAudioSession.sharedInstance().setCategory(.playback, mode: .default)
+            try AVAudioSession.sharedInstance().setActive(true)
+            return true
+        } catch {
+            message = "音声出力を開始できませんでした。再生をもう一度お試しください。"
+            return false
+        }
+    }
+#endif
 }

@@ -11,6 +11,7 @@ struct Track: Decodable, Identifiable, Equatable {
     var duration: Double? = nil
     var track: Int? = nil
     var discNumber: Int? = nil
+    var suffix: String? = nil
 
     var albumKey: String { albumId ?? "\(artist ?? "")\u{1f}\(album ?? "")" }
 }
