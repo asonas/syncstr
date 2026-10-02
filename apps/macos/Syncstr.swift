@@ -58,10 +58,8 @@ struct LibraryView: View {
             rule
             if library.connected {
                 HStack(spacing: 0) {
-                    if library.sidebarVisible {
-                        sidebar
-                        Rectangle().fill(Studio.iron).frame(width: 1)
-                    }
+                    sidebar
+                    Rectangle().fill(Studio.iron).frame(width: 1)
                     content.frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
             } else if library.restoringSession {
@@ -101,40 +99,12 @@ struct LibraryView: View {
 
     private var header: some View {
         HStack(spacing: 16) {
+            Spacer(minLength: 16)
             if library.connected {
-                Button { library.sidebarVisible.toggle() } label: {
-                    Image(systemName: "sidebar.left").frame(width: 32, height: 40)
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel("サイドバーを開閉")
-                .help("サイドバーを開閉")
-                HStack(spacing: 8) {
-                    Image(systemName: "magnifyingglass").foregroundStyle(Studio.fog)
-                    TextField("曲、アルバム、アーティストを検索", text: $library.search)
-                        .textFieldStyle(.plain)
-                        .accessibilityLabel("ライブラリを検索")
-                    if !library.search.isEmpty {
-                        Button { library.search = "" } label: { Image(systemName: "xmark.circle.fill") }
-                            .buttonStyle(.plain).accessibilityLabel("検索をクリア")
-                    }
-                }
-                .padding(.horizontal, 12).frame(height: 40)
-                .background(Studio.carbon)
-                .clipShape(RoundedRectangle(cornerRadius: 4))
-                .overlay { RoundedRectangle(cornerRadius: 4).strokeBorder(Studio.iron, lineWidth: 1) }
-                .frame(maxWidth: 400)
-                Spacer(minLength: 0)
-                Button(action: library.reload) { Image(systemName: "arrow.clockwise") }
-                    .disabled(library.refreshing)
-                    .buttonStyle(StudioButton(primary: false))
-                    .accessibilityLabel("再読み込み").help("再読み込み")
+                LibrarySearchField(text: $library.search).frame(width: 300, height: 30)
             } else {
-                Spacer()
                 Text("音楽ライブラリ").foregroundStyle(Studio.fog)
             }
-            Button { showingUpload = true } label: { Image(systemName: "arrow.up.doc") }
-                .buttonStyle(StudioButton(primary: false))
-                .accessibilityLabel("音楽をアップロード").help("音楽をアップロード")
         }
         .padding(.horizontal, 24).padding(.vertical, 12)
         .background(Color.black)
@@ -158,14 +128,19 @@ struct LibraryView: View {
                 .accessibilityAddTraits(library.destination == destination && !library.showingNowPlaying ? .isSelected : [])
             }
             rule.padding(.vertical, 12)
-            Button { library.showingNowPlaying = true; library.search = "" } label: {
-                Label("再生中", systemImage: "waveform")
+            Button { showingUpload = true } label: {
+                Label("音楽を追加", systemImage: "arrow.up.doc")
                     .frame(maxWidth: .infinity, minHeight: 32, alignment: .leading)
                     .padding(.horizontal, 12)
-                    .foregroundStyle(library.showingNowPlaying ? Studio.signal : Studio.fog)
                     .contentShape(Rectangle())
             }
-            .buttonStyle(.plain).disabled(library.current == nil)
+            .buttonStyle(.plain).accessibilityLabel("音楽をアップロード")
+            Button(action: library.reload) {
+                Label(library.refreshing ? "更新中…" : "ライブラリを更新", systemImage: "arrow.clockwise")
+                    .frame(maxWidth: .infinity, minHeight: 32, alignment: .leading)
+                    .padding(.horizontal, 12).contentShape(Rectangle())
+            }
+            .buttonStyle(.plain).disabled(library.refreshing)
             Spacer()
             Text("\(library.tracks.count)曲")
                 .font(.system(size: 12)).foregroundStyle(Studio.fog).padding(12)
@@ -451,6 +426,33 @@ struct LibraryView: View {
         guard seconds.isFinite, seconds >= 0 else { return "0:00" }
         let value = Int(seconds)
         return String(format: "%d:%02d", value / 60, value % 60)
+    }
+}
+
+private struct LibrarySearchField: NSViewRepresentable {
+    @Binding var text: String
+
+    func makeCoordinator() -> Coordinator { Coordinator(text: $text) }
+
+    func makeNSView(context: Context) -> NSSearchField {
+        let field = NSSearchField()
+        field.placeholderString = "ライブラリを検索"
+        field.setAccessibilityLabel("ライブラリを検索")
+        field.sendsSearchStringImmediately = true
+        field.target = context.coordinator
+        field.action = #selector(Coordinator.search(_:))
+        return field
+    }
+
+    func updateNSView(_ field: NSSearchField, context: Context) {
+        context.coordinator.text = $text
+        if field.stringValue != text { field.stringValue = text }
+    }
+
+    final class Coordinator: NSObject {
+        var text: Binding<String>
+        init(text: Binding<String>) { self.text = text }
+        @objc func search(_ field: NSSearchField) { text.wrappedValue = field.stringValue }
     }
 }
 
