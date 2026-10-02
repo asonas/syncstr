@@ -19,10 +19,10 @@ Uploads use a temporary copy so the transmitted content matches its checksum. Al
 | Component | Source |
 |---|---|
 | Client | [Upload.swift](Upload.swift), [UploadCheck.swift](UploadCheck.swift) |
-| Rust server | [server/ at a fixed commit](https://github.com/asonas/syncstr/tree/57b3d8cdfa498404795b9f7c96fe9f21c4196102/server), preserved on `https-upload` and not yet integrated into main |
+| Rust server | [server/](../../server/README.md), integrated into main |
 | Deployment | [syncstr-uploader-deployment](https://github.com/asonas/syncstr-uploader-deployment); its Compose configuration selects the build source with `SYNCSTR_SOURCE_REF` |
 
-For server API work, read `server/README.md` and `server/src/lib.rs` at the ref selected by the deployment. The fixed link above is a starting point, not proof of a running deployment's version. Check Compose, environment overrides, and deployment history to establish that version. Do not infer it from a worktree's location or name.
+For server API work, read `server/README.md` and `server/src/lib.rs` at the ref selected by the deployment. The source on main may differ from a running deployment's version. Check Compose, environment overrides, and deployment history to establish that version. Do not infer it from a worktree's location or name.
 
 ## Build and run
 

@@ -16,8 +16,7 @@ services:
       SYNCSTR_MUSIC_DIR: /storage/music
       SYNCSTR_STAGING_DIR: /storage/staging
     volumes:
-      - /mnt/data/syncstr/music:/storage/music
-      - /mnt/data/syncstr/upload-staging:/storage/staging
+      - /srv/syncstr/storage:/storage
     secrets:
       - upload_token
 secrets:
