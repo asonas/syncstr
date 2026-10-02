@@ -34,6 +34,7 @@ final class Library: ObservableObject {
     @Published var playing = false
     @Published var loading = false
     @Published var refreshing = false
+    @Published var restoringSession = true
     @Published var message: String?
     @Published var position = 0.0
     @Published var duration = 0.0
@@ -123,12 +124,18 @@ final class Library: ObservableObject {
         guard !restoredCredentials else { return }
         restoredCredentials = true
         refreshing = true
-        defer { refreshing = false }
+        defer {
+            refreshing = false
+            restoringSession = false
+        }
         do {
             if let saved = try await credentials.load() {
                 server = saved.server
                 username = saved.username
                 password = saved.password
+                let client = try Navidrome(server: server, username: username, password: password)
+                load(client)
+                await task?.value
             }
         } catch {
             message = "保存したログイン情報を読み込めませんでした。アカウントを入力してください。"

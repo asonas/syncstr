@@ -63,6 +63,12 @@ struct LibraryView: View {
                     }
                     content.frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
+            } else if library.restoringSession {
+                VStack(spacing: 16) {
+                    ProgressView()
+                    Text("ライブラリに接続中…")
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else { login }
             if let message = library.message {
                 HStack(alignment: .top, spacing: 12) {

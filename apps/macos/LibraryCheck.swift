@@ -79,7 +79,7 @@ struct LibraryCheck {
 
         do {
             await library.restoreCredentials()
-            try require(library.password.isEmpty)
+            try require(library.password.isEmpty && !library.connected && !library.restoringSession)
             library.connect(server: "https://fixture.invalid", username: "listener", password: "fixture-one")
             try await wait("Login did not finish") { !library.refreshing }
             try require(library.connected && library.message == nil)
@@ -87,17 +87,21 @@ struct LibraryCheck {
             try require(saved == LoginCredentials(server: "https://fixture.invalid", username: "listener", password: "fixture-one"))
             let reopened = Library(session: session, credentials: store)
             await reopened.restoreCredentials()
-            try require(reopened.username == "listener" && reopened.password == "fixture-one")
+            try require(reopened.connected && reopened.tracks.count == 3 && reopened.password.isEmpty && !reopened.restoringSession)
 
             library.connect(server: "https://fixture.invalid", username: "listener", password: "fixture-two")
             try await wait("Credential update did not finish") { !library.refreshing }
             try require(try await store.load()?.password == "fixture-two")
             LibraryFixtureProtocol.reject = true
+            let rejected = Library(session: session, credentials: store)
+            await rejected.restoreCredentials()
+            try require(!rejected.connected && !rejected.restoringSession && rejected.message != nil)
+            try require(rejected.username == "listener" && rejected.password == "fixture-two")
             library.connect(server: "https://fixture.invalid", username: "listener", password: "wrong")
             try await wait("Rejected login did not finish") { !library.refreshing }
             try require(try await store.load()?.password == "fixture-two")
             LibraryFixtureProtocol.reject = false
-            print("PASS: successful login saves and restores credentials; rejected login does not replace them")
+            print("PASS: saved credentials automatically connect; rejected startup returns to login and preserves credentials")
 
             try require(library.destination == .albums)
             try require(library.albums.map(\.title) == ["Album A", "Album B"])
