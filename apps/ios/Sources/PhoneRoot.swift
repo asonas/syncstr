@@ -13,26 +13,17 @@ enum PhoneTab: Hashable { case library, search, playing, settings }
 struct PhoneRoot: View {
     @ObservedObject var library: Library
     @State private var tab = PhoneTab.library
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
     var body: some View {
         VStack(spacing: 0) {
             if library.connected {
-                TabView(selection: $tab) {
-                    NavigationStack { catalog }
-                        .tabItem { Label("ライブラリ", systemImage: "square.stack") }
-                        .tag(PhoneTab.library)
-                    NavigationStack { search }
-                        .tabItem { Label("検索", systemImage: "magnifyingglass") }
-                        .tag(PhoneTab.search)
-                    NavigationStack { nowPlaying }
-                        .tabItem { Label("再生中", systemImage: "play.circle") }
-                        .tag(PhoneTab.playing)
-                    NavigationStack { settings }
-                        .tabItem { Label("設定", systemImage: "gearshape") }
-                        .tag(PhoneTab.settings)
-                }
-                .tabViewBottomAccessory {
-                    if library.current != nil && tab != .playing { miniPlayer }
+                if #available(iOS 26.1, *) {
+                    tabs.tabViewBottomAccessory(isEnabled: library.current != nil && tab != .playing) { miniPlayer }
+                } else if library.current != nil && tab != .playing {
+                    tabs.tabViewBottomAccessory { miniPlayer }
+                } else {
+                    tabs
                 }
             } else if library.restoringSession {
                 VStack(spacing: 16) {
@@ -43,20 +34,47 @@ struct PhoneRoot: View {
             } else {
                 login
             }
+        }
+        .background(PhoneStyle.graphite)
+        .safeAreaInset(edge: .top, spacing: 0) {
             if let message = library.message {
-                HStack(alignment: .top) {
-                    Image(systemName: "exclamationmark.circle").accessibilityHidden(true)
-                    Text(message).font(.callout)
-                    Spacer(minLength: 0)
-                    Button("閉じる") { library.message = nil }
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack(alignment: .top, spacing: 8) {
+                        Image(systemName: "exclamationmark.circle")
+                            .font(.system(size: 20))
+                            .accessibilityHidden(true)
+                        Text(message).font(.callout).frame(maxWidth: .infinity, alignment: .leading)
+                        if !dynamicTypeSize.isAccessibilitySize {
+                            Button("閉じる") { library.message = nil }
+                        }
+                    }
+                    if dynamicTypeSize.isAccessibilitySize {
+                        Button("閉じる") { library.message = nil }
+                    }
                 }
                 .padding()
                 .background(PhoneStyle.carbon)
             }
         }
-        .background(PhoneStyle.graphite)
         .onChange(of: library.connected) { _, connected in
             if !connected { tab = .library }
+        }
+    }
+
+    private var tabs: some View {
+        TabView(selection: $tab) {
+            NavigationStack { catalog }
+                .tabItem { Label("ライブラリ", systemImage: "square.stack") }
+                .tag(PhoneTab.library)
+            NavigationStack { search }
+                .tabItem { Label("検索", systemImage: "magnifyingglass") }
+                .tag(PhoneTab.search)
+            NavigationStack { nowPlaying }
+                .tabItem { Label("再生中", systemImage: "play.circle") }
+                .tag(PhoneTab.playing)
+            NavigationStack { settings }
+                .tabItem { Label("設定", systemImage: "gearshape") }
+                .tag(PhoneTab.settings)
         }
     }
 
@@ -228,44 +246,58 @@ struct PhoneRoot: View {
     }
 
     private var nowPlaying: some View {
-        ScrollView {
-            if let track = library.current {
-                VStack(alignment: .leading, spacing: 24) {
-                    artwork(track.coverArt, size: 240)
-                        .frame(maxWidth: .infinity)
-                    VStack(alignment: .leading, spacing: 8) {
-                        Text(track.title).font(.title).fontWeight(.regular)
-                        Text(track.artist ?? "アーティスト不明").foregroundStyle(.secondary)
-                        if let album = track.album { Text(album).font(.subheadline).foregroundStyle(.secondary) }
-                    }
-                    VStack(spacing: 8) {
-                        Slider(value: Binding(get: { library.position }, set: { library.seek(to: $0) }), in: 0...max(library.duration, 1))
-                            .disabled(library.duration <= 0)
-                            .accessibilityLabel("再生位置")
-                            .accessibilityValue("\(time(library.position)) / \(time(library.duration))")
-                        HStack {
-                            Text(time(library.position))
-                            Spacer()
-                            Text(time(library.duration))
+        GeometryReader { geometry in
+            ScrollView {
+                if let track = library.current {
+                    VStack(alignment: .leading, spacing: 24) {
+                        artwork(track.coverArt, size: min(dynamicTypeSize.isAccessibilitySize ? 120 : 240, max(0, geometry.size.width - 48)))
+                            .frame(maxWidth: .infinity)
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text(track.title).font(.title).fontWeight(.regular)
+                            Text(track.artist ?? "アーティスト不明").foregroundStyle(.secondary)
+                            if let album = track.album { Text(album).font(.subheadline).foregroundStyle(.secondary) }
                         }
-                        .font(.caption).monospacedDigit().foregroundStyle(.secondary)
+                        VStack(spacing: 8) {
+                            Slider(value: Binding(get: { library.position }, set: { library.seek(to: $0) }), in: 0...max(library.duration, 1))
+                                .disabled(library.duration <= 0)
+                                .accessibilityLabel("再生位置")
+                                .accessibilityValue("\(time(library.position)) / \(time(library.duration))")
+                            HStack {
+                                Text(time(library.position))
+                                Spacer()
+                                Text(time(library.duration))
+                            }
+                            .font(.caption).monospacedDigit().foregroundStyle(.secondary)
+                        }
+                        if library.loading { ProgressView("読み込み中…") }
                     }
-                    HStack(spacing: 40) {
-                        Spacer(minLength: 0)
-                        Button { withAudioSession { library.previous() } } label: { Image(systemName: "backward.end.fill") }
-                            .disabled(!library.canGoPrevious).accessibilityLabel("前の曲")
-                        playbackButton
-                        Button { withAudioSession { library.next() } } label: { Image(systemName: "forward.end.fill") }
-                            .disabled(!library.canGoNext).accessibilityLabel("次の曲")
-                        Spacer(minLength: 0)
-                    }
-                    .font(.title2)
-                    .buttonStyle(.bordered)
-                    if library.loading { ProgressView("読み込み中…") }
+                    .frame(width: max(0, geometry.size.width - 48), alignment: .leading)
+                    .padding(24)
+                } else {
+                    ContentUnavailableView("曲を選んでください", systemImage: "music.note", description: Text("ライブラリまたは検索から音楽を選べます。"))
                 }
-                .padding(24)
-            } else {
-                ContentUnavailableView("曲を選んでください", systemImage: "music.note", description: Text("ライブラリまたは検索から音楽を選べます。"))
+            }
+        }
+        .safeAreaInset(edge: .bottom, spacing: 0) {
+            if library.current != nil {
+                HStack(spacing: 16) {
+                    Spacer(minLength: 0)
+                    Button { withAudioSession { library.previous() } } label: {
+                        Image(systemName: "backward.end.fill").frame(minWidth: 44, minHeight: 44)
+                    }
+                    .disabled(!library.canGoPrevious).accessibilityLabel("前の曲")
+                    playbackButton
+                    Button { withAudioSession { library.next() } } label: {
+                        Image(systemName: "forward.end.fill").frame(minWidth: 44, minHeight: 44)
+                    }
+                    .disabled(!library.canGoNext).accessibilityLabel("次の曲")
+                    Spacer(minLength: 0)
+                }
+                .font(.system(size: 24))
+                .buttonStyle(.bordered)
+                .padding(.horizontal, 24)
+                .padding(.vertical, 12)
+                .background(PhoneStyle.graphite)
             }
         }
         .background(PhoneStyle.graphite)
