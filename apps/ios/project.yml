@@ -1,4 +1,7 @@
 name: Syncstr
+packages:
+  AudioTags:
+    path: ../macos/AudioTags
 options:
   bundleIdPrefix: as.ason.syncstr
   deploymentTarget:
@@ -21,9 +24,15 @@ targets:
       - path: ../macos/CredentialStore.swift
       - path: ../macos/Upload.swift
       - path: ../macos/UploadView.swift
+      - path: ../macos/MusicMetadata.swift
+      - path: ../macos/MetadataEditor.swift
+      - path: ../macos/Licenses
+        buildPhase: resources
       - path: ../macos/UploadSettingsView.swift
       - path: ../macos/SettingsView.swift
       - path: ../macos/Assets.xcassets
+    dependencies:
+      - package: AudioTags
     settings:
       base:
         PRODUCT_NAME: Syncstr
@@ -82,6 +91,18 @@ targets:
         GENERATE_INFOPLIST_FILE: YES
     dependencies:
       - target: Syncstr
+  MusicMetadataTests:
+    type: bundle.unit-test
+    platform: macOS
+    sources:
+      - path: ../macos/Tests
+      - path: ../macos/MusicMetadata.swift
+      - path: ../macos/Upload.swift
+    dependencies:
+      - package: AudioTags
+    settings:
+      base:
+        GENERATE_INFOPLIST_FILE: YES
 schemes:
   SyncstrMac:
     build:
@@ -89,6 +110,8 @@ schemes:
         SyncstrMac: all
     archive:
       config: Release
+    test:
+      targets: [MusicMetadataTests]
   Syncstr:
     build:
       targets:

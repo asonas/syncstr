@@ -5,6 +5,9 @@ private struct UploadItem: Identifiable {
     let id = UUID()
     let file: URL
     let bytes: Int64?
+    var original: MusicMetadata?
+    var metadata: MusicMetadata?
+    var metadataError: String?
     var state: State = .waiting
 
     enum State: Equatable {
@@ -23,6 +26,8 @@ struct UploadView: View {
     @State private var dropTargeted = false
     @State private var message: String?
     @State private var showingSettings = false
+    @State private var editing: UploadItem?
+    @State private var importing = false
     private let store = CredentialStore(service: "as.ason.syncstr.upload", label: "syncstr Upload")
     private let supportedExtensions = Set(["mp3", "aac", "m4a", "alac", "wav", "aiff", "aif", "flac", "ogg", "opus"])
 
@@ -48,7 +53,7 @@ struct UploadView: View {
                     .accessibilityHidden(true)
                 Text(dropTargeted ? "ここにドロップして追加" : "音楽ファイルをここにドラッグ＆ドロップ")
                     .font(.headline)
-                Button("ファイルを選択…") { picker = true }.disabled(sending)
+                Button(importing ? "曲情報を読み込み中…" : "ファイルを選択…") { picker = true }.disabled(sending || importing)
             }
             .frame(maxWidth: .infinity).padding(.vertical, 24)
             .background(dropTargeted ? Color.accentColor.opacity(0.12) : Color.white.opacity(0.03))
@@ -64,7 +69,7 @@ struct UploadView: View {
                     Text("\(items.count)件").foregroundStyle(.secondary).monospacedDigit()
                     Spacer()
                     if !items.isEmpty {
-                        Button("一覧をクリア") { items = []; message = nil }.disabled(sending)
+                        Button("一覧をクリア") { items = []; message = nil }.disabled(sending || importing)
                             .buttonStyle(.plain).foregroundStyle(.secondary)
                     }
                 }.padding(14)
@@ -108,23 +113,33 @@ struct UploadView: View {
                 Button("閉じる") { dismiss() }.disabled(sending)
                 Button(sending ? "アップロード中…" : "アップロード") { Task { await send() } }
                     .buttonStyle(.borderedProminent)
-                    .disabled(sending || pendingCount == 0 || token.isEmpty)
+                    .disabled(sending || importing || pendingCount == 0 || token.isEmpty)
             }
         }
         .padding(24).frame(width: 680)
         .preferredColorScheme(.dark)
         .interactiveDismissDisabled(sending)
         .dropDestination(for: URL.self) { urls, _ in
-            guard !sending else { return false }
-            addFiles(urls)
+            guard !sending, !importing else { return false }
+            Task { await addFiles(urls) }
             return !urls.isEmpty
-        } isTargeted: { dropTargeted = $0 && !sending }
+        } isTargeted: { dropTargeted = $0 && !sending && !importing }
         .sheet(isPresented: $showingSettings, onDismiss: { Task { await loadSettings() } }) {
             SettingsView()
         }
+        .sheet(item: $editing) { item in
+            if let original = item.original, let metadata = item.metadata {
+                MetadataEditor(filename: item.file.lastPathComponent, original: original, save: { updated in
+                    if let index = items.firstIndex(where: { $0.id == item.id }) {
+                        items[index].metadata = updated
+                        items[index].state = .waiting
+                    }
+                }, metadata: metadata)
+            }
+        }
         .fileImporter(isPresented: $picker, allowedContentTypes: [.audio], allowsMultipleSelection: true) { result in
             switch result {
-            case .success(let urls): addFiles(urls)
+            case .success(let urls): Task { await addFiles(urls) }
             case .failure: message = "ファイルを選択できませんでした。"
             }
         }
@@ -142,6 +157,14 @@ struct UploadView: View {
                     Text(ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file))
                         .font(.caption).foregroundStyle(.secondary)
                 }
+                if let metadata = item.metadata {
+                    Text([metadata.title, metadata.artist, metadata.album].filter { !$0.isEmpty }.joined(separator: " · ").isEmpty
+                         ? "曲情報なし" : [metadata.title, metadata.artist, metadata.album].filter { !$0.isEmpty }.joined(separator: " · "))
+                        .font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                    if metadata != item.original { Text("曲情報を変更済み").font(.caption).foregroundStyle(Color.accentColor) }
+                } else if let error = item.metadataError {
+                    Text(error).font(.caption).foregroundStyle(.secondary).lineLimit(2)
+                }
                 if case .failed(let error) = item.state {
                     Text(error).font(.caption).foregroundStyle(.red).textSelection(.enabled)
                 }
@@ -156,15 +179,21 @@ struct UploadView: View {
                 case .failed: Label("失敗", systemImage: "exclamationmark.circle").foregroundStyle(.red)
                 }
             }.font(.caption).padding(.top, 4)
+            Button("曲情報…") { editing = item }
+                .disabled(sending || importing || item.metadata == nil || item.state == .completed)
+                .accessibilityLabel("\(item.file.lastPathComponent)の曲情報を編集")
             Button {
                 items.removeAll { $0.id == item.id }
             } label: { Image(systemName: "xmark").frame(width: 24, height: 24) }
-                .buttonStyle(.plain).foregroundStyle(.secondary).disabled(sending)
+                .buttonStyle(.plain).foregroundStyle(.secondary).disabled(sending || importing)
                 .accessibilityLabel("\(item.file.lastPathComponent)を一覧から外す")
         }.padding(14)
     }
 
-    private func addFiles(_ urls: [URL]) {
+    @MainActor private func addFiles(_ urls: [URL]) async {
+        guard !sending, !importing else { return }
+        importing = true
+        defer { importing = false }
         var rejected = 0
         for url in urls {
             guard !items.contains(where: { $0.file.standardizedFileURL == url.standardizedFileURL }) else { continue }
@@ -173,7 +202,13 @@ struct UploadView: View {
             guard url.isFileURL, supportedExtensions.contains(url.pathExtension.lowercased()),
                   let values = try? url.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey]),
                   values.isRegularFile == true else { rejected += 1; continue }
-            items.append(UploadItem(file: url, bytes: values.fileSize.map(Int64.init)))
+            let result = await Task.detached { Result { try MusicMetadata.read(url) } }.value
+            switch result {
+            case .success(let metadata):
+                items.append(UploadItem(file: url, bytes: values.fileSize.map(Int64.init), original: metadata, metadata: metadata))
+            case .failure(let error):
+                items.append(UploadItem(file: url, bytes: values.fileSize.map(Int64.init), metadataError: error.localizedDescription))
+            }
         }
         message = rejected == 0 ? nil : "\(rejected)件は追加できませんでした。対応する音楽ファイルを選んでください。フォルダは追加できません。"
     }
@@ -187,7 +222,7 @@ struct UploadView: View {
     }
 
     @MainActor private func send() async {
-        guard !sending else { return }
+        guard !sending, !importing else { return }
         sending = true
         message = nil
         defer { sending = false }
@@ -198,7 +233,13 @@ struct UploadView: View {
                 guard let index = items.firstIndex(where: { $0.id == id }) else { continue }
                 items[index].state = .uploading
                 do {
-                    let receipt = try await client.upload(items[index].file)
+                    let original = items[index].original
+                    let metadata = items[index].metadata
+                    let receipt = try await client.upload(items[index].file, prepareCopy: { copy in
+                        if let original, let metadata, original != metadata {
+                            try metadata.writeChanges(from: original, to: copy)
+                        }
+                    })
                     items[index].state = .completed
                     onUploaded(LibraryUpload(filename: receipt.filename, bytes: receipt.bytes, sha256: receipt.sha256))
                 } catch { items[index].state = .failed(error.localizedDescription) }

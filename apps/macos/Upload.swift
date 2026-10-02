@@ -52,18 +52,20 @@ struct UploadClient: Sendable {
         }
     }
 
-    func upload(_ source: URL, session suppliedSession: URLSession? = nil) async throws -> UploadReceipt {
+    func upload(_ source: URL, session suppliedSession: URLSession? = nil,
+                prepareCopy: (@Sendable (URL) throws -> Void)? = nil) async throws -> UploadReceipt {
         let scoped = source.startAccessingSecurityScopedResource()
         defer { if scoped { source.stopAccessingSecurityScopedResource() } }
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false,
                                               attributes: [.posixPermissions: 0o700])
         defer { try? FileManager.default.removeItem(at: directory) }
-        let snapshot = directory.appendingPathComponent("upload")
+        let snapshot = directory.appendingPathComponent(source.lastPathComponent)
         let (size, checksum) = try await Task.detached {
             try Task.checkCancellation()
             try FileManager.default.copyItem(at: source, to: snapshot)
             try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: snapshot.path)
+            try prepareCopy?(snapshot)
             let handle = try FileHandle(forReadingFrom: snapshot)
             defer { try? handle.close() }
             var digest = SHA256()

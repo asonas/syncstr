@@ -19,6 +19,8 @@ HTTPS 接続のみ受け付けます。ログイン成功時に接続先・ユ�
 Navidromeからのログアウトとは独立しており、設定の「保存した接続情報を削除」で削除できます。
 
 一覧にはファイル名・サイズと、待機中・送信中・完了・失敗を表示します。同じファイルの重複追加は避け、送信前に一覧から外すこともできます。
+各ファイルの「曲情報…」から、曲名・アーティスト・アルバム・曲番号・ジャケットを編集できます。既存の情報を読み込み、変更した項目だけをアップロードする一時コピーへ保存します。元ファイルは変更しません。
+ジャケットには10MB以下のJPEGまたはPNGを選択してください。曲情報を読み込めない形式は編集ボタンを無効にし、元の内容でアップロードします。
 失敗した場合も次のファイルへ進み、再試行は未完了のファイルだけが対象です。同名ファイルは上書きしません。
 元ファイルの内容とチェックサムがずれないよう、一時コピーを作成して送ります。ファイルサイズ分の空き容量が必要です。
 形式検証を通ったファイルだけがサーバーへ保存されます。Navidromeのスキャン後にライブラリを再読み込みしてください。
@@ -26,7 +28,7 @@ Navidromeからのログアウトとは独立しており、設定の「保存�
 
 ## 起動
 
-SwiftとmacOS SDKを使用します。SwiftUIマクロが必要なSDKではXcodeのDeveloperディレクトリを指定してください。
+SwiftとmacOS SDK、XcodeGenを使用します。ビルド時にSwift Package ManagerでTagLib 2.3.0を取得します。SwiftUIマクロが必要なSDKではXcodeのDeveloperディレクトリを指定してください。
 署名には、この Mac の Keychain にある `Apple Development: Yuya Fujiwara (55CYFEJC5B)` 証明書と秘密鍵が必要です。
 再ビルド後も Keychain のアクセス許可を引き継ぐため、同じ証明書と bundle ID で署名します。
 アドホック署名のビルドから切り替えた初回は、保存済みログイン情報へのアクセス確認で「常に許可」を選んでください。
@@ -77,6 +79,13 @@ clone後は既存の `apps/ios/ci_scripts/ci_post_clone.sh` が両プラット�
 CloudのArchive成功とTestFlightグループへの配布完了は、App Store Connectでそれぞれ確認します。
 
 ## API 検証
+
+曲情報の編集、日本語のタグ、ジャケットの追加・削除、元ファイルと音声の保持、編集後のコピーに対するアップロード検証を実行します。
+
+```sh
+mise exec -- xcodegen generate --spec apps/ios/project.yml
+env DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer xcodebuild -project apps/ios/Syncstr.xcodeproj -scheme SyncstrMac -destination 'platform=macOS' CODE_SIGNING_ALLOWED=NO test
+```
 
 アップロードのHTTPヘッダー、SHA-256、ファイル名のエンコード、確定応答、重複拒否、HTTPS制限を通信境界で確認できます。
 

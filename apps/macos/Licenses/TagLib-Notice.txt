@@ -1,0 +1,6 @@
+TagLib 2.3.0, packaged by Stephen Booth as CXXTagLib.
+Copyright Scott Wheeler and the TagLib contributors.
+Source: https://github.com/sbooth/CXXTagLib/tree/2.3.0
+
+syncstr uses the unmodified TagLib source under the Mozilla Public
+License 1.1 option. The license is included in TagLib.txt.
