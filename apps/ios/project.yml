@@ -47,6 +47,7 @@ targets:
     info:
       path: ../macos/TestFlight-Info.plist
       properties:
+        CFBundleLocalizations: [ja, en]
         CFBundleDisplayName: syncstr
         CFBundleShortVersionString: $(MARKETING_VERSION)
         CFBundleVersion: $(CURRENT_PROJECT_VERSION)
