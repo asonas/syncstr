@@ -94,7 +94,7 @@ struct LibraryView: View {
             if library.connected {
                 ToolbarItem(placement: .primaryAction) {
                     LibrarySearchField(text: $library.search, placeholder: "\(library.destination.rawValue)を検索")
-                        .frame(width: 280, height: 26)
+                        .frame(width: 280, height: 38)
                 }
             }
         }
@@ -150,13 +150,24 @@ struct LibraryView: View {
                 Button { library.selectedAlbum = nil } label: { Label("アルバムへ戻る", systemImage: "chevron.left") }
                     .buttonStyle(.plain).foregroundStyle(Studio.signal).padding([.top, .horizontal], 24)
                 HStack(spacing: 20) {
-                    Artwork(url: artworkURL(album.coverArt)).frame(width: 96, height: 96)
-                    VStack(alignment: .leading, spacing: 12) {
-                        Text(album.title).font(.system(size: 28, weight: .regular)).tracking(-0.42)
+                    Artwork(url: artworkURL(album.coverArt)).frame(width: 200, height: 200)
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text(album.title).font(.system(size: 28, weight: .semibold)).tracking(-0.42)
                             .accessibilityAddTraits(.isHeader)
                         Text(album.artist).foregroundStyle(Studio.fog)
                         Text("\(album.tracks.count)曲").font(.system(size: 12)).foregroundStyle(Studio.fog)
+                        Spacer(minLength: 16)
+                        Button {
+                            if let first = album.tracks.first { library.play(first, in: album.tracks) }
+                        } label: {
+                            Label("再生", systemImage: "play.fill")
+                                .frame(width: 106, height: 32)
+                        }
+                        .buttonStyle(.bordered)
+                        .tint(Studio.signal)
+                        .disabled(album.tracks.isEmpty)
                     }
+                    .frame(height: 200, alignment: .center)
                     Spacer(minLength: 0)
                 }.padding(24)
                 trackRows(album.tracks)
@@ -278,7 +289,6 @@ struct LibraryView: View {
                     }
                     Spacer(minLength: 0)
                 }.padding(24)
-                Text("再生キュー").font(.system(size: 16)).padding(.horizontal, 24).padding(.bottom, 12)
                 trackRows(library.queue, preservingQueue: true)
             }
         }
@@ -419,6 +429,8 @@ private struct LibrarySearchField: NSViewRepresentable {
 
     func makeNSView(context: Context) -> NSSearchField {
         let field = NSSearchField()
+        field.controlSize = .large
+        field.font = .systemFont(ofSize: 13)
         field.placeholderString = placeholder
         field.setAccessibilityLabel(placeholder)
         field.sendsSearchStringImmediately = true
