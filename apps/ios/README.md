@@ -22,7 +22,9 @@ Mac 側の Keychain の資格情報は転送しません。
 
 ## TestFlight と Xcode Cloud
 
-生成済みの Xcode project と共有 scheme を Git に含めます。Cloud 側では XcodeGen の実行や外部依存のインストールは不要です。
+`project.yml` を生成元として Git 管理し、生成済みの project・workspace・共有 scheme は Git に含めません。
+Cloud は `ci_scripts/ci_post_clone.sh` で XcodeGen を用意して、clone 後に同じ場所へ project と scheme を生成します。
+Cloud 接続情報の `Syncstr.xcodeproj/xcshareddata/xcodecloud/manifest.json` は Git 管理を続けます。
 初回は Xcode の Integrate → Create Workflow から `Syncstr iOS` を選択して、このリポジトリを接続します。
 
 配布ワークフローは次の構成にします。
@@ -32,6 +34,9 @@ Mac 側の Keychain の資格情報は転送しません。
 - 開始条件: `main` への変更
 - Action: iOS の Archive、TestFlight の内部テスト配布
 - Post-action: 本人用の内部テストグループへ配布
+
+「プロジェクトまたはワークスペース」は生成後の `apps/ios/Syncstr.xcodeproj` を指定します。
+`apps/ios` ディレクトリや `project.yml` は指定しません。
 
 Cloud の設定と初回ビルドの完了は、ローカルのビルド成功とは別に App Store Connect で確認します。
 

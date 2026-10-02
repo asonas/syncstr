@@ -13,3 +13,6 @@ infra/data/
 ops/backups/
 tmp/
 .worktrees/
+apps/ios/Syncstr.xcodeproj/project.pbxproj
+apps/ios/Syncstr.xcodeproj/project.xcworkspace/
+apps/ios/Syncstr.xcodeproj/xcshareddata/xcschemes/
