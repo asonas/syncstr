@@ -50,6 +50,32 @@ open apps/macos/.build/Syncstr.app
 
 画面構成は [Apple MVP 操作モデルの決定](https://github.com/asonas/syncstr/issues/5#issuecomment-5472974010)に沿っています。
 
+## TestFlight と Xcode Cloud
+
+配信用のmacOSターゲットは、iOSと共通の `apps/ios/project.yml` から生成します。
+既存のApp Store Connect「syncstr」にmacOSプラットフォームを追加し、iOSと同じBundle ID `as.ason.syncstr.ios` を使用します。
+
+```sh
+mise exec -- xcodegen generate --spec apps/ios/project.yml
+open apps/ios/Syncstr.xcodeproj
+```
+
+Xcode Cloudでは次の設定を使います。
+
+- Project: `apps/ios/Syncstr.xcodeproj`
+- Scheme: `SyncstrMac`
+- 開始条件: `main` への変更
+- Action: macOSのArchive、TestFlightの内部テスト配布
+- Post-action: 内部テストグループ `internal` へ配布
+
+clone後は既存の `apps/ios/ci_scripts/ci_post_clone.sh` が両プラットフォームのprojectとschemeを生成します。
+プロジェクトのパスに `apps/macos` や `project.yml` は指定しません。
+
+配布版はApp Sandboxを有効にし、外向きのネットワーク通信と利用者が選択したファイルの読み取りを許可します。
+採用済みのiOSアイコンからmacOS用の各サイズを生成しています。
+`build.sh` の手動ビルドとはBundle IDと保存コンテナが異なるため、配布版の初回起動ではアプリ内で接続情報を入力してください。
+CloudのArchive成功とTestFlightグループへの配布完了は、App Store Connectでそれぞれ確認します。
+
 ## API 検証
 
 アップロードのHTTPヘッダー、SHA-256、ファイル名のエンコード、確定応答、重複拒否、HTTPS制限を通信境界で確認できます。

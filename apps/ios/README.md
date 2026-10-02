@@ -38,6 +38,8 @@ Cloud 接続情報の `Syncstr.xcodeproj/xcshareddata/xcodecloud/manifest.json` 
 「プロジェクトまたはワークスペース」は生成後の `apps/ios/Syncstr.xcodeproj` を指定します。
 `apps/ios` ディレクトリや `project.yml` は指定しません。
 
+同じ生成元にはmacOS配信用の `SyncstrMac` schemeも含まれます。macOSの配布設定は [macOS README](../macos/README.md#testflight-と-xcode-cloud) を参照してください。
+
 Cloud の設定と初回ビルドの完了は、ローカルのビルド成功とは別に App Store Connect で確認します。
 
 アイコンは [採用原図](https://www.figma.com/design/KtfBubkg9KiK5LuLHIm8Qt?node-id=12-2) から書き出しました。
