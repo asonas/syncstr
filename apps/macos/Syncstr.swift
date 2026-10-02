@@ -92,7 +92,7 @@ struct LibraryView: View {
         .tint(Studio.signal)
         .preferredColorScheme(.dark)
         .frame(minWidth: 640, minHeight: 560)
-        .navigationTitle("syncstr")
+        .navigationTitle("")
         .task { await library.restoreCredentials() }
         .sheet(isPresented: $showingUpload) { UploadView() }
     }
@@ -101,7 +101,6 @@ struct LibraryView: View {
 
     private var header: some View {
         HStack(spacing: 16) {
-            Text("syncstr").font(.system(size: 20, weight: .semibold)).tracking(-0.3)
             if library.connected {
                 Button { library.sidebarVisible.toggle() } label: {
                     Image(systemName: "sidebar.left").frame(width: 32, height: 40)
@@ -142,14 +141,14 @@ struct LibraryView: View {
     }
 
     private var sidebar: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: 4) {
             Text("ライブラリ")
                 .font(.system(size: 12)).foregroundStyle(Studio.fog)
-                .padding(.horizontal, 12).padding(.bottom, 8)
+                .padding(.horizontal, 12).padding(.bottom, 4)
             ForEach(LibraryDestination.allCases, id: \.self) { destination in
                 Button { library.navigate(destination); library.search = "" } label: {
                     Label(destination.rawValue, systemImage: destination.symbol)
-                        .frame(maxWidth: .infinity, minHeight: 40, alignment: .leading)
+                        .frame(maxWidth: .infinity, minHeight: 32, alignment: .leading)
                         .padding(.horizontal, 12)
                         .background(library.destination == destination && !library.showingNowPlaying ? Studio.graphite : Color.clear)
                         .foregroundStyle(library.destination == destination && !library.showingNowPlaying ? Studio.signal : Color.white)
@@ -158,10 +157,10 @@ struct LibraryView: View {
                 }.buttonStyle(.plain)
                 .accessibilityAddTraits(library.destination == destination && !library.showingNowPlaying ? .isSelected : [])
             }
-            rule.padding(.vertical, 16)
+            rule.padding(.vertical, 12)
             Button { library.showingNowPlaying = true; library.search = "" } label: {
                 Label("再生中", systemImage: "waveform")
-                    .frame(maxWidth: .infinity, minHeight: 40, alignment: .leading)
+                    .frame(maxWidth: .infinity, minHeight: 32, alignment: .leading)
                     .padding(.horizontal, 12)
                     .foregroundStyle(library.showingNowPlaying ? Studio.signal : Studio.fog)
                     .contentShape(Rectangle())
@@ -171,8 +170,8 @@ struct LibraryView: View {
             Text("\(library.tracks.count)曲")
                 .font(.system(size: 12)).foregroundStyle(Studio.fog).padding(12)
         }
-        .padding(.horizontal, 12).padding(.top, 28)
-        .frame(width: 176)
+        .padding(.horizontal, 12).padding(.top, 20)
+        .frame(width: 200)
         .background(Studio.carbon)
     }
 
@@ -213,24 +212,29 @@ struct LibraryView: View {
             switch library.destination {
             case .albums:
                 VStack(alignment: .leading, spacing: 0) {
-                    pageTitle("アルバム", detail: "\(library.albums.count)枚")
                     ScrollView {
-                        LazyVGrid(columns: [GridItem(.adaptive(minimum: 160, maximum: 240), spacing: 20)], alignment: .leading, spacing: 24) {
+                        LazyVGrid(columns: [GridItem(.adaptive(minimum: 180, maximum: 240), spacing: 20, alignment: .top)], alignment: .leading, spacing: 24) {
                             ForEach(library.albums) { album in
                                 Button { library.selectedAlbum = album.id } label: {
-                                    VStack(alignment: .leading, spacing: 12) {
+                                    VStack(alignment: .leading, spacing: 8) {
                                         Artwork(url: artworkURL(album.coverArt))
-                                        Text(album.title).font(.system(size: 16)).lineLimit(2)
-                                        Text(album.artist).font(.system(size: 12)).foregroundStyle(Studio.fog).lineLimit(1)
+                                        VStack(alignment: .leading, spacing: 4) {
+                                            Text(album.title).font(.system(size: 14))
+                                                .lineLimit(2)
+                                                .truncationMode(.tail)
+                                                .frame(maxWidth: .infinity, alignment: .leading)
+                                            Text(album.artist).font(.system(size: 12)).foregroundStyle(Studio.fog)
+                                                .lineLimit(1).truncationMode(.tail)
+                                                .frame(maxWidth: .infinity, alignment: .leading)
+                                        }
+                                        .frame(height: 56, alignment: .topLeading)
                                     }
-                                    .padding(16)
                                     .frame(maxWidth: .infinity, alignment: .leading)
-                                    .background(Studio.carbon)
-                                    .clipShape(RoundedRectangle(cornerRadius: 4))
-                                    .overlay { RoundedRectangle(cornerRadius: 4).strokeBorder(Studio.iron, lineWidth: 1) }
                                 }.buttonStyle(.plain)
+                                    .help("\(album.title)\n\(album.artist)")
+                                    .accessibilityLabel("\(album.title)、\(album.artist)")
                             }
-                        }.padding([.horizontal, .bottom], 24)
+                        }.padding(24)
                         if library.albums.isEmpty { emptyLibrary }
                     }
                 }
@@ -454,12 +458,15 @@ private struct Artwork: View {
     let url: URL?
 
     var body: some View {
-        AsyncImage(url: url) { image in
-            image.resizable().scaledToFill()
-        } placeholder: {
-            ZStack {
-                Studio.carbon
-                Image(systemName: "music.note").font(.system(size: 28)).foregroundStyle(Studio.fog)
+        GeometryReader { geometry in
+            AsyncImage(url: url) { image in
+                image.resizable().scaledToFill()
+                    .frame(width: geometry.size.width, height: geometry.size.height)
+            } placeholder: {
+                ZStack {
+                    Studio.carbon
+                    Image(systemName: "music.note").font(.system(size: 28)).foregroundStyle(Studio.fog)
+                }
             }
         }
         .aspectRatio(1, contentMode: .fit)
