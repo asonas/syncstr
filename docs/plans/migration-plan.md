@@ -1,5 +1,7 @@
 # Music Player Migration Implementation Plan
 
+Historical long-term plan. Environment and validation statuses below describe the initial investigation. Check the [current implementation](../../README.md#current-implementation) before resuming this work.
+
 **Goal:** Non-destructively import DRM-free iTunes/Music XML metadata, playlists, and local files into the NAS catalog.
 
 **Architecture:** XML and audio inventory are independent inputs. LibraryImporter records candidates and decisions; it never moves or deletes source files. WAV/AIFF metadata is preserved through DB and sidecar boundaries.

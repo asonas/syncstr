@@ -1,54 +1,44 @@
-# syncstrの設計判断
+# syncstr design decisions
 
-この文書は、実装時に再び議論しない判断と、実装前に決める判断を分けて記録します。
+These decisions record the initial long-term design. Check applicability to the current Navidrome player against the [README](../README.md#long-term-design-and-deferred-work) and successor issues.
 
-## 採用済みの判断
+This document separates established decisions from questions to resolve before implementing the corresponding part of the design.
 
-| ID | 判断 | 理由 | 影響 |
-| --- | --- | --- | --- |
-| D-001 | NAS上のサーバーを正本にする | 複数端末の音源と状態を一つに集約するため | クライアントはキャッシュと操作送信元になる |
-| D-002 | iTunesまたはMusic XMLは初回移行だけに使う | Appleの公開APIでは汎用アプリが継続的な双方向同期を保証できないため | 移行後の状態はsyncstrが管理する |
-| D-003 | クライアントはネイティブ実装にする | 音声セッション、バックグラウンド、メディアキー、ファイルアクセスをOS APIで扱うため | Swift、C#、KotlinをOSごとに使い分ける |
-| D-004 | 原音を優先する | 変換による品質低下と不可逆な変更を避けるため | 非対応形式だけ互換コピーを生成する |
-| D-005 | WAVとAIFFのメタデータはDBとsidecarで保持する | タグを書き込めない音源を変更しないため | 原音のハッシュを検証する |
-| D-006 | 同期操作にoperation_id、device_counter、server_seqを持たせる | 再送、順序、競合を明示的に扱うため | サーバーのSQLiteトランザクションで一意性を保証する |
-| D-007 | パスキーを既定の認証方式にする | パスワードを常用せず、端末単位で失効できるようにするため | 初回登録、復旧、端末管理を別途設計する |
-| D-008 | Navidromeはメディアアダプターに限定する | ratingとplay countが製品の履歴イベント契約を満たさないため | syncstrのSyncServiceを正本として追加する |
-| D-009 | Rust共有同期コアは採用しない | FFI、キャンセル、スレッド境界、配布の測定が未完了で障害面積を減らせないため | 共通資産は同期ベクトルと適合テストにする |
-| D-010 | macOSとiPhoneを最初の縦切りにする | ネイティブ音声経路を先に検証するため | WindowsとAndroidは後続の適合実装にする |
+## Established decisions
 
-## 実装前に決める判断
+| ID | Decision | Rationale | Consequence |
+|---|---|---|---|
+| D-001 | The NAS server is authoritative | Keep media and state consistent across devices | Clients hold caches and submit operations |
+| D-002 | Use iTunes or Music XML only for initial migration | Apple's public APIs do not guarantee continuous bidirectional synchronization for general-purpose apps | syncstr owns state after migration |
+| D-003 | Build native clients | Use OS APIs for audio sessions, background execution, media keys, and file access | Use Swift, C#, or Kotlin for each platform |
+| D-004 | Prefer original audio | Avoid quality loss and irreversible transformations | Generate compatibility copies only for unsupported formats |
+| D-005 | Keep WAV and AIFF metadata in the DB and sidecars | Preserve originals when tag writing is unavailable | Verify original-file hashes |
+| D-006 | Include operation_id, device_counter, and server_seq in sync operations | Make retries, ordering, and conflicts explicit | Enforce uniqueness in server-side SQLite transactions |
+| D-007 | Default to passkey authentication | Avoid routine password use and support per-device revocation | Design registration, recovery, and device management separately |
+| D-008 | Limit Navidrome to a media adapter | Ratings and play counts do not satisfy the product's history-event contract | Add an authoritative syncstr SyncService |
+| D-009 | Do not adopt a shared Rust synchronization core | FFI, cancellation, thread boundaries, and distribution remain unmeasured; a smaller failure surface has not been demonstrated | Share synchronization vectors and conformance tests instead |
+| D-010 | Implement macOS and iPhone first | Validate native audio paths early | Windows and Android follow as conforming implementations |
 
-### D-101 サーバーの実装言語
+## Decisions to resolve before the relevant implementation
 
-推奨初期案はRustのWebサーバーです。
+### D-101 Server language
 
-理由は、NAS上で長時間動く同期、ファイル、バックアップ処理の境界を型と所有権で管理しやすいためです。
+The initial recommendation is a Rust web server. Types and ownership can help manage the boundaries around long-running synchronization, files, and backups on the NAS. This is separate from adopting a shared Rust client core.
 
-ただしRust共有コアをクライアントへ組み込む判断とは別です。
+Compare Rust and alternatives using the same API contract, startup time, binary size, and development speed in the first implementation task.
 
-最初の実装タスクで、Rustと代替候補を同じAPI契約、起動時間、バイナリサイズ、開発速度で比較して決定します。
+### D-102 Audio directory layout
 
-### D-102 音源ディレクトリの配置
+The initial recommendation separates original audio, import staging, trash, sidecars, and backup working files. The scanner reads originals; only dedicated services import or delete them.
 
-推奨初期案は、原音、取り込みステージ、ゴミ箱、sidecar、バックアップ作業領域を別ディレクトリに分けることです。
+### D-103 Backup destination
 
-スキャナーは原音領域を読み取り、取り込みと削除は専用サービスだけが実行します。
+The initial recommendation combines a separate NAS volume with encrypted external storage. Do not count a backup as successful until a restore drill passes.
 
-### D-103 バックアップ先
+### D-104 Open-source license
 
-推奨初期案は、NAS上の別ボリュームと暗号化した外部保存先を組み合わせることです。
+The initial recommendation allows separate licensing of server and clients and audits dependency licenses in CI. Select the license before the corresponding implementation release and reflect it in README and NOTICE.
 
-復元試験を完了するまで、バックアップを成功扱いにしません。
+### D-105 iPhone playback acceptance
 
-### D-104 OSSライセンス
-
-推奨初期案は、サーバーとクライアントを分離してライセンスを選べる構成にし、依存ライセンスをCIで監査することです。
-
-ライセンスの種類は実装開始前に決定し、READMEとNOTICEへ反映します。
-
-### D-105 iPhone再生の合格条件
-
-AudioValidationはmacOSビルドに成功しましたが、現行環境ではXCTestが提供されず、自動プローブはBLOCKEDです。
-
-iPhone実機、バックグラウンド、メディアキー、ギャップレス、HTTPS Rangeは、対応する実機結果を得るまで合格扱いにしません。
+At the initial validation, AudioValidation built on macOS, but the environment did not provide XCTest, so automated probes were BLOCKED. Physical iPhone playback, background audio, media keys, gapless playback, and HTTPS Range require corresponding device results before acceptance.

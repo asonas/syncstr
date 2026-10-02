@@ -1,56 +1,41 @@
 # syncstr
 
-NASを正本とする個人向け音楽ライブラリと、複数端末の再生状態を同期するネイティブ音楽プレイヤーです。
+A native macOS and iPhone player for a music library you manage yourself.
 
-macOS、Windows、iPhone、Androidで同じライブラリを参照し、端末がオフラインの間もダウンロード済みの音源を再生できます。
+## Current implementation
 
-## 現在地
+The apps connect to Navidrome over HTTPS and use the OpenSubsonic API to browse and stream music. They authenticate with a Navidrome account and store connection credentials in each device's Keychain.
 
-設計と技術検証を完了し、製品実装を開始する準備段階です。
+- **macOS:** album, artist, and track browsing; search; continuous playback; seeking; and uploads through a separate upload service.
+- **iPhone:** library browsing, search, playback, local track downloads, background audio, and lock-screen controls. Loading the library at startup still requires a connection.
 
-- サービス仕様：[docs/design-spec.md](docs/design-spec.md)
-- サービス概要：[docs/service-overview.md](docs/service-overview.md)
-- 設計判断：[docs/decisions.md](docs/decisions.md)
-- 設計インタビュー記録：[docs/grill-me.md](docs/grill-me.md)
-- 実装ロードマップ：[docs/superpowers/plans/2026-08-15-syncstr-implementation-plan.md](docs/superpowers/plans/2026-08-15-syncstr-implementation-plan.md)
-- 技術検証：[docs/validation/](docs/validation/)
+Start with the [macOS guide](apps/macos/README.md) or [iPhone guide](apps/ios/README.md) for build and verification steps. [Issue #11](https://github.com/asonas/syncstr/issues/11) records implementation milestones; [open issues](https://github.com/asonas/syncstr/issues) track follow-up work. Record local builds, distribution, and device verification separately.
 
-## 製品の境界
+## Code and documentation map
 
-サーバーはNAS上の音源、メタデータ、プレイリスト、評価、再生履歴の正本を保持します。
+| Task | Start here |
+|---|---|
+| macOS UI and launch | [Syncstr.swift](apps/macos/Syncstr.swift), [macOS guide](apps/macos/README.md) |
+| Shared playback, API, and credentials | [Library.swift](apps/macos/Library.swift), [Navidrome.swift](apps/macos/Navidrome.swift), [CredentialStore.swift](apps/macos/CredentialStore.swift). The iOS target compiles these same files |
+| iPhone UI and device features | [Sources](apps/ios/Sources/), [iPhone guide](apps/ios/README.md) |
+| Uploads and settings | [Upload.swift](apps/macos/Upload.swift), [UploadView.swift](apps/macos/UploadView.swift), [SettingsView.swift](apps/macos/SettingsView.swift), [server and deployment sources](apps/macos/README.md#server-and-deployment-sources) |
+| Xcode Cloud and distribution for both platforms | [project.yml](apps/ios/project.yml), [ci_post_clone.sh](apps/ios/ci_scripts/ci_post_clone.sh). Generate the Xcode project from YAML |
+| UI and icon design | [DESIGN.md](DESIGN.md), which distinguishes UI colors from icon colors |
+| Earlier UI prototype | [Apple MVP operation model](https://github.com/asonas/syncstr/tree/be9fd4d9f06fca3676ec0426dbfe4b6606aae0ea/prototypes/apple-mvp-operation-model), [decision #5](https://github.com/asonas/syncstr/issues/5). The prototype is preserved on a separate branch, outside main |
+| Interpreting design decisions | [Domain docs](docs/agents/domain.md) |
 
-クライアントは音源キャッシュと未送信操作を保持し、接続が復旧した時点で同期します。
+## Long-term design and deferred work
 
-初回移行ではiTunesまたはMusicのXMLとローカル音源を照合します。
+Playback-state synchronization, passkey authentication, Music XML migration, and Windows/Android clients belong to the long-term design. They are not prerequisites for running or changing the current Navidrome player.
 
-Apple MusicまたはiTunesとの継続的な双方向同期は行いません。
+The following documents preserve the initial design and technical investigations. Use the app guides and source code for implemented behavior, and issues for work status.
 
-DRM保護された音源とApple Musicのクラウド上だけに存在する曲は対象外です。
+- [Service specification](docs/design-spec.md), [service overview](docs/service-overview.md), [design decisions](docs/decisions.md)
+- [Design interview](docs/grill-me.md), [long-term plans](docs/plans/README.md), [initial roadmap](docs/plans/2026-08-15-syncstr-implementation-plan.md)
+- [Technical validation records](docs/validation/README.md)
 
-## 対応形式
+The direct NAS-share access in [Issue #9](https://github.com/asonas/syncstr/issues/9) describes an earlier prototype. The current player follows the HTTPS/OpenSubsonic path in [Issue #11](https://github.com/asonas/syncstr/issues/11). The synchronization server on `syncstr-implementation` is deferred and is separate from the upload service.
 
-初期対応形式はMP3、AAC、M4A、ALAC、WAV、AIFFです。
+## License
 
-原音を優先し、端末が再生できない場合だけ互換コピーまたはサーバー変換を検討します。
-
-WAVとAIFFのようにタグを書き込めない音源は、DBとsidecarでメタデータを保持します。
-
-## 実装方針
-
-- クライアントは各OSのネイティブAPIで実装します。
-- macOSとiPhoneを最初の縦切りにします。
-- WindowsとAndroidは共通同期契約に適合する後続クライアントとします。
-- Navidromeはメディア配信の補助アダプターとして扱います。
-- Rustの共有同期コアは採用せず、各クライアントは共通のテストベクトルに適合させます。
-- 認証はパスキーを既定とし、端末単位の資格情報失効を実装します。
-
-## 開発を始めるとき
-
-1. [設計仕様](docs/design-spec.md)と[未解決の論点](docs/grill-me.md)を確認します。
-2. [実装ロードマップ](docs/superpowers/plans/2026-08-15-syncstr-implementation-plan.md)の最初の判断ゲートを完了します。
-3. 同期契約とOpenAPIを先に固定します。
-4. サーバー、macOS、iPhoneを独立したテストサイクルで実装します。
-
-## ライセンス
-
-ライセンスは実装開始前に決定します。
+The license for the planned open-source release has not been selected. See each app's `Licenses/` directory for bundled third-party notices.

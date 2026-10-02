@@ -1,223 +1,207 @@
-# 個人向けクロスプラットフォーム音楽プレイヤー設計仕様書
+# Personal Cross-Platform Music Player Design Specification
 
-作成日：2026-08-14
-対象フェーズ：設計完了、技術検証完了、製品実装未着手
-想定利用者：当面は単一利用者、将来はオープンソースとして公開
+Created: 2026-08-14
 
-## 概要
+Scope: long-term design and initial validation records. See the [README](../README.md#current-implementation) for the current implementation.
 
-このシステムは、NASに集約したローカル音源をmacOS、Windows、iPhone、Androidで再生する個人向け音楽プレイヤーである。
+Intended audience: initially a single user, with a future open-source release.
 
-NAS上のライブラリ、メタデータ、プレイリスト、評価、再生履歴を正本とし、各端末は必要な音源を保存してオフラインでも再生する。
+## Overview
 
-既存のiTunesまたはMusicライブラリは初回移行の入力として扱う。
+This system is a personal music player for playing local audio stored on a NAS from macOS, Windows, iPhone, and Android.
 
-初回移行後にAppleのアプリケーションと継続的な双方向同期は行わない。
+The NAS holds the authoritative library, metadata, playlists, ratings, and playback history. Each device stores the audio it needs for offline playback.
 
-既存のiTunesまたはMusicのXML書き出しは曲情報とプレイリストを含むが、音源本体を含まないため、XMLと音源ファイルを別々に取り込んで対応づける。
+An existing iTunes or Music library is input to the initial migration. There is no ongoing bidirectional synchronization with Apple's applications after migration.
 
-Apple Musicのクラウド上だけに存在する曲と、DRMで保護された音源は対象外とする。
+An iTunes or Music XML export contains track information and playlists but no audio files. Import the XML and audio separately and match them. Cloud-only Apple Music tracks and DRM-protected audio are out of scope.
 
-## 設計原則
+## Design Principles
 
-- **UIの状態表現**：[DESIGN.md](../DESIGN.md) のプラットフォーム別方針を参照する。
-- **NAS正本**：サーバーがライブラリ状態を保持し、端末はキャッシュと操作の送信元になる。
-- **原音優先**：音源を原音のまま保存、配信し、端末が再生できない場合だけ互換コピーを生成する。
-- **操作の損失防止**：オフライン操作を一意な操作として記録し、再送しても重複適用しない。
-- **最終収束**：複数端末が別々に操作しても、同期完了後にすべての端末が同じ状態へ収束する。
-- **ネイティブ実装**：UIの情報設計とデザインは共通化するが、UIコード、音声再生、バックグラウンド動作、OS連携は各OSのAPIを使う。
-- **可搬性**：サーバーはDocker Composeを標準配布形式とし、単一バイナリ配布も検証対象とする。
-- **復元可能性**：音源だけでなくDB、履歴イベント、sidecar、設定を復元対象とする。
+- **UI state:** Follow the platform guidance in [DESIGN.md](../DESIGN.md).
+- **NAS authority:** The server owns library state; devices hold caches and originate operations.
+- **Original audio first:** Store and serve original audio. Generate a compatibility copy only when a device cannot play the original.
+- **Prevent lost operations:** Record each offline operation uniquely and avoid applying retries more than once.
+- **Eventual convergence:** All devices converge to the same state after synchronization, even when they operate independently.
+- **Native implementation:** Share information architecture and design, while using each OS's APIs for UI code, audio playback, background execution, and system integration.
+- **Portability:** Use Docker Compose as the standard server distribution and evaluate a single-binary distribution.
+- **Recoverability:** Restore the database, history events, sidecars, and configuration as well as audio.
 
-## 用語
+## Terminology
 
-- **ライブラリ**：サーバーが管理する音源とそのメタデータの集合。
-- **トラック**：ライブラリへ登録した一つの音源ファイルを表す内部エンティティ。同じ内容の別ファイル、別ミックス、別マスター、別形式は別トラックとして扱う。
-- **音源ファイル**：NASのメディア領域に保存される原音ファイル。
-- **sidecar**：音源ファイルにタグを書き込めない場合に、同じ音源を補足するメタデータファイル。
-- **操作イベント**：端末またはサーバーが状態変更を表すために発行する一意なイベント。
-- **正本状態**：サーバーが操作イベントを適用して得た現在の状態。
-- **端末キャッシュ**：端末がオフライン再生のために保持する音源、メタデータ、操作イベント。
+- **Library:** The audio and metadata managed by the server.
+- **Track:** An internal entity representing one registered audio file. Separate files with identical content, different mixes, different masters, and different formats are separate tracks.
+- **Audio file:** An original audio file stored in the NAS media area.
+- **Sidecar:** A supplementary metadata file used when metadata cannot be written into the audio file's tags.
+- **Operation event:** A unique event issued by a device or server to represent a state change.
+- **Authoritative state:** The current state produced by applying operation events on the server.
+- **Device cache:** Audio, metadata, and operation events retained on a device for offline use.
 
-## 対象範囲
+## Scope
 
-### 対象機能
+### Included Features
 
-- DRMなしのローカル音源の初回移行
-- MP3、AAC、M4A、ALAC、WAV、AIFFの登録と再生
-- 形式追加を可能にする音声デコーダー境界
-- 曲名、アーティスト、アルバム、アルバムアーティスト、ジャンル、年、ディスク番号、トラック番号、作曲者、コメント、アートワークの管理
-- タグが存在する音源へのタグ書き込み
-- タグを書き込めない音源へのDB保存とsidecar保存
-- アルバム、アーティスト、曲、プレイリスト、お気に入り、履歴の閲覧
-- 全文検索とメタデータによる絞り込み
-- 通常再生、キュー、ギャップレス再生、音量正規化
-- 原音のストリーミングとオフラインダウンロード
-- 指定プレイリストとお気に入りの自動ダウンロード
-- 再生開始、一定進捗到達、完了、スキップの履歴記録
-- 評価、お気に入り、プレイリスト編集のオフライン操作
-- 操作イベントの再送、重複排除、競合解決
-- HTTPSによるリモートアクセス
-- パスキーによる認証と端末単位の資格情報失効
-- NAS音源の追加、スキャン、欠損検出、重複候補検出
-- ゴミ箱を経由した音源の削除
-- DB、履歴、設定、sidecarを含むバックアップと復元
-- macOSとiPhoneを初期縦切りとするネイティブアプリ
-- WindowsとAndroidを後続のネイティブアプリとする適合実装
+- Initial migration of DRM-free local audio
+- Registration and playback of MP3, AAC, M4A, ALAC, WAV, and AIFF
+- An audio decoder boundary that allows additional formats
+- Management of title, artist, album, album artist, genre, year, disc number, track number, composer, comments, and artwork
+- Tag writing for audio that supports tags
+- Database and sidecar storage for audio that cannot accept tags
+- Browsing albums, artists, tracks, playlists, favorites, and history
+- Full-text search and metadata filtering
+- Normal playback, queues, gapless playback, and volume normalization
+- Original-audio streaming and offline downloads
+- Automatic downloads for selected playlists and favorites
+- History events for playback start, a progress threshold, completion, and skipping
+- Offline edits to ratings, favorites, and playlists
+- Operation retries, deduplication, and conflict resolution
+- Remote access over HTTPS
+- Passkey authentication and per-device credential revocation
+- Adding and scanning NAS audio, detecting missing files, and identifying potential duplicates
+- Audio deletion through a trash area
+- Backup and recovery of the database, history, configuration, and sidecars
+- Native macOS and iPhone applications as the initial vertical slice
+- Subsequent native Windows and Android clients conforming to the same contracts
 
-### 対象外
+### Excluded Features
 
-- Apple MusicまたはiTunesとの継続的な双方向同期
-- Apple Musicのクラウド上だけに存在する曲
-- DRM保護された音源の汎用プレイヤーでの再生
-- 定額配信サービスとの連携
-- Chromecast、AirPlayなど外部機器へのキャスト
-- 歌詞
-- レコメンド
-- スマートプレイリスト
+- Ongoing bidirectional synchronization with Apple Music or iTunes
+- Cloud-only Apple Music tracks
+- Playback of DRM-protected audio in a general-purpose player
+- Subscription streaming service integration
+- Casting to external devices through Chromecast, AirPlay, or similar protocols
+- Lyrics
+- Recommendations
+- Smart playlists
 - EQ
-- 排他出力とサンプルレート自動切替
-- Last.fm、ListenBrainzなどへの外部scrobble
-- 複数ユーザー向けのロール分割
-- Webプレイヤー
+- Exclusive output and automatic sample-rate switching
+- External scrobbling to Last.fm, ListenBrainz, or similar services
+- Multi-user roles
+- A web player
 
-## 利用シナリオ
+## Usage Scenarios
 
-### 初回移行
+### Initial Migration
 
-1. 利用者がMusicまたはiTunesからXMLを書き出す。
-2. 利用者が音源をNASの取り込み領域へコピーする。
-3. サーバーがXMLと音源ファイルを読み取り、パス、ファイル名、サイズ、再生時間を使って候補を作る。
-4. 候補が一意に定まる曲を登録し、候補が複数ある曲を確認待ちにする。
-5. XMLから読み取れるプレイリスト、評価、再生回数、最終再生日時を初期値として取り込む。
-6. DRM保護された曲、クラウド上だけの曲、照合できない曲を移行結果へ記録する。
-7. 取り込みは音源の移動や削除を行わず、利用者が結果を確認してからライブラリを確定する。
+1. The user exports XML from Music or iTunes.
+2. The user copies audio into the NAS import area.
+3. The server reads the XML and audio files, then produces candidates using paths, filenames, sizes, and durations.
+4. Tracks with a unique match are registered; tracks with multiple candidates await confirmation.
+5. Available playlists, ratings, play counts, and last-played timestamps from the XML become initial values.
+6. The migration report records DRM-protected tracks, cloud-only tracks, and unmatched tracks.
+7. Import does not move or delete audio. The user reviews the results before finalizing the library.
 
-### 音源スキャン
+### Audio Scanning
 
-1. サーバーは監視フォルダと手動実行の両方でスキャンを開始する。
-2. スキャンは一時状態のファイルを読み飛ばし、ファイルが安定してからメタデータと音声情報を抽出する。
-3. ファイル内容のSHA-256、サイズ、形式、再生時間、サンプルレート、チャンネル数を保存する。
-4. 既存トラックのパス変更は同一内容のハッシュ候補として提示する。
-5. 同一内容または類似メタデータの重複候補は自動統合せず、別トラックとして保持するか利用者が確認する。
-6. 外部操作で消えたファイルは欠損状態へ変更し、履歴とプレイリストから直ちに削除しない。
+1. The server starts scans from watched folders or manual requests.
+2. Scanning skips files in a transient state and extracts metadata and audio information only after they stabilize.
+3. Store the content SHA-256, size, format, duration, sample rate, and channel count.
+4. Present path changes as candidates matched by identical content hashes.
+5. Do not automatically merge identical content or similar metadata. Keep separate tracks or request user review.
+6. Mark externally deleted files as missing without immediately removing their history or playlist entries.
 
-### 再生
+### Playback
 
-1. クライアントはメタデータと再生URLを取得する。
-2. 端末に完全な音源が保存されていればローカル音源を優先する。
-3. 保存されていなければHTTPSで原音をストリーミングする。
-4. 端末が原音形式を扱えない場合はサーバーに互換コピーを要求する。
-5. 再生エンジンはOSのメディアセッション、バックグラウンド再生、メディアキー、通知へ統合する。
-6. 再生エンジンはギャップレス再生を提供する。
-7. 音量正規化は原音ファイルを変更せず、再生経路で適用する。
-8. 再生操作は端末へ永続化し、ネットワークが復旧した時点で履歴イベントを送信する。
+1. The client fetches metadata and a playback URL.
+2. Prefer a complete local audio file if one is available.
+3. Otherwise, stream the original over HTTPS.
+4. Request a compatibility copy if the device cannot handle the original format.
+5. Integrate the playback engine with OS media sessions, background playback, media keys, and notifications.
+6. Provide gapless playback.
+7. Apply volume normalization in the playback path without modifying the original file.
+8. Persist playback operations locally and send history events when connectivity returns.
 
-### オフライン再生とダウンロード
+### Offline Playback and Downloads
 
-1. 利用者は曲、アルバム、プレイリスト、お気に入りを明示的にダウンロードできる。
-2. 自動ダウンロードはお気に入りと指定プレイリストを対象とする。
-3. 自動キャッシュは利用者が設定した容量上限内で管理し、明示ダウンロードを自動削除しない。
-4. ダウンロードはHTTP Rangeで再開し、完了後にSHA-256を検証する。
-5. 検証前の部分ファイルはライブラリへ表示しない。
-6. 端末の空き容量を安全制限より下げる操作は拒否する。
-7. 通常はアプリ専用領域へ保存し、利用者が明示的に書き出した場合だけ共有領域へ複製する。
+1. Users can explicitly download tracks, albums, playlists, and favorites.
+2. Automatic downloads cover favorites and selected playlists.
+3. Manage automatic caches within a user-defined quota. Never automatically remove explicit downloads.
+4. Resume downloads with HTTP Range and verify SHA-256 after completion.
+5. Do not expose partial files in the library before verification.
+6. Reject operations that would reduce available storage below the safety limit.
+7. Store files in app-private storage by default. Copy them to shared storage only on an explicit export request.
 
-### 同期
+### Synchronization
 
-1. クライアントは操作を一意なoperation_id、端末内連番、端末IDとともにローカルへ保存する。
-2. クライアントは未送信操作をまとめてサーバーへ送信する。
-3. サーバーはoperation_idの一意制約で重複を排除し、受理順にserver_seqを付与する。
-4. サーバーは操作を正本状態へ適用し、適用結果と次の同期カーソルを返す。
-5. クライアントはカーソル以降の操作を取得し、同じ操作をローカル状態へ適用する。
-6. 同期失敗時は未送信操作を削除せず、指数バックオフで再送する。
-7. 長期間接続しなかった端末は差分期間を超えた場合に完全スナップショットを取得する。
+1. The client persists each operation with a unique `operation_id`, a per-device counter, and a device ID.
+2. The client batches pending operations for the server.
+3. The server deduplicates through an `operation_id` uniqueness constraint and assigns `server_seq` in acceptance order.
+4. The server applies operations to authoritative state and returns results and the next synchronization cursor.
+5. Clients fetch operations after their cursor and apply the same operations locally.
+6. Keep pending operations after failures and retry with exponential backoff.
+7. Devices offline beyond the incremental retention window fetch a complete snapshot.
 
-### プレイリスト競合
+### Playlist Conflicts
 
-プレイリストの追加、削除、並べ替えは、配列全体ではなく項目IDを対象とする操作として記録する。
+Record playlist additions, deletions, and moves as operations on item IDs rather than entire arrays.
 
-サーバーは受理した操作をserver_seq順に適用し、同じ項目に複数の移動があれば後から受理した移動を最後の位置へ適用する。
+The server applies accepted operations in `server_seq` order. When an item has multiple moves, the last accepted move determines its final position.
 
-削除された項目は墓標として保持し、古い端末が再送して復活させることを防ぐ。
+Retain deleted items as tombstones so retries from stale devices cannot resurrect them. Keep tombstones for 90 days even after all devices acknowledge synchronization, then compact them into a snapshot.
 
-墓標は全端末の同期確認後も90日間保持し、その後にスナップショットへ圧縮する。
+## Architecture
 
-## アーキテクチャ
+### Server
 
-### サーバー
+The server is responsible for:
 
-サーバーは次の責務を持つ。
+- Library scanning, metadata extraction, migration, and duplicate candidate detection
+- Authoritative database access and search index updates
+- Range delivery of original audio and compatibility-copy generation
+- Synchronization acceptance, deduplication, conflict resolution, and cursor management
+- Passkey registration, authentication, device management, and credential revocation
+- Administrative audio deletion, trash, backup, and restoration
+- Health checks, audit logs, and configuration
 
-- ライブラリスキャン、メタデータ抽出、移行、重複候補検出
-- 正本DBの読み書きと検索インデックス更新
-- 音源のRange配信、原音配信、互換コピー生成
-- 同期操作の受理、重複排除、競合解決、カーソル管理
-- パスキー登録、認証、端末管理、資格情報失効
-- 管理者向け音源削除、ゴミ箱、バックアップ、復元
-- ヘルスチェック、監査ログ、設定管理
+Logical modules have the following responsibilities:
 
-サーバー内部の論理モジュールは次の名前と責務に分ける。
+- `AuthService`: Passkey challenges and verification, device registration, token refresh, and revocation.
+- `LibraryScanner`: Watched-folder scanning, file stabilization, hashing, and missing-file detection.
+- `LibraryImporter`: Matching iTunes or Music XML to audio, pending confirmations, and migration results.
+- `MetadataStore`: Database, tag, and sidecar access and inconsistencies between them.
+- `CatalogService`: Tracks, albums, artists, and search indexes.
+- `MediaService`: Original-audio Range delivery, signed URLs, and compatibility copies.
+- `SyncService`: Operation acceptance, deduplication, `server_seq` allocation, cursors, and snapshots.
+- `ProjectionUpdater`: Applying operations to authoritative state, history aggregates, and search indexes.
+- `TrashService`: Deletion, trash, restoration, and permanent erasure.
+- `BackupService`: Consistent backup and restoration of the database, configuration, and history.
+- `AuditLog`: Authentication changes, administrative actions, and destructive operations.
 
-- `AuthService`：パスキーのチャレンジ、検証、端末登録、トークン更新、失効を扱う。
-- `LibraryScanner`：監視フォルダを走査し、ファイルの安定化、ハッシュ計算、欠損検出を扱う。
-- `LibraryImporter`：iTunesまたはMusic XMLと音源ファイルを照合し、確認待ちと移行結果を管理する。
-- `MetadataStore`：DB、音源タグ、sidecarの読み書きと不一致を扱う。
-- `CatalogService`：トラック、アルバム、アーティスト、検索インデックスを提供する。
-- `MediaService`：原音のRange配信、署名URL、互換コピー生成を扱う。
-- `SyncService`：操作の受理、重複排除、server_seq採番、カーソル、スナップショットを扱う。
-- `ProjectionUpdater`：同期操作を正本状態、履歴集計、検索インデックスへ反映する。
-- `TrashService`：削除、ゴミ箱、復元、完全消去を扱う。
-- `BackupService`：整合したDB、設定、履歴のバックアップと復元を扱う。
-- `AuditLog`：認証変更、管理操作、破壊的操作を記録する。
+Expose an HTTP JSON API documented in OpenAPI. Use `/v1` in URLs and isolate breaking changes in a new major version.
 
-サーバーはHTTP JSON APIを公開し、API仕様はOpenAPIで管理する。
+Use SQLite with WAL mode and migration history. Even if multiple server processes become necessary, guarantee operation uniqueness and `server_seq` allocation in a single database transaction.
 
-APIのバージョンはURLの`/v1`で表し、破壊的変更は新しいメジャーバージョンへ分離する。
+### Clients
 
-標準DBはSQLiteとし、WALモードとマイグレーション履歴を使う。
+Divide each client into these layers:
 
-サーバーを複数プロセスで運用する必要が生じた場合も、操作の一意性とserver_seqの採番を単一のDBトランザクションで保証する。
+- **UI:** Native screens, navigation, accessibility, and keyboard interaction.
+- **Application:** Library browsing, playback control, downloads, synchronization, and settings.
+- **Local data:** SQLite persistence for metadata, caches, pending operations, and synchronization cursors.
+- **OS integration:** Audio sessions, background tasks, notifications, media keys, and credential storage.
+- **Networking:** OpenAPI requests, authentication refresh, retries, and Range retrieval.
 
-### クライアント
+The initial clients target macOS and iPhone. Use Swift and SwiftUI, with AppKit or UIKit where needed. Use C# and WinUI 3 for Windows and Kotlin and Jetpack Compose for Android.
 
-クライアントは次の層に分ける。
+Define shared information architecture, design principles, colors, typography, and component states in Figma. Follow each OS's conventions for back navigation, menus, sharing, windows, keyboards, and background execution.
 
-- **UI層**：OS標準の画面、ナビゲーション、アクセシビリティ、キーボード操作を実装する。
-- **アプリケーション層**：ライブラリ閲覧、再生制御、ダウンロード、同期、設定のユースケースを実装する。
-- **ローカルデータ層**：メタデータ、キャッシュ、未送信操作、同期カーソルをSQLiteへ保存する。
-- **OS連携層**：音声セッション、バックグラウンド処理、通知、メディアキー、資格情報保管庫を実装する。
-- **通信層**：OpenAPIに従ってAPIを呼び出し、認証更新、再試行、Range取得を扱う。
+### Shared Synchronization Core
 
-初期クライアントはmacOSとiPhoneを対象とする。
+Maintain state-transition specifications, machine-readable test vectors, failure scenarios, and conformance tests as shared assets so clients do not interpret synchronization rules independently.
 
-macOSとiPhoneはSwiftを基本とし、SwiftUIをUIの中心に据え、必要な箇所ではAppKitまたはUIKitを使う。
+Compare a Rust shared core with a Swift-only implementation against these criteria:
 
-WindowsはC#とWinUI 3、AndroidはKotlinとJetpack Composeを基本とする。
+- Both can implement the same synchronization scenarios as state machines.
+- Per-device counters, `operation_id`, `server_seq`, retries, and deduplication converge to identical results.
+- The Swift, Kotlin, and C# FFI boundaries safely handle errors, cancellation, threads, and asynchronous work.
+- Binary distribution, debugging, crash analysis, build time, and size remain acceptable on each OS.
+- Adopting Rust reduces the test scope and failure surface compared with separate implementations.
 
-Figmaでは共通の情報設計、デザイン原則、色、タイポグラフィ、コンポーネント状態を定義する。
+Move the synchronization state machine and conflict resolution into a shared core only if Rust meets these conditions. Keep networking, local databases, file operations, audio playback, and OS lifecycle handling outside it.
 
-戻る操作、メニュー、共有、ウィンドウ、キーボード、バックグラウンド実行などは各OSの標準慣習を優先する。
+## Data Model
 
-### 共有同期コア
-
-同期規則は、各クライアントが独自に解釈しないよう、状態遷移仕様、機械可読なテストベクトル、障害シナリオ、適合テストを共通資産として管理する。
-
-Rust共有コアは、次の技術検証でSwift単独実装と比較する。
-
-- 同じ同期シナリオを状態機械として実装できること
-- 端末内連番、operation_id、server_seq、再送、重複排除を同じ結果へ収束できること
-- Swift、Kotlin、C#とのFFI境界でエラー、キャンセル、スレッド、非同期処理を安全に扱えること
-- 各OS向けバイナリの配布、デバッグ、クラッシュ解析、ビルド時間、サイズが許容範囲に収まること
-- Rust版の採用によって、個別実装よりテスト対象と障害面積が減ること
-
-Rust版が上記条件を満たした場合だけ、同期状態機械と競合解決を共有コアへ移す。
-
-ネットワーク、ローカルDB、ファイル操作、音声再生、OSライフサイクルは共有コアへ含めない。
-
-## データモデル
-
-以下のDDLは論理スキーマであり、実装時は採用DBの型へ変換する。
+The following DDL is a logical schema. Adapt its types to the selected database during implementation.
 
 ```sql
 CREATE TABLE users (
@@ -384,331 +368,265 @@ CREATE TABLE audit_logs (
 );
 ```
 
-### 識別子と時刻
+### Identifiers and Time
 
-すべての内部IDとoperation_idは、端末間で衝突しないランダムなIDを使う。
+Use random IDs that do not collide across devices for all internal IDs and `operation_id` values.
 
-content_hashはファイル内容の同一性を判定するために使うが、タグ変更やコンテナ変更による同一曲判定には使わない。
+Use `content_hash` to identify identical file contents, not to identify the same song after tag or container changes. Retain device timestamps for display and analysis, but never use them to order conflicts.
 
-端末時刻は表示と分析に保持するが、競合順序の決定には使わない。
+Use `device_counter` for operations within a device and `server_seq` for server-wide application order.
 
-同一端末の操作順はdevice_counterで表し、サーバー全体の適用順はserver_seqで表す。
+## API and Synchronization Contracts
 
-## APIと同期契約
+### Main APIs
 
-### 主要API
+- `POST /v1/auth/passkeys/register/options`: Issue a challenge for initial or additional registration.
+- `POST /v1/auth/passkeys/register/verify`: Register a passkey and issue device credentials.
+- `POST /v1/auth/passkeys/login/options`: Issue a login challenge.
+- `POST /v1/auth/passkeys/login/verify`: Issue an access token and refresh credentials.
+- `POST /v1/auth/token/refresh`: Rotate refresh credentials.
+- `POST /v1/sync/push`: Accept pending operations.
+- `GET /v1/sync/pull?cursor=<server_seq>`: Return operations after the cursor or a complete snapshot.
+- `GET /v1/library/tracks`: List, search, and filter tracks.
+- `GET /v1/library/albums`: List albums.
+- `GET /v1/library/artists`: List artists.
+- `GET /v1/playlists`: Return playlists and their entries.
+- `POST /v1/media/{track_id}/stream-url`: Issue a short-lived streaming URL.
+- `POST /v1/media/{track_id}/download-url`: Issue a short-lived download URL.
+- `POST /v1/library/imports`: Start an initial XML and audio migration.
+- `POST /v1/library/scans`: Start a scan.
+- `POST /v1/admin/tracks/{track_id}/trash`: Move audio to trash after administrator reauthentication.
+- `POST /v1/admin/trash/purge`: Permanently empty trash after administrator reauthentication.
 
-- `POST /v1/auth/passkeys/register/options`：初回登録または追加登録のチャレンジを発行する。
-- `POST /v1/auth/passkeys/register/verify`：パスキーを登録し、端末資格情報を発行する。
-- `POST /v1/auth/passkeys/login/options`：ログイン用チャレンジを発行する。
-- `POST /v1/auth/passkeys/login/verify`：アクセストークンと更新資格情報を発行する。
-- `POST /v1/auth/token/refresh`：更新資格情報をローテーションする。
-- `POST /v1/sync/push`：未送信操作を受理する。
-- `GET /v1/sync/pull?cursor=<server_seq>`：カーソル以降の操作または完全スナップショットを返す。
-- `GET /v1/library/tracks`：曲一覧、検索、絞り込みを返す。
-- `GET /v1/library/albums`：アルバム一覧を返す。
-- `GET /v1/library/artists`：アーティスト一覧を返す。
-- `GET /v1/playlists`：プレイリスト一覧と項目を返す。
-- `POST /v1/media/{track_id}/stream-url`：短時間有効なストリーミングURLを発行する。
-- `POST /v1/media/{track_id}/download-url`：短時間有効なダウンロードURLを発行する。
-- `POST /v1/library/imports`：XMLと音源の初回移行を開始する。
-- `POST /v1/library/scans`：スキャンを開始する。
-- `POST /v1/admin/tracks/{track_id}/trash`：管理者の再認証後に音源をゴミ箱へ移す。
-- `POST /v1/admin/trash/purge`：管理者の再認証後にゴミ箱を完全消去する。
+### Operation Idempotency
 
-### 操作の冪等性
+Store `operation_id` as a unique key. Receiving the same ID again returns its original result without applying the state change twice.
 
-サーバーはoperation_idを一意キーとして保存する。
+If an accepted operation cannot be applied, return an error code, the target entity, and whether retrying is possible instead of discarding it. Devices retain operations after retryable errors and notify the user about permanent failures such as revoked authentication, deleted targets, or invalid formats.
 
-同じoperation_idを再受信した場合、元の適用結果を返し、状態を二重に変更しない。
+### Synchronization Cursors
 
-サーバーが受理した操作を適用できない場合は、操作を破棄せず、エラーコード、対象エンティティ、再試行可否を返す。
+Clients store the last fully applied `server_seq` as their cursor. If the application terminates during application, roll back the transaction and fetch from the same cursor next time.
 
-端末は再試行可能なエラーでは操作を保持し、認証失効、対象削除、形式不正など再試行しても成功しないエラーでは利用者へ通知する。
+Return a complete snapshot when event compaction has removed operations needed by a cursor. “All devices have acknowledged synchronization” refers to non-revoked devices. Devices disconnected for 90 days or longer fetch a complete snapshot on reconnection rather than replaying compacted events.
 
-### 同期カーソル
+### Error Codes
 
-クライアントは最後に完全に適用したserver_seqをカーソルとして保存する。
+Include these machine-readable codes in API error bodies:
 
-操作の適用中にアプリが終了した場合は、トランザクションをロールバックし、次回に同じカーソルから取得する。
+- `auth_required`: The access token is missing or expired.
+- `auth_revoked`: The device or refresh credentials have been revoked.
+- `reauth_required`: A destructive operation requires reauthentication.
+- `rate_limited`: A rate limit has been reached.
+- `operation_duplicate`: The operation was already accepted; return its original result.
+- `operation_rejected`: Target state or permissions prevent applying the operation.
+- `media_missing`: The original audio file is missing.
+- `media_hash_mismatch`: The downloaded file's hash does not match.
+- `unsupported_format`: The playback path cannot handle the format.
+- `quota_exceeded`: The operation exceeds the device quota or free-space limit.
+- `invalid_import`: The XML or audio information is invalid for migration.
+- `migration_failed`: A database migration failed.
+- `server_unavailable`: The server cannot be reached.
 
-サーバーがイベントを圧縮してカーソル以前の操作を保持しない場合、クライアントへ完全スナップショットを返す。
+## Playback History
 
-イベント圧縮で「全端末が同期確認済み」とみなす対象は、失効していない端末とする。
-
-90日以上接続していない端末は、次回接続時に完全スナップショットを取得し、圧縮済みイベントを再生しない。
-
-### エラーコード
-
-APIはエラー本文に次の機械可読コードを含める。
-
-- `auth_required`：アクセストークンがない、または期限切れである。
-- `auth_revoked`：端末または更新資格情報が失効している。
-- `reauth_required`：破壊的操作に再認証が必要である。
-- `rate_limited`：レート制限に達した。
-- `operation_duplicate`：同じ操作を受理済みである。元の適用結果を返す。
-- `operation_rejected`：対象の状態や権限により操作を適用できない。
-- `media_missing`：原音ファイルが欠損している。
-- `media_hash_mismatch`：取得したファイルのハッシュが一致しない。
-- `unsupported_format`：再生経路が形式を扱えない。
-- `quota_exceeded`：端末の保存上限または空き容量制限を超える。
-- `invalid_import`：XMLまたは音源情報を移行処理へ渡せない。
-- `migration_failed`：DBマイグレーションに失敗した。
-- `server_unavailable`：サーバーへ接続できない。
-
-## 再生履歴
-
-クライアントは次のイベントを保存する。
+Clients persist these events:
 
 - `play_started`
 - `progress_reached`
 - `play_completed`
 - `play_skipped`
 
-再生回数は`play_completed`を集計する。
+Aggregate `play_completed` events into play counts. Emit `play_completed` when the engine reports natural completion or playback reaches 90 percent. Deduplicate retries from the same playback session by `operation_id`.
 
-再生エンジンが自然終了を報告した場合、または再生進捗が90パーセントへ到達した場合に`play_completed`を発行する。
+The server retains events for 90 days, aggregates them into snapshots, and compacts older events. Play counts, last-played timestamps, and skip counts are derived values that can be recalculated from events.
 
-同一再生セッションの再送はoperation_idで排除する。
+## Metadata and File Management
 
-サーバーはイベントを90日間保持し、スナップショットへ集約した後に古いイベントを圧縮する。
+The database is authoritative for search and synchronization. For formats that support writable tags, save administrative edits to the database before writing them to files.
 
-再生回数、最終再生日時、スキップ回数はイベントから再計算できる派生値とする。
+Treat a failed tag write as a failed database change, and record the original value and write error in the audit log.
 
-## メタデータとファイル管理
+For formats with limited tag compatibility, such as WAV and AIFF, store the database values and a sidecar as a portable representation of authoritative metadata. Sidecars are JSON containing the relative audio path, internal ID, metadata, and artwork references.
 
-DBは検索と同期に必要な正本である。
+Automatic file moves and renames are outside the MVP.
 
-タグを書き込める形式では、管理画面からの編集をDBへ保存した後にファイルへ反映する。
+## Authentication and Security
 
-タグ書き込みに失敗した場合、DBの変更を失敗として扱い、元の値と書き込みエラーを監査ログへ残す。
+### Passkeys
 
-WAVやAIFFなどタグの互換性が限定される形式では、DBとsidecarを正本の可搬表現として保存する。
+Passkeys are the standard authentication method. During initial setup, the NAS CLI issues a one-time registration code for the first passkey. Recovery uses a new registration code from the NAS CLI or a previously issued recovery code.
 
-sidecarの形式は、音源ファイルの相対パス、内部ID、メタデータ、アートワーク参照を含むJSONとする。
+Fix the passkey RP ID to the canonical hostname chosen during setup. A hostname change requires registering new passkeys as part of migration.
 
-サーバーがファイルを自動的に移動またはリネームする機能はMVPに含めない。
+After passkey-based device registration, native apps use short-lived access tokens and rotating refresh credentials. Store refresh credentials in the OS's secure storage, such as macOS Keychain, iOS Keychain, Windows Credential Manager, or Android Keystore.
 
-## 認証とセキュリティ
+### Connection Protection
 
-### パスキー
+Allow only HTTPS in production. Permit localhost HTTP only in development builds. Accept self-signed certificates only after the user explicitly establishes trust.
 
-パスキーを標準認証とする。
+Use short-lived signed media URLs. Never write them to application logs, audit logs, or error messages.
 
-初回セットアップはNAS上のCLIが一度だけ有効な登録コードを発行し、そのコードを使って最初のパスキーを登録する。
+### Permissions and Reauthentication
 
-復旧はNAS上のCLIによる再登録コード、または事前発行した復旧コードで行う。
+The initial version is single-user, without fine-grained roles for normal authenticated operations. Require passkey reauthentication for permanent audio deletion, trash purging, revoking all devices, and server configuration changes.
 
-パスキーのRP IDは初回設定時の正式なホスト名に固定し、ホスト名変更時は新しいパスキーを登録して移行する。
+List devices with last-used time, OS, and revocation status. Per-device revocation immediately invalidates existing refresh credentials.
 
-ネイティブアプリはパスキーで端末登録した後、短期アクセストークンとローテーションする更新資格情報を使う。
+Rate-limit authentication, registration, and reauthentication by IP address and credential. Initial defaults are five authentication operations per 15 minutes and 120 normal API requests per device per minute. Administrative configuration can lower these limits.
 
-更新資格情報はmacOS Keychain、iOS Keychain、Windows Credential Manager、Android Keystoreなど、各OSの安全な保管領域へ保存する。
+Audit administrative actions, authentication changes, audio deletion, and trash purging.
 
-### 接続保護
+### Privacy
 
-本番接続はHTTPSだけを許可する。
+Send no telemetry by default. Send crash information that does not directly identify a person only with explicit consent. Exclude track titles, filenames, audio paths, server URLs, and history events from telemetry.
 
-localhostのHTTPは開発ビルドに限って許可する。
+## Errors and Boundary Conditions
 
-自己署名証明書は、利用者が明示的に信頼設定した場合だけ許可する。
+- **NAS unavailable:** Keep cached audio and pending operations available; synchronize after reconnection.
+- **Authentication revoked:** Continue local playback, stop server operations, and display reauthentication.
+- **Missing audio:** Mark the track as missing and retain history and playlist entries.
+- **Hash mismatch:** Discard the incomplete download and prompt for retry.
+- **Unsupported format:** Try original streaming, then request a compatibility copy if playback fails.
+- **Compatibility generation failure:** Explain the failure, indicate that the original exists, and show how to retry.
+- **Synchronization conflict:** Apply operations in `server_seq` order and report results without discarding operations.
+- **Database migration failure:** Restore the pre-update snapshot and allow restarting the previous server version.
+- **Insufficient space:** Preserve explicit downloads, stop new automatic caching, and notify the user.
+- **Invalid XML:** Continue migration where possible and retain readable entries and errors with line numbers in the report.
 
-音源URLは短時間だけ有効な署名付きURLとする。
+## Operations
 
-署名付きURLはアプリのログ、監査ログ、エラーメッセージへ書き出さない。
+### Distribution
 
-### 権限と再認証
+Support Docker Compose with separate volumes for media, the database, configuration, and trash. A single-binary distribution must accept external paths for configuration, the database, and media.
 
-初期版は単一ユーザーとし、ログイン後の通常操作に細かなロールを設けない。
+Evaluate Navidrome in an isolated environment without replacing the existing server.
 
-音源の完全削除、ゴミ箱の消去、全端末失効、サーバー設定変更にはパスキーによる再認証を要求する。
+For internet access, place a TLS-terminating reverse proxy or tunnel in front of the server and give the application its public HTTPS URL. Router configuration, certificate issuance, and port forwarding are outside the application's responsibilities.
 
-端末は一覧表示し、最終利用日時、OS、失効状態を確認できる。
+### Backups
 
-端末単位の失効は既存の更新資格情報を直ちに無効化する。
+Back up audio files, the database, sidecars, configuration, synchronization events, and audit logs. Capture the database and synchronization events as a consistent snapshot.
 
-認証、登録、再認証の試行回数をIPアドレスと資格情報単位で制限する。
+Restore the database onto an empty server, verify audio hashes, apply sidecars, and then distribute complete snapshots to devices.
 
-初期既定値は、認証系操作を15分あたり5回、通常APIを端末あたり1分あたり120回とし、管理設定で下げられるようにする。
+### Trash and Event Compaction
 
-管理操作、認証変更、音源削除、ゴミ箱消去は監査ログへ記録する。
+Client deletion moves audio to trash. Permanently erase it after 30 days by default; make this retention period configurable.
 
-### プライバシー
-
-テレメトリーは既定で送信しない。
-
-利用者が明示的に同意した場合だけ、個人を直接識別しないクラッシュ情報を送信する。
-
-曲名、ファイル名、音源パス、サーバーURL、履歴イベントはテレメトリーへ含めない。
-
-## エラーと境界条件
-
-- **NAS停止**：キャッシュ済み音源と未送信操作を利用可能にし、再接続後に同期する。
-- **認証失効**：ローカル再生を継続し、サーバー操作を停止して再認証画面を表示する。
-- **音源欠損**：トラックを欠損状態で表示し、既存の履歴とプレイリスト項目を保持する。
-- **ハッシュ不一致**：ダウンロードを不完全として破棄し、再試行を促す。
-- **非対応形式**：原音ストリーミングを試行し、再生不能なら互換コピーの生成を要求する。
-- **互換コピー生成失敗**：エラー理由を表示し、原音の存在と再試行方法を示す。
-- **同期競合**：server_seq順に操作を適用し、操作を破棄せず、適用結果をクライアントへ通知する。
-- **DB移行失敗**：更新前スナップショットから復元し、旧サーバー版で再起動できるようにする。
-- **容量不足**：明示ダウンロードを削除せず、新規自動キャッシュを停止して利用者へ通知する。
-- **不正なXML**：移行処理を中断せず、読めた項目と行番号付きのエラーを結果へ保存する。
-
-## 運用
-
-### 配布
-
-サーバーはDocker Composeで起動できるようにし、メディア領域、DB領域、設定領域、ゴミ箱領域を別ボリュームとして指定する。
-
-単一バイナリ配布では、設定ファイル、DB、メディア領域を外部パスで指定できるようにする。
-
-Navidrome評価では、既存サーバーを置き換えずに検証環境へ導入する。
-
-インターネット公開では、サーバーの前段にTLS終端を行うリバースプロキシまたはトンネルを置き、アプリケーションはHTTPSの公開URLを受け取る。
-
-アプリケーション自身はルーター設定、証明書発行、ポート開放を担当しない。
-
-### バックアップ
-
-バックアップ対象は音源ファイル、DB、sidecar、設定、同期イベント、監査ログとする。
-
-DBと同期イベントは整合したスナップショットとして取得する。
-
-復元手順は、空のサーバーへDBを戻し、音源のハッシュを検証し、sidecarを適用し、端末へ完全スナップショットを配信する順序とする。
-
-### ゴミ箱とイベント圧縮
-
-クライアントからの削除は音源をゴミ箱へ移し、既定では30日後に完全消去する。
-
-ゴミ箱の保持期間は設定で変更できる。
-
-同期イベントはスナップショットと全端末の同期確認後に圧縮し、再生イベントの詳細は90日を超えて保持しない。
-
-### 更新
-
-更新前にDBと設定のスナップショットを自動作成する。
-
-DBマイグレーションは再実行可能にし、失敗時は旧版とスナップショットで復旧する。
-
-音源ファイルの移動や変換をDBマイグレーションへ含めない。
-
-### OSSライセンス
-
-自作のサーバー、クライアント、同期仕様、テスト資産はApache-2.0を第一候補とする。
-
-NavidromeとはAPI連携に限定し、ソースコードをリンクまたは改変した配布物を作らない。
-
-依存ライブラリは公開前にライセンス一覧を作成し、配布形態と互換しない依存は採用しない。
-
-音声デコーダーを追加する場合は、OS標準APIを優先し、外部デコーダーはライセンス条件、動的リンク、再配布条件を確認したうえで採用する。
-
-## 既存ソフトウェアの評価
-
-NavidromeはNAS上の音源管理、再生回数、プレイリスト、評価、OpenSubsonic互換APIを提供するため、最初に適合性を検証する。
-
-検証項目は次のとおりとする。
-
-- MP3、AAC、M4A、ALAC、WAV、AIFFを正しく登録、検索、配信できること
-- macOSとiPhoneのクライアントが同じメタデータと原音を取得できること
-- オフライン履歴を欠損、重複なく取り込めること
-- 履歴、評価、お気に入り、プレイリスト操作の競合を収束させられること
-- 端末認証、端末失効、短期URL、再認証を実装できること
-- 既存のAPIで不足する機能だけを独自APIまたは補助サーバーで追加できること
-
-すべての項目を満たせない場合は、Navidromeを音源サーバーとして利用し、不足する同期状態と端末管理を補助サーバーで提供する。
-
-サーバー全体を新規実装する判断は、補助サーバーで要件を表現できないことを検証してから行う。
-
-SwinsianはmacOS専用のローカルライブラリ管理と再生の比較対象とする。
-
-SwinsianはWindows、iPhone、Android向けの統一クライアントやNAS同期を提供する比較対象ではない。
-
-## 実装順序
-
-### 技術検証
-
-1. Navidromeを隔離したNAS環境へ導入する。
-2. iTunesまたはMusic XMLと音源を小規模な検証ライブラリへ取り込む。
-3. macOSとiPhoneで原音再生、ギャップレス再生、音量正規化、Rangeダウンロードを試す。
-4. オフライン操作の再送、重複排除、プレイリスト競合を検証する。
-5. Swift単独同期実装とRust共有コア実装を同じテストベクトルで比較する。
-6. 結果に基づいてNavidrome連携方式とRust採否を確定する。
-
-### MVP
-
-1. サーバーの認証、ライブラリスキャン、検索、メディア配信を実装する。
-2. macOSクライアントで閲覧、再生、プレイリスト、お気に入り、履歴、ダウンロードを実装する。
-3. iPhoneクライアントで同じ同期契約、バックグラウンド再生、オフライン再生を実装する。
-4. macOSとiPhoneを4週間日常利用し、NAS停止、回線切替、アプリ終了、重複再送、復元を検証する。
-5. 合格後にWindows、Androidへ適合実装を進める。
-
-## テスト方針
-
-- **同期単体テスト**：操作の順序変更、再送、重複、同時追加、同時削除、同時移動、削除と移動の衝突を検証する。
-- **プロパティテスト**：任意の操作列を複数端末へ異なる順序で適用しても、最終状態が一致することを検証する。
-- **API統合テスト**：認証、カーソル、ページング、Range配信、署名URL、エラーコードを検証する。
-- **移行テスト**：XMLと音源の照合、タグなしWAV、AIFF、重複候補、DRM曲、壊れたXMLを検証する。
-- **音声テスト**：ギャップレス境界、無音、長尺、可変ビットレート、非対応形式、互換コピーを検証する。
-- **障害テスト**：NAS停止、回線切断、アプリ強制終了、DBマイグレーション失敗、空き容量不足を検証する。
-- **セキュリティテスト**：パスキー登録、再認証、端末失効、署名URL期限、レート制限、監査ログを検証する。
-- **アクセシビリティテスト**：キーボード操作、スクリーンリーダー、文字拡大、コントラスト、フォーカス順をOSごとに検証する。
-- **適合テスト**：各クライアントが共通の同期テストベクトルを通過することをリリース条件とする。
-
-## 成果物
-
-- 本設計仕様書
-- OpenAPI仕様
-- 論理スキーマとDBマイグレーション
-- 同期状態機械の仕様
-- 同期適合テストベクトル
-- iTunesまたはMusic XML移行ツール
-- サーバーのDocker Compose定義
-- サーバーのバックアップと復元手順
-- macOSネイティブクライアント
-- iPhoneネイティブクライアント
-- Windowsネイティブクライアント
-- Androidネイティブクライアント
-- 形式ごとの音声再生適合表
-- セキュリティモデルと脅威モデル
-- OSSライセンス一覧
-- 利用者向けセットアップガイド
-
-## 外部仕様への参照
-
-- [Apple MusicのXML書き出し](https://support.apple.com/ja-jp/guide/music/-mus27cd5060f/mac)
-- [MediaPlayerのplayCount](https://developer.apple.com/documentation/mediaplayer/mpmediaitem/playcount)
-- [MediaPlayerのlastPlayedDate](https://developer.apple.com/documentation/mediaplayer/mpmediaitem/lastplayeddate)
-- [MusicKitのライブラリ操作](https://developer.apple.com/documentation/musickit/musiclibrary)
-- [Navidromeの概要](https://www.navidrome.org/docs/overview/)
-- [Swinsian 3](https://swinsian.com/blog/2025/08/19/swinsian-3/)
-
-## Current Status
-
-設計インタビューと技術検証を完了した。
-
-製品実装は未着手である。
-
-### Checklist
-
-- [x] 目的、正本、対応OS、MVP境界を確定
-- [x] 初回移行とAppleアプリとの共存方針を確定
-- [x] 音源形式、メタデータ、sidecar方針を確定
-- [x] オフライン同期、競合解決、履歴モデルを確定
-- [x] ネイティブクライアント方針を確定
-- [x] パスキー認証、端末失効、破壊的操作の再認証を確定
-- [x] バックアップ、ゴミ箱、イベント圧縮、更新方針を確定
-- [x] Navidrome適合性とRust共有コアの評価基準を確定
-- [x] 設計仕様書を作成
-- [x] Navidrome技術検証。認証なしの実行はBLOCKEDで、製品ではメディアアダプターに限定する
-- [x] Rust共有コア技術検証。7ベクトルの適合性を確認し、製品共有コアには採用しない
-- [ ] OpenAPIと同期適合テストの作成
-- [ ] macOSとiPhoneのMVP実装
-- [ ] 4週間の日常利用検証
-- [ ] WindowsとAndroidの適合実装
+Compact synchronization events after a snapshot and acknowledgment from all devices. Do not retain detailed playback events beyond 90 days.
 
 ### Updates
 
-- 2026-08-14：設計インタビューを完了し、NAS正本、ネイティブクライアント、オフライン同期、パスキー認証、MVP除外範囲を確定した。
-- 2026-08-14：本仕様書を作成した。実装開始前にNavidromeとRust共有コアの技術検証を行う。
-- 2026-08-15：Navidrome、Swift同期、Rust候補、Apple再生の技術検証を完了した。AppleのXCTestとiPhone実機検証はBLOCKEDとして記録した。
-- 2026-08-15：サーバー、移行、Appleクライアント、運用の実装計画を作成した。
+Automatically snapshot the database and configuration before updates. Make database migrations rerunnable and recover with the previous version and snapshot after failure. Never include audio moves or conversion in database migrations.
+
+### Open-Source Licensing
+
+Apache-2.0 is the leading candidate for the project's server, clients, synchronization specification, and test assets.
+
+Integrate with Navidrome only through APIs; do not distribute linked or modified copies of its source. Inventory dependency licenses before publication and reject dependencies incompatible with the distribution model.
+
+Prefer OS audio APIs. Before adding an external decoder, review its license, dynamic-linking conditions, and redistribution requirements.
+
+## Existing Software Evaluation
+
+Evaluate Navidrome first for NAS audio management, play counts, playlists, ratings, and its OpenSubsonic-compatible API. Check that:
+
+- MP3, AAC, M4A, ALAC, WAV, and AIFF can be registered, searched, and served correctly.
+- macOS and iPhone clients receive identical metadata and original audio.
+- Offline history can be imported without loss or duplication.
+- Conflicting history, rating, favorite, and playlist operations converge.
+- Device authentication, revocation, short-lived URLs, and reauthentication can be implemented.
+- Only missing capabilities require custom APIs or a supplementary server.
+
+If Navidrome cannot satisfy every item, use it as a media server and provide missing synchronization state and device management through a supplementary server. Consider a fully custom server only after verifying that a supplementary server cannot express the requirements.
+
+Use Swinsian as a comparison for macOS local-library management and playback, not as a reference for unified Windows, iPhone, Android, or NAS synchronization.
+
+## Implementation Sequence
+
+### Technical Validation
+
+1. Install Navidrome in an isolated NAS environment.
+2. Import iTunes or Music XML and audio into a small validation library.
+3. Test original playback, gapless playback, volume normalization, and Range downloads on macOS and iPhone.
+4. Test offline retries, deduplication, and playlist conflicts.
+5. Compare Swift-only synchronization and a Rust shared core using identical vectors.
+6. Decide the Navidrome integration model and whether to adopt Rust from the results.
+
+### MVP
+
+1. Implement server authentication, scanning, search, and media delivery.
+2. Implement macOS browsing, playback, playlists, favorites, history, and downloads.
+3. Implement the same synchronization contract, background playback, and offline playback on iPhone.
+4. Use both clients daily for four weeks, testing NAS downtime, network switching, app termination, duplicate retries, and restoration.
+5. Proceed to conforming Windows and Android implementations after acceptance.
+
+## Testing Strategy
+
+- **Synchronization unit tests:** Reordering, retries, duplicates, concurrent additions, deletions, and moves, and delete/move conflicts.
+- **Property tests:** Identical final states when arbitrary operations reach multiple devices in different orders.
+- **API integration tests:** Authentication, cursors, pagination, Range delivery, signed URLs, and error codes.
+- **Migration tests:** XML/audio matching, untagged WAV, AIFF, duplicate candidates, DRM tracks, and malformed XML.
+- **Audio tests:** Gapless boundaries, silence, long tracks, variable bitrates, unsupported formats, and compatibility copies.
+- **Failure tests:** NAS downtime, disconnection, forced app termination, failed database migration, and insufficient storage.
+- **Security tests:** Passkey registration, reauthentication, device revocation, signed URL expiry, rate limits, and audit logs.
+- **Accessibility tests:** Keyboard use, screen readers, text scaling, contrast, and focus order on each OS.
+- **Conformance tests:** Passing shared synchronization vectors is a release requirement for every client.
+
+## Deliverables
+
+- This design specification
+- OpenAPI specification
+- Logical schema and database migrations
+- Synchronization state-machine specification
+- Synchronization conformance vectors
+- iTunes or Music XML migration tool
+- Server Docker Compose definition
+- Server backup and restoration procedures
+- Native macOS client
+- Native iPhone client
+- Native Windows client
+- Native Android client
+- Audio playback conformance matrix by format
+- Security model and threat model
+- Open-source license inventory
+- User setup guide
+
+## External Specifications
+
+- [Apple Music XML export](https://support.apple.com/ja-jp/guide/music/-mus27cd5060f/mac)
+- [MediaPlayer playCount](https://developer.apple.com/documentation/mediaplayer/mpmediaitem/playcount)
+- [MediaPlayer lastPlayedDate](https://developer.apple.com/documentation/mediaplayer/mpmediaitem/lastplayeddate)
+- [MusicKit library operations](https://developer.apple.com/documentation/musickit/musiclibrary)
+- [Navidrome overview](https://www.navidrome.org/docs/overview/)
+- [Swinsian 3](https://swinsian.com/blog/2025/08/19/swinsian-3/)
+
+## Historical Status (2026-08-15)
+
+The design interview and technical validation were complete at this point. Product implementation had not started. This checklist records that milestone; see the [README](../README.md#current-implementation) for the current implementation.
+
+### Checklist
+
+- [x] Define the purpose, authoritative state, target operating systems, and MVP boundary
+- [x] Define initial migration and coexistence with Apple's applications
+- [x] Define audio formats, metadata, and sidecar policy
+- [x] Define offline synchronization, conflict resolution, and history
+- [x] Define the native-client approach
+- [x] Define passkeys, device revocation, and reauthentication for destructive operations
+- [x] Define backups, trash, event compaction, and updates
+- [x] Define Navidrome suitability and Rust shared-core evaluation criteria
+- [x] Write the design specification
+- [x] Evaluate Navidrome: unauthenticated execution was BLOCKED; limit its product role to a media adapter
+- [x] Evaluate the Rust shared core: confirm seven-vector conformance; do not adopt it as the product's shared core
+- [ ] Create OpenAPI and synchronization conformance tests
+- [ ] Implement the macOS and iPhone MVP
+- [ ] Complete four weeks of daily-use validation
+- [ ] Implement conforming Windows and Android clients
+
+### Updates
+
+- 2026-08-14: Completed the design interview and established NAS authority, native clients, offline synchronization, passkeys, and MVP exclusions.
+- 2026-08-14: Created this specification. Evaluate Navidrome and the Rust shared core before implementation.
+- 2026-08-15: Completed Navidrome, Swift synchronization, Rust candidate, and Apple playback evaluations. Recorded Apple XCTest and physical iPhone validation as BLOCKED.
+- 2026-08-15: Created implementation plans for the server, migration, Apple clients, and operations.

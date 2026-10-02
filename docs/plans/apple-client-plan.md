@@ -1,5 +1,7 @@
 # Music Player Apple Client Implementation Plan
 
+Historical long-term plan. Environment and validation statuses below describe the initial investigation. Check the [current implementation](../../README.md#current-implementation) before resuming this work.
+
 **Goal:** Deliver native macOS and iPhone clients with local SQLite, offline operations, original-first playback, and accessible SwiftUI.
 
 **Architecture:** SwiftUI uses a local repository and Keychain-backed device credentials. The client implements the SyncService operation contract locally; Rust is not linked. AVFoundation remains platform-specific behind PlaybackService.

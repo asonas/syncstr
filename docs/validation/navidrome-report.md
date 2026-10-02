@@ -1,5 +1,7 @@
 # Navidrome compatibility report
 
+Historical validation record. Commands and paths below refer to the evaluated commit, not the current main tree. See the [current app guides](../../README.md#code-and-documentation-map) for present-day verification.
+
 ## Execution conditions
 
 The runners only accept `http` URLs whose host is `127.0.0.1`, `::1`, or

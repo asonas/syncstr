@@ -1,5 +1,7 @@
 # Apple playback validation report
 
+Historical validation record. Commands and paths below refer to the evaluated commit, not the current main tree. See the [current app guides](../../README.md#code-and-documentation-map) for present-day verification.
+
 ## Environment and fixture contract
 
 Recorded 2026-08-15 03:52:35 JST on macOS 26.6.1 (25G76), Apple Swift 6.3.3,

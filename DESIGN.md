@@ -1,60 +1,60 @@
 # Syncstr — Design
 
-## この文書の使い方
+## How to Use This Document
 
-画面の配置・文言・寸法・状態表現は、以下のプラットフォーム別方針を優先する。ブランド／アイコンの決定と、後半のSpliceのWeb向け参考資料は適用範囲が異なる。Webのpx値やページ構成をmacOSのpt値・ウィンドウ構成へそのまま転用しない。
+For layout, wording, dimensions, and state presentation, prioritize the platform guidance below. Brand and icon decisions and the later Splice web reference have different scopes. Do not directly map web pixel values or page structures onto macOS point values or window layouts.
 
-## macOSのUI方針
+## macOS UI Guidance
 
-### 情報と操作
+### Information and Actions
 
-- サイドバーで選択済みの内容を、本文の「アルバム」などの見出しで繰り返さない。「ライブラリ」「再生中」「再生キュー」など、操作や情報の理解に寄与しない見出しも置かない。削除時は見出し専用の余白も取り除く。
-- 選択・再生の状態は背景、色、アイコンで伝える。見た目から分かる状態に「選択中」「再生中」という説明を重ねない。VoiceOverにはラベルと選択状態などのアクセシビリティ属性を提供する。
-- 待機・送信・失敗など、次の操作の判断に必要な状態は表示する。状態テキストを一律に削除する規則ではない。
-- 常設サイドバーにはアルバム・アーティスト・曲と、「音楽を追加」「ライブラリを更新」を置く。ブランド名を繰り返す見出しや、サイドバーを閉じるボタンは置かない。
-- 接続先・アップロードトークンの保存とログアウトは設定画面へまとめる。ログアウトには確認を設ける。
-- 音源のドロップは送信候補の一覧への追加とし、「アップロード」を押してから1件ずつ送信する。
+- Do not repeat the sidebar selection as a content heading such as “Albums.” Omit headings such as “Library,” “Now Playing,” or “Playback Queue” when they do not help explain an action or information. Remove spacing reserved for any removed heading.
+- Communicate selection and playback through backgrounds, colors, and icons. Do not repeat visually apparent state with “Selected” or “Playing” text. Supply VoiceOver labels and accessibility attributes such as selection state.
+- Show waiting, sending, failure, and other states needed to choose the next action. This is not a blanket rule to remove status text.
+- Keep albums, artists, tracks, “Add Music,” and “Refresh Library” in the persistent sidebar. Do not add a heading that repeats the brand or a button to close the sidebar.
+- Put connection settings, upload-token storage, and logout in Settings. Confirm logout.
+- Dropping audio adds it to the upload candidate list. Send files one at a time only after the user presses Upload.
 
-### アルバム詳細
+### Album Details
 
-Music.appの情報配置を参考に、アートワークの隣へアルバム名、アーティスト、曲数をまとめ、その下に「再生」を置く。再生ボタンはアルバムのディスク番号・曲番号順の1曲目から再生する。曲一覧はその下へ直接続ける。
+Follow Music.app's information placement: group the album title, artist, and track count beside the artwork, with Play below them. The button starts with the first track in disc and track-number order. Place the track list directly below.
 
-### 検索とウィンドウ
+### Search and Windows
 
-- 検索窓は右上に置き、表示中の項目に応じて「アルバムを検索」「アーティストを検索」「曲を検索」とする。
-- フォーカスは入力欄の範囲で示す。フォーカスによって周囲に明るい帯が出たり、上部に不要な領域が増えたりしないことを実画面で確認する。
-- サイドバーと本文の区切り線はウィンドウ上端まで連続させる。サイドバーの行は背景の余白を含めてクリックできるようにする。
-- 検索窓の高さはNSSearchFieldの標準サイズから取得し、外枠だけを引き伸ばさない。macOS 26以降はextraLarge、それ以前はlargeを使用する。通常時・フォーカス時の入力文字、アイコン、フォーカス枠が同じ高さの中で揃うことを確認する。Splice参考資料のInput Fieldは文字サイズと余白の参考であり、macOS検索窓の固定高の指定ではない。
+- Place search in the upper-right corner. Use “Search Albums,” “Search Artists,” or “Search Tracks” according to the visible section.
+- Indicate focus within the input field. Check the actual screen for an unwanted bright band around it or extra space above it when focused.
+- Continue the sidebar/content divider to the top of the window. Make sidebar rows clickable across their background padding.
+- Obtain the search height from NSSearchField's standard size rather than stretching only its outer frame. Use extraLarge on macOS 26 or later and large on earlier versions. Verify that text, icons, and the focus ring align within the same height in normal and focused states. The Splice Input Field reference informs typography and spacing; it does not specify a fixed macOS search height.
 
-変更後の確認方法は [CODING_STANDARDS.md](CODING_STANDARDS.md) を参照する。
+See [CODING_STANDARDS.md](CODING_STANDARDS.md) for verification after changes.
 
-## 採用したブランド／アイコン配色
+## Selected brand and icon colors
 
-2026-10-02に、アイコンの意匠 **A2.3「水平のリズム」**、配色 **C2**、残像 **F2** を採用しました。[Figmaの採用案](https://www.figma.com/design/KtfBubkg9KiK5LuLHIm8Qt?node-id=12-2)を参照してください。
+The selected icon combines shape **A2.3**, palette **C2**, and the subtle **F2** trail blur. See the [selected Figma design](https://www.figma.com/design/KtfBubkg9KiK5LuLHIm8Qt?node-id=12-2).
 
-| 用途 | 色 | 適用範囲 |
+| Role | Color | Use |
 |---|---|---|
-| ブランドの藍色 | `#4338ca` | 採用アイコンの背景 |
-| ブランドの淡い白 | `#eef2ff` | 採用アイコンのSと残像 |
+| Brand indigo | `#4338ca` | Icon background |
+| Brand pale white | `#eef2ff` | Foreground S and trailing layers |
 
-この2色はアイコン用の組み合わせです。既存UIのSignal Blue `#528fff`、Button Blue `#1253ff`、Carbon／Graphiteの背景色を置き換える決定ではありません。以下のSplice参照資料にある「新しいアクセントカラーを追加しない」という規範はUIに適用し、採用アイコンにはこの配色を適用します。
+These colors apply to the icon. They do not replace the UI's Signal Blue `#528fff`, Button Blue `#1253ff`, or Carbon/Graphite backgrounds. The Splice reference below restricts new accent colors in the UI; the selected icon uses the palette above.
 
-### 残像の設定
+### Trailing layers
 
-256 × 256の座標系で、手前のSは不透明度100%・ブラーなしとし、背後に同じ形・同じ色のSを2層重ねます。
+On a 256 × 256 canvas, keep the foreground S fully opaque and sharp. Place two copies behind it using the same shape and color:
 
-| レイヤー | 手前のSからの位置 | 不透明度 | ブラー半径 |
+| Layer | Offset from foreground | Opacity | Blur radius |
 |---|---|---|---|
-| 近い残像 | 右6・下6 | 42% | 2 |
-| 遠い残像 | 右12・下12 | 20% | 4 |
+| Near trail | Right 6, down 6 | 42% | 2 |
+| Far trail | Right 12, down 12 | 20% | 4 |
 
-重なり全体を中央に置くため、手前のSを単層時の位置から左6・上6へ移動します。サイズ変更時は、位置とブラー半径も同じ倍率で拡縮します。
+Shift the foreground S left 6 and up 6 from its single-layer position to center the combined mark. Scale offsets and blur with the canvas size.
 
-### 判断の根拠と実装状態
+### Rationale and implementation
 
-- 不透明な `#eef2ff` と `#4338ca` の輝度コントラスト比は約7.07:1です。これは[WCAGの相対輝度とコントラスト比の定義](https://www.w3.org/TR/WCAG22/#dfn-relative-luminance)による計算値であり、ブランドの独自性や美しさを評価する点数ではありません。半透明の残像には同じ値を適用できません。
-- 藍色 `#4338ca` をGraphite `#232426` 上のマークに使うと約1.97:1になるため、採用アイコンでは淡い白と組み合わせます。
-- Figma上で意匠を選定済みです。OS別素材への仕上げとアプリへの組み込みは未実施です。Apple向けの仕上げでは、[Icon Composerの公式説明](https://developer.apple.com/videos/play/wwdc2025/361/)に沿って原図形のレイヤーを保ち、ブラーなどの効果を別途調整します。
+- Opaque `#eef2ff` on `#4338ca` has approximately 7.07:1 luminance contrast, calculated using [WCAG's relative luminance and contrast definitions](https://www.w3.org/TR/WCAG22/#dfn-relative-luminance). This measures contrast, not brand quality; it does not describe the translucent trails.
+- Indigo `#4338ca` on Graphite `#232426` has approximately 1.97:1 contrast. The icon therefore pairs indigo with pale white.
+- The selected icon is included in the [iOS assets](apps/ios/Sources/Assets.xcassets/AppIcon.appiconset/) and [macOS assets](apps/macos/Assets.xcassets/MacAppIcon.appiconset/). [build.sh](apps/macos/build.sh) defines the manual build; [project.yml](apps/ios/project.yml) defines distribution targets.
 
 ## Splice — Style Reference
 > midnight recording studio — a dark, weightless space where the only thing that ever gets loud is the music.

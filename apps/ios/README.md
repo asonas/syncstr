@@ -1,67 +1,59 @@
-# syncstr iPhone
+# syncstr for iPhone
 
-Navidrome の音楽を iPhone で選んで再生する SwiftUI アプリです。iOS 26 以降を対象とします。
-macOS の `Library.swift`、`Navidrome.swift`、`CredentialStore.swift` を同じソースとしてビルドします。
+A SwiftUI player for music served by Navidrome, targeting iOS 26 or later. The target compiles the shared `Library.swift`, `Navidrome.swift`, and `CredentialStore.swift` files from `apps/macos/`.
 
-## 起動
+## Build and run
 
-Xcode と iOS Simulator を使用します。`project.yml` は XcodeGen の生成元です。
+Use Xcode and an iOS Simulator. [project.yml](project.yml) is the XcodeGen source of truth.
 
 ```sh
 mise exec -- xcodegen generate --spec apps/ios/project.yml
 open apps/ios/Syncstr.xcodeproj
 ```
 
-Xcode で `Syncstr` scheme と iPhone Simulator を選び、Run します。
-初回はアプリ内で Navidrome のアカウントを入力します。資格情報は iPhone / Simulator の Keychain に保存し、次回から自動ログインします。
-Mac 側の Keychain の資格情報は転送しません。
+Choose the `Syncstr` scheme and an iPhone Simulator, then run. Enter the credentials for your Navidrome server in the app. They are stored in the device or simulator's Keychain and restored on subsequent launches. Credentials from the Mac's Keychain are not copied to the device.
 
-実機の場合は Xcode の Signing & Capabilities で利用者の Team を選び、接続した iPhone を実行先にします。
-署名は Yuya Fujiwara の Team `QYP65434UW`、Bundle ID `as.ason.syncstr.ios` を使用します。
-資格情報や署名の秘密鍵はリポジトリへ保存しません。
+For a physical device, set the signing team and bundle ID in `project.yml` to match your Apple Developer registration, regenerate the project, and select the connected iPhone. Keep credentials and signing private keys outside the repository.
 
-## TestFlight と Xcode Cloud
+## TestFlight and Xcode Cloud
 
-`project.yml` を生成元として Git 管理し、生成済みの project・workspace・共有 scheme は Git に含めません。
-Cloud は `ci_scripts/ci_post_clone.sh` で XcodeGen を用意して、clone 後に同じ場所へ project と scheme を生成します。
-Cloud 接続情報の `Syncstr.xcodeproj/xcshareddata/xcodecloud/manifest.json` は Git 管理を続けます。
-初回は Xcode の Integrate → Create Workflow から `Syncstr iOS` を選択して、このリポジトリを接続します。
+Keep `project.yml` under version control. Generated project files, workspaces, and shared schemes are excluded. [ci_post_clone.sh](ci_scripts/ci_post_clone.sh), next to the generated project, installs XcodeGen if needed and generates the project after cloning. The Xcode Cloud connection manifest remains tracked.
 
-配布ワークフローは次の構成にします。
+Connect the repository through Xcode's Integrate → Create Workflow. Configure:
 
-- ソース: `asonas/syncstr` の `main`
-- Project: `apps/ios/Syncstr.xcodeproj`、scheme: `Syncstr`
-- 開始条件: `main` への変更
-- Action: iOS の Archive、TestFlight の内部テスト配布
-- Post-action: 本人用の内部テストグループへ配布
+- Source: this repository's `main` branch
+- Project: `apps/ios/Syncstr.xcodeproj`
+- Scheme: `Syncstr`
+- Start condition: changes to `main`
+- Action: iOS Archive for internal TestFlight testing
+- Post-action: distribute to your internal test group
 
-「プロジェクトまたはワークスペース」は生成後の `apps/ios/Syncstr.xcodeproj` を指定します。
-`apps/ios` ディレクトリや `project.yml` は指定しません。
+The workflow's project path remains `apps/ios/Syncstr.xcodeproj`, even though it is generated after cloning. Do not use the directory or `project.yml` as that setting.
 
-同じ生成元にはmacOS配信用の `SyncstrMac` schemeも含まれます。macOSの配布設定は [macOS README](../macos/README.md#testflight-と-xcode-cloud) を参照してください。
+The same YAML defines the `SyncstrMac` scheme. See the [macOS distribution guide](../macos/README.md#testflight-and-xcode-cloud). Check Cloud build completion and TestFlight delivery in App Store Connect separately from local build success.
 
-Cloud の設定と初回ビルドの完了は、ローカルのビルド成功とは別に App Store Connect で確認します。
+## Implemented behavior
 
-アイコンは [採用原図](https://www.figma.com/design/KtfBubkg9KiK5LuLHIm8Qt?node-id=12-2) から書き出しました。
-原図を保持したまま、[iOS 用の 1024px フレーム](https://www.figma.com/design/KtfBubkg9KiK5LuLHIm8Qt?node-id=15-2) で背景を全面に広げています。角丸は OS が適用します。
+- The library starts on albums, with album tracks, all tracks, and artists available for browsing.
+- Search covers tracks, albums, and artists.
+- Selecting a track plays the originating list in order. The mini-player opens Now Playing, which provides pause/resume, previous/next, and seeking.
+- A cloud/download icon marks an unsaved track, a spinner marks downloading, and a check marks a saved track. Tap the cloud to download; tap the title to play. A spinner next to the title indicates playback preparation.
+- Playback prefers a saved local file. Download state survives restarts and is isolated by server and account. Logout retains audio files. Fetching the library at startup still requires a server connection.
+- Lock-screen and Control Center integration expose track information, playback position, pause/resume, previous/next, and seeking.
+- Settings provide library refresh and logout. Logout removes saved connection credentials for the device.
+- Playback activates the audio session's playback category. Background audio is declared; screen locking, audio-route changes, and interruptions require physical-device verification.
 
-## 最初の操作範囲
+Queue editing, offline library browsing at startup, playlists, and favorites are outside the current scope.
 
-- ライブラリはアルバムから開始し、アルバム内の曲・全曲・アーティストを閲覧できます。
-- 検索タブは曲、アルバム、アーティストを対象にします。
-- 曲を選ぶと一覧順に再生します。ミニプレイヤーから再生中タブへ移れます。
-- 再生中では一時停止・再開、前後の曲、シークを操作できます。
-- 曲一覧の雲と下矢印は未ダウンロード、スピナーはダウンロード中、丸とチェックは保存済みです。雲のボタンで端末へ保存します。曲名のタップは再生を開始し、準備中は曲名の横にスピナーを表示します。
-- 保存した曲は端末のファイルを優先して再生します。保存状態は再起動後も復元し、接続先とアカウントごとに分けます。ログアウトしても音源は保持します。起動時のライブラリ取得にはサーバー接続が必要です。
-- ロック画面・コントロールセンターには曲名、アーティスト、再生位置を表示し、再生・一時停止、前後の曲、シークを操作できます。
-- 設定では再読み込みとログアウトを行えます。ログアウトでこの端末の保存資格情報を削除します。
-- 再生開始時に AudioSession の playback category を有効にします。background audio を宣言していますが、実機での画面ロック・経路変更・割り込みは実機確認が必要です。
+## Assets
 
-キュー編集、オフライン起動時のライブラリ閲覧、プレイリスト、お気に入りは対象外です。
+The app icon is exported from the [selected design](https://www.figma.com/design/KtfBubkg9KiK5LuLHIm8Qt?node-id=12-2). The [1024px iOS frame](https://www.figma.com/design/KtfBubkg9KiK5LuLHIm8Qt?node-id=15-2) extends its background to the edges; the OS applies rounded corners.
 
-保存状態のアイコンは [Regen Icons](https://github.com/kazdenc/regen-icons) の `cloud-download` と `circle-check` を使用しています。MIT ライセンスを `Licenses/RegenIcons.txt` に保持し、アプリへ同梱します。
+Download-state icons use `cloud-download` and `circle-check` from [Regen Icons](https://github.com/kazdenc/regen-icons). Its MIT license is preserved in [Licenses/RegenIcons.txt](Licenses/RegenIcons.txt) and bundled with the app.
 
-## 検証
+## Verification
+
+After generating the project, select an available iPhone Simulator destination:
 
 ```sh
 DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer xcodebuild \
@@ -70,9 +62,8 @@ DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer xcodebuild \
   -derivedDataPath apps/ios/.build/DerivedData CODE_SIGN_IDENTITY=- test
 ```
 
-固定 API 応答とテスト専用の Keychain service で、自動ログイン・ライブラリ取得・ログアウトを検証します。
-テスト用音源で保存状態の復元、アカウント分離、AVPlayer のローカル読み込み、Now Playing 情報の更新も検証します。
-本番資格情報はテストに使いません。
-手動ではログイン、アルバム表示、追加済みの Voyager の選曲、音声、シーク、再起動後の自動ログインを確認してください。
-Simulator の成功は iPhone 実機での再生成功とは分けて記録します。
-TestFlight では未保存の曲のストリーミング、雲ボタンからの保存、保存済み表示、画面ロック後の再生継続・ロック画面操作を確認してください。端末の保存曲の再生は、ライブラリ表示後にネットワークを切った状態でも確認できます。
+Tests use fixed API responses and a test-only Keychain service for automatic login, library loading, and logout. Audio fixtures cover download-state restoration, account isolation, AVPlayer local playback, and Now Playing updates. Production credentials are not used.
+
+Manually verify login, album browsing, your own sample tracks, audible playback, seeking, and automatic login after restart. Record Simulator results separately from physical-device playback.
+
+Through TestFlight, verify streaming of unsaved tracks, downloads, saved-state indicators, playback after locking the screen, and lock-screen controls. After loading the library, disconnect the network and verify playback of saved tracks.

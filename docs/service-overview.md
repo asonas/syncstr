@@ -1,98 +1,70 @@
-# syncstrのサービス概要
+# syncstr service overview
 
-## 目的
+This is the long-term service vision. See the [README](../README.md#current-implementation) for the current implementation and development entry points.
 
-syncstrは、NASに集約した個人の音楽ライブラリを複数の端末で一貫して利用するためのサービスです。
+## Purpose
 
-利用者は、普段使うmacOS、Windows、iPhone、Androidのどこからでも同じ曲、プレイリスト、評価、再生履歴を扱います。
+syncstr provides consistent access to a personal music library stored on a NAS. Users work with the same tracks, playlists, ratings, and playback history from macOS, Windows, iPhone, and Android.
 
-端末がネットワークから切り離されても、明示的にダウンロードした音源とローカルに保存した操作を使って再生と編集を続けます。
+When disconnected, they continue playback and editing with explicitly downloaded audio and locally stored operations.
 
-## 利用者
+## Users
 
-当初の利用者は単一ユーザーです。
+The initial service has one user who manages their own NAS and migrates an existing iTunes or Music library. A future open-source release retains the safety properties of that single-user design.
 
-利用者は自分のNASを管理でき、既存のiTunesまたはMusicライブラリを移行します。
+## Authoritative state and caches
 
-将来は、単一ユーザー向けの安全な設計を崩さずにオープンソースとして公開します。
+The server owns media registrations, metadata, playlists, ratings, favorites, playback history, and operation events. Clients cache metadata, some or all audio, pending operations, and synchronization cursors.
 
-## 正本とキャッシュ
+Clients persist local changes as events with operation_id, device_id, and device_counter. The server assigns server_seq in acceptance order and never applies the same operation_id twice.
 
-サーバーが正本状態を保持します。
+## Main flows
 
-正本には音源の登録情報、メタデータ、プレイリスト、評価、お気に入り、再生履歴、操作イベントを含めます。
+### Initial migration
 
-クライアントはメタデータ、音源の一部または全部、未送信操作、同期カーソルをキャッシュします。
+The user exports XML from Music or iTunes and places audio in the NAS import area. Migration matches XML tracks against file paths, sizes, durations, and hashes.
 
-クライアントで先に適用した操作は、operation_id、device_id、device_counterを持つイベントとして保存します。
+Tracks without a unique match await confirmation. The process can stop without moving or deleting audio. DRM-protected, cloud-only, and unmatched tracks are reported with reasons.
 
-サーバーは受理順にserver_seqを付与し、同じoperation_idを二重適用しません。
+### Playback
 
-## 主要な利用の流れ
+Prefer a complete local audio file; otherwise stream the original over HTTPS. Request a compatibility copy only when the device cannot handle the original format. Integrate the playback engine with each OS's media session, background execution, and media keys.
 
-### 初回移行
+### Offline operations
 
-利用者はMusicまたはiTunesからXMLを書き出し、音源ファイルをNASの取り込み領域へ置きます。
+Favorites, ratings, playlist edits, and playback history remain available offline. Persist operations locally and retry with exponential backoff after reconnecting. The server deduplicates them and returns acceptance order and conflict-resolution results.
 
-移行処理はXMLの曲情報と音源のパス、サイズ、再生時間、ハッシュを照合します。
+### Backup and restore
 
-候補が一つに決まらない曲は確認待ちにし、処理は音源を移動または削除せずに停止できます。
+Back up the audio inventory, DB, operation events, sidecars, and configuration. Verify restoration in an isolated environment before applying it to production data. Restore must not silently discard trashed audio, history, or playlist tombstones.
 
-DRM曲、クラウド上だけの曲、照合できない曲は理由付きでレポートします。
+## In scope
 
-### 再生
+- Migration of local DRM-free audio
+- Registration and playback of MP3, AAC, M4A, ALAC, WAV, and AIFF
+- Metadata, artwork, ratings, playlists, and history
+- Original-audio streaming and offline downloads
+- Operation deduplication and conflict resolution
+- Passkey authentication and device revocation
+- NAS scanning, missing-file detection, and duplicate candidates
+- Trash, backup, and restore
+- Native macOS and iPhone clients
+- Conforming Windows and Android clients
 
-クライアントはローカルに完全な音源があればそれを優先し、なければHTTPSで原音をストリーミングします。
+## Out of scope
 
-端末が原音形式を扱えない場合だけ、サーバーへ互換コピーを要求します。
+- Continuous bidirectional synchronization with Apple Music or iTunes
+- General-purpose playback of DRM-protected audio
+- A subscription streaming service
+- Lyrics, recommendations, and smart playlists
+- EQ, exclusive output, and automatic sample-rate switching
+- External scrobbling
+- Casting
+- Multi-user permission models
+- A web player
 
-再生エンジンは各OSのメディアセッション、バックグラウンド実行、メディアキーへ統合します。
+## Success criteria
 
-### オフライン操作
+macOS and iPhone pass the same synchronization contract, and offline operations converge after connectivity returns during daily use.
 
-お気に入り、評価、プレイリスト編集、再生履歴は接続がなくても操作できます。
-
-操作はローカルへ永続化し、再接続後に指数バックオフで再送します。
-
-サーバーは操作を重複排除し、受理した順序と競合解決の結果をクライアントへ返します。
-
-### バックアップと復元
-
-バックアップ対象は音源のインベントリ、DB、操作イベント、sidecar、設定です。
-
-復元は隔離環境で検証してから本番データへ適用します。
-
-ゴミ箱に移した音源、履歴、プレイリストの墓標を復元時に勝手に消しません。
-
-## 対象範囲
-
-- DRMなしのローカル音源の移行
-- MP3、AAC、M4A、ALAC、WAV、AIFFの登録と再生
-- メタデータ、アートワーク、評価、プレイリスト、履歴の管理
-- 原音ストリーミングとオフラインダウンロード
-- 操作イベントの重複排除と競合解決
-- パスキー認証と端末失効
-- NASのスキャン、欠損検出、重複候補検出
-- ゴミ箱、バックアップ、復元
-- macOSとiPhoneのネイティブクライアント
-- WindowsとAndroidの適合クライアント
-
-## 対象外
-
-- Apple MusicまたはiTunesとの継続的な双方向同期
-- DRM保護された音源の汎用再生
-- 定額配信サービス
-- 歌詞、レコメンド、スマートプレイリスト
-- EQ、排他出力、サンプルレート自動切り替え
-- 外部scrobble
-- キャスト機能
-- 複数ユーザー向けの権限分割
-- Webプレイヤー
-
-## 成功条件
-
-macOSとiPhoneで同じ同期契約を通過し、日常利用中のオフライン操作が接続復旧後に収束することを確認します。
-
-初回移行は音源を変更せず、WAVとAIFFのメタデータを失わず、失敗理由を利用者が確認できることを条件にします。
-
-WindowsとAndroidは、同じサーバーAPIと同期ベクトルに適合してから対応済みとします。
+Initial migration preserves audio, retains WAV/AIFF metadata, and exposes failure reasons. Windows and Android are supported only after conforming to the same server API and synchronization vectors.

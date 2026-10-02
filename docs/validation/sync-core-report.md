@@ -1,68 +1,37 @@
-# 同期コア評価
+# Synchronization core evaluation
 
-## 結論
+Historical evidence from the initial validation. Commands and paths below refer to the evaluated commit; see the [current app guides](../../README.md#code-and-documentation-map) for present-day verification.
 
-Rust共有コアは**不採用**とする。
+## Decision
 
-同期仕様の実行モデルはSwift基準実装とする。
+**Do not adopt a shared Rust core.** Use Swift as the executable reference model for synchronization. Retain the Rust implementation only as a disposable JSON-vector conformance candidate.
 
-Rust実装はJSONベクトル適合性を確認するための破棄可能な候補として保持する。
+Swift and Rust produced identical normalized JSON for three successful and four rejected vectors. However, calling Rust from Swift through FFI was not implemented. The adoption prerequisites for a minimal FFI call, error propagation, cancellation, and thread boundaries were therefore unmet. A reduction in test scope or failure surface from FFI could not be measured.
 
-SwiftとRustは成功3件と拒否4件のJSONベクトルで同じ正規化済みJSONを返した。
+## Environment
 
-しかし、RustをSwiftから呼び出すFFIは未実装である。
+- Execution: 2026-08-15T02:13:51+0900 (JST)
+- Evaluated commit: `fe6c63c52611924531dd6bceaf412cb9b89a2fbe`
+- OS: macOS 26.6.1 (Build 25G76)
+- Swift: Apple Swift 6.3.3
+- Rust: rustc 1.97.1, Cargo 1.97.1
+- JSON comparison: jq 1.8.2
 
-そのため、採用条件であるFFI境界の最小呼び出し、エラー伝達、キャンセル、スレッド境界の検証を満たしていない。
+## Conformance
 
-FFI導入によるテスト対象または障害面積の削減も測定できない。
+`make -C validation sync-test` exited with status 0. All 15 Swift library tests passed. Rust passed three engine unit tests and seven integration tests, for a total of 10.
 
-## 実行環境
+The comparison target sent the same seven vectors to each runner individually. The three successful cases matched `state`, `events`, and `differences`. Both runners returned `{"error":"operation_rejected"}` for all four rejected cases.
 
-実行日時は2026-08-15T02:13:51+0900（JST）である。
+The comparison script normalizes object keys and line breaks with `jq -S -c`. Only `state.playlist_tombstones.*` arrays are sorted, because they represent sets. Playlist and event arrays retain order because it affects state-transition semantics.
 
-評価対象commitは`fe6c63c52611924531dd6bceaf412cb9b89a2fbe`である。
+The comparison script reported a difference and exited with status 1 for differing fixtures. Reversed tombstone-set fixtures were equivalent and exited with status 0.
 
-OSはmacOS 26.6.1（Build 25G76）である。
+Rejected vectors exit with status 4 in the Swift CLI and 1 in the Rust CLI. The Makefile contract requires both to be nonzero and to emit the same JSON error classification; it does not require identical exit codes.
 
-SwiftはApple Swift 6.3.3である。
+## Fixtures
 
-Rustはrustc 1.97.1、Cargo 1.97.1である。
-
-JSON比較にはjq 1.8.2を使った。
-
-## 適合性
-
-`make -C validation sync-test`は終了コード0だった。
-
-Swiftのライブラリテストは15件がPASSした。
-
-Rustのテストはengine単体3件と統合7件の合計10件がPASSした。
-
-比較ターゲットは各runnerへ同じ7ベクトルを1件ずつ渡した。
-
-成功3件では`state`、`events`、`differences`が一致した。
-
-拒否4件では両方が`{"error":"operation_rejected"}`を返した。
-
-比較スクリプトは`jq -S -c`でオブジェクトキーと改行を正規化する。
-
-`state.playlist_tombstones.*`は集合なので、その配列だけをソートして比較する。
-
-プレイリスト順とイベント順は状態遷移の意味を持つため、配列順を並べ替えずに比較する。
-
-異なるfixtureに対する比較スクリプトは差分を出し、終了コード1を返した。
-
-逆順の墓標集合fixtureは同値として終了コード0を返した。
-
-拒否ベクトルではSwift CLIが終了コード4、Rust CLIが終了コード1を返す。
-
-Makefileの比較契約は終了コードの一致ではなく、両方が非ゼロであり、標準出力のJSON分類が同じであることとする。
-
-このため、拒否4件はどちらも`{"error":"operation_rejected"}`であることを比較する。
-
-## Fixture
-
-同期ベクトルは次の7件である。
+Seven synchronization vectors:
 
 - `sync-vectors/convergence-basic.json`
 - `sync-vectors/convergence-conflicts.json`
@@ -72,51 +41,47 @@ Makefileの比較契約は終了コードの一致ではなく、両方が非ゼ
 - `sync-vectors/rejections/missing-required-field.json`
 - `sync-vectors/rejections/missing-server-seq.json`
 
-比較scriptのfixtureは次の4件である。
+Four comparison-script fixtures:
 
 - `scripts/fixtures/compare-expected.json`
 - `scripts/fixtures/compare-actual.json`
 - `scripts/fixtures/tombstones-expected.json`
 - `scripts/fixtures/tombstones-reversed.json`
 
-Swift CLIのerror fixtureは次の2件である。
+Two Swift CLI error fixtures:
 
 - `scripts/fixtures/invalid-json.json`
 - `scripts/fixtures/expectation-mismatch.json`
 
-明示的failed casesはnoneである。
+Explicit failed cases: none.
 
 ## Swift CLI
 
-`SyncValidationCLI`はベクトルパスを1件受け取り、成功時には`state`、`events`、`differences`をJSONで標準出力へ出す。
+`SyncValidationCLI` accepts one vector path and writes `state`, `events`, and `differences` as JSON to stdout on success. `VectorResult` is `Codable`.
 
-`VectorResult`は`Codable`である。
+Errors are distinguished by JSON on stdout and exit status:
 
-エラーは標準出力のJSONと終了コードで区別する。
+| Condition | JSON | Exit status |
+|---|---|---|
+| Invalid arguments | `{"error":"invalid_arguments"}` | 2 |
+| Missing path | `{"error":"vector_not_found"}` | 3 |
+| Invalid JSON or rejected operation | `{"error":"operation_rejected"}` | 4 |
+| Expectation mismatch | `{"error":"expectation_mismatch"}` | 5 |
 
-| 条件 | JSON | 終了コード |
-| --- | --- | --- |
-| 引数不正 | `{"error":"invalid_arguments"}` | 2 |
-| パス不存在 | `{"error":"vector_not_found"}` | 3 |
-| 不正JSONまたは操作拒否 | `{"error":"operation_rejected"}` | 4 |
-| 期待値不一致 | `{"error":"expectation_mismatch"}` | 5 |
+CLI runs confirmed statuses 3, 4, and 5 for missing paths, invalid JSON, and expectation mismatches respectively.
 
-不存在パス、不正JSON、期待値不一致をCLIで実行し、それぞれ3、4、5を確認した。
+## Measurements
 
-## 測定値
+Measured on 2026-08-15 with `/usr/bin/time -p` after the targets had already been built.
 
-測定日は2026-08-15である。
+| Implementation | Tests | Elapsed time | Debug CLI size |
+|---|---:|---:|---:|
+| Swift | 15 | 2.54 seconds | 508,928 bytes |
+| Rust | 10 | 0.07 seconds | 2,163,600 bytes |
 
-テスト時間は既ビルド状態で`/usr/bin/time -p`を使って計測した。
+These are local debug-build measurements, not a release-performance comparison.
 
-| 実装 | テスト数 | 実行時間 | debug CLIサイズ |
-| --- | ---: | ---: | ---: |
-| Swift | 15 | 2.54秒 | 508,928 bytes |
-| Rust | 10 | 0.07秒 | 2,163,600 bytes |
-
-これらの値はdebug buildとローカル環境の測定値であり、リリース性能の比較ではない。
-
-## 再現コマンド
+## Reproduction commands
 
 ```sh
 make -C validation sync-test
@@ -127,45 +92,39 @@ make -C validation sync-compare-test
 stat -f '%N %z bytes' validation/swift-sync/.build/arm64-apple-macosx/debug/SyncValidationCLI validation/rust-sync/target/debug/vector-runner
 ```
 
-## FFI評価
+## FFI evaluation
 
-| 項目 | 結果 |
-| --- | --- |
-| 最小FFI呼び出し | 未実装 |
-| FFIエラー伝達 | 未検証 |
-| FFIキャンセル | 未実装 |
-| FFIスレッド境界 | 未検証 |
-| テスト対象または障害面積の削減 | 未測定 |
+| Item | Result |
+|---|---|
+| Minimal FFI call | Not implemented |
+| FFI error propagation | Not verified |
+| FFI cancellation | Not implemented |
+| FFI thread boundaries | Not verified |
+| Reduced test scope or failure surface | Not measured |
 
-FFIが未実装の状態では、Rust共有コアへの移行根拠はない。
+Without an FFI implementation, there is no evidence supporting migration to a shared Rust core.
 
-## 配布・パッケージング評価
+## Distribution and packaging
 
-配布・パッケージングは未測定である。上記のdebug CLIサイズはローカル検証用の
-実行ファイルであり、製品向けの配布物を表さない。SwiftからRustを組み込む
-XCFramework、static library、Swift Packageのbinary targetはいずれも作成していない。
-iOS/macOSの署名、notarization、release artifact size、起動時間、更新・rollback、
-Kotlin/C#など他クライアント向けbindingも未評価である。
+Distribution and packaging were not measured. The debug CLI sizes above describe local validation executables, not product artifacts. No XCFramework, static library, or Swift Package binary target for integrating Rust into Swift was created.
 
-Rust不採用の根拠として測定または検証すべき項目は次のとおりであり、JSONベクトル
-適合性以外は未測定または未実装である。
+iOS/macOS signing, notarization, release artifact size, startup time, update/rollback behavior, and bindings for Kotlin/C# clients were also not evaluated.
 
-| 項目 | 現状 |
-| --- | --- |
-| JSONベクトル適合性 | Swift/Rustとも7ベクトルで確認済み |
-| 最小FFI呼び出し | 未実装 |
-| FFIエラー伝達 | 未検証 |
-| FFIキャンセル | 未実装 |
-| FFIスレッド境界 | 未検証 |
-| テスト対象または障害面積の削減 | 未測定 |
-| release性能・サイズ | 未測定 |
-| 配布物の構築・署名・notarization | 未測定 |
-| クライアントbindingと配布 | 未測定 |
-| 更新・rollbackの運用性 | 未測定 |
+The adoption assessment covers the following items; only JSON-vector conformance was established:
 
-## 採否の実装計画への反映
+| Item | Status |
+|---|---|
+| JSON-vector conformance | Verified with seven vectors in both Swift and Rust |
+| Minimal FFI call | Not implemented |
+| FFI error propagation | Not verified |
+| FFI cancellation | Not implemented |
+| FFI thread boundaries | Not verified |
+| Reduced test scope or failure surface | Not measured |
+| Release performance and size | Not measured |
+| Artifact construction, signing, and notarization | Not measured |
+| Client bindings and distribution | Not measured |
+| Update and rollback operations | Not measured |
 
-次段階ではSyncServiceをサーバーの正本とし、Swiftクライアントは機械可読な
-ベクトル契約を独自実装する。Rust候補は適合性検査用に限定し、製品の共有コア、
-FFI、配布物には含めない。release性能、FFI、障害面積、配布・パッケージングは
-未測定のままである。
+## Consequences for the implementation plan
+
+The planned next stage makes the server's SyncService authoritative. Swift clients implement the machine-readable vector contract independently. Limit the Rust candidate to conformance checks; do not include it as a shared product core, FFI layer, or distributed artifact. Release performance, FFI, failure surface, distribution, and packaging remain unmeasured.

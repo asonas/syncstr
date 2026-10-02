@@ -1,93 +1,91 @@
-# syncstr macOS
+# syncstr for macOS
 
-Navidrome に接続し、アルバム・アーティスト・曲から音楽を選んで再生する macOS アプリです。
-接続先の既定値は https://navidrome.jkte.ch です。
-Navidrome のユーザー名とパスワードをアプリ内で入力してください。
-HTTPS 接続のみ受け付けます。ログイン成功時に接続先・ユーザー名・パスワードをこの Mac の Keychain に保存します。
-次回起動時は保存情報で自動ログインします。接続中は待機画面を表示し、失敗時はログイン画面へ戻ります。
-ログアウトはアプリの「設定…」（Command+,）にあります。確認後に再生を停止し、Navidromeの保存情報を削除します。
-一覧取得とストリーミングには OpenSubsonic API を使用します。
-再生履歴の送信と既存音源のメタデータ編集は行いません。
+A native player that browses albums, artists, and tracks from Navidrome. Enter the HTTPS URL and account credentials for a server you manage. The app uses the OpenSubsonic API for listing and streaming music.
 
-## アップロード
+After a successful login, the app saves connection credentials in this Mac's Keychain and reconnects on launch. Failed reconnects return to the login screen. Log out from Settings (Command+,); confirmation stops playback and removes the saved Navidrome credentials.
 
-サイドバーの「音楽を追加」からアップロード画面を開きます。音楽ファイルをドラッグ＆ドロップするか、「ファイルを選択…」で一覧に追加し、「アップロード」で1件ずつ送信します。
-[Rustのアップロードサービス](https://github.com/asonas/syncstr-uploader-deployment)をNAS上に配置し、HTTPSで公開してください。
-アップロード先の既定値は `https://syncstr-uploader.jkte.ch` です。
-アプリの「設定…」（Command+,）またはアップロード画面の「アップロード設定…」で、URLと専用トークンを入力して「保存」を押します。
-アップロード前に専用のKeychain serviceへ保存し、次回以降は保存済みの接続情報を使用します。Navidromeのユーザー名・パスワードとは別の認証です。
-Navidromeからのログアウトとは独立しており、設定の「保存した接続情報を削除」で削除できます。
+## Uploads
 
-一覧にはファイル名・サイズと、待機中・送信中・完了・失敗を表示します。同じファイルの重複追加は避け、送信前に一覧から外すこともできます。
-各ファイルの「曲情報…」から、曲名・アーティスト・アルバム・曲番号・ジャケットを編集できます。既存の情報を読み込み、変更した項目だけをアップロードする一時コピーへ保存します。元ファイルは変更しません。
-ジャケットには10MB以下のJPEGまたはPNGを選択してください。曲情報を読み込めない形式は編集ボタンを無効にし、元の内容でアップロードします。
-失敗した場合も次のファイルへ進み、再試行は未完了のファイルだけが対象です。同名ファイルは上書きしません。
-元ファイルの内容とチェックサムがずれないよう、一時コピーを作成して送ります。ファイルサイズ分の空き容量が必要です。
-形式検証を通ったファイルだけがサーバーへ保存されます。Navidromeのスキャン後にライブラリを再読み込みしてください。
-初期版はアプリ実行中の転送のみ対応し、バックグラウンド転送・途中再開・フォルダ選択には対応していません。
+Open the upload screen from the sidebar. Drag audio files onto it or use the file picker, then start uploading. Files are sent one at a time. The list shows file size and pending, sending, completed, or failed status. Duplicate selections are excluded, pending items can be removed, and retries skip completed files.
 
-## 起動
+Use each file's track-information action to edit its title, artist, album, track number, and artwork. Existing metadata is loaded first; only changed fields are written to the temporary upload copy. The original file remains unchanged. Choose JPEG or PNG artwork no larger than 10 MB. If metadata cannot be read for a format, editing is disabled and the file uploads unchanged.
 
-SwiftとmacOS SDK、XcodeGenを使用します。ビルド時にSwift Package ManagerでTagLib 2.3.0を取得します。SwiftUIマクロが必要なSDKではXcodeのDeveloperディレクトリを指定してください。
-署名には、この Mac の Keychain にある `Apple Development: Yuya Fujiwara (55CYFEJC5B)` 証明書と秘密鍵が必要です。
-再ビルド後も Keychain のアクセス許可を引き継ぐため、同じ証明書と bundle ID で署名します。
-アドホック署名のビルドから切り替えた初回は、保存済みログイン情報へのアクセス確認で「常に許可」を選んでください。
+Deploy the Rust upload service described below behind HTTPS. Enter its URL and a dedicated token in the upload settings tab and confirm with OK. These credentials use a separate Keychain service from Navidrome. Logging out of Navidrome does not remove the upload credentials; use their deletion control in settings.
+
+Uploads use a temporary copy so the transmitted content matches its checksum. Allow enough free space for that copy. The server validates file formats and rejects overwrites. The app polls until all uploaded tracks appear in Navidrome and refreshes the library. If scanning has not completed, refresh the library after it finishes. Background transfer, resuming interrupted uploads, and folder selection are not supported.
+
+### Server and deployment sources
+
+| Component | Source |
+|---|---|
+| Client | [Upload.swift](Upload.swift), [UploadCheck.swift](UploadCheck.swift) |
+| Rust server | [server/ at a fixed commit](https://github.com/asonas/syncstr/tree/57b3d8cdfa498404795b9f7c96fe9f21c4196102/server), preserved on `https-upload` and not yet integrated into main |
+| Deployment | [syncstr-uploader-deployment](https://github.com/asonas/syncstr-uploader-deployment); its Compose configuration selects the build source with `SYNCSTR_SOURCE_REF` |
+
+For server API work, read `server/README.md` and `server/src/lib.rs` at the ref selected by the deployment. The fixed link above is a starting point, not proof of a running deployment's version. Check Compose, environment overrides, and deployment history to establish that version. Do not infer it from a worktree's location or name.
+
+## Build and run
+
+Use Xcode's Swift compiler, macOS SDK, and XcodeGen. The build fetches TagLib 2.3.0 through Swift Package Manager. Find your development signing identity with `security find-identity -v -p codesigning` and supply it through `CODE_SIGN_IDENTITY`. Keep the same certificate and bundle ID across rebuilds to preserve Keychain access permissions. Switching from an ad-hoc build may require approving Keychain access once.
+
+Run from the repository root:
 
 ```sh
+# Replace this example with your own signing identity.
+export CODE_SIGN_IDENTITY='Apple Development: Your Name (TEAMID)'
 env DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer sh apps/macos/build.sh
-open apps/macos/.build/Syncstr.app
+sh apps/macos/run.sh
 ```
 
-ログイン後はアルバムを表示します。アルバムを開き、曲名を押すと再生します。
-サイドバーでアルバム・アーティスト・曲を切り替えられます。「ライブラリを更新」もサイドバーにあります。タイトルバー右側のmacOS標準検索欄は、表示中の項目に合わせてアルバム・アーティスト・曲を検索します。
-下部の曲名から同じウィンドウの再生中画面を開けます。
+`run.sh` lists this user's running Syncstr executables, sends TERM to old builds, and waits for them to exit. It then opens the target by absolute path and verifies that exactly one Syncstr process is running from that path. Finish transfers before restarting. Building and launching are separate operations.
 
-下部のボタンで前の曲・一時停止／再開・次の曲を操作し、シークバーで再生位置を変更できます。
-再生順は曲を選んだ一覧の順番です。アルバムではディスク番号・曲番号順に並びます。
-検索や画面移動で再生順は変わりません。曲が終わると次へ進み、最後の曲で停止します。
-最後の曲が終わった後に「再生」を押すと、その曲を先頭から再生します。
-接続に失敗した場合は入力やネットワークを確認して再試行してください。
-再生に失敗した場合は曲を選び直してください。
-プレイリスト編集・ダウンロード・履歴・オフライン保存は未実装です。
+To launch another build, pass its bundle path: `sh apps/macos/run.sh /path/to/Syncstr.app`. Shutdown and startup verification each wait at most 10 seconds. A shutdown timeout reports the remaining PIDs and paths without launching another instance. The script never escalates to a forced kill.
 
-画面構成は [Apple MVP 操作モデルの決定](https://github.com/asonas/syncstr/issues/5#issuecomment-5472974010)に沿っています。
+A per-user lock prevents concurrent launches through the script. If an abnormal interruption leaves a lock behind, first confirm that no launch is in progress, then remove the empty lock directory reported by the error with `rmdir`.
 
-## TestFlight と Xcode Cloud
+## Playback
 
-配信用のmacOSターゲットは、iOSと共通の `apps/ios/project.yml` から生成します。
-既存のApp Store Connect「syncstr」にmacOSプラットフォームを追加し、iOSと同じBundle ID `as.ason.syncstr.ios` を使用します。
+The library opens on albums. Use the sidebar to switch between albums, artists, and tracks, or to refresh the library. The title-bar search filters the current section. Open an album and select a track to play it; the mini-player opens the Now Playing view in the same window.
+
+Previous/next, pause/resume, and seeking operate on the list from which playback started. Albums are ordered by disc and track number. Navigation and search do not change the active queue. Tracks advance automatically; playback stops after the last track. Pressing play after the final track ends restarts that track.
+
+Retry a failed connection after checking the server and network. Select a track again after a playback failure. Playlist editing, download/offline storage, playback history submission, and editing existing files' metadata are not implemented in this macOS client.
+
+The screen structure follows the [Apple MVP operation model decision](https://github.com/asonas/syncstr/issues/5#issuecomment-5472974010).
+
+## TestFlight and Xcode Cloud
+
+Both platform targets are generated from [apps/ios/project.yml](../ios/project.yml). Set its signing team and bundle identifiers to match your Apple Developer registration. Add the macOS platform to your App Store Connect app and keep the platform settings consistent.
 
 ```sh
 mise exec -- xcodegen generate --spec apps/ios/project.yml
 open apps/ios/Syncstr.xcodeproj
 ```
 
-Xcode Cloudでは次の設定を使います。
+Configure Xcode Cloud with:
 
 - Project: `apps/ios/Syncstr.xcodeproj`
 - Scheme: `SyncstrMac`
-- 開始条件: `main` への変更
-- Action: macOSのArchive、TestFlightの内部テスト配布
-- Post-action: 内部テストグループ `internal` へ配布
+- Start condition: changes to `main`
+- Action: macOS Archive for internal TestFlight testing
+- Post-action: distribute to your internal test group
 
-clone後は既存の `apps/ios/ci_scripts/ci_post_clone.sh` が両プラットフォームのprojectとschemeを生成します。
-プロジェクトのパスに `apps/macos` や `project.yml` は指定しません。
+[ci_post_clone.sh](../ios/ci_scripts/ci_post_clone.sh) generates both platforms' projects and schemes after cloning. The workflow project path is the generated `.xcodeproj`, not `apps/macos` or `project.yml`.
 
-配布版はApp Sandboxを有効にし、外向きのネットワーク通信と利用者が選択したファイルの読み取りを許可します。
-採用済みのiOSアイコンからmacOS用の各サイズを生成しています。
-`build.sh` の手動ビルドとはBundle IDと保存コンテナが異なるため、配布版の初回起動ではアプリ内で接続情報を入力してください。
-CloudのArchive成功とTestFlightグループへの配布完了は、App Store Connectでそれぞれ確認します。
+Distribution builds enable App Sandbox, outgoing network access, and read access to user-selected files. Their bundle ID and container differ from the manual `build.sh` build, so enter connection credentials on first launch. Check Archive success and TestFlight delivery separately in App Store Connect.
 
-## API 検証
+## Verification
 
-曲情報の編集、日本語のタグ、ジャケットの追加・削除、元ファイルと音声の保持、編集後のコピーに対するアップロード検証を実行します。
+Run the launcher fixtures with `mise exec -- python3 apps/macos/Tests/test_run.py`. They replace process-listing, termination, and launch commands in a temporary environment; they do not operate on running apps.
+
+Verify metadata editing, Japanese tags, artwork addition and removal, preservation of original files and audio, and uploads of edited copies:
 
 ```sh
 mise exec -- xcodegen generate --spec apps/ios/project.yml
 env DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer xcodebuild -project apps/ios/Syncstr.xcodeproj -scheme SyncstrMac -destination 'platform=macOS' CODE_SIGNING_ALLOWED=NO test
 ```
 
-アップロードのHTTPヘッダー、SHA-256、ファイル名のエンコード、確定応答、重複拒否、HTTPS制限を通信境界で確認できます。
+Verify upload headers, SHA-256, filename encoding, response receipts, conflict handling, and HTTPS restrictions at the HTTP boundary:
 
 ```sh
 mkdir -p apps/macos/.build/module-cache
@@ -95,8 +93,7 @@ xcrun swiftc -parse-as-library -module-cache-path apps/macos/.build/module-cache
 apps/macos/.build/upload-check
 ```
 
-URLSession の通信境界に固定応答を使用して、ログイン拒否、
-ページ分割された曲一覧取得、配信URLの生成を確認します。本番資格情報は不要です。
+Verify rejected login, paginated track lists, and streaming URLs with fixed URLSession responses:
 
 ```sh
 mkdir -p apps/macos/.build/module-cache
@@ -104,22 +101,18 @@ xcrun swiftc -parse-as-library -module-cache-path apps/macos/.build/module-cache
 apps/macos/.build/navidrome-check
 ```
 
-## 再生・Keychain の検証
-
-API だけを固定応答へ置き換え、実際の AVPlayer と短い無音ファイルで前後移動・連続再生・末尾停止・シークを検証します。
-Keychain は実行ごとに異なる `as.ason.syncstr.test.*` service の架空の資格情報を使い、終了時に削除します。
-通常の保存情報は読み書きしません。Keychain と音声サービスへアクセスできる macOS 環境で実行してください。
+Verify continuous playback, end-of-queue behavior, seeking, and credential restoration with the real AVPlayer and a short silent audio fixture. This check requires access to macOS audio services and Keychain. It uses a unique test-only Keychain service and fictional credentials, removes its entries afterward, and does not access normal saved credentials:
 
 ```sh
+mkdir -p apps/macos/.build/module-cache
 xcrun swiftc -parse-as-library -module-cache-path apps/macos/.build/module-cache -o apps/macos/.build/library-check apps/macos/Library.swift apps/macos/Navidrome.swift apps/macos/CredentialStore.swift apps/macos/LibraryCheck.swift
 apps/macos/.build/library-check
 ```
 
-本番の確認は、ログイン後に試聴用の9曲が表示されること、選曲して音が出ること、
-一時停止・再開、曲の切り替え、シーク、アプリ再起動後の入力復元、ログアウト後の保存情報削除をアプリで確認してください。
+Manually verify login, your own sample tracks, audible playback, pause/resume, track changes, seeking, credential restoration after restart, and credential removal on logout. A passing build does not establish audible playback.
 
-## 参照
+## References
 
-- [Navidrome の Subsonic API 対応](https://www.navidrome.org/docs/developers/subsonic-api/)
-- [OpenSubsonic 認証仕様](https://opensubsonic.netlify.app/docs/api-reference/)
-- [曲一覧の取得](https://opensubsonic.netlify.app/docs/endpoints/search3/)
+- [Navidrome Subsonic API support](https://www.navidrome.org/docs/developers/subsonic-api/)
+- [OpenSubsonic API](https://opensubsonic.netlify.app/docs/api-reference/)
+- [Track search](https://opensubsonic.netlify.app/docs/endpoints/search3/)

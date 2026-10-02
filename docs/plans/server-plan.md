@@ -1,5 +1,7 @@
 # Music Player Server Implementation Plan
 
+Historical long-term plan. Environment and validation statuses below describe the initial investigation. Check the [current implementation](../../README.md#current-implementation) before resuming this work.
+
 **Goal:** Build the NAS-authoritative server with SyncService as the only synchronization source of truth.
 
 **Architecture:** Navidrome remains an optional media/stream adapter; it never owns product history or conflicts. SQLite transactions own `operation_id` deduplication and `server_seq` assignment. HTTP `/v1` is documented in OpenAPI.

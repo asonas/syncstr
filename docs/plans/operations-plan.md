@@ -1,5 +1,7 @@
 # Music Player Operations Implementation Plan
 
+Historical long-term plan. Environment and validation statuses below describe the initial investigation. Check the [current implementation](../../README.md#current-implementation) before resuming this work.
+
 **Goal:** Operate the NAS service securely, recoverably, and with auditable deployments.
 
 **Architecture:** Docker Compose is the initial deployment; HTTPS terminates at a reverse proxy. Production data, credentials, fixtures, and validation databases are strictly separate.

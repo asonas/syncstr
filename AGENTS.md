@@ -1,21 +1,18 @@
+## Navigation
+
+For implementation files, build and verification commands, or earlier prototypes, start with the [README map](README.md#code-and-documentation-map).
+Write documentation in English. Use relative paths and fictional values in published documentation and fixtures; keep personal filesystem paths, operational hostnames, account details, device identifiers, and session logs out of them.
+
 ## Agent skills
 
-- UIの配置・文言・寸法・状態表現を変更するときは [DESIGN.md](DESIGN.md) のmacOS方針を先に読む。
-- 変更をレビューするときは [CODING_STANDARDS.md](CODING_STANDARDS.md) を読み、変更した操作と表示状態を確認する。
+- Before changing UI layout, wording, dimensions, or state presentation, read the macOS guidance in [DESIGN.md](DESIGN.md).
+- When reviewing changes, read [CODING_STANDARDS.md](CODING_STANDARDS.md) and verify the affected interactions and display states.
 
-### Issue tracker
+- Issues and specs: [GitHub issue conventions](docs/agents/issue-tracker.md).
+- Triage: [default labels](docs/agents/triage-labels.md).
+- Design terminology and decisions: [domain docs](docs/agents/domain.md).
 
-Issues are tracked in this repository's GitHub Issues. See `docs/agents/issue-tracker.md`.
+## macOS launch verification
 
-### Triage labels
-
-Use the five default triage labels. See `docs/agents/triage-labels.md`.
-
-### Domain docs
-
-This repository uses a single-context layout. See `docs/agents/domain.md`.
-
-## macOS アプリの起動確認
-
-- Syncstr のビルドを起動・再起動するときは、先に実行中の Syncstr の実行パスを確認し、別 worktree の旧ビルドを含む既存インスタンスを通常終了する。終了を確認してから対象ビルドを1つだけ起動する。
-- 起動後は、Syncstr のプロセスが1つだけで、その実行パスが対象ビルドと一致することを確認する。同じ bundle ID のアプリが複数存在しうるため、アプリの選択には絶対パスを使う。
+- Launch or restart builds with `sh apps/macos/run.sh`; pass the target `.app` path for another location. If shutdown times out, inspect the remaining process. See the [macOS guide](apps/macos/README.md#build-and-run).
+- Before removing a worktree, confirm that no Syncstr process is running from it.

@@ -1,20 +1,20 @@
-# レビュー基準
+# Review Standards
 
-## UI変更
+## UI Changes
 
-[DESIGN.md](DESIGN.md) と差分を照合する。同じ規則の複製をここへ追加せず、判断基準はDESIGN.mdへ集約する。
+Compare the diff with [DESIGN.md](DESIGN.md). Keep design criteria there rather than duplicating the same rules here.
 
-1. 表示する見出し・説明・状態が、選択済みのナビゲーションや視覚表現と重複していないか確認する。必要な失敗理由や操作結果、アクセシビリティの状態通知は維持する。
-2. 変更した画面を対象ビルドで開き、変更に関係する状態を確認する。検索欄なら通常・フォーカス・入力・クリア、選択行なら選択表示と余白のクリック、レイアウトなら通常幅と狭いウィンドウでの配置を確認する。
-3. アルバム再生など操作を変えた場合は、その操作結果を確認する。既存の検証で十分なものにテストを追加しない。表示文字列のソース検索だけでは、実画面の検証にならない。
-4. 確認結果には対象ビルド、確認した操作・表示状態、未確認の項目を記録する。ビルド成功、実画面確認、main反映、push、配布は別の結果として報告する。
+1. Check whether headings, explanations, and status labels repeat selected navigation or visible state. Preserve necessary failure reasons, operation results, and accessibility state announcements.
+2. Open the changed screen in the target build and inspect the relevant states. For search, check normal, focused, typing, and cleared states. For selected rows, check selection styling and clicks on padding. For layout, check normal and narrow windows.
+3. When changing an action such as album playback, verify its result. Do not add tests where existing checks suffice. Searching source strings alone does not verify the actual screen.
+4. Record the target build, interactions and display states checked, and anything unverified. Report build success, visual verification, main integration, push, and distribution separately.
 
-スクリーンショットや本番音源が必要な検証では、ユーザーが担当すると指定した操作を尊重する。未実施の確認を成功として扱わない。
+For checks requiring screenshots or production audio, respect actions the user has reserved for themselves. Never report an unperformed check as successful.
 
-## macOSの確認対象
+## macOS Verification Target
 
-起動・再起動の手順は [macOS README](apps/macos/README.md#起動) を参照する。画面を確認する前に実行パスと対象の.appが一致し、プロセスが1つであることを確かめる。
+Follow the [macOS launch procedure](apps/macos/README.md#build-and-run). Before checking the screen, verify that the executable path matches the target app and exactly one process is running.
 
-手動ビルドとXcode／TestFlightのビルドはBundle IDと保存コンテナが異なる。対象.appのInfo.plistと実行パスを確認し、名前だけで同じアプリと判断しない。別の配布形態をインストール先へ上書きして切り替える前に、対象と保存情報への影響を確認する。検証用worktreeを削除する前に、そのアプリを終了する。
+Manual builds and Xcode/TestFlight builds use different bundle IDs and storage containers. Inspect the target app's Info.plist and executable path instead of identifying it only by name. Before replacing an installed app with another distribution variant, confirm the target and the effect on saved data. Quit an app before removing its validation worktree.
 
-起動対象を確認できない場合は、実画面確認を未完了として報告する。古い画面を最新のコードの結果として判定しない。
+If the launch target cannot be verified, report visual verification as incomplete. Do not judge old screens as results of the latest code.

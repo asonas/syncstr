@@ -1,17 +1,15 @@
-# 技術検証レポート
+# Technical validation reports
 
-このディレクトリには、実装前に行った技術検証の判定を保存します。
+These reports preserve investigations performed before product implementation. Their commands refer to the evaluated commits, not necessarily the current main tree. Current app build and verification instructions are linked from the [README](../../README.md#code-and-documentation-map).
 
-## 判定
+## Decisions
 
-- [同期コア](sync-core-report.md)：Swiftを基準実装とし、Rust共有コアは不採用
-- [Navidrome](navidrome-report.md)：メディア配信の補助アダプターとして扱う。認証済みAPIの実測はBLOCKED
-- [Apple再生](apple-playback-report.md)：macOSビルドは成功。XCTestとiPhone実機の再生結果はBLOCKED
+- [Synchronization core](sync-core-report.md): use Swift as the reference implementation; do not adopt a shared Rust core.
+- [Navidrome](navidrome-report.md): classify it as a media-delivery adapter; authenticated API measurements were BLOCKED.
+- [Apple playback](apple-playback-report.md): the macOS build succeeded; XCTest and physical iPhone playback results were BLOCKED.
 
-## 判定の扱い
+## Interpreting results
 
-BLOCKEDは失敗と同じ意味ではなく、実行条件が満たされず観測できなかったことを示します。
+BLOCKED means the execution prerequisites were unavailable and the behavior could not be observed. It is distinct from failure.
 
-BLOCKEDのケースをPASSへ変更するには、レポートに再現コマンド、実行環境、結果JSON、失敗理由を追記します。
-
-技術検証用の音源、資格情報、DBを製品環境へ流用しません。
+To change a BLOCKED case to PASS, add the reproduction command, environment, result JSON, and any failure reasons to the report. Do not reuse validation audio, credentials, or databases in production.

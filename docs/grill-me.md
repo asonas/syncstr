@@ -1,87 +1,57 @@
-# syncstrの設計インタビュー記録
+# syncstr design interview record
 
-この文書は、設計インタビューと技術検証で固定した前提を、実装中に再確認できる形へ整理したものです。
+This document preserves assumptions established during the initial design interview and technical validation. Check the [current scope](../README.md#current-implementation) before applying them to implementation work.
 
-## 固定した回答
+## Established answers
 
-### 製品の境界
+### Product boundary
 
-syncstrはNAS上の音源を複数端末で再生する個人向けサービスです。
+syncstr is a personal service for playing NAS-hosted music on multiple devices. The NAS library, metadata, playlists, ratings, and playback history are authoritative.
 
-NAS上のライブラリ、メタデータ、プレイリスト、評価、再生履歴を正本にします。
+After the initial iTunes or Music XML migration, the product does not continuously synchronize bidirectionally with Apple's apps. It starts with a single user and is intended for a later open-source release.
 
-初回のiTunesまたはMusic XML移行後、Appleアプリとの継続的な双方向同期は行いません。
+### Clients
 
-当初は単一ユーザーで使い、将来はオープンソースとして公開します。
+Target macOS, Windows, iPhone, and Android. Share UI information architecture and visual language through Figma. Use each OS's APIs for audio playback, background execution, media keys, and file access.
 
-### クライアント
+Implement macOS and iPhone first, followed by conforming Windows and Android clients.
 
-macOS、Windows、iPhone、Androidを対象にします。
+### Audio and migration
 
-UIの情報設計と視覚言語はFigmaで共通化します。
+Support MP3, AAC, M4A, ALAC, WAV, and AIFF where possible. Use the DB and sidecars for untagged files or formats where tag writing is unavailable.
 
-音声再生、バックグラウンド、メディアキー、ファイルアクセスは各OSのAPIを使います。
+Exclude DRM-protected audio and tracks available only in Apple Music's cloud. Migration does not modify, move, or delete source audio. Report ambiguous candidates and failure reasons.
 
-macOSとiPhoneを最初に実装し、WindowsとAndroidを後続の適合実装にします。
+### Synchronization and authentication
 
-### 音源と移行
+Persist offline ratings, favorites, playlist changes, and history operations, then resend them. Deduplicate by operation_id, validate per-device ordering with device_counter, and record server acceptance order with server_seq.
 
-MP3、AAC、M4A、ALAC、WAV、AIFFを可能な限り扱います。
+Address playlist entries by item ID. Tombstones prevent stale devices from resurrecting deleted entries. Default to passkeys and provide per-device revocation and recovery.
 
-タグがない、またはタグを書き込めない音源はDBとsidecarで管理します。
+### Validation results
 
-DRM保護された音源とApple Musicのクラウド上だけに存在する曲は移行対象にしません。
+The Swift reference implementation and Rust candidate matched state, history, and error classifications for seven shared vectors. The shared Rust core was not adopted because FFI, cancellation, thread boundaries, and distribution had not been measured.
 
-移行は音源を変更、移動、削除せず、曖昧な候補と失敗理由をレポートします。
+Navidrome was classified as a media-delivery adapter, not the source of truth for history or synchronization. Apple's AudioValidation built, but playback results were BLOCKED because XCTest was unavailable and no iPhone was connected.
 
-### 同期と認証
+## Questions to revisit before implementation
 
-オフラインの評価、お気に入り、プレイリスト、履歴操作を保存して再送します。
+### Server
 
-operation_idで再送を重複排除し、device_counterで端末内順序を検証し、server_seqで正本の受理順を記録します。
+Adopting a Rust server requires comparing API implementation speed, Docker image size, startup time, SQLite concurrency, and operational diagnosis. Do not infer shared-core reuse from that choice.
 
-プレイリスト項目は項目ID単位で操作し、削除済み項目の墓標で古い端末の再送による復活を防ぎます。
+### Migration
 
-認証はパスキーを既定とし、端末単位の失効と復旧手段を用意します。
+Create anonymized fixtures for paths, encodings, and artwork references found in real Music or iTunes XML exports. Require confirmation for multiple matches; silently selecting one can associate history and ratings with the wrong audio.
 
-### 検証結果
+### Synchronization
 
-Swift基準実装とRust候補は、共通の7ベクトルで状態、履歴、エラー分類を一致させました。
+Specify the playback percentage that records completion and the conditions that record a skip in the API contract. Test the boundary between 90-day tombstone retention and snapshot compaction using each device's last synchronization cursor.
 
-Rust共有コアはFFI、キャンセル、スレッド境界、配布物の測定が未完了のため採用しません。
+### Operations
 
-Navidromeはメディア配信の補助アダプターとし、履歴と同期の正本にはしません。
+Provide a recovery path for lost passkeys before use, even for a single user. Keep permanent deletion disabled until trash retention, backup destinations, and encryption-key custody are decided.
 
-AppleのAudioValidationはビルドに成功しましたが、XCTest未提供とiPhone実機未接続のため再生結果はBLOCKEDです。
+### Publication
 
-## 実装前に問い直すこと
-
-### サーバー
-
-Rustサーバーを採用する条件は、API契約の実装速度、Dockerイメージサイズ、起動時間、SQLiteの並行処理、運用時の障害解析を比較できることです。
-
-この比較をせずに、Rustを共有コアへ再利用することは決めません。
-
-### 移行
-
-実際のMusicまたはiTunes XMLに含まれるパス表現、エンコーディング、アートワーク参照を匿名化したfixtureへ落とし込む必要があります。
-
-複数候補の自動選択を許すと、誤った音源へ履歴や評価を移すため、確認待ちを既定にします。
-
-### 同期
-
-履歴の「完了」を何パーセント到達で記録するか、スキップをどの条件で記録するかをAPI契約へ固定します。
-
-90日間の墓標保持とスナップショット圧縮の境界を、端末の最終同期カーソルでテストします。
-
-### 運用
-
-パスキーを失った場合の復旧経路は、単一ユーザーでも先に用意しないと管理不能になります。
-
-ゴミ箱の保持期間、バックアップ先、暗号鍵の保管者を決めるまで、完全削除を有効にしません。
-
-### 公開
-
-OSS公開時に音源、個人のXML、fixtureの個人情報、検証用資格情報が含まれないことを自動検査します。
-
-ライセンスと商標の確認を終えるまで、公開リポジトリの説明文にAppleやNapsterとの関係を示す表現を使いません。
+Before open-source publication, automatically check that audio, personal XML exports, identifying fixture data, and validation credentials are excluded. Complete license and trademark review before using repository descriptions that imply a relationship with Apple or Napster.

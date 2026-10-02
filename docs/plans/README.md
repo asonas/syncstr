@@ -1,23 +1,13 @@
-# 実装計画の読み方
+# Implementation plans
 
-syncstrの実装は、サーバー、移行、Appleクライアント、運用の境界ごとに分けます。
+These documents preserve the initial long-term plan. Start with the [README map](../../README.md#code-and-documentation-map) when changing the current Navidrome player. Synchronization, migration, and recovery work are not prerequisites for current app development.
 
-各計画は、先行する契約とテストを入力にして、独立した受け入れ条件を満たす成果物を出します。
+## Plans
 
-## 計画
+- [Initial implementation roadmap](2026-08-15-syncstr-implementation-plan.md): historical sequencing and acceptance gates.
+- [Server](server-plan.md): authentication, scanning, catalog, media, synchronization, and backup APIs and storage.
+- [Migration](migration-plan.md): non-destructive matching of Music XML and local audio.
+- [Apple clients](apple-client-plan.md): SwiftUI, local storage, Keychain, and AVFoundation.
+- [Operations](operations-plan.md): deployment, HTTPS, backup, trash, and auditing.
 
-- [サーバー](server-plan.md)：認証、スキャン、カタログ、メディア配信、同期、バックアップのAPIとDB
-- [移行](migration-plan.md)：iTunesまたはMusic XMLとローカル音源の非破壊照合
-- [Appleクライアント](apple-client-plan.md)：macOSとiPhoneのSwiftUI、SQLite、Keychain、AVFoundation
-- [運用](operations-plan.md)：Docker Compose、HTTPS、バックアップ、ゴミ箱、監査
-
-## 実装順
-
-1. [マスターロードマップ](../superpowers/plans/2026-08-15-syncstr-implementation-plan.md)のサーバー言語判断とリポジトリ基盤
-2. OpenAPIと同期契約
-3. サーバーの認証、カタログ、メディア配信
-4. XML移行
-5. SyncService
-6. macOSとiPhone
-7. 運用と復元
-8. MVP受け入れと日常利用
+The original sequence was foundation and language selection, contracts, server, migration, synchronization, Apple clients, operations, and MVP acceptance. Check the current scope and successor issues before resuming any of these steps.
