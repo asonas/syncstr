@@ -5,7 +5,7 @@ packages:
 options:
   bundleIdPrefix: as.ason.syncstr
   deploymentTarget:
-    iOS: "26.0"
+    iOS: "27.0"
     macOS: "26.0"
 settings:
   base:

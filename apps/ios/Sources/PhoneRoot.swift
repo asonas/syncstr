@@ -12,18 +12,13 @@ enum PhoneTab: Hashable { case library, search, playing, settings }
 struct PhoneRoot: View {
     @ObservedObject var library: Library
     @State private var tab = PhoneTab.library
+    @State private var showingPlayer = false
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
     var body: some View {
         VStack(spacing: 0) {
             if library.connected {
-                if #available(iOS 26.1, *) {
-                    tabs.tabViewBottomAccessory(isEnabled: library.current != nil && tab != .playing) { miniPlayer }
-                } else if library.current != nil && tab != .playing {
-                    tabs.tabViewBottomAccessory { miniPlayer }
-                } else {
-                    tabs
-                }
+                tabs.tabViewBottomAccessory(isEnabled: library.current != nil && tab != .playing) { miniPlayer }
             } else if library.restoringSession {
                 VStack(spacing: 16) {
                     ProgressView()
@@ -35,13 +30,16 @@ struct PhoneRoot: View {
             }
         }
         .background(PhoneStyle.graphite)
+        .sheet(isPresented: $showingPlayer) {
+            PhoneNowPlaying(library: library)
+                .presentationDragIndicator(.visible)
+                .presentationBackground(PhoneStyle.graphite)
+        }
         .safeAreaInset(edge: .top, spacing: 0) {
             if let message = library.message {
                 VStack(alignment: .leading, spacing: 8) {
                     HStack(alignment: .top, spacing: 8) {
-                        Image(systemName: "exclamationmark.circle")
-                            .font(.system(size: 20))
-                            .accessibilityHidden(true)
+                        RegenIcon(name: "circle-alert", size: 20)
                         Text(message).font(.callout).frame(maxWidth: .infinity, alignment: .leading)
                         if !dynamicTypeSize.isAccessibilitySize {
                             Button("閉じる") { library.message = nil }
@@ -63,16 +61,16 @@ struct PhoneRoot: View {
     private var tabs: some View {
         TabView(selection: $tab) {
             NavigationStack { catalog }
-                .tabItem { Label("ライブラリ", systemImage: "square.stack") }
+                .tabItem { Label("ライブラリ", image: "regen-layers") }
                 .tag(PhoneTab.library)
             NavigationStack { search }
-                .tabItem { Label("検索", systemImage: "magnifyingglass") }
+                .tabItem { Label("検索", image: "regen-search") }
                 .tag(PhoneTab.search)
-            NavigationStack { nowPlaying }
-                .tabItem { Label("再生中", systemImage: "play.circle") }
+            NavigationStack { PhoneNowPlaying(library: library) }
+                .tabItem { Label("再生中", image: "regen-circle-play") }
                 .tag(PhoneTab.playing)
             NavigationStack { settings }
-                .tabItem { Label("設定", systemImage: "gearshape") }
+                .tabItem { Label("設定", image: "regen-settings") }
                 .tag(PhoneTab.settings)
         }
     }
@@ -130,59 +128,128 @@ struct PhoneRoot: View {
     }
 
     private var catalog: some View {
-        List {
-            Section {
-                NavigationLink {
-                    songList(library.tracks).navigationTitle("曲")
-                } label: { Label("曲", systemImage: "music.note.list") }
-                NavigationLink {
-                    List(library.artists, id: \.self) { artist in
-                        NavigationLink(artist) {
-                            songList(library.tracks.filter { ($0.artist ?? "アーティスト不明") == artist })
-                                .navigationTitle(artist)
-                        }
-                    }
-                    .navigationTitle("アーティスト")
-                } label: { Label("アーティスト", systemImage: "person.2") }
-            }
-            Section("アルバム") {
-                if library.albums.isEmpty { Text("音楽はまだありません。NAS へ音源を追加してください。") }
-                ForEach(library.albums) { album in
+        ScrollView {
+            VStack(alignment: .leading, spacing: 16) {
+                VStack(spacing: 0) {
                     NavigationLink {
-                        songList(album.tracks)
-                            .navigationTitle(album.title)
-                    } label: {
-                        HStack(spacing: 16) {
-                            artwork(album.coverArt, size: 64)
-                            VStack(alignment: .leading, spacing: 6) {
-                                Text(album.title).font(.headline).fontWeight(.regular)
-                                Text(album.artist).font(.subheadline).foregroundStyle(.secondary)
-                                Text("\(album.tracks.count)曲").font(.caption).foregroundStyle(.secondary)
+                        List(library.artists, id: \.self) { artist in
+                            NavigationLink(artist) {
+                                songList(library.tracks.filter { ($0.artist ?? "アーティスト不明") == artist })
+                                    .navigationTitle(artist)
                             }
                         }
-                        .padding(.vertical, 4)
-                    }
+                        .navigationTitle("アーティスト")
+                    } label: { categoryLabel("アーティスト", icon: "users") }
+                    NavigationLink {
+                        ScrollView { albumGrid.padding(20) }
+                            .background(PhoneStyle.graphite).navigationTitle("アルバム")
+                    } label: { categoryLabel("アルバム", icon: "layers") }
+                    NavigationLink {
+                        songList(library.tracks).navigationTitle("曲")
+                    } label: { categoryLabel("曲", icon: "music") }
+                }
+                .buttonStyle(.plain)
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("アルバム").font(.title3.bold())
+                    if library.albums.isEmpty { Text("音楽はまだありません。NAS へ音源を追加してください。") }
+                    albumGrid
                 }
             }
+            .padding(.horizontal, 20)
+            .padding(.top, 8)
+            .padding(.bottom, 20)
         }
-        .scrollContentBackground(.hidden)
         .background(PhoneStyle.graphite)
         .navigationTitle("ライブラリ")
+        .toolbarTitleDisplayMode(.inlineLarge)
         .refreshable { library.reload() }
-        .toolbar {
-            Button { library.reload() } label: {
-                if library.refreshing { ProgressView() }
-                else { Image(systemName: "arrow.clockwise") }
-            }
-            .disabled(library.refreshing)
-            .accessibilityLabel("ライブラリを再読み込み")
+    }
+
+    private func categoryLabel(_ title: String, icon: String) -> some View {
+        HStack(spacing: 8) {
+            RegenIcon(name: icon).foregroundStyle(PhoneStyle.signal)
+            Text(title).font(.title3).foregroundStyle(.primary)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            RegenIcon(name: "chevron-right").foregroundStyle(.secondary)
         }
+        .frame(minHeight: 48)
+        .contentShape(Rectangle())
+    }
+
+    private var albumGrid: some View {
+        LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 16),
+                                count: dynamicTypeSize.isAccessibilitySize ? 1 : 2), spacing: 16) {
+            ForEach(library.albums) { album in
+                NavigationLink { albumDetail(album) } label: {
+                    VStack(alignment: .leading, spacing: 4) {
+                        PhoneArtwork(url: album.coverArt.flatMap { library.artworkURLs[$0] })
+                        Text(album.title).font(.subheadline.bold()).foregroundStyle(.primary)
+                            .lineLimit(dynamicTypeSize.isAccessibilitySize ? nil : 2)
+                        Text(album.artist).font(.subheadline).foregroundStyle(.secondary)
+                            .lineLimit(dynamicTypeSize.isAccessibilitySize ? nil : 1)
+                    }
+                }
+                .buttonStyle(.plain)
+            }
+        }
+    }
+
+    private func albumDetail(_ album: Album) -> some View {
+        GeometryReader { geometry in
+            List {
+                VStack(spacing: 0) {
+                    PhoneArtwork(url: album.coverArt.flatMap { library.artworkURLs[$0] })
+                        .frame(width: max(0, min(geometry.size.width - 128, dynamicTypeSize.isAccessibilitySize ? 120 : 320)))
+                        .padding(.bottom, 20)
+                    VStack(spacing: 4) {
+                        Text(album.title).font(.title3.bold())
+                        Text(album.artist).font(.body).foregroundStyle(PhoneStyle.signal)
+                        Text("\(album.tracks.count)曲").font(.caption).foregroundStyle(.secondary)
+                    }
+                    .multilineTextAlignment(.center)
+                    .padding(.bottom, 16)
+                    Button {
+                        if let first = album.tracks.first { start(first, in: album.tracks) }
+                    } label: {
+                        HStack(spacing: 8) {
+                            RegenIcon(name: "filled-play")
+                            Text("再生")
+                        }
+                        .frame(minWidth: 160, minHeight: 44)
+                        .background(PhoneStyle.button, in: RoundedRectangle(cornerRadius: 8))
+                        .foregroundStyle(.white)
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(album.tracks.isEmpty)
+                    .accessibilityLabel("アルバムを先頭から再生")
+                }
+                .frame(maxWidth: .infinity)
+                .padding(.top, 8)
+                .padding(.bottom, 20)
+                .listRowInsets(EdgeInsets(top: 0, leading: 20, bottom: 0, trailing: 20))
+                .listRowSeparator(.hidden)
+                .listRowBackground(Color.clear)
+                ForEach(Array(album.tracks.enumerated()), id: \.element.id) { index, track in
+                    trackRow(track, in: album.tracks, index: index + 1)
+                        .listRowInsets(EdgeInsets(top: 0, leading: 20, bottom: 0, trailing: 20))
+                        .listRowBackground(Color.clear)
+                }
+            }
+            .listStyle(.plain)
+            .scrollContentBackground(.hidden)
+            .background(PhoneStyle.graphite)
+        }
+        .navigationBarTitleDisplayMode(.inline)
     }
 
     private var search: some View {
         Group {
             if library.search.isEmpty {
-                ContentUnavailableView("音楽を検索", systemImage: "magnifyingglass", description: Text("曲、アルバム、アーティストを検索できます。"))
+                ContentUnavailableView {
+                    Label { Text("音楽を検索") } icon: { RegenIcon(name: "search", size: 48) }
+                } description: {
+                    Text("曲、アルバム、アーティストを検索できます。")
+                }
             } else if library.visibleTracks.isEmpty {
                 ContentUnavailableView.search(text: library.search)
             } else {
@@ -196,145 +263,103 @@ struct PhoneRoot: View {
 
     private func songList(_ tracks: [Track]) -> some View {
         List(tracks) { track in
-            HStack(spacing: 8) {
-                Button {
-                    start(track, in: tracks)
-                } label: {
-                    HStack(spacing: 12) {
-                        VStack(alignment: .leading, spacing: 6) {
-                            Text(track.title).foregroundStyle(.primary)
-                            Text(track.artist ?? "アーティスト不明")
-                                .font(.subheadline).foregroundStyle(.secondary)
-                        }
-                        Spacer(minLength: 8)
-                        if library.current?.id == track.id {
-                            if library.loading {
-                                ProgressView().accessibilityLabel("再生を準備中")
-                            } else {
-                                Image(systemName: library.playing ? "speaker.wave.2" : "pause.circle")
-                                    .accessibilityLabel(library.playing ? "再生中" : "選択中")
-                            }
-                        }
-                        if let duration = track.duration {
-                            Text(time(duration)).font(.caption).monospacedDigit().foregroundStyle(.secondary)
-                        }
-                    }
-                    .padding(.vertical, 8)
-                    .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .accessibilityIdentifier("track-\(track.id)")
-                if library.downloading.contains(track.id) {
-                    ProgressView().frame(width: 44, height: 44)
-                        .accessibilityLabel("ダウンロード中")
-                } else if library.downloaded.contains(track.id) {
-                    Image("regen-circle-check").renderingMode(.template)
-                        .resizable().frame(width: 24, height: 24)
-                        .foregroundStyle(.secondary)
-                        .frame(width: 44, height: 44)
-                        .accessibilityLabel("ダウンロード済み")
-                } else {
-                    Button { library.download(track) } label: {
-                        Image("regen-cloud-download").renderingMode(.template)
-                            .resizable().frame(width: 24, height: 24)
-                            .frame(width: 44, height: 44)
-                    }
-                    .buttonStyle(.plain)
-                    .accessibilityLabel("\(track.title)、未ダウンロード。端末に保存")
-                }
-            }
+            trackRow(track, in: tracks)
         }
         .scrollContentBackground(.hidden)
         .background(PhoneStyle.graphite)
     }
 
-    private var miniPlayer: some View {
-        HStack(spacing: 12) {
-            Button { tab = .playing } label: {
-                HStack(spacing: 12) {
-                    artwork(library.current?.coverArt, size: 44)
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text(library.current?.title ?? "").lineLimit(1)
-                        Text(library.current?.artist ?? "").font(.caption).foregroundStyle(.secondary).lineLimit(1)
+    private func trackRow(_ track: Track, in tracks: [Track], index: Int? = nil) -> some View {
+        HStack(spacing: 8) {
+            Button {
+                start(track, in: tracks)
+            } label: {
+                HStack(spacing: 8) {
+                    if let index {
+                        Group {
+                            if library.current?.id == track.id {
+                                RegenIcon(name: library.playing ? "activity" : "filled-pause")
+                                    .foregroundStyle(PhoneStyle.signal)
+                            } else { Text("\(index)").font(.subheadline).foregroundStyle(.secondary) }
+                        }
+                        .frame(width: 24)
                     }
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(track.title).font(.callout)
+                            .foregroundStyle(library.current?.id == track.id ? PhoneStyle.signal : .primary)
+                        Text(track.artist ?? "アーティスト不明")
+                            .font(.subheadline).foregroundStyle(.secondary)
+                    }
+                    Spacer(minLength: 8)
+                    if index == nil && library.current?.id == track.id {
+                        if library.loading {
+                            ProgressView().accessibilityLabel("再生を準備中")
+                        } else {
+                            RegenIcon(name: library.playing ? "activity" : "filled-pause")
+                                .accessibilityLabel(library.playing ? "再生中" : "選択中")
+                        }
+                    }
+                    if index == nil, let duration = track.duration {
+                        Text(time(duration)).font(.caption).monospacedDigit().foregroundStyle(.secondary)
+                    }
+                }
+                .padding(.vertical, 8)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityIdentifier("track-\(track.id)")
+            .accessibilityValue(library.current?.id == track.id ? (library.loading ? "再生を準備中" : library.playing ? "再生中" : "選択中") : "")
+            if library.downloading.contains(track.id) {
+                ProgressView().frame(width: 44, height: 44)
+                    .accessibilityLabel("ダウンロード中")
+            } else if library.downloaded.contains(track.id) {
+                Image("regen-circle-check").renderingMode(.template)
+                    .resizable().frame(width: 24, height: 24)
+                    .foregroundStyle(.secondary)
+                    .frame(width: 44, height: 44)
+                    .accessibilityLabel("ダウンロード済み")
+            } else {
+                Button { library.download(track) } label: {
+                    Image("regen-cloud-download").renderingMode(.template)
+                        .resizable().frame(width: 24, height: 24)
+                        .frame(width: 44, height: 44)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("\(track.title)、未ダウンロード。端末に保存")
+            }
+        }
+    }
+
+    private var miniPlayer: some View {
+        HStack(spacing: 8) {
+            Button { showingPlayer = true } label: {
+                HStack(spacing: 8) {
+                    artwork(library.current?.coverArt, size: 28)
+                    VStack(alignment: .leading, spacing: 0) {
+                        Text(library.current?.title ?? "").fontWeight(.semibold).lineLimit(1)
+                        if dynamicTypeSize <= .xLarge {
+                            Text(library.current?.artist ?? "").foregroundStyle(.secondary).lineLimit(1)
+                        }
+                    }
+                    .font(.subheadline)
+                    .dynamicTypeSize(...DynamicTypeSize.xxxLarge)
                     Spacer(minLength: 0)
                 }
+                .frame(minHeight: 44)
+                .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
             .accessibilityLabel("\(library.current?.title ?? "")の再生中画面を開く")
-            playbackButton
-        }
-        .padding(12)
-        .background(PhoneStyle.carbon)
-    }
-
-    private var nowPlaying: some View {
-        GeometryReader { geometry in
-            ScrollView {
-                if let track = library.current {
-                    VStack(alignment: .leading, spacing: 24) {
-                        artwork(track.coverArt, size: min(dynamicTypeSize.isAccessibilitySize ? 120 : 240, max(0, geometry.size.width - 48)))
-                            .frame(maxWidth: .infinity)
-                        VStack(alignment: .leading, spacing: 8) {
-                            Text(track.title).font(.title).fontWeight(.regular)
-                            Text(track.artist ?? "アーティスト不明").foregroundStyle(.secondary)
-                            if let album = track.album { Text(album).font(.subheadline).foregroundStyle(.secondary) }
-                        }
-                        VStack(spacing: 8) {
-                            Slider(value: Binding(get: { library.position }, set: { library.seek(to: $0) }), in: 0...max(library.duration, 1))
-                                .disabled(library.duration <= 0)
-                                .accessibilityLabel("再生位置")
-                                .accessibilityValue("\(time(library.position)) / \(time(library.duration))")
-                            HStack {
-                                Text(time(library.position))
-                                Spacer()
-                                Text(time(library.duration))
-                            }
-                            .font(.caption).monospacedDigit().foregroundStyle(.secondary)
-                        }
-                        if library.loading { ProgressView("読み込み中…") }
-                    }
-                    .frame(width: max(0, geometry.size.width - 48), alignment: .leading)
-                    .padding(24)
-                } else {
-                    ContentUnavailableView("曲を選んでください", systemImage: "music.note", description: Text("ライブラリまたは検索から音楽を選べます。"))
-                }
+            .accessibilityValue(library.current?.artist ?? "")
+            Button { library.togglePlayback() } label: {
+                RegenIcon(name: library.playing || library.loading ? "filled-pause" : "filled-play", size: 28)
+                    .frame(width: 44, height: 44)
+                    .contentShape(Rectangle())
             }
+            .buttonStyle(.plain)
+            .accessibilityLabel(library.playing || library.loading ? "一時停止" : "再生")
         }
-        .safeAreaInset(edge: .bottom, spacing: 0) {
-            if library.current != nil {
-                HStack(spacing: 16) {
-                    Spacer(minLength: 0)
-                    Button { library.previous() } label: {
-                        Image(systemName: "backward.end.fill").frame(minWidth: 44, minHeight: 44)
-                    }
-                    .disabled(!library.canGoPrevious).accessibilityLabel("前の曲")
-                    playbackButton
-                    Button { library.next() } label: {
-                        Image(systemName: "forward.end.fill").frame(minWidth: 44, minHeight: 44)
-                    }
-                    .disabled(!library.canGoNext).accessibilityLabel("次の曲")
-                    Spacer(minLength: 0)
-                }
-                .font(.system(size: 24))
-                .buttonStyle(.bordered)
-                .padding(.horizontal, 24)
-                .padding(.vertical, 12)
-                .background(PhoneStyle.graphite)
-            }
-        }
-        .background(PhoneStyle.graphite)
-        .navigationTitle("再生中")
-    }
-
-    private var playbackButton: some View {
-        Button {
-            library.togglePlayback()
-        } label: {
-            Image(systemName: library.playing || library.loading ? "pause.fill" : "play.fill")
-                .frame(minWidth: 44, minHeight: 44)
-        }
-        .accessibilityLabel(library.playing || library.loading ? "一時停止" : "再生")
+        .padding(.horizontal, 16)
     }
 
     private var settings: some View {
@@ -355,16 +380,8 @@ struct PhoneRoot: View {
     }
 
     private func artwork(_ id: String?, size: CGFloat) -> some View {
-        AsyncImage(url: id.flatMap { library.artworkURLs[$0] }) { image in
-            image.resizable().scaledToFit()
-        } placeholder: {
-            Image(systemName: "music.note").font(.largeTitle).foregroundStyle(.secondary)
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .background(PhoneStyle.carbon)
-        }
-        .frame(width: size, height: size)
-        .clipShape(RoundedRectangle(cornerRadius: 4))
-        .accessibilityHidden(true)
+        PhoneArtwork(url: id.flatMap { library.artworkURLs[$0] })
+            .frame(width: size, height: size)
     }
 
     private func start(_ track: Track, in tracks: [Track]) {

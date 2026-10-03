@@ -4,6 +4,18 @@
 
 For layout, wording, dimensions, and state presentation, prioritize the platform guidance below. Brand and icon decisions and the later Splice web reference have different scopes. Do not directly map web pixel values or page structures onto macOS point values or window layouts.
 
+## iPhone UI Guidance
+
+The [iOS Music-inspired exploration](https://www.figma.com/design/KtfBubkg9KiK5LuLHIm8Qt?node-id=18-3) defines information hierarchy and alignment. Preserve the existing UI colors and use the spacing scale below, without adding a separate iOS spacing scale.
+
+- Use native navigation, tabs, the tab bottom accessory, sheets, and sliders. Let the system provide Liquid Glass for navigation and controls; keep content on Graphite. Do not cover the mini-player accessory with an opaque background.
+- Use system typography with Dynamic Type. Inter and Noto Sans JP in Figma are preview substitutes. Allow long titles to wrap and use one album column at accessibility text sizes.
+- In the full player, inset artwork 20 points from each edge. Inset metadata and seeking 32 points from the leading edge and 20 from the trailing edge. Align the visible trailing edge of the original Regen dots SVG with artwork and seeking, accounting for its 3-point transparent inset separately from its 44-point hit target.
+- Group title and artist with 4-point spacing and equal text size, emphasizing the title with weight. Use 20 points between artwork, metadata, and seeking; use 32 points before and between transport controls. Transport targets are 64 points with 36-point skip icons and a 48-point play/pause icon.
+- Center album artwork and metadata above Play and the track list. Keep mini-player artwork small and its playback action separate from opening the player.
+- Use original SVGs from `kazdenc/regen-icons` for app-owned icons. Native system chrome remains system-managed. Artwork comes from the library, not the fictional Figma fixture.
+- Treat safe areas, native control metrics, icon optical offsets, and touch-target sizes as constraints rather than spacing tokens. Verify normal text, long text, accessibility text sizes, and narrow screens on iOS 27. Physical-device playback remains a separate check.
+
 ## macOS UI Guidance
 
 ### Information and Actions

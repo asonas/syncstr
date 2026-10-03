@@ -1,6 +1,6 @@
 # syncstr for iPhone
 
-A SwiftUI player for music served by Navidrome, targeting iOS 26 or later. The target compiles the shared `Library.swift`, `Navidrome.swift`, and `CredentialStore.swift` files from `apps/macos/`.
+A SwiftUI player for music served by Navidrome, targeting iOS 27 or later. The target compiles the shared `Library.swift`, `Navidrome.swift`, and `CredentialStore.swift` files from `apps/macos/`.
 
 ## Build and run
 
@@ -46,9 +46,9 @@ The same YAML defines the `SyncstrMac` scheme. See the [macOS distribution guide
 
 ## Implemented behavior
 
-- The library starts on albums, with album tracks, all tracks, and artists available for browsing.
+- The library combines artist, album, and track navigation with a two-column album grid. Album details place artwork and metadata above Play and the ordered track list. Accessibility text sizes use a single album column.
 - Search covers tracks, albums, and artists.
-- Selecting a track plays the originating list in order. The mini-player opens Now Playing, which provides pause/resume, previous/next, and seeking.
+- Selecting a track plays the originating list in order. The native glass mini-player opens Now Playing as a sheet, with pause/resume, previous/next, seeking, and a track download menu. The Now Playing tab provides the same controls.
 - A cloud/download icon marks an unsaved track, a spinner marks downloading, and a check marks a saved track. Tap the cloud to download; tap the title to play. A spinner next to the title indicates playback preparation.
 - Playback prefers a saved local file. Download state survives restarts and is isolated by server and account. Logout retains audio files. Fetching the library at startup still requires a server connection.
 - Lock-screen and Control Center integration expose track information, playback position, pause/resume, previous/next, and seeking.
@@ -61,7 +61,7 @@ Queue editing, offline library browsing at startup, playlists, and favorites are
 
 The app icon is exported from the [selected design](https://www.figma.com/design/KtfBubkg9KiK5LuLHIm8Qt?node-id=12-2). The [1024px iOS frame](https://www.figma.com/design/KtfBubkg9KiK5LuLHIm8Qt?node-id=15-2) extends its background to the edges; the OS applies rounded corners.
 
-Download-state icons use `cloud-download` and `circle-check` from [Regen Icons](https://github.com/kazdenc/regen-icons). Its MIT license is preserved in [Licenses/RegenIcons.txt](Licenses/RegenIcons.txt) and bundled with the app.
+App-owned navigation and playback icons use original SVGs from [Regen Icons](https://github.com/kazdenc/regen-icons), pinned to revision `64c0e165c3ce6d5c9d7329acf5762306f86d6b1d`. Download-state icons use its `cloud-download` and `circle-check`. Its MIT license is preserved in [Licenses/RegenIcons.txt](Licenses/RegenIcons.txt) and bundled with the app. System navigation chrome remains native. See [DESIGN.md](../../DESIGN.md) for layout and typography rules.
 
 ## Verification
 
