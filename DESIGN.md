@@ -4,6 +4,26 @@
 
 For layout, wording, dimensions, and state presentation, prioritize the platform guidance below. Brand and icon decisions and the later Splice web reference have different scopes. Do not directly map web pixel values or page structures onto macOS point values or window layouts.
 
+## Apple Platforms: Liquid Glass
+
+macOS and iOS follow the native Liquid Glass design system. The Apple platform guidance in this section takes precedence over the later Splice web rules for navigation, floating controls, materials, shadows, and foreground colors. Preserve the Syncstr palette in the content layer and its blue action accents.
+
+Official sources:
+
+- [Adopting Liquid Glass](https://developer.apple.com/documentation/TechnologyOverviews/adopting-liquid-glass): use standard framework components, remove interfering custom backgrounds, avoid excessive glass, and verify accessibility settings.
+- [HIG: Materials](https://developer.apple.com/design/human-interface-guidelines/materials): distinguish the floating control layer from content and use semantic foreground colors that remain legible on the material.
+- [HIG: Layout](https://developer.apple.com/design/human-interface-guidelines/layout): communicate hierarchy through placement, grouping, and alignment; distinguish controls from content.
+- [Applying Liquid Glass to custom views](https://developer.apple.com/documentation/SwiftUI/Applying-Liquid-Glass-to-custom-views): apply `glassEffect` after layout modifiers; use `GlassEffectContainer` when coordinating multiple glass surfaces.
+
+Implementation rules:
+
+- Prefer native navigation, toolbars, sheets, search fields, sliders, and button styles. Use native `glassEffect(.regular, in:)` for a custom floating control surface such as the macOS player. Do not simulate glass with a translucent fill, hand-drawn border, blur, or shadow.
+- Keep glass in the navigation and control layer. Keep album artwork, track rows, and other content on the existing content surfaces. Do not stack glass backgrounds on individual controls inside a glass bar. A bar containing separate controls is not one large interactive button.
+- Use semantic primary and secondary foreground styles on glass. Do not force Fog or white onto the material solely to match a static screenshot. Let the system adapt material contrast, tint preferences, reduced transparency, and reduced motion; verify those states before claiming support has been visually checked.
+- Figma defines information hierarchy, alignment, and optical size; its flat material previews do not define glass rendering. For the macOS mini-player, preserve the preferred Figma order: artwork and track information, transport, then time labels above seeking. Music.app informs grouping and optical spacing, not additional unsupported controls.
+- Keep the 704-by-72-point macOS player envelope, 40-point artwork, 32-point transport targets, and 20/24-point transport icons. Give the artwork and text group 232 points including its 8-point internal gap; use 16-point horizontal outer padding and gaps between groups. Keep title and artist 4 points apart. Distinguish these control dimensions from spacing tokens.
+- Inspect the actual app with content behind the glass, both empty and playing states, long track names, narrow windows, focus and pointer states. A successful build or the presence of `glassEffect` does not establish visual correctness.
+
 ## iPhone UI Guidance
 
 The [iOS Music-inspired exploration](https://www.figma.com/design/KtfBubkg9KiK5LuLHIm8Qt?node-id=18-3) defines information hierarchy and alignment. Preserve the existing UI colors and use the spacing scale below, without adding a separate iOS spacing scale.
@@ -17,6 +37,16 @@ The [iOS Music-inspired exploration](https://www.figma.com/design/KtfBubkg9KiK5L
 - Treat safe areas, native control metrics, icon optical offsets, and touch-target sizes as constraints rather than spacing tokens. Verify normal text, long text, accessibility text sizes, and narrow screens on iOS 27. Physical-device playback remains a separate check.
 
 ## macOS UI Guidance
+
+The [macOS Music-inspired exploration](https://www.figma.com/design/KtfBubkg9KiK5LuLHIm8Qt?node-id=47-2) defines the library layout and reusable controls. Keep the Syncstr palette and native system typography; Inter and Noto Sans JP in Figma are preview substitutes.
+
+- Keep the sidebar 208 points wide. Use a 300-point artist browser on wide windows, reducing it to 180 points when the content area is below 800 points. Keep artist selection visible while browsing grouped albums.
+- Use 32-point content margins, 20-point grid column gaps, 32-point grid row gaps, and 4-point title/artist gaps. The album grid adapts from a minimum card width of 180 points.
+- On wide album details, use 272-point artwork, a 32-point artwork/metadata gap, and 48 points above the title group. Stack artwork and metadata when the content area is below 640 points.
+- Use 48-point album track rows and 32-point song table rows. Draw separators inside row bounds. Preserve full titles in accessibility labels and help text when visible text truncates.
+- Use original Regen Icons SVGs, pinned to `64c0e165c3ce6d5c9d7329acf5762306f86d6b1d`, for app-owned library and playback controls. Keep native window chrome and search icons system-managed. In macOS track rows, center the original 20-point dots SVG in a 32-point target inside the row's 8-point horizontal padding. Its visible edge is 16.5 points from the selected background edge (8 padding + 6 target inset + 2.5 SVG inset). Do not offset the target outside the row. This differs from the iPhone full-player artwork/seek alignment rule.
+- Center the native Liquid Glass player in the content area excluding the sidebar. Limit it to 704 by 72 points, with a 20-point bottom inset. In compact windows keep track information and transport visible; seeking remains available in the full playback view. Reserve scrollable space below content so the player does not prevent access to the final row.
+- These dimensions describe controls and responsive constraints, not an additional spacing scale. Use only the shared spacing tokens for gaps and padding.
 
 ### Information and Actions
 
