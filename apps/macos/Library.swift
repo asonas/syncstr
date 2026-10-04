@@ -103,7 +103,13 @@ final class Library: ObservableObject {
                       if ($0.track ?? 0) != ($1.track ?? 0) { return ($0.track ?? 0) < ($1.track ?? 0) }
                       return $0.title.localizedStandardCompare($1.title) == .orderedAscending
                   })
-        }.sorted { $0.title.localizedStandardCompare($1.title) == .orderedAscending }
+        }.sorted {
+            let titleOrder = $0.title.localizedStandardCompare($1.title)
+            if titleOrder != .orderedSame { return titleOrder == .orderedAscending }
+            let artistOrder = $0.artist.localizedStandardCompare($1.artist)
+            if artistOrder != .orderedSame { return artistOrder == .orderedAscending }
+            return $0.id < $1.id
+        }
     }
 
     var visibleAlbums: [Album] {

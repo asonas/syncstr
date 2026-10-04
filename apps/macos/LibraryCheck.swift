@@ -73,7 +73,32 @@ struct LibraryCheck {
     }
 
     @MainActor
+    static func stableAlbumOrder() throws {
+        let library = Library()
+        let tracks = [
+            Track(id: "c", title: "Third", artist: "Artist B", album: "Unknown Album", albumId: "album-c"),
+            Track(id: "b", title: "Second", artist: "Artist A", album: "Unknown Album", albumId: "album-b"),
+            Track(id: "a", title: "First", artist: "Artist A", album: "Unknown Album", albumId: "album-a")
+        ]
+        library.tracks = tracks
+        let initialOrder = library.visibleAlbums.map(\.id)
+        for tick in 0..<128 {
+            library.position = Double(tick)
+            library.playing = tick.isMultiple(of: 2)
+            library.current = tracks[tick % tracks.count]
+            if tick == 64 { library.tracks.reverse() }
+            let order = library.visibleAlbums.map(\.id)
+            guard order == initialOrder else {
+                throw CheckFailure(message: "Same-title album order changed at playback tick \(tick): \(order)")
+            }
+        }
+        try require(initialOrder == ["album-a", "album-b", "album-c"])
+        print("PASS: same-title albums retain artist/ID order through playback updates and reversed input")
+    }
+
+    @MainActor
     static func main() async throws {
+        try stableAlbumOrder()
         let service = "as.ason.syncstr.test." + UUID().uuidString
         let store = CredentialStore(service: service)
         let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
