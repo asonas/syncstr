@@ -27,3 +27,5 @@ headless/data/
 headless/identity/
 headless/syncstr-headless
 headless/target/
+headless/connectivity-probe/target/
+headless/connectivity-probe/.probe-state/

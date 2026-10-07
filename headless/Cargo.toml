@@ -5,6 +5,9 @@ edition = "2024"
 rust-version = "1.99"
 publish = false
 
+[features]
+p2p = ["dep:iroh"]
+
 [dependencies]
 anyhow = "1"
 axum = { version = "0.8", features = ["multipart"] }
@@ -14,6 +17,7 @@ clap = { version = "4", features = ["derive"] }
 fs2 = "0.4"
 futures-util = "0.3"
 hex = "0.4"
+iroh = { version = "=1.3.0", default-features = false, features = ["tls-ring"], optional = true }
 hyper-util = { version = "0.1", features = ["tokio"] }
 rand = "0.9"
 rcgen = "0.14"

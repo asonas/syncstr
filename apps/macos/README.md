@@ -8,6 +8,10 @@ Choose **Select Music Folder** on first launch. Syncstr reads supported audio an
 
 The phone can save albums and listen after the Mac is closed. Use Settings to change folders. See [the local-transfer guide](../../docs/local-music-transfer.md) for trust, retry behavior, and limits.
 
+## P2P node connection
+
+Settings also provides explicit headless P2P registration, catalog access, audio uploads, and downloads. See [P2P music transfer](../../docs/p2p-music-transfer.md). The app bundles the pinned official IrohLib package and its dependency notices; existing Bonjour pairing is retained.
+
 ## Build and run
 
 Use Xcode's Swift compiler, macOS SDK, and XcodeGen. The build fetches TagLib 2.3.0 through Swift Package Manager. Find your development signing identity with `security find-identity -v -p codesigning` and supply it through `CODE_SIGN_IDENTITY`. Keep the same certificate and bundle ID across rebuilds to preserve Keychain access permissions. Switching from an ad-hoc build may require approving Keychain access once.

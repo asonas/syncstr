@@ -14,6 +14,7 @@ struct PhoneRoot: View {
     @State private var tab = PhoneTab.library
     @State private var showingPlayer = false
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    @Environment(\.scenePhase) private var scenePhase
 
     var body: some View {
         VStack(spacing: 0) {
@@ -29,6 +30,8 @@ struct PhoneRoot: View {
                 ScrollView {
                     VStack(spacing: 24) {
                         PhonePairingView(transfer: library.transfer)
+                        Divider()
+                        PeerSetupView(transfer: library.transfer)
                         if library.hasSavedLocalLibrary {
                             Button("保存した音楽を開く") { Task { await library.openSavedLocalLibrary() } }
                         }
@@ -37,6 +40,9 @@ struct PhoneRoot: View {
             }
         }
         .background(PhoneStyle.graphite)
+        .onChange(of: scenePhase) { _, phase in
+            if phase == .background, library.transfer.peerConnected { library.transfer.cancel() }
+        }
         .sheet(isPresented: $showingPlayer) {
             PhoneNowPlaying(library: library)
                 .presentationDragIndicator(.visible)
@@ -323,6 +329,7 @@ struct PhoneRoot: View {
     private var settings: some View {
         Form {
             Section { PhonePairingView(transfer: library.transfer) }
+            Section { PeerSetupView(transfer: library.transfer) }
             Section {
                 LabeledContent("曲数", value: "\(library.tracks.count)")
                 Button("別のMacを選ぶ") { library.closeLibrary() }

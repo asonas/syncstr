@@ -166,7 +166,12 @@ final class LocalTransfer: ObservableObject {
     private var browser: NWBrowser?
     private var listener: NWListener?
     private var channels: [UUID: MusicConnection] = [:]
-    private var client: MusicConnection?
+    private var client: (any MusicChannel)?
+    let peerSecrets: CredentialStore
+    private let peerPairing: CredentialStore
+    @Published var peerID = ""
+    @Published var peerName: String?
+    var peerConnected: Bool { connected && client is PeerMusicConnection }
     private var operation: Task<Void, Never>?
     private var approval: CheckedContinuation<Bool, Never>?
     private var approvalTimeout: Task<Void, Never>?
@@ -190,9 +195,13 @@ final class LocalTransfer: ObservableObject {
 #endif
 
     init(store: LocalMusicStore = LocalMusicStore(), secrets: CredentialStore = CredentialStore(
-        service: "as.ason.syncstr.local-pair", label: "syncstr paired device")) {
+        service: "as.ason.syncstr.local-pair", label: "syncstr paired device"),
+        peerSecrets: CredentialStore = CredentialStore(service: "as.ason.syncstr.p2p.identity"),
+        peerPairing: CredentialStore = CredentialStore(service: "as.ason.syncstr.p2p.peer")) {
         self.store = store
         self.secrets = secrets
+        self.peerSecrets = peerSecrets
+        self.peerPairing = peerPairing
     }
 
     func browse() {
@@ -225,6 +234,133 @@ final class LocalTransfer: ObservableObject {
     func restorePairing() async {
         do { pairedName = try await secrets.load()?.name }
         catch { status = "ペアリング情報を読み込めませんでした。もう一度お試しください。" }
+    }
+
+    func restorePeer() async {
+        do {
+            peerID = try await PeerMusicConnection.publicID(secrets: peerSecrets)
+            peerName = try await peerPairing.load()?.name
+        } catch { status = error.localizedDescription }
+    }
+
+    func connectPeer(addressText: String, expected: String, name: String) {
+        cancel()
+        let attempt = generation
+        busy = true
+        status = "P2Pで接続中…"
+        operation = Task {
+            defer { if generation == attempt { busy = false } }
+            do {
+                guard addressText.utf8.count <= 16384 else { throw LocalMusicError.invalidData }
+                let bytes = Data(addressText.utf8)
+                let address = try JSONDecoder().decode(PeerAddress.self, from: bytes)
+                let channel = try await PeerMusicConnection.connect(address: address, expected: expected, secrets: peerSecrets)
+                guard generation == attempt, !Task.isCancelled else { channel.close(); return }
+                client = channel
+                try await channel.send(MusicMessage(kind: "hello", name: name))
+                let header = try await channel.receive()
+                guard header.kind == "catalog", let id = header.library, UUID(uuidString: id) != nil else { throw LocalMusicError.invalidData }
+                var entries: [LocalEntry] = []
+                var metadataBytes = 0
+                var ids = Set<String>()
+                while true {
+                    let message = try await channel.receive()
+                    if message.kind == "ready" { break }
+                    guard message.kind == "entry", let entry = message.entry, LocalMusicStore.valid(entry),
+                          ids.insert(entry.track.id).inserted else { throw LocalMusicError.invalidData }
+                    metadataBytes += try JSONEncoder().encode(entry).count
+                    guard entries.count < 100000, metadataBytes <= 256 * 1024 * 1024 else { throw LocalMusicError.invalidData }
+                    entries.append(entry)
+                }
+                guard generation == attempt, !Task.isCancelled else { channel.close(); return }
+                if let previous = try store.load(), previous.id == id {
+                    let saved = previous.entries.filter { store.hasFile($0) }
+                    let savedByID = Dictionary(uniqueKeysWithValues: saved.map { ($0.track.id, $0) })
+                    entries = entries.map { savedByID[$0.track.id] ?? $0 }
+                    entries += saved.filter { !ids.contains($0.track.id) }
+                }
+                let catalog = LocalCatalog(id: id, name: header.name ?? name, entries: entries)
+                if let onCatalog { try onCatalog(catalog) } else { try store.save(catalog) }
+                try await peerPairing.save(PairingCredentials(libraryID: expected, name: name, key: bytes.base64EncodedString()))
+                guard generation == attempt else { return }
+                self.catalog = catalog
+                peerName = name
+                connected = true
+                status = "P2Pで接続しました。アルバムを選んで保存できます。"
+            } catch {
+                if generation == attempt { client?.close(); client = nil; connected = false; status = error.localizedDescription }
+            }
+        }
+    }
+
+    func reconnectPeer() async {
+        do {
+            guard let saved = try await peerPairing.load(), let bytes = Data(base64Encoded: saved.key),
+                  let address = String(data: bytes, encoding: .utf8) else { throw LocalMusicError.invalidData }
+            connectPeer(addressText: address, expected: saved.libraryID, name: saved.name)
+        } catch { status = error.localizedDescription }
+    }
+
+    func forgetPeer() async {
+        cancel()
+        do { try await peerPairing.remove(); peerName = nil; status = "P2Pの接続先を削除しました。保存済みの音楽は残ります。" }
+        catch { status = error.localizedDescription }
+    }
+
+    func uploadPeer(files: [URL]) {
+        guard let client = client as? PeerMusicConnection, connected, !busy else { return }
+        let attempt = generation
+        busy = true
+        total = files.count
+        completed = 0
+        progress = 0
+        operation = Task {
+            defer { if generation == attempt { busy = false } }
+            do {
+                for url in files {
+                    let scoped = url.startAccessingSecurityScopedResource()
+                    defer { if scoped { url.stopAccessingSecurityScopedResource() } }
+                    let temporary = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+                    defer { try? FileManager.default.removeItem(at: temporary) }
+                    let entry = try await Task.detached {
+                        let source = try url.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey])
+                        guard source.isRegularFile == true, let sourceSize = source.fileSize, sourceSize > 0,
+                              UInt64(sourceSize) <= 20 * 1024 * 1024 * 1024,
+                              ["mp3", "m4a", "aac", "flac", "wav", "aiff", "aif", "alac"].contains(url.pathExtension.lowercased()) else {
+                            throw LocalMusicError.invalidData
+                        }
+                        try FileManager.default.copyItem(at: url, to: temporary)
+                        let size = try temporary.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0
+                        let track = Track(id: UUID().uuidString, title: url.deletingPathExtension().lastPathComponent, artist: nil,
+                            suffix: url.pathExtension.lowercased(), size: UInt64(size))
+                        return LocalEntry(track: track, sha256: try LocalMusicStore.digest(file: temporary), artwork: nil)
+                    }.value
+                    guard LocalMusicStore.valid(entry) else { throw LocalMusicError.invalidData }
+                    try Task.checkCancellation()
+                    guard generation == attempt else { return }
+                    status = "「\(entry.track.title)」を送信中…"
+                    try await client.send(MusicMessage(kind: "put", entry: entry))
+                    guard try await client.receive().kind == "accept" else { throw LocalMusicError.invalidData }
+                    let handle = try FileHandle(forReadingFrom: temporary)
+                    defer { try? handle.close() }
+                    var sent = 0
+                    while let bytes = try handle.read(upToCount: 65536), !bytes.isEmpty {
+                        try await client.send(MusicMessage(kind: "data", bytes: bytes))
+                        sent += bytes.count
+                        progress = (Double(completed) + Double(sent) / Double(entry.track.size!)) / Double(max(1, total))
+                    }
+                    try await client.send(MusicMessage(kind: "end"))
+                    let response = try await client.receive()
+                    guard response.kind == "saved", let saved = response.entry, LocalMusicStore.valid(saved),
+                          saved.sha256 == entry.sha256, saved.track.size == entry.track.size else { throw LocalMusicError.invalidData }
+                    completed += 1
+                }
+                progress = 1
+                status = "\(completed)曲を接続先に追加しました。ライブラリは再接続すると更新されます。"
+            } catch {
+                if generation == attempt { client.close(); self.client = nil; connected = false; status = error.localizedDescription }
+            }
+        }
     }
 
     func cancel() {
@@ -477,4 +613,5 @@ final class LocalTransfer: ObservableObject {
             }
         }
     }
+
 }

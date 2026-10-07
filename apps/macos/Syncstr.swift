@@ -200,6 +200,12 @@ struct LibraryView: View {
                             Text("\(album.tracks.count)曲").font(.system(size: 12)).foregroundStyle(Studio.fog)
                             Spacer(minLength: 20)
                             playButton(album.tracks)
+                            if library.transfer.peerConnected {
+                                Button("アルバムを保存") { library.transfer.copy(album.tracks) }
+                                    .buttonStyle(.bordered).disabled(library.transfer.busy)
+                                if library.transfer.busy { ProgressView(value: library.transfer.progress) }
+                                if let status = library.transfer.status { Text(status).font(.caption).foregroundStyle(.secondary) }
+                            }
                         }.frame(minHeight: wide ? 272 : nil, alignment: .topLeading)
                         if wide { Spacer(minLength: 0) }
                     }
@@ -359,6 +365,9 @@ struct LibraryView: View {
                 .accessibilityAddTraits(library.current?.id == track.id ? .isSelected : [])
             Menu {
                 Button("再生") { library.play(track, in: tracks) }
+                if library.transfer.peerConnected {
+                    Button("曲を保存") { library.transfer.copy([track]) }.disabled(library.transfer.busy)
+                }
                 Button("アルバムを表示") { library.selectedAlbum = track.albumKey; library.search = ""; library.showingNowPlaying = false }
                 Button("アーティストを表示") { self.showArtist(track.artist ?? "アーティスト不明") }
             } label: { Text("\(track.title)のその他の操作").hidden().frame(width: 32, height: 32) }

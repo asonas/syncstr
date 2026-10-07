@@ -8,6 +8,10 @@ On the Mac, choose a music folder and open **Transfer to iPhone**. On the phone,
 
 The catalog, artwork, and completed audio remain on the phone after restarting without networking. Unsaved tracks remain distinguishable from saved tracks. Pairing controls are in Settings; removing a pairing retains received files. See [the local-transfer guide](../../docs/local-music-transfer.md).
 
+## P2P node connection
+
+Settings also provides explicit headless P2P registration, catalog access, audio uploads, and downloads. See [P2P music transfer](../../docs/p2p-music-transfer.md). The app bundles the pinned official IrohLib package and its dependency notices; existing Bonjour pairing is retained.
+
 ## Build and run
 
 Use Xcode and an iOS Simulator. [project.yml](project.yml) is the XcodeGen source of truth.

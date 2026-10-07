@@ -149,8 +149,9 @@ final class Library: ObservableObject {
 
     func reload() {
 #if os(macOS)
-        if let url = localFolder?.root { Task { await chooseFolder(url) }; return }
+        if let folder = localFolder, folder.catalog.id == localCatalog?.id { Task { await chooseFolder(folder.root) }; return }
 #endif
+        if transfer.peerName != nil { Task { await transfer.reconnectPeer() } }
     }
 
     func openLocal(_ catalog: LocalCatalog) throws {
@@ -174,9 +175,14 @@ final class Library: ObservableObject {
 
     func refreshLocalFiles() {
         guard let localCatalog else { return }
-#if os(iOS)
         localFiles = Dictionary(uniqueKeysWithValues: localCatalog.entries.filter { localStore.hasFile($0) }
             .map { ($0.track.id, localStore.fileURL($0)) })
+#if os(macOS)
+        if let folder = localFolder, folder.catalog.id == localCatalog.id {
+            localFiles.merge(folder.files) { _, original in original }
+        }
+#endif
+#if os(iOS)
         downloaded = Set(localFiles.keys)
 #endif
     }
@@ -188,6 +194,10 @@ final class Library: ObservableObject {
     func openSavedLocalLibrary() async {
         do {
 #if os(macOS)
+            if let snapshot = try localStore.snapshot(), snapshot.sourceRoot == nil {
+                try openLocal(snapshot.catalog)
+                return
+            }
             let data = try Data(contentsOf: localStore.root.appendingPathComponent("folder.bookmark"))
             var stale = false
             let url = try URL(resolvingBookmarkData: data, options: .withSecurityScope,

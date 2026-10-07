@@ -1,5 +1,8 @@
 name: Syncstr
 packages:
+  IrohLib:
+    url: https://github.com/n0-computer/iroh-ffi
+    exactVersion: 1.1.0
   AudioTags:
     path: ../macos/AudioTags
 options:
@@ -22,6 +25,8 @@ targets:
       - path: ../macos/LocalCatalog.swift
       - path: ../macos/CatalogDatabase.swift
       - path: ../macos/LocalTransfer.swift
+      - path: ../macos/PeerTransfer.swift
+      - path: ../macos/PeerSetup.swift
       - path: ../macos/LocalSetup.swift
       - path: ../macos/Library.swift
       - path: ../macos/Track.swift
@@ -31,6 +36,7 @@ targets:
       - path: ../macos/SettingsView.swift
       - path: ../macos/Assets.xcassets
     dependencies:
+      - package: IrohLib
       - package: AudioTags
     settings:
       base:
@@ -64,10 +70,14 @@ targets:
       - path: ../macos/LocalCatalog.swift
       - path: ../macos/CatalogDatabase.swift
       - path: ../macos/LocalTransfer.swift
+      - path: ../macos/PeerTransfer.swift
+      - path: ../macos/PeerSetup.swift
       - path: ../macos/LocalSetup.swift
       - path: ../macos/Library.swift
       - path: ../macos/Track.swift
       - path: ../macos/CredentialStore.swift
+    dependencies:
+      - package: IrohLib
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: as.ason.syncstr.ios
@@ -114,9 +124,11 @@ targets:
       - path: ../macos/LocalCatalog.swift
       - path: ../macos/CatalogDatabase.swift
       - path: ../macos/LocalTransfer.swift
+      - path: ../macos/PeerTransfer.swift
       - path: ../macos/Track.swift
       - path: ../macos/CredentialStore.swift
     dependencies:
+      - package: IrohLib
       - package: AudioTags
     settings:
       base:
@@ -130,9 +142,11 @@ targets:
       - path: ../macos/LocalCatalog.swift
       - path: ../macos/CatalogDatabase.swift
       - path: ../macos/LocalTransfer.swift
+      - path: ../macos/PeerTransfer.swift
       - path: ../macos/Track.swift
       - path: ../macos/CredentialStore.swift
     dependencies:
+      - package: IrohLib
       - package: AudioTags
 schemes:
   LibraryCheck:

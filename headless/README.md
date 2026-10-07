@@ -50,6 +50,8 @@ This does not configure router forwarding or make a NAS behind NAT reachable fro
 
 ## Version 1 HTTP contract
 
+For opt-in QUIC transport and native macOS/iPhone clients, see [P2P music transfer](../docs/p2p-music-transfer.md). The default build and Docker command remain HTTPS-only.
+
 Every endpoint requires `Authorization: Bearer <token>` over HTTPS. The node token currently authorizes all operations. There is no anonymous catalog endpoint, deletion endpoint, credential query parameter, or plaintext listener.
 
 | Method and path | Contract |
