@@ -31,9 +31,21 @@ Each message is UTF-8 JSON, preceded by a four-byte unsigned big-endian body len
 | Mac to phone | `end` | `track`: completed track ID |
 | Mac to phone | `changed` | Source does not match its indexed digest; refresh the Mac library |
 
-An entry contains `track`, lowercase hexadecimal `sha256`, and optional Base64 `artwork` (JPEG, at most 512 KiB). `track` contains `id`, `title`, optional `artist`, `album`, `albumId`, `coverArt`, `duration` in seconds, `track` number, `discNumber`, `suffix`, and `size` in bytes. `coverArt`, when present, equals the track ID. IDs are opaque to clients. The Mac derives track IDs from library identity and relative file path; unchanged rescans retain them. SHA-256 identifies the exact audio version. The receiver limits catalogs to 100,000 entries and 256 MiB of accumulated encoded entries.
+An entry contains `track`, lowercase hexadecimal `sha256`, and optional Base64 `artwork` (JPEG, at most 512 KiB). `track` contains `id`, `title`, optional `artist`, `album`, `albumId`, `coverArt`, `duration` in seconds, `track` number, `discNumber`, `suffix`, and `size` in bytes. `coverArt`, when present, equals the track ID. IDs are opaque to clients and persist in the local catalog. SHA-256 identifies the exact audio version. The receiver limits catalogs to 100,000 entries and 256 MiB of accumulated encoded entries.
 
 The receiver persists the catalog independently of the connection. It writes audio to private staging files, checks exact byte size and SHA-256, then atomically publishes the file. Artwork is stored locally with the catalog. UI availability is derived from published files, never staging files. Retrying checks the digest of previously completed files before skipping them.
+
+## Catalog storage
+
+Each app stores its current library in `LocalMusic/catalog.sqlite`, using the system SQLite library and schema version 1. The database is local to that app; it is not transferred between devices. The version 1 JSON wire contract is unchanged.
+
+- `catalog` stores the library identity, display name, and optional local source root.
+- `entries` stores stable track IDs, ordering, content hashes, encoded entry metadata, and source-relative file paths. Source paths remain private to the device and are never accepted from peers.
+- `received_files` records content hashes and private-storage relative paths after audio publication. Filesystem presence and size remain the authority for playback availability. A file published immediately before a database write failure is rediscovered when its catalog is saved again.
+
+Catalog and source-location replacement commits in one transaction. An unsuccessful write leaves the preceding catalog intact. The first successful load imports `catalog.json`, preserving the library and track IDs and indexing existing received files. JSON remains untouched as a migration backup; after SQLite contains a catalog, JSON is no longer read or updated. Failed imports can retry, while a corrupt or unsupported SQLite database reports an error rather than silently reopening a stale JSON catalog. Artwork, audio filenames, the active-library marker, the security-scoped folder bookmark, and Keychain credentials retain their existing locations.
+
+The scanner reconciles files with persisted relative paths before assigning IDs. On the first migrated scan, it recognizes legacy path-derived IDs. A file at an existing path retains its ID when metadata or content changes. Among unmatched entries, an exact content hash preserves identity only when there is one old candidate and one new candidate. Ambiguous duplicate matches receive separate new UUIDs. A move combined with a content change cannot be identified by this rule. New files receive UUIDs independent of their paths. The app still supports one selected source folder and one current received catalog; this does not implement multi-node ownership, uploads to a NAS, or distributed catalog conflict resolution.
 
 ## Format and execution limits
 

@@ -18,7 +18,7 @@ No login or alternate server connection is part of onboarding. macOS Settings se
 
 - **Source folder:** A user-selected Mac directory, read through a security-scoped bookmark.
 - **Catalog:** A persisted library identity, track metadata, audio hashes, and artwork.
-- **Track:** One indexed audio file. IDs derive from library identity and relative path; SHA-256 identifies the audio version.
+- **Track:** One indexed audio file with a persisted opaque ID. Existing IDs survive catalog migration; newly indexed tracks receive UUIDs. SHA-256 identifies the exact file version, separately from track identity. See the [catalog storage contract](local-music-transfer.md#catalog-storage) for rescan matching.
 - **Pairing:** Explicit Mac approval of a phone with a shared key retained in each device's nonsynchronizing Keychain.
 - **Received audio:** A durable phone copy published only after exact size and SHA-256 verification. Partial staging files never count as available tracks.
 

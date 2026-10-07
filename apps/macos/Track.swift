@@ -1,7 +1,7 @@
 import Foundation
 
 struct Track: Codable, Identifiable, Equatable {
-    let id: String
+    var id: String
     let title: String
     let artist: String?
     var album: String? = nil

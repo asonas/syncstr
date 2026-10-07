@@ -30,7 +30,7 @@ final class LocalLibraryTests: XCTestCase {
     }
 
     @MainActor
-    func testColdLaunchRestoresCatalogAndPlaysReceivedAudio() async throws {
+    func testColdLaunchMigratesLegacyCatalogAndPlaysReceivedAudio() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }
         let files = LocalMusicStore(root: root)
@@ -50,8 +50,9 @@ final class LocalLibraryTests: XCTestCase {
             duration: 1, track: 1, suffix: "wav", size: UInt64(audio.count))
         let entry = LocalEntry(track: track, sha256: hash, artwork: nil)
         try files.importFile(temporary, entry: entry)
-        let initial = Library(localStore: files)
-        try initial.openLocal(LocalCatalog(id: UUID().uuidString, name: "Fixture Music", entries: [entry]))
+        let catalog = LocalCatalog(id: UUID().uuidString, name: "Fixture Music", entries: [entry])
+        try JSONEncoder().encode(catalog).write(to: root.appendingPathComponent("catalog.json"))
+        try Data().write(to: root.appendingPathComponent("active"))
 
         var playbackURL: URL?
         var player: AVPlayer?

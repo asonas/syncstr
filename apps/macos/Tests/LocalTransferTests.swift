@@ -189,6 +189,7 @@ final class LocalTransferTests: XCTestCase {
         try Data("abc".utf8).write(to: temporary)
         try files.importFile(temporary, entry: entry)
         XCTAssertTrue(files.hasFile(entry))
+        XCTAssertFalse(files.hasCatalog)
     }
 
     func testScanReadsTagsAndArtworkWithoutFollowingExternalLinksOrEditingAudio() async throws {
@@ -223,8 +224,75 @@ final class LocalTransferTests: XCTestCase {
             XCTAssertNotNil(entry.artwork)
             XCTAssertEqual(try Data(contentsOf: folder.files[entry.track.id]!), originals[folder.files[entry.track.id]!.lastPathComponent])
         }
-        let rescanned = try await LocalFolder.scan(source, id: id)
+        let store = LocalMusicStore(root: root.appendingPathComponent("catalog"))
+        try store.save(folder)
+        let rescanned = try await LocalFolder.scan(source, id: id, previous: store.snapshot())
         XCTAssertEqual(rescanned.catalog.entries.map { $0.track.id }, folder.catalog.entries.map { $0.track.id })
+    }
+
+    func testSourceLocationsAndIdentitySurviveMigrationRenameAndDuplicateFiles() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let source = root.appendingPathComponent("source")
+        let original = try fixture(source)
+        let store = LocalMusicStore(root: root.appendingPathComponent("catalog"))
+        var legacy = try await LocalFolder.scan(source, id: "fixture-library").catalog
+        let enumerated = try XCTUnwrap(FileManager.default.enumerator(at: source.standardizedFileURL.resolvingSymlinksInPath(),
+            includingPropertiesForKeys: nil)?.nextObject() as? URL)
+        let legacyRelative = String(enumerated.path.dropFirst(source.standardizedFileURL.resolvingSymlinksInPath().path.count))
+        let legacyID = LocalMusicStore.digest(Data(("fixture-library" + legacyRelative).utf8))
+        legacy.entries[0].track.id = legacyID
+        try store.prepare()
+        try JSONEncoder().encode(legacy).write(to: store.root.appendingPathComponent("catalog.json"))
+        let migrated = try await LocalFolder.scan(source, id: legacy.id, previous: store.snapshot())
+        XCTAssertEqual(migrated.catalog.entries[0].track.id, legacyID)
+        try store.save(migrated)
+        XCTAssertEqual(try store.snapshot()?.sourcePaths, [legacyID: "First.wav"])
+        let renamed = source.appendingPathComponent("Renamed.wav")
+        try FileManager.default.moveItem(at: original, to: renamed)
+        let reopened = LocalMusicStore(root: store.root)
+        let scanned = try await LocalFolder.scan(source, id: legacy.id, previous: reopened.snapshot())
+        XCTAssertEqual(scanned.catalog.entries[0].track.id, legacyID)
+        XCTAssertEqual(scanned.files[legacyID], renamed)
+        try reopened.save(scanned)
+        let duplicate = source.appendingPathComponent("Duplicate.wav")
+        try FileManager.default.copyItem(at: renamed, to: duplicate)
+        let copied = try await LocalFolder.scan(source, id: legacy.id, previous: reopened.snapshot())
+        XCTAssertEqual(copied.catalog.entries.count, 2)
+        XCTAssertEqual(Set(copied.catalog.entries.map { $0.track.id }).count, 2)
+        XCTAssertEqual(copied.files[legacyID], renamed)
+        try reopened.save(copied)
+        try FileManager.default.moveItem(at: renamed, to: source.appendingPathComponent("A.wav"))
+        try FileManager.default.moveItem(at: duplicate, to: source.appendingPathComponent("B.wav"))
+        let ambiguous = try await LocalFolder.scan(source, id: legacy.id, previous: reopened.snapshot())
+        XCTAssertTrue(Set(ambiguous.files.keys).isDisjoint(with: copied.files.keys))
+        try reopened.save(ambiguous)
+        XCTAssertEqual(try reopened.snapshot()?.sourceRoot?.path, source.path)
+        XCTAssertEqual(Set(try XCTUnwrap(reopened.snapshot()).sourcePaths.values), ["A.wav", "B.wav"])
+    }
+
+    func testLegacyDuplicateIDsSurvivePathNormalization() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let source = root.appendingPathComponent("source")
+        let original = try fixture(source)
+        try FileManager.default.copyItem(at: original, to: source.appendingPathComponent("Copy.wav"))
+        var catalog = try await LocalFolder.scan(source, id: "legacy").catalog
+        let canonical = source.standardizedFileURL.resolvingSymlinksInPath()
+        let enumerator = try XCTUnwrap(FileManager.default.enumerator(at: canonical, includingPropertiesForKeys: nil))
+        var idsByName: [String: String] = [:]
+        for case let url as URL in enumerator {
+            idsByName[url.deletingPathExtension().lastPathComponent] = LocalMusicStore.digest(
+                Data(("legacy" + String(url.path.dropFirst(canonical.path.count))).utf8))
+        }
+        for index in catalog.entries.indices {
+            catalog.entries[index].track.id = try XCTUnwrap(idsByName[catalog.entries[index].track.title])
+        }
+        let previous = CatalogSnapshot(catalog: catalog, sourceRoot: nil, sourcePaths: [:])
+        let scanned = try await LocalFolder.scan(source, id: catalog.id, previous: previous)
+        for entry in scanned.catalog.entries {
+            XCTAssertEqual(entry.track.id, idsByName[entry.track.title])
+        }
     }
 
     func testStorageFailureDoesNotPublishAudio() throws {

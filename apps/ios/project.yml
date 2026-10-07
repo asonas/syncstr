@@ -20,6 +20,7 @@ targets:
     sources:
       - path: ../macos/Syncstr.swift
       - path: ../macos/LocalCatalog.swift
+      - path: ../macos/CatalogDatabase.swift
       - path: ../macos/LocalTransfer.swift
       - path: ../macos/LocalSetup.swift
       - path: ../macos/Library.swift
@@ -61,6 +62,7 @@ targets:
       - path: Licenses
         buildPhase: resources
       - path: ../macos/LocalCatalog.swift
+      - path: ../macos/CatalogDatabase.swift
       - path: ../macos/LocalTransfer.swift
       - path: ../macos/LocalSetup.swift
       - path: ../macos/Library.swift
@@ -92,7 +94,9 @@ targets:
   SyncstrTests:
     type: bundle.unit-test
     platform: iOS
-    sources: [Tests]
+    sources:
+      - path: Tests
+      - path: ../macos/Tests/CatalogMigrationTests.swift
     settings:
       base:
         GENERATE_INFOPLIST_FILE: YES
@@ -104,6 +108,7 @@ targets:
     sources:
       - path: ../macos/Tests
       - path: ../macos/LocalCatalog.swift
+      - path: ../macos/CatalogDatabase.swift
       - path: ../macos/LocalTransfer.swift
       - path: ../macos/Track.swift
       - path: ../macos/CredentialStore.swift
@@ -119,6 +124,7 @@ targets:
       - path: ../macos/LibraryCheck.swift
       - path: ../macos/Library.swift
       - path: ../macos/LocalCatalog.swift
+      - path: ../macos/CatalogDatabase.swift
       - path: ../macos/LocalTransfer.swift
       - path: ../macos/Track.swift
       - path: ../macos/CredentialStore.swift

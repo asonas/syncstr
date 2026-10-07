@@ -11,6 +11,8 @@ These decisions describe the local music product. The initial server-oriented sp
 | D-010 | Implement macOS and iPhone first | Validate native playback and transfer with a small scope | Windows and Android are deferred |
 | D-011 | Make Mac-folder-to-iPhone local copies the sole music source | General users should not need to administer a server | Supersede the initial NAS authority, server sequencing, account authentication, and media-adapter requirements |
 | D-012 | Require explicit pairing approval and verify received audio | Discovery alone does not establish trust; partial files must not become playable | Retain pairing keys in Keychain and publish audio after exact size and SHA-256 checks |
+| D-013 | Persist each device's catalog and local file locations in SQLite | Preserve identity across restarts and support transactional catalog replacement | Migrate existing JSON without changing pairing or audio; keep the JSON transfer protocol |
+| D-014 | Allow additions from any device, with an always-on headless NAS collecting originals | Devices should not have permanently assigned source and receiver roles | Extend beyond D-011 in future milestones; NAS uploads, headless execution, and remote access remain unimplemented |
 
 ## Unresolved decisions
 

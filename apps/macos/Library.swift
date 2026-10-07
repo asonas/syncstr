@@ -182,7 +182,7 @@ final class Library: ObservableObject {
     }
 
     var hasSavedLocalLibrary: Bool {
-        FileManager.default.fileExists(atPath: localStore.root.appendingPathComponent("catalog.json").path)
+        localStore.hasCatalog
     }
 
     func openSavedLocalLibrary() async {
@@ -207,7 +207,7 @@ final class Library: ObservableObject {
         let scoped = url.startAccessingSecurityScopedResource()
         var releaseScopeOnFailure = scoped
         do {
-            let oldCatalog = try localStore.load()
+            let previous = try localStore.snapshot()
             let bookmarkURL = localStore.root.appendingPathComponent("folder.bookmark")
             var previousFolder = localFolder?.root
             if previousFolder == nil, let data = try? Data(contentsOf: bookmarkURL) {
@@ -216,10 +216,11 @@ final class Library: ObservableObject {
                     relativeTo: nil, bookmarkDataIsStale: &stale)
             }
             let sameFolder = previousFolder?.standardizedFileURL.resolvingSymlinksInPath().path == url.standardizedFileURL.resolvingSymlinksInPath().path
-            let id = sameFolder ? oldCatalog?.id ?? UUID().uuidString : UUID().uuidString
-            let folder = try await Task.detached { try await LocalFolder.scan(url, id: id) }.value
+            let id = sameFolder ? previous?.catalog.id ?? UUID().uuidString : UUID().uuidString
+            let folder = try await Task.detached { try await LocalFolder.scan(url, id: id, previous: previous) }.value
             try localStore.prepare()
             let bookmark = try url.bookmarkData(options: .withSecurityScope, includingResourceValuesForKeys: nil, relativeTo: nil)
+            try localStore.save(folder)
             try bookmark.write(to: localStore.root.appendingPathComponent("folder.bookmark"), options: .atomic)
             try openLocal(folder.catalog)
             if let scopedFolder { scopedFolder.stopAccessingSecurityScopedResource() }

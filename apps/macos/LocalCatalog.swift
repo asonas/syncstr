@@ -62,12 +62,44 @@ struct LocalMusicStore {
     }
 
     func load() throws -> LocalCatalog? {
-        let url = root.appendingPathComponent("catalog.json")
-        guard FileManager.default.fileExists(atPath: url.path) else { return nil }
-        return try JSONDecoder().decode(LocalCatalog.self, from: Data(contentsOf: url))
+        try snapshot()?.catalog
+    }
+
+    var hasCatalog: Bool {
+        if FileManager.default.fileExists(atPath: root.appendingPathComponent("catalog.json").path) { return true }
+        guard hasStorage else { return false }
+        return (try? CatalogDatabase(root.appendingPathComponent("catalog.sqlite")).containsCatalog()) ?? true
+    }
+
+    private var hasStorage: Bool {
+        FileManager.default.fileExists(atPath: root.appendingPathComponent("catalog.sqlite").path)
+            || FileManager.default.fileExists(atPath: root.appendingPathComponent("catalog.json").path)
+    }
+
+    func snapshot() throws -> CatalogSnapshot? {
+        guard hasStorage else { return nil }
+        return try database().snapshot()
+    }
+
+    private func database() throws -> CatalogDatabase {
+        try prepare()
+        let database = try CatalogDatabase(root.appendingPathComponent("catalog.sqlite"))
+        let legacy = root.appendingPathComponent("catalog.json")
+        if try !database.containsCatalog(), FileManager.default.fileExists(atPath: legacy.path) {
+            let catalog = try JSONDecoder().decode(LocalCatalog.self, from: Data(contentsOf: legacy))
+            try writeArtwork(catalog)
+            try database.save(catalog, received: catalog.entries.filter(hasFile))
+        }
+        return database
     }
 
     func save(_ catalog: LocalCatalog) throws {
+        let database = try database()
+        try writeArtwork(catalog)
+        try database.save(catalog, received: catalog.entries.filter(hasFile))
+    }
+
+    private func writeArtwork(_ catalog: LocalCatalog) throws {
         guard Set(catalog.entries.map { $0.track.id }).count == catalog.entries.count else {
             throw LocalMusicError.invalidData
         }
@@ -76,7 +108,6 @@ struct LocalMusicStore {
             guard Self.valid(entry) else { throw LocalMusicError.invalidData }
             if let artwork = entry.artwork { try artwork.write(to: artworkURL(entry), options: .atomic) }
         }
-        try JSONEncoder().encode(catalog).write(to: root.appendingPathComponent("catalog.json"), options: .atomic)
     }
 
     static func valid(_ entry: LocalEntry) -> Bool {
@@ -110,12 +141,28 @@ struct LocalMusicStore {
         try prepare()
         let destination = fileURL(entry)
         if FileManager.default.fileExists(atPath: destination.path) {
-            if try Self.digest(file: destination) == entry.sha256 { return }
-            _ = try FileManager.default.replaceItemAt(destination, withItemAt: temporary)
+            if try Self.digest(file: destination) != entry.sha256 {
+                _ = try FileManager.default.replaceItemAt(destination, withItemAt: temporary)
+            }
         } else {
             try FileManager.default.moveItem(at: temporary, to: destination)
         }
+        try database().recordReceived(entry)
     }
+
+#if os(macOS)
+    func save(_ folder: LocalFolder) throws {
+        let database = try database()
+        try writeArtwork(folder.catalog)
+        let prefix = folder.root.path + "/"
+        var paths: [String: String] = [:]
+        for (id, url) in folder.files {
+            guard url.path.hasPrefix(prefix) else { throw LocalMusicError.invalidData }
+            paths[id] = String(url.path.dropFirst(prefix.count))
+        }
+        try database.save(folder.catalog, sourceRoot: folder.root, sourcePaths: paths)
+    }
+#endif
 }
 
 #if os(macOS)
@@ -125,7 +172,7 @@ struct LocalFolder {
     var files: [String: URL]
     var skipped: [String]
 
-    static func scan(_ root: URL, id: String) async throws -> LocalFolder {
+    static func scan(_ root: URL, id: String, previous: CatalogSnapshot? = nil) async throws -> LocalFolder {
         let root = root.standardizedFileURL.resolvingSymlinksInPath()
         let keys: Set<URLResourceKey> = [.isRegularFileKey, .isSymbolicLinkKey]
         var enumerationError: Error?
@@ -142,6 +189,8 @@ struct LocalFolder {
             try Task.checkCancellation()
             let values = try url.resourceValues(forKeys: keys)
             guard values.isSymbolicLink != true, values.isRegularFile == true else { continue }
+            let legacyRelative = String(url.path.dropFirst(root.path.count))
+            let url = url.standardizedFileURL.resolvingSymlinksInPath()
             guard extensions.contains(url.pathExtension.lowercased()) else {
                 if ["ogg", "opus", "wma", "ape"].contains(url.pathExtension.lowercased()) { skipped.append(url.lastPathComponent) }
                 continue
@@ -157,8 +206,7 @@ struct LocalFolder {
                     return value
                 }
                 func number(_ key: String) -> Int? { tag(key)?.split(separator: "/").first.flatMap { Int($0) } }
-                let relative = String(url.path.dropFirst(root.path.count))
-                let trackID = LocalMusicStore.digest(Data((id + relative).utf8))
+                let trackID = LocalMusicStore.digest(Data((id + legacyRelative).utf8))
                 var artwork: Data?
                 if let data = tags["artwork"] as? Data, data.count <= 10 * 1024 * 1024,
                    let source = CGImageSourceCreateWithData(data as CFData, nil),
@@ -187,8 +235,34 @@ struct LocalFolder {
         }
         if let enumerationError { throw enumerationError }
         guard !entries.isEmpty else { throw LocalMusicError.noMusic }
+        let old = previous?.catalog.id == id ? previous : nil
+        let oldEntries = Dictionary(uniqueKeysWithValues: (old?.catalog.entries ?? []).map { ($0.track.id, $0) })
+        let oldPaths = Dictionary(uniqueKeysWithValues: (old?.sourcePaths ?? [:]).map { ($0.value, $0.key) })
+        var retained: [String: String] = [:]
+        for entry in entries {
+            let path = String(files[entry.track.id]!.path.dropFirst(root.path.count + 1))
+            if let existing = oldPaths[path] { retained[entry.track.id] = existing }
+            else if old?.sourceRoot == nil, oldEntries[entry.track.id] != nil {
+                // The first SQLite scan preserves IDs derived from legacy relative paths.
+                retained[entry.track.id] = entry.track.id
+            }
+        }
+        let used = Set(retained.values)
+        let missing = Dictionary(grouping: oldEntries.values.filter { !used.contains($0.track.id) }, by: \.sha256)
+        let added = Dictionary(grouping: entries.filter { retained[$0.track.id] == nil }, by: \.sha256)
+        var stableFiles: [String: URL] = [:]
+        entries = entries.map { entry in
+            let matches = missing[entry.sha256] ?? []
+            let renamedID = matches.count == 1 && added[entry.sha256]?.count == 1 ? matches[0].track.id : nil
+            let stableID = retained[entry.track.id] ?? renamedID ?? UUID().uuidString
+            stableFiles[stableID] = files[entry.track.id]
+            var updated = entry
+            updated.track.id = stableID
+            if updated.track.coverArt != nil { updated.track.coverArt = stableID }
+            return updated
+        }
         return LocalFolder(root: root, catalog: LocalCatalog(id: id, name: root.lastPathComponent,
-            entries: entries.sorted { $0.track.id < $1.track.id }), files: files, skipped: skipped)
+            entries: entries.sorted { $0.track.id < $1.track.id }), files: stableFiles, skipped: skipped)
     }
 }
 #endif
