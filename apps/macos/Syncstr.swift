@@ -29,30 +29,9 @@ struct StudioButton: ButtonStyle {
     }
 }
 
-struct StudioInput: ViewModifier {
-    @FocusState private var focused: Bool
-
-    func body(content: Content) -> some View {
-        content
-            .textFieldStyle(.plain)
-            .font(.system(size: 14))
-            .padding(.horizontal, 16)
-            .frame(minHeight: 44)
-            .background(Studio.carbon)
-            .clipShape(RoundedRectangle(cornerRadius: 4))
-            .focused($focused)
-            .overlay {
-                RoundedRectangle(cornerRadius: 4)
-                    .strokeBorder(focused ? Studio.signal : Studio.iron, lineWidth: focused ? 2 : 1)
-            }
-    }
-}
-
 struct LibraryView: View {
     @ObservedObject var library: Library
-    @State private var showingUpload = false
     @State private var showingPairing = false
-    @State private var showingServerLogin = false
     @State private var hoveredTrack: String?
 
     var body: some View {
@@ -73,10 +52,7 @@ struct LibraryView: View {
                     Text("ライブラリに接続中…")
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else if showingServerLogin {
-                VStack { Button("戻る") { showingServerLogin = false }; login }
-            }
-            else {
+            } else {
                 VStack(spacing: 20) {
                     Text("自分の音楽を、どの端末でも").font(.title)
                     Text("音楽フォルダを選ぶと、このMacで聴いたり、iPhoneへ持ち出したりできます。")
@@ -84,7 +60,6 @@ struct LibraryView: View {
                     if library.hasSavedLocalLibrary {
                         Button("前の音楽フォルダを開く") { Task { await library.openSavedLocalLibrary() } }
                     }
-                    Button("Navidromeに接続する") { showingServerLogin = true }
                 }.padding(32).frame(maxWidth: .infinity, maxHeight: .infinity)
             }
             if let message = library.message {
@@ -116,13 +91,9 @@ struct LibraryView: View {
             }
         }
         .toolbarBackground(.hidden, for: .windowToolbar)
-        .task { await library.restoreCredentials() }
-        .onChange(of: library.connected) { _, connected in if !connected { showingServerLogin = false } }
+        .task { await library.restoreLibrary() }
         .sheet(isPresented: $showingPairing) {
             MacPairingView(transfer: library.transfer) { Task { await library.startPairing() } }
-        }
-        .sheet(isPresented: $showingUpload) {
-            UploadView(onUploaded: { library.pollForLibraryUpdates(uploads: [$0]) })
         }
     }
 
@@ -146,13 +117,13 @@ struct LibraryView: View {
                 .accessibilityAddTraits(library.destination == destination && !library.showingNowPlaying ? .isSelected : [])
             }
             rule.padding(.vertical, 16)
-            Button { if library.local { showingPairing = true } else { showingUpload = true } } label: {
-                HStack(spacing: 8) { MacIcon("cloud-upload"); Text(library.local ? "iPhoneに転送" : "音楽を追加") }
+            Button { showingPairing = true } label: {
+                HStack(spacing: 8) { MacIcon("cloud-upload"); Text("iPhoneに転送") }
                     .frame(maxWidth: .infinity, minHeight: 32, alignment: .leading)
                     .padding(.horizontal, 8)
                     .contentShape(Rectangle())
             }
-            .buttonStyle(.plain).accessibilityLabel(library.local ? "iPhoneに音楽を転送" : "音楽をアップロード")
+            .buttonStyle(.plain).accessibilityLabel("iPhoneに音楽を転送")
             Button(action: library.reload) {
                 HStack(spacing: 8) { MacIcon("refresh"); Text(library.refreshing ? "更新中…" : "ライブラリを更新") }
                     .frame(maxWidth: .infinity, minHeight: 32, alignment: .leading)
@@ -450,62 +421,6 @@ struct LibraryView: View {
 
     private func artworkURL(_ id: String?) -> URL? {
         id.flatMap { library.artworkURLs[$0] }
-    }
-
-    private var login: some View {
-        ScrollView {
-            ViewThatFits(in: .horizontal) {
-                HStack(alignment: .center, spacing: 48) {
-                    loginHeading.frame(width: 220)
-                    loginForm.frame(width: 320)
-                }
-                VStack(alignment: .leading, spacing: 32) {
-                    loginHeading
-                    loginForm
-                }.frame(maxWidth: 400)
-            }
-            .padding(.horizontal, 48).padding(.vertical, 32)
-            .frame(maxWidth: .infinity)
-        }.frame(maxHeight: .infinity)
-    }
-
-    private var loginHeading: some View {
-        VStack(alignment: .leading, spacing: 20) {
-            Text("ライブラリに接続").font(.system(size: 36, weight: .regular)).tracking(-0.54)
-                .fixedSize(horizontal: false, vertical: true).accessibilityAddTraits(.isHeader)
-            Text("Navidrome のアカウントでログインして、NAS の音楽を再生します。")
-                .font(.system(size: 16)).foregroundStyle(Studio.fog)
-                .fixedSize(horizontal: false, vertical: true)
-        }
-    }
-
-    private var loginForm: some View {
-        VStack(alignment: .leading, spacing: 20) {
-            VStack(alignment: .leading, spacing: 8) {
-                Text("サーバーURL").font(.system(size: 12)).foregroundStyle(Studio.fog)
-                TextField("サーバーURL", text: $library.server).modifier(StudioInput()).accessibilityLabel("サーバーURL")
-            }
-            VStack(alignment: .leading, spacing: 8) {
-                Text("ユーザー名").font(.system(size: 12)).foregroundStyle(Studio.fog)
-                TextField("ユーザー名", text: $library.username).modifier(StudioInput()).accessibilityLabel("ユーザー名")
-            }
-            VStack(alignment: .leading, spacing: 8) {
-                Text("パスワード").font(.system(size: 12)).foregroundStyle(Studio.fog)
-                SecureField("パスワード", text: $library.password).modifier(StudioInput()).accessibilityLabel("パスワード")
-            }
-            Button {
-                library.connect(server: library.server, username: library.username, password: library.password)
-            } label: {
-                HStack(spacing: 8) {
-                    if library.refreshing { ProgressView().controlSize(.small) }
-                    Text(library.refreshing ? "接続を準備中…" : "ログイン")
-                }.frame(maxWidth: .infinity)
-            }
-            .buttonStyle(StudioButton(primary: true)).keyboardShortcut(.defaultAction)
-            .disabled(library.refreshing || library.username.isEmpty || library.password.isEmpty)
-            Text("ログイン情報はこの Mac の Keychain に保存します。")
-                .font(.system(size: 12)).foregroundStyle(Studio.fog)
-        }.disabled(library.refreshing)
     }
 
     private var playbackBar: some View {

@@ -19,7 +19,7 @@ struct SyncstrApp: App {
                 .tint(PhoneStyle.signal)
                 .task {
                     _ = playback
-                    await library.restoreCredentials()
+                    await library.restoreLibrary()
                 }
                 .onChange(of: scenePhase) { _, phase in
                     if phase == .background {

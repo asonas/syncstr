@@ -170,7 +170,7 @@ final class LocalTransfer: ObservableObject {
     private var operation: Task<Void, Never>?
     private var approval: CheckedContinuation<Bool, Never>?
     private var approvalTimeout: Task<Void, Never>?
-    private var peerCredential: LoginCredentials?
+    private var peerCredential: PairingCredentials?
     private var catalog: LocalCatalog?
     private var generation = UUID()
     private var hosting = UUID()
@@ -223,7 +223,7 @@ final class LocalTransfer: ObservableObject {
     func stopBrowsing() { browser?.cancel(); browser = nil; nearby = [] }
 
     func restorePairing() async {
-        do { pairedName = try await secrets.load()?.username }
+        do { pairedName = try await secrets.load()?.name }
         catch { status = "ペアリング情報を読み込めませんでした。もう一度お試しください。" }
     }
 
@@ -277,12 +277,12 @@ final class LocalTransfer: ObservableObject {
         self.folder = folder
         peerCredential = try await secrets.load()
         guard hosting == epoch else { return }
-        if let credential = peerCredential, credential.server != folder.catalog.id {
+        if let credential = peerCredential, credential.libraryID != folder.catalog.id {
             try await secrets.remove()
             peerCredential = nil
         }
-        pairedName = peerCredential?.username
-        let secret = try peerCredential?.password ?? MusicConnection.newCode()
+        pairedName = peerCredential?.name
+        let secret = try peerCredential?.key ?? MusicConnection.newCode()
         code = peerCredential == nil ? secret : ""
         let listener = try NWListener(using: MusicConnection.parameters(code: secret, identity: folder.catalog.id))
         self.listener = listener
@@ -329,7 +329,7 @@ final class LocalTransfer: ObservableObject {
                 }
             }
             guard accepted, hosting == epoch else { try await channel.send(MusicMessage(kind: "denied")); return }
-            let credential = LoginCredentials(server: folder.catalog.id, username: name, password: secret)
+            let credential = PairingCredentials(libraryID: folder.catalog.id, name: name, key: secret)
             try await secrets.save(credential)
             guard hosting == epoch else { throw LocalMusicError.unauthorized }
             peerCredential = credential
@@ -378,7 +378,7 @@ final class LocalTransfer: ObservableObject {
                 let saved = try await secrets.load()
                 let identity = String(device.id.dropFirst("Syncstr-".count))
                 guard UUID(uuidString: identity) != nil else { throw LocalMusicError.invalidData }
-                let secret = code.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && saved?.server == identity ? saved!.password : code
+                let secret = code.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && saved?.libraryID == identity ? saved!.key : code
                 let channel = MusicConnection(NWConnection(to: device.endpoint,
                     using: try MusicConnection.parameters(code: secret, identity: identity)))
                 client = channel
@@ -409,7 +409,7 @@ final class LocalTransfer: ObservableObject {
                 let catalog = LocalCatalog(id: identity, name: header.name ?? "Mac", entries: entries)
                 if let onCatalog { try onCatalog(catalog) }
                 else { try store.save(catalog) }
-                try await secrets.save(LoginCredentials(server: identity, username: device.name, password: secret))
+                try await secrets.save(PairingCredentials(libraryID: identity, name: device.name, key: secret))
                 guard generation == attempt else { return }
                 self.catalog = catalog
                 pairedName = device.name

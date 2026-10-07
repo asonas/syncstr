@@ -63,7 +63,7 @@ struct PhoneNowPlaying: View {
                                 Button { library.download(track) } label: {
                                     Label("端末に保存", image: "regen-cloud-download")
                                 }
-                                .disabled(library.downloaded.contains(track.id) || library.downloading.contains(track.id))
+                                .disabled(library.downloaded.contains(track.id) || library.transfer.activeTrack == track.id)
                             } label: {
                                 // The original SVG has a 3 pt transparent inset on its right.
                                 RegenIcon(name: "dots")

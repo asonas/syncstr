@@ -1,17 +1,22 @@
 import Foundation
 import Security
 
-struct LoginCredentials: Codable, Equatable, Sendable {
-    let server: String
-    let username: String
-    let password: String
+struct PairingCredentials: Codable, Equatable, Sendable {
+    let libraryID: String
+    let name: String
+    let key: String
+
+    // Keep existing paired-device records readable across app updates.
+    enum CodingKeys: String, CodingKey {
+        case libraryID = "server", name = "username", key = "password"
+    }
 }
 
 actor CredentialStore {
     private let service: String
     private let label: String
 
-    init(service: String = "as.ason.syncstr.navidrome", label: String = "syncstr Navidrome") {
+    init(service: String, label: String = "syncstr paired device") {
         self.service = service
         self.label = label
     }
@@ -24,7 +29,7 @@ actor CredentialStore {
         ]
     }
 
-    func load() throws -> LoginCredentials? {
+    func load() throws -> PairingCredentials? {
         var request = query
         request[kSecReturnData as String] = true
         request[kSecMatchLimit as String] = kSecMatchLimitOne
@@ -34,10 +39,10 @@ actor CredentialStore {
         guard status == errSecSuccess, let data = result as? Data else {
             throw KeychainError(status: status)
         }
-        return try JSONDecoder().decode(LoginCredentials.self, from: data)
+        return try JSONDecoder().decode(PairingCredentials.self, from: data)
     }
 
-    func save(_ credentials: LoginCredentials) throws {
+    func save(_ credentials: PairingCredentials) throws {
         let data = try JSONEncoder().encode(credentials)
         let update = [kSecValueData as String: data]
         var status = SecItemUpdate(query as CFDictionary, update as CFDictionary)

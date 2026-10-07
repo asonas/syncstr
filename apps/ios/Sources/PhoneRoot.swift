@@ -13,7 +13,6 @@ struct PhoneRoot: View {
     @ObservedObject var library: Library
     @State private var tab = PhoneTab.library
     @State private var showingPlayer = false
-    @State private var showingServerLogin = false
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
     var body: some View {
@@ -26,8 +25,6 @@ struct PhoneRoot: View {
                     Text("ライブラリに接続中…")
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else if showingServerLogin {
-                VStack { Button("戻る") { showingServerLogin = false }; login }
             } else {
                 ScrollView {
                     VStack(spacing: 24) {
@@ -35,7 +32,6 @@ struct PhoneRoot: View {
                         if library.hasSavedLocalLibrary {
                             Button("保存した音楽を開く") { Task { await library.openSavedLocalLibrary() } }
                         }
-                        Button("Navidromeに接続する") { showingServerLogin = true }
                     }.padding(24)
                 }
             }
@@ -65,7 +61,7 @@ struct PhoneRoot: View {
             }
         }
         .onChange(of: library.connected) { _, connected in
-            if !connected { tab = .library; showingServerLogin = false }
+            if !connected { tab = .library }
         }
     }
 
@@ -83,58 +79,6 @@ struct PhoneRoot: View {
             NavigationStack { settings }
                 .tabItem { Label("設定", image: "regen-settings") }
                 .tag(PhoneTab.settings)
-        }
-    }
-
-    private var login: some View {
-        NavigationStack {
-            Form {
-                Section {
-                    Text("NAS の音楽を、この iPhone で。")
-                        .font(.title2).fontWeight(.regular)
-                    Text("Navidrome のアカウントで接続します。")
-                        .foregroundStyle(.secondary)
-                }
-                Section("接続先") {
-                    TextField("サーバーURL", text: $library.server)
-                        .keyboardType(.URL)
-                        .textInputAutocapitalization(.never)
-                        .autocorrectionDisabled()
-                        .accessibilityIdentifier("server")
-                    TextField("ユーザー名", text: $library.username)
-                        .textContentType(.username)
-                        .textInputAutocapitalization(.never)
-                        .autocorrectionDisabled()
-                        .accessibilityIdentifier("username")
-                    SecureField("パスワード", text: $library.password)
-                        .textContentType(.password)
-                        .accessibilityIdentifier("password")
-                }
-                Section {
-                    Button {
-                        library.connect(server: library.server, username: library.username, password: library.password)
-                    } label: {
-                        HStack {
-                            Spacer()
-                            if library.refreshing { ProgressView() }
-                            Text(library.refreshing ? "接続中…" : "ログイン")
-                            Spacer()
-                        }
-                        .frame(minHeight: 44)
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .tint(PhoneStyle.button)
-                    .disabled(library.refreshing || library.username.isEmpty || library.password.isEmpty)
-                    .accessibilityIdentifier("login")
-                } footer: {
-                    Text("ログイン情報はこの iPhone の Keychain に保存し、次回から自動で接続します。")
-                }
-            }
-            .disabled(library.refreshing)
-            .scrollContentBackground(.hidden)
-            .background(PhoneStyle.graphite)
-            .navigationTitle("syncstr")
-            .scrollDismissesKeyboard(.interactively)
         }
     }
 
@@ -162,7 +106,7 @@ struct PhoneRoot: View {
                 .buttonStyle(.plain)
                 VStack(alignment: .leading, spacing: 8) {
                     Text("アルバム").font(.title3.bold())
-                    if library.albums.isEmpty { Text("音楽はまだありません。NAS へ音源を追加してください。") }
+                    if library.albums.isEmpty { Text("音楽はまだありません。Macの音楽フォルダに音源を追加してください。") }
                     albumGrid
                 }
             }
@@ -234,9 +178,7 @@ struct PhoneRoot: View {
                     .buttonStyle(.plain)
                     .disabled(album.tracks.isEmpty)
                     .accessibilityLabel(active ? "一時停止" : "再生")
-                    if library.local {
-                        AlbumTransferButton(transfer: library.transfer, tracks: album.tracks).padding(.top, 16)
-                    }
+                    AlbumTransferButton(transfer: library.transfer, tracks: album.tracks).padding(.top, 16)
                 }
                 .frame(maxWidth: .infinity)
                 .padding(.top, 8)
@@ -324,7 +266,7 @@ struct PhoneRoot: View {
             .buttonStyle(.plain)
             .accessibilityIdentifier("track-\(track.id)")
             .accessibilityValue(library.current?.id == track.id ? (library.loading ? "再生を準備中" : library.playing ? "再生中" : "選択中") : "")
-            if library.downloading.contains(track.id) || library.transfer.activeTrack == track.id {
+            if library.transfer.activeTrack == track.id {
                 ProgressView().frame(width: 44, height: 44)
                     .accessibilityLabel("ダウンロード中")
             } else if library.downloaded.contains(track.id) {
@@ -341,7 +283,7 @@ struct PhoneRoot: View {
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel("\(track.title)、未ダウンロード。端末に保存")
-                .disabled(library.local && library.transfer.busy)
+                .disabled(library.transfer.busy)
             }
         }
     }
@@ -380,20 +322,11 @@ struct PhoneRoot: View {
 
     private var settings: some View {
         Form {
-            if library.local {
-                Section { PhonePairingView(transfer: library.transfer) }
-                Section { Button("別の接続方法を選ぶ") { library.disconnect() } }
-            } else {
-            Section("接続") {
-                LabeledContent("サーバー", value: library.server)
-                LabeledContent("ユーザー", value: library.username)
-                LabeledContent("曲数", value: "\(library.tracks.count)")
-                Button("ライブラリを再読み込み") { library.reload() }.disabled(library.refreshing)
-            }
+            Section { PhonePairingView(transfer: library.transfer) }
             Section {
-                Button("ログアウト", role: .destructive) { library.disconnect() }
-            } footer: { Text("この iPhone に保存したログイン情報を削除します。") }
-            }
+                LabeledContent("曲数", value: "\(library.tracks.count)")
+                Button("別のMacを選ぶ") { library.closeLibrary() }
+            } header: { Text("ライブラリ") } footer: { Text("受け取った音楽はこのiPhoneに残ります。") }
         }
         .scrollContentBackground(.hidden)
         .background(PhoneStyle.graphite)

@@ -2,7 +2,7 @@
 
 ## Exploring the implementation
 
-Use the [README map](../../README.md#code-and-documentation-map) to find the relevant source and app guide. The current playback path uses Navidrome/OpenSubsonic; the synchronization server in the initial design has a different scope.
+Use the [README map](../../README.md#code-and-documentation-map) to find the relevant source and app guide. The current playback path uses a selected Mac folder and verified audio copied to an iPhone. Earlier server plans are historical and do not define current onboarding.
 
 ## Finding decisions
 

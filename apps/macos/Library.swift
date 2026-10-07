@@ -10,12 +10,6 @@ struct Album: Identifiable {
     var coverArt: String? { tracks.compactMap(\.coverArt).first }
 }
 
-struct LibraryUpload {
-    let filename: String
-    let bytes: UInt64
-    let sha256: String
-}
-
 enum LibraryDestination: String, CaseIterable {
     case albums = "アルバム"
     case artists = "アーティスト"
@@ -32,9 +26,6 @@ enum LibraryDestination: String, CaseIterable {
 
 @MainActor
 final class Library: ObservableObject {
-    @Published var server = ""
-    @Published var username = ""
-    @Published var password = ""
     @Published var tracks: [Track] = []
     @Published var connected = false
     @Published var current: Track?
@@ -53,7 +44,6 @@ final class Library: ObservableObject {
     @Published var sidebarVisible = true
     @Published var showingNowPlaying = false
     @Published private(set) var artworkURLs: [String: URL] = [:]
-    @Published private(set) var local = false
     let localStore: LocalMusicStore
     let transfer: LocalTransfer
     private var localFiles: [String: URL] = [:]
@@ -65,45 +55,24 @@ final class Library: ObservableObject {
 #endif
 #if os(iOS)
     @Published private(set) var downloaded: Set<String> = []
-    @Published private(set) var downloading: Set<String> = []
-    var offlineTracks = OfflineTracks()
-    private var downloadTasks: [String: Task<Void, Never>] = [:]
-    private var downloadAccount = ""
-    private var downloadGeneration = UUID()
 #endif
 
-    private var client: Navidrome?
     private var player: AVPlayer?
     private var observation: NSKeyValueObservation?
     private var itemObservation: NSKeyValueObservation?
     private var durationObservation: NSKeyValueObservation?
     private var timeObserver: Any?
     private var finishObserver: NSObjectProtocol?
-    private var task: Task<Void, Never>?
-    private var pollingTask: Task<Void, Never>?
-    private var pendingUploads: [String: LibraryUpload] = [:]
-    private var excludedTrackIDs: Set<String> = []
-    private var checkedChecksums: [String: String] = [:]
     private var seeking: UUID?
-    private var restoredCredentials = false
-    private let session: URLSession
-    private let credentials: CredentialStore
+    private var restoredLibrary = false
     private let makePlayer: (URL) -> AVPlayer
-    private let pollingSleep: (Duration) async throws -> Void
 
-    init(
-        session: URLSession = URLSession(configuration: .ephemeral, delegate: NoRedirects(), delegateQueue: nil),
-        credentials: CredentialStore = CredentialStore(),
-        makePlayer: @escaping (URL) -> AVPlayer = { AVPlayer(url: $0) },
-        pollingSleep: @escaping (Duration) async throws -> Void = { try await Task.sleep(for: $0) },
-        localStore: LocalMusicStore = LocalMusicStore()
-    ) {
-        self.session = session
-        self.credentials = credentials
+    init(makePlayer: @escaping (URL) -> AVPlayer = { AVPlayer(url: $0) },
+         localStore: LocalMusicStore = LocalMusicStore(),
+         pairingSecrets: CredentialStore = CredentialStore(service: "as.ason.syncstr.local-pair")) {
         self.makePlayer = makePlayer
-        self.pollingSleep = pollingSleep
         self.localStore = localStore
-        self.transfer = LocalTransfer(store: localStore)
+        self.transfer = LocalTransfer(store: localStore, secrets: pairingSecrets)
         transfer.onCatalog = { [weak self] catalog in try self?.openLocal(catalog) }
         transfer.onSaved = { [weak self] in self?.refreshLocalFiles() }
         transferChanges = transfer.objectWillChange.sink { [weak self] in self?.objectWillChange.send() }
@@ -169,69 +138,27 @@ final class Library: ObservableObject {
         showingNowPlaying = false
     }
 
-    func restoreCredentials() async {
-        guard !restoredCredentials else { return }
-        restoredCredentials = true
-        refreshing = true
-        defer {
-            refreshing = false
-            restoringSession = false
+    func restoreLibrary() async {
+        guard !restoredLibrary else { return }
+        restoredLibrary = true
+        defer { restoringSession = false }
+        if FileManager.default.fileExists(atPath: localStore.root.appendingPathComponent("active").path) {
+            await openSavedLocalLibrary()
         }
-        do {
-            if FileManager.default.fileExists(atPath: localStore.root.appendingPathComponent("active").path) {
-                await openSavedLocalLibrary()
-                return
-            }
-            if let saved = try await credentials.load() {
-                server = saved.server
-                username = saved.username
-                password = saved.password
-                let client = try Navidrome(server: server, username: username, password: password)
-                load(client)
-                await task?.value
-            }
-        } catch {
-            message = "保存したログイン情報を読み込めませんでした。アカウントを入力してください。"
-        }
-    }
-
-    func connect(server: String, username: String, password: String) {
-        pollingTask?.cancel()
-        pendingUploads = [:]
-        excludedTrackIDs = []
-        checkedChecksums = [:]
-        message = nil
-        do {
-            let client = try Navidrome(server: server, username: username, password: password)
-            let login = LoginCredentials(server: client.server.absoluteString, username: username, password: password)
-            load(client, saving: login)
-        } catch { message = error.localizedDescription }
     }
 
     func reload() {
 #if os(macOS)
-        if local, let url = localFolder?.root { Task { await chooseFolder(url) }; return }
+        if let url = localFolder?.root { Task { await chooseFolder(url) }; return }
 #endif
-        if let client { load(client) }
     }
 
     func openLocal(_ catalog: LocalCatalog) throws {
         try localStore.save(catalog)
         try Data().write(to: localStore.root.appendingPathComponent("active"), options: .atomic)
-        task?.cancel()
-        pollingTask?.cancel()
-#if os(iOS)
-        downloadGeneration = UUID()
-        downloadTasks.values.forEach { $0.cancel() }
-        downloadTasks = [:]
-        downloading = []
-        downloadAccount = ""
-#endif
         stop()
         current = nil
         queue = []
-        client = nil
-        local = true
         localCatalog = catalog
         tracks = catalog.entries.map(\.track)
         artworkURLs = Dictionary(uniqueKeysWithValues: catalog.entries.compactMap { entry in
@@ -315,111 +242,8 @@ final class Library: ObservableObject {
     }
 #endif
 
-    @discardableResult
-    func pollForLibraryUpdates(uploads: [LibraryUpload]) -> Task<Void, Never>? {
-        pollingTask?.cancel()
-        guard connected, !uploads.isEmpty else { return nil }
-        if pendingUploads.isEmpty {
-            excludedTrackIDs = Set(tracks.map(\.id))
-            checkedChecksums = [:]
-        }
-        for upload in uploads { pendingUploads[upload.filename] = upload }
-        pollingTask = Task { [weak self] in
-            for attempt in 0..<10 {
-                guard let sleep = self?.pollingSleep else { return }
-                do { try await sleep(.seconds(1 << attempt)) }
-                catch { return }
-                guard !Task.isCancelled, let self, self.connected else { return }
-                if self.refreshing { await self.task?.value }
-                guard !Task.isCancelled, self.connected else { return }
-                self.reload()
-                await self.task?.value
-                guard !Task.isCancelled else { return }
-                await self.resolvePendingUploads()
-                guard !Task.isCancelled else { return }
-                if self.pendingUploads.isEmpty { return }
-            }
-        }
-        return pollingTask
-    }
-
-    private func resolvePendingUploads() async {
-        guard let client else { return }
-        for track in tracks where !excludedTrackIDs.contains(track.id) {
-            guard !Task.isCancelled else { return }
-            let candidates = pendingUploads.values.filter { $0.bytes == track.size }
-            guard !candidates.isEmpty else { continue }
-            do {
-                let checksum: String
-                if let cached = checkedChecksums[track.id] { checksum = cached }
-                else {
-                    checksum = try await client.checksum(track, session: session)
-                    try Task.checkCancellation()
-                    checkedChecksums[track.id] = checksum
-                }
-                if let upload = candidates.first(where: { $0.sha256 == checksum }) {
-                    pendingUploads[upload.filename] = nil
-                    excludedTrackIDs.insert(track.id)
-                }
-            } catch {
-                if Task.isCancelled { return }
-            }
-        }
-    }
-
-    private func load(_ client: Navidrome, saving login: LoginCredentials? = nil) {
-        task?.cancel()
-        refreshing = true
-        message = nil
-        task = Task {
-            do {
-                let tracks = try await client.tracks(session: session)
-                guard !Task.isCancelled else { return }
-                self.client = client
-                self.transfer.cancel()
-#if os(macOS)
-                self.transfer.stopHosting()
-#endif
-                self.local = false
-                self.localFiles = [:]
-                try? FileManager.default.removeItem(at: localStore.root.appendingPathComponent("active"))
-                self.tracks = tracks
-#if os(iOS)
-                let account = client.server.absoluteString + "\u{1f}" + username
-                if downloadAccount != account {
-                    downloadGeneration = UUID()
-                    downloadTasks.values.forEach { $0.cancel() }
-                    downloadTasks = [:]
-                    downloading = []
-                }
-                downloadAccount = account
-                downloaded = Set(tracks.filter { offlineTracks.contains(account: account, id: $0.id, suffix: $0.suffix) }.map(\.id))
-#endif
-                artworkURLs = Dictionary(uniqueKeysWithValues: Set(tracks.compactMap(\.coverArt)).map {
-                    ($0, client.url("getCoverArt", parameters: [
-                        URLQueryItem(name: "id", value: $0), URLQueryItem(name: "size", value: "400")
-                    ]))
-                })
-                connected = true
-                password = ""
-                if let login {
-                    do { try await credentials.save(login) }
-                    catch {
-                        guard !Task.isCancelled else { return }
-                        message = "ログインしましたが、Keychain に保存できませんでした。次回は再入力が必要です。"
-                    }
-                }
-            } catch {
-                guard !Task.isCancelled else { return }
-                message = (error as? ClientError)?.localizedDescription ?? "接続に失敗しました。ネットワークを確認して、もう一度お試しください。"
-            }
-            guard !Task.isCancelled else { return }
-            refreshing = false
-        }
-    }
-
     func play(_ track: Track, in tracks: [Track]? = nil) {
-        guard local || client != nil else { return }
+        guard connected else { return }
 #if os(iOS)
         guard activateAudio() else { return }
 #endif
@@ -429,16 +253,7 @@ final class Library: ObservableObject {
         current = track
         duration = max(0, track.duration ?? 0)
         message = nil
-        var url = local ? localFiles[track.id] : client?.url("stream", parameters: [
-            URLQueryItem(name: "id", value: track.id),
-            URLQueryItem(name: "format", value: "raw")
-        ])
-#if os(iOS)
-        if offlineTracks.contains(account: downloadAccount, id: track.id, suffix: track.suffix) {
-            url = offlineTracks.url(account: downloadAccount, id: track.id, suffix: track.suffix)
-        }
-#endif
-        guard let url else {
+        guard let url = localFiles[track.id] else {
             message = "この曲はまだ保存されていません。Macに接続して保存してください。"
             return
         }
@@ -459,7 +274,7 @@ final class Library: ObservableObject {
                 self.player?.pause()
                 playing = false
                 loading = false
-                message = "曲を再生できませんでした。接続を確認して曲を選び直してください。"
+                message = "曲を再生できませんでした。音源ファイルを確認して曲を選び直してください。"
             }
         }
         durationObservation = item.observe(\.duration, options: [.initial, .new]) { [weak self] item, _ in
@@ -558,84 +373,38 @@ final class Library: ObservableObject {
         duration = 0
     }
 
-    func disconnect() {
-        let wasLocal = local
-        if local {
-            transfer.cancel()
+    func closeLibrary() {
+        transfer.cancel()
 #if os(macOS)
-            transfer.stopHosting()
-#endif
-            local = false
-            localFiles = [:]
-            try? FileManager.default.removeItem(at: localStore.root.appendingPathComponent("active"))
-        }
-        pollingTask?.cancel()
-        pendingUploads = [:]
-        excludedTrackIDs = []
-        checkedChecksums = [:]
-        task?.cancel()
-        stop()
-#if os(iOS)
-        downloadTasks.values.forEach { $0.cancel() }
-        downloadTasks = [:]
-        downloading = []
+        transfer.stopHosting()
+        if let scopedFolder { scopedFolder.stopAccessingSecurityScopedResource() }
+        scopedFolder = nil
+        localFolder = nil
+#else
         downloaded = []
-        downloadAccount = ""
-        downloadGeneration = UUID()
 #endif
-        client = nil
+        localFiles = [:]
+        localCatalog = nil
+        try? FileManager.default.removeItem(at: localStore.root.appendingPathComponent("active"))
+        stop()
         current = nil
         tracks = []
         queue = []
         artworkURLs = [:]
-        password = ""
         connected = false
         search = ""
         navigate(.albums)
         message = nil
-        if wasLocal { refreshing = false; return }
-        refreshing = true
-        task = Task {
-            do { try await credentials.remove() }
-            catch { message = "ログアウトしましたが、Keychain の保存情報を削除できませんでした。" }
-            refreshing = false
-        }
+        refreshing = false
     }
 
 #if os(iOS)
     func download(_ track: Track) {
-        if local {
-            guard transfer.connected else { message = "設定またはアルバム画面からMacに接続して保存してください。"; return }
-            transfer.copy([track])
+        guard transfer.connected else {
+            message = "設定またはアルバム画面からMacに接続して保存してください。"
             return
         }
-        guard let client, !downloading.contains(track.id), !downloaded.contains(track.id) else { return }
-        let account = downloadAccount
-        let generation = downloadGeneration
-        downloading.insert(track.id)
-        downloadTasks[track.id] = Task {
-            defer {
-                if downloadGeneration == generation {
-                    downloading.remove(track.id)
-                    downloadTasks[track.id] = nil
-                }
-            }
-            do {
-                let (temporary, response) = try await session.download(from: client.url("download", parameters: [URLQueryItem(name: "id", value: track.id)]))
-                defer { try? FileManager.default.removeItem(at: temporary) }
-                try Task.checkCancellation()
-                guard let response = response as? HTTPURLResponse, response.statusCode == 200,
-                      response.mimeType?.hasPrefix("audio/") == true || response.mimeType == "application/octet-stream" else {
-                    throw ClientError.response
-                }
-                try offlineTracks.save(temporary, account: account, id: track.id, suffix: track.suffix)
-                if downloadGeneration == generation { downloaded.insert(track.id) }
-            } catch {
-                if !Task.isCancelled && downloadGeneration == generation {
-                    message = "「\(track.title)」を保存できませんでした。接続と端末の空き容量を確認して、もう一度お試しください。"
-                }
-            }
-        }
+        transfer.copy([track])
     }
 
     private func activateAudio() -> Bool {

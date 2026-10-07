@@ -1,10 +1,10 @@
 # Local music onboarding
 
-This implements the Mac-to-iPhone local-copy path in [issue #12](https://github.com/asonas/syncstr/issues/12). Choose a music folder on the Mac, open **Transfer to iPhone**, and connect from Syncstr on the same local network. Scan the Mac's QR code or enter its pairing code, then approve the phone on the Mac. On the phone, select an album and save it. After saving, the phone can cold-launch, browse the stored catalog, and play received files without a Mac, Navidrome, or a network connection.
+This implements the Mac-to-iPhone local-copy path in [issue #12](https://github.com/asonas/syncstr/issues/12). Choose a music folder on the Mac, open **Transfer to iPhone**, and connect from Syncstr on the same local network. Scan the Mac's QR code or enter its pairing code, then approve the phone on the Mac. On the phone, select an album and save it. After saving, the phone can cold-launch, browse the stored catalog, and play received files without a Mac or a network connection.
 
 Both apps must stay available during transfer. Returning from the background or a broken connection may require reconnecting from Settings or the album's connection action. Retrying skips verified completed tracks; the interrupted track starts again. The Mac's originals are never edited. Unsupported or unreadable files are listed after scanning. One selected folder and one paired phone per Mac are supported in this milestone. Pairing a replacement phone requires removing the previous pairing. Removing a pairing retains received audio.
 
-The Navidrome login remains available as an alternative. Its existing account-specific downloads and credentials are separate from the local catalog. The local copy workflow does not propagate deletions or edit source tags.
+The local copy workflow does not propagate deletions or edit source tags.
 
 ## Transport and authorization
 
@@ -33,7 +33,7 @@ Each message is UTF-8 JSON, preceded by a four-byte unsigned big-endian body len
 
 An entry contains `track`, lowercase hexadecimal `sha256`, and optional Base64 `artwork` (JPEG, at most 512 KiB). `track` contains `id`, `title`, optional `artist`, `album`, `albumId`, `coverArt`, `duration` in seconds, `track` number, `discNumber`, `suffix`, and `size` in bytes. `coverArt`, when present, equals the track ID. IDs are opaque to clients. The Mac derives track IDs from library identity and relative file path; unchanged rescans retain them. SHA-256 identifies the exact audio version. The receiver limits catalogs to 100,000 entries and 256 MiB of accumulated encoded entries.
 
-The receiver persists the catalog independently of the connection. It writes audio to private staging files, checks exact byte size and SHA-256, then atomically publishes the file. Artwork is stored locally with the catalog. UI availability is derived from published files, never staging files. Retrying checks the digest of previously completed files before skipping them. The local catalog and audio namespace is separate from Navidrome account storage.
+The receiver persists the catalog independently of the connection. It writes audio to private staging files, checks exact byte size and SHA-256, then atomically publishes the file. Artwork is stored locally with the catalog. UI availability is derived from published files, never staging files. Retrying checks the digest of previously completed files before skipping them.
 
 ## Format and execution limits
 
@@ -43,6 +43,6 @@ Mac folder access uses the system directory picker and a security-scoped bookmar
 
 ## Verification
 
-The Mac test suite exercises a real TLS loopback connection, approval/rejection, source indexing, album transfer, interruption at completed-track boundaries, reconnecting with saved credentials, repeat-copy idempotence, source-change rejection, and corrupt/partial file rejection. Tests use temporary folders and unique test-only Keychain services. iPhone tests restore a local catalog without credentials and open received audio with AVPlayer, alongside existing Navidrome tests.
+The Mac test suite exercises a real TLS loopback connection, approval/rejection, source indexing, album transfer, interruption at completed-track boundaries, reconnecting with saved credentials, repeat-copy idempotence, source-change rejection, and corrupt/partial file rejection. Tests use temporary folders and unique test-only Keychain services. iPhone tests restore a local catalog without a server account and open received audio with AVPlayer.
 
-Before release, complete the physical-device acceptance journey from issue #12: system folder authorization, Bonjour discovery between devices, pairing QR and manual entry, denied-permission recovery, album transfer and interruption, Mac closure, offline iPhone cold launch, audible playback, seeking, and locked-screen controls. Automated tests and build success do not establish these device results. App Store submission and license selection remain separate work.
+The Mac-to-iPhone transfer, Mac closure, offline iPhone cold launch, and audible playback were confirmed by the user through TestFlight on 2026-10-07. Recheck this journey after changes. Before release, complete the remaining physical-device acceptance checks from issue #12: system folder authorization, Bonjour discovery between devices, pairing QR and manual entry, denied-permission recovery, album transfer and interruption, Mac closure, offline iPhone cold launch, audible playback, seeking, and locked-screen controls. Automated tests and build success do not establish these device results. App Store submission and license selection remain separate work.

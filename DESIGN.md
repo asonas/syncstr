@@ -53,9 +53,8 @@ The [macOS Music-inspired exploration](https://www.figma.com/design/KtfBubkg9KiK
 - Do not repeat the sidebar selection as a content heading such as “Albums.” Omit headings such as “Library,” “Now Playing,” or “Playback Queue” when they do not help explain an action or information. Remove spacing reserved for any removed heading.
 - Communicate selection and playback through backgrounds, colors, and icons. Do not repeat visually apparent state with “Selected” or “Playing” text. Supply VoiceOver labels and accessibility attributes such as selection state.
 - Show waiting, sending, failure, and other states needed to choose the next action. This is not a blanket rule to remove status text.
-- Keep albums, artists, tracks, “Add Music,” and “Refresh Library” in the persistent sidebar. Do not add a heading that repeats the brand or a button to close the sidebar.
-- Put connection settings, upload-token storage, and logout in Settings. Confirm logout.
-- Dropping audio adds it to the upload candidate list. Send files one at a time only after the user presses Upload.
+- Keep albums, artists, tracks, “Transfer to iPhone,” and “Refresh Library” in the persistent sidebar. Do not add a heading that repeats the brand or a button to close the sidebar.
+- Put music-folder selection in macOS Settings and pairing controls in iPhone Settings. Keep transfer progress, cancellation, and pairing approval visible.
 
 ### Album Details
 

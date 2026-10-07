@@ -29,7 +29,6 @@ Historical long-term plan. Environment and validation statuses below describe th
 
 - Restore drills prove data consistency and a revoked device cannot refresh credentials.
 - HTTPS, rate limits, backup, trash, and OSS audit each have an automated check plus an operator runbook.
-- Navidrome validation compose is not production configuration; authenticated adapter results remain BLOCKED.
 - Retention periods, backup destination/encryption keys, proxy choice, and OSS disclosure policy require owner decisions.
 
 ## Test cycles

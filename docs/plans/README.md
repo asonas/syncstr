@@ -1,6 +1,6 @@
 # Implementation plans
 
-These documents preserve the initial long-term plan. Start with the [README map](../../README.md#code-and-documentation-map) when changing the current Navidrome player. Synchronization, migration, and recovery work are not prerequisites for current app development.
+These historical plans describe an earlier NAS-based product. Their server and account requirements are superseded by the [local music specification](../design-spec.md). They are not implementation requirements unless explicitly revisited.
 
 ## Plans
 

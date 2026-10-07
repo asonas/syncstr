@@ -4,10 +4,6 @@ Historical long-term plan. Environment and validation statuses below describe th
 
 **Goal:** Build the NAS-authoritative server with SyncService as the only synchronization source of truth.
 
-**Architecture:** Navidrome remains an optional media/stream adapter; it never owns product history or conflicts. SQLite transactions own `operation_id` deduplication and `server_seq` assignment. HTTP `/v1` is documented in OpenAPI.
-
-**Dependencies:** design spec; sync vectors; Navidrome report (authenticated probes BLOCKED); Rust shared core is rejected because FFI, release, and fault-surface evidence is absent.
-
 ## Boundaries
 
 | Module | API / DB boundary | Acceptance evidence |
@@ -25,8 +21,7 @@ Historical long-term plan. Environment and validation statuses below describe th
 3. Implement scanner, metadata/sidecar boundary, catalog/search, and missing-file state without deleting history.
 4. Implement MediaService original Range streaming; add compatibility-copy/server-transcode only after a client reports a native format failure.
 5. Implement SyncService in the server language from the machine-readable vector contract: operation uniqueness, device counter, server sequence, tombstones, snapshots, and ProjectionUpdater.
-6. Add Navidrome adapter only for scanner/stream comparison behind an interface; do not route sync, ratings, or play event truth through it.
-7. Add trash, backup/restore, OpenAPI contract tests, and end-to-end Docker tests.
+6. Add trash, backup/restore, OpenAPI contract tests, and end-to-end Docker tests.
 
 ## Test cycles and acceptance
 
@@ -38,6 +33,5 @@ Historical long-term plan. Environment and validation statuses below describe th
 
 ## Risks / decisions
 
-- Authenticated Navidrome API/media results are unmeasured: treat its adapter capability as BLOCKED until a disposable credential run passes.
 - Rust core is not a dependency; reconsider only after measured FFI, packaging, cancellation, and reduced fault surface.
 - Transcoding policy, retention capacity, and server implementation language remain decisions after original-stream evidence.

@@ -4,8 +4,6 @@ This document preserves the initial long-term plan. For current app development,
 
 **Goal:** Implement the NAS-authoritative syncstr server, migration, and macOS/iPhone clients in independent test cycles.
 
-**Architecture:** The server manages operation events and authoritative state through SQLite transactions. Clients conform to OpenAPI and machine-readable synchronization vectors. Limit Navidrome to a supplementary media adapter, and do not embed the Rust shared synchronization core in the product.
-
 **Tech Stack:** Rust + Axum is the leading server candidate; compare minimal Go and TypeScript implementations in Task 1 before deciding. Use SQLite, OpenAPI v1, Docker Compose, Swift and SwiftUI for macOS/iPhone, C# and WinUI 3 for Windows, and Kotlin and Jetpack Compose for Android. Server filenames in this plan assume Rust + Axum. If another candidate is selected, update the ADR and planned paths before Task 2.
 
 **Spec:** [Design specification](../design-spec.md)
@@ -19,7 +17,6 @@ This document preserves the initial long-term plan. For current app development,
 - Offline operations carry `operation_id`, `device_id`, `device_counter`, and `server_seq`.
 - Use passkeys by default and implement device revocation, recovery, rate limits, and audit logs.
 - Start with macOS and iPhone. Mark Windows and Android as supported only after they pass the same OpenAPI and synchronization vectors.
-- Authenticated Navidrome API conformance was unmeasured at this planning milestone. Do not make it authoritative for product history or synchronization.
 - Do not turn BLOCKED Apple results caused by unavailable XCTest or a disconnected physical iPhone into PASS.
 
 ---
@@ -296,8 +293,6 @@ git commit -m "Build syncstr Apple clients"
 - Produces: An HTTPS frontend, health checks, encrypted backups, restoration procedures, audit logs, and an open-source license audit
 
 - [ ] **Step 1: Create production Compose configuration and checks**
-
-Verify that validation Navidrome credentials, audio, databases, and ports do not enter the production Compose configuration.
 
 - [ ] **Step 2: Implement HTTPS, rate limits, and audit logs**
 

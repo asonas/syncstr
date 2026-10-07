@@ -32,8 +32,6 @@ Address playlist entries by item ID. Tombstones prevent stale devices from resur
 
 The Swift reference implementation and Rust candidate matched state, history, and error classifications for seven shared vectors. The shared Rust core was not adopted because FFI, cancellation, thread boundaries, and distribution had not been measured.
 
-Navidrome was classified as a media-delivery adapter, not the source of truth for history or synchronization. Apple's AudioValidation built, but playback results were BLOCKED because XCTest was unavailable and no iPhone was connected.
-
 ## Questions to revisit before implementation
 
 ### Server

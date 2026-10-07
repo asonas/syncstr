@@ -10,30 +10,7 @@ commit is `cc22d81`. `swift build --package-path validation/apple/AudioValidatio
 succeeded for that commit; `swift test --package-path validation/apple/AudioValidation`
 is BLOCKED because the active Command Line Tools installation does not provide XCTest.
 
-`make -C validation all-test` was also successful at this timestamp, but its
-scope is the Swift sync tests, Rust tests, sync comparison/CLI tests, and the
-Navidrome compose, fixture, and health checks. It does **not** execute the
-AudioValidation SwiftPM test target. Therefore it is not evidence that the
-Apple cases passed: the separate Apple build passed and the separate Apple test
-remains BLOCKED as stated above.
-
-The local fixture source is `validation/navidrome/fixtures/library`. Its
-generator writes `SHA256SUMS`; regenerate and verify it before probing:
-
-```sh
-make -C validation navidrome-fixture-test
-(
-  cd validation/navidrome/fixtures/library
-  shasum -a 256 -c SHA256SUMS
-)
-swift test --package-path validation/apple/AudioValidation
-```
-
-The manifest currently covers MP3, AAC, M4A, ALAC, WAV, AIFF, artwork, a
-duplicate MP3, and an alternate mix. If the generated fixture directory is
-unavailable, the six fixture probes become `REJECT` results and all 11 case
-IDs are still written to JSON; the validation does not use `XCTSkip` for that
-condition.
+The original fixture generator and validation package are preserved in Git history, outside the current source tree. Use the current app guides for executable checks.
 
 `PlaybackProbe.probe` uses `AVAudioPlayerDelegate` to await natural completion;
 decode errors and its five-second timer become `REJECT` results rather than an

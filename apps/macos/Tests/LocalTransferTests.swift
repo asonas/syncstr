@@ -3,10 +3,32 @@ import AppKit
 import AudioTags
 import CryptoKit
 import Network
+import Security
 import XCTest
 
 @MainActor
 final class LocalTransferTests: XCTestCase {
+    func testExistingPairingRecordSurvivesAccountModelRemoval() async throws {
+        let service = "syncstr-pairing-update-test-" + UUID().uuidString
+        let store = CredentialStore(service: service)
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecAttrAccount as String: "last-login"
+        ]
+        defer { SecItemDelete(query as CFDictionary) }
+        var item = query
+        item[kSecValueData as String] = Data(#"{"server":"fixture-library","username":"Fixture Phone","password":"0123456789abcdef0123456789abcdef"}"#.utf8)
+        item[kSecAttrSynchronizable as String] = false
+        XCTAssertEqual(SecItemAdd(item as CFDictionary, nil), errSecSuccess)
+        let saved = try await store.load()
+        XCTAssertEqual(saved, PairingCredentials(libraryID: "fixture-library", name: "Fixture Phone",
+            key: "0123456789abcdef0123456789abcdef"))
+        try await store.save(try XCTUnwrap(saved))
+        let reopened = try await store.load()
+        XCTAssertEqual(reopened, saved)
+    }
+
     private func wait(_ condition: () -> Bool, file: StaticString = #filePath, line: UInt = #line) async throws {
         for _ in 0..<400 {
             if condition() { return }

@@ -5,7 +5,6 @@ These reports preserve investigations performed before product implementation. T
 ## Decisions
 
 - [Synchronization core](sync-core-report.md): use Swift as the reference implementation; do not adopt a shared Rust core.
-- [Navidrome](navidrome-report.md): classify it as a media-delivery adapter; authenticated API measurements were BLOCKED.
 - [Apple playback](apple-playback-report.md): the macOS build succeeded; XCTest and physical iPhone playback results were BLOCKED.
 
 ## Interpreting results

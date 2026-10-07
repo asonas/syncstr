@@ -23,15 +23,10 @@ targets:
       - path: ../macos/LocalTransfer.swift
       - path: ../macos/LocalSetup.swift
       - path: ../macos/Library.swift
-      - path: ../macos/Navidrome.swift
+      - path: ../macos/Track.swift
       - path: ../macos/CredentialStore.swift
-      - path: ../macos/Upload.swift
-      - path: ../macos/UploadView.swift
-      - path: ../macos/MusicMetadata.swift
-      - path: ../macos/MetadataEditor.swift
       - path: ../macos/Licenses
         buildPhase: resources
-      - path: ../macos/UploadSettingsView.swift
       - path: ../macos/SettingsView.swift
       - path: ../macos/Assets.xcassets
     dependencies:
@@ -69,7 +64,7 @@ targets:
       - path: ../macos/LocalTransfer.swift
       - path: ../macos/LocalSetup.swift
       - path: ../macos/Library.swift
-      - path: ../macos/Navidrome.swift
+      - path: ../macos/Track.swift
       - path: ../macos/CredentialStore.swift
     settings:
       base:
@@ -103,17 +98,15 @@ targets:
         GENERATE_INFOPLIST_FILE: YES
     dependencies:
       - target: Syncstr
-  MusicMetadataTests:
+  LocalMusicTests:
     type: bundle.unit-test
     platform: macOS
     sources:
       - path: ../macos/Tests
       - path: ../macos/LocalCatalog.swift
       - path: ../macos/LocalTransfer.swift
-      - path: ../macos/Navidrome.swift
+      - path: ../macos/Track.swift
       - path: ../macos/CredentialStore.swift
-      - path: ../macos/MusicMetadata.swift
-      - path: ../macos/Upload.swift
     dependencies:
       - package: AudioTags
     settings:
@@ -127,7 +120,7 @@ targets:
       - path: ../macos/Library.swift
       - path: ../macos/LocalCatalog.swift
       - path: ../macos/LocalTransfer.swift
-      - path: ../macos/Navidrome.swift
+      - path: ../macos/Track.swift
       - path: ../macos/CredentialStore.swift
     dependencies:
       - package: AudioTags
@@ -143,7 +136,7 @@ schemes:
     archive:
       config: Release
     test:
-      targets: [MusicMetadataTests]
+      targets: [LocalMusicTests]
   Syncstr:
     build:
       targets:

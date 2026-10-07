@@ -5,7 +5,32 @@ import XCTest
 
 final class LocalLibraryTests: XCTestCase {
     @MainActor
-    func testColdLaunchWithoutCredentialsRestoresCatalogAndPlaysReceivedAudio() async throws {
+    func testFirstLaunchIsReadyForPairingAndUnsavedAudioCannotPlay() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let files = LocalMusicStore(root: root)
+        var createdPlayer = false
+        let library = Library(makePlayer: { url in
+            createdPlayer = true
+            return AVPlayer(url: url)
+        }, localStore: files)
+        await library.restoreLibrary()
+        XCTAssertFalse(library.connected)
+        XCTAssertFalse(library.restoringSession)
+        XCTAssertNil(library.message)
+        let track = Track(id: "unsaved", title: "Not Copied", artist: "Fixture Artist", suffix: "wav", size: 3)
+        try library.openLocal(LocalCatalog(id: UUID().uuidString, name: "Fixture Music", entries: [
+            LocalEntry(track: track, sha256: String(repeating: "a", count: 64), artwork: nil)
+        ]))
+        library.play(track)
+        XCTAssertFalse(createdPlayer)
+        XCTAssertTrue(library.downloaded.isEmpty)
+        XCTAssertNotNil(library.message)
+        library.closeLibrary()
+    }
+
+    @MainActor
+    func testColdLaunchRestoresCatalogAndPlaysReceivedAudio() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }
         let files = LocalMusicStore(root: root)
@@ -25,25 +50,21 @@ final class LocalLibraryTests: XCTestCase {
             duration: 1, track: 1, suffix: "wav", size: UInt64(audio.count))
         let entry = LocalEntry(track: track, sha256: hash, artwork: nil)
         try files.importFile(temporary, entry: entry)
-        let credentials = CredentialStore(service: "syncstr-local-library-test-" + UUID().uuidString)
-        let initial = Library(credentials: credentials, localStore: files)
+        let initial = Library(localStore: files)
         try initial.openLocal(LocalCatalog(id: UUID().uuidString, name: "Fixture Music", entries: [entry]))
 
         var playbackURL: URL?
         var player: AVPlayer?
-        let restored = Library(credentials: credentials, makePlayer: { url in
+        let restored = Library(makePlayer: { url in
             playbackURL = url
             let value = AVPlayer(url: url)
             player = value
             return value
         }, localStore: files)
-        await restored.restoreCredentials()
+        await restored.restoreLibrary()
         XCTAssertTrue(restored.connected)
-        XCTAssertTrue(restored.local)
         XCTAssertEqual(restored.albums.first?.title, "Fixture Album")
         XCTAssertEqual(restored.downloaded, [track.id])
-        let savedCredentials = try await credentials.load()
-        XCTAssertNil(savedCredentials)
         restored.play(restored.tracks[0])
         XCTAssertEqual(playbackURL, files.fileURL(entry))
         for _ in 0..<100 where player?.currentItem?.status == .unknown {
@@ -51,7 +72,7 @@ final class LocalLibraryTests: XCTestCase {
         }
         XCTAssertEqual(player?.currentItem?.status, .readyToPlay)
         restored.pause()
-        restored.disconnect()
+        restored.closeLibrary()
         XCTAssertTrue(files.hasFile(entry))
     }
 }
