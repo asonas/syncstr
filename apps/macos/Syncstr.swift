@@ -411,8 +411,12 @@ struct LibraryView: View {
     }
 
     private func playButton(_ tracks: [Track]) -> some View {
-        Button { if let first = tracks.first { library.play(first, in: tracks) } } label: {
-            HStack(spacing: 8) { MacIcon("filled-play", size: 16); Text("再生") }
+        let active = (library.playing || library.loading) && tracks.contains { $0.id == library.current?.id }
+        return Button { library.togglePlayback(in: tracks) } label: {
+            HStack(spacing: 8) {
+                MacIcon(active ? "filled-pause" : "filled-play", size: 16)
+                Text(active ? "一時停止" : "再生")
+            }
                 .frame(width: 128, height: 36)
                 .background(Studio.button, in: RoundedRectangle(cornerRadius: 8))
                 .contentShape(Rectangle())

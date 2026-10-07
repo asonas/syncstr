@@ -206,7 +206,8 @@ struct PhoneRoot: View {
     }
 
     private func albumDetail(_ album: Album) -> some View {
-        GeometryReader { geometry in
+        let active = (library.playing || library.loading) && album.tracks.contains { $0.id == library.current?.id }
+        return GeometryReader { geometry in
             List {
                 VStack(spacing: 0) {
                     PhoneArtwork(url: album.coverArt.flatMap { library.artworkURLs[$0] })
@@ -220,11 +221,11 @@ struct PhoneRoot: View {
                     .multilineTextAlignment(.center)
                     .padding(.bottom, 16)
                     Button {
-                        if let first = album.tracks.first { start(first, in: album.tracks) }
+                        library.togglePlayback(in: album.tracks)
                     } label: {
                         HStack(spacing: 8) {
-                            RegenIcon(name: "filled-play")
-                            Text("再生")
+                            RegenIcon(name: active ? "filled-pause" : "filled-play")
+                            Text(active ? "一時停止" : "再生")
                         }
                         .frame(minWidth: 160, minHeight: 44)
                         .background(PhoneStyle.button, in: RoundedRectangle(cornerRadius: 8))
@@ -232,7 +233,7 @@ struct PhoneRoot: View {
                     }
                     .buttonStyle(.plain)
                     .disabled(album.tracks.isEmpty)
-                    .accessibilityLabel("アルバムを先頭から再生")
+                    .accessibilityLabel(active ? "一時停止" : "再生")
                     if library.local {
                         AlbumTransferButton(transfer: library.transfer, tracks: album.tracks).padding(.top, 16)
                     }

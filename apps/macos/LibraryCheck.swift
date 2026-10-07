@@ -200,13 +200,27 @@ struct LibraryCheck {
             library.search = "Third"
             try require(library.visibleTracks.map(\.id) == ["third"])
             library.search = ""
-            library.play(albumTracks[0], in: albumTracks)
+            library.togglePlayback(in: [])
+            try require(library.current == nil)
+            library.togglePlayback(in: library.albums[1].tracks)
+            try await wait("Other album did not play") { library.playing }
+            library.togglePlayback(in: albumTracks)
             try await wait("First track did not play") { library.playing && library.position > 0 }
             try require(!library.canGoPrevious && library.canGoNext)
             library.navigate(.artists)
             library.next()
             try require(library.current?.id == "second")
             try require(library.canGoPrevious && !library.canGoNext)
+            try await wait("Second track did not play") { library.playing && library.position > 0 }
+            library.togglePlayback(in: albumTracks)
+            try await wait("Album pause failed") { !library.playing && !library.loading }
+            let pausedPlayer = mediaPlayers.last!
+            let pausedPosition = pausedPlayer.currentTime().seconds
+            library.togglePlayback(in: albumTracks)
+            try await wait("Album resume failed") { library.playing }
+            try require(library.current?.id == "second" && library.queue.map(\.id) == ["first", "second"])
+            try require(mediaPlayers.last! === pausedPlayer && pausedPlayer.currentTime().seconds >= pausedPosition)
+            print("PASS: album action starts, switches albums, pauses and resumes the current track without replacing the queue")
             library.previous()
             try require(library.current?.id == "first")
             try await wait("Previous track did not play") { library.playing && library.position > 0 }

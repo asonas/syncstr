@@ -511,6 +511,16 @@ final class Library: ObservableObject {
         }
     }
 
+    func togglePlayback(in tracks: [Track]) {
+        guard let first = tracks.first else { return }
+        if let current, tracks.contains(where: { $0.id == current.id }),
+           let player, player.currentItem?.status != .failed {
+            togglePlayback()
+        } else {
+            play(first, in: tracks)
+        }
+    }
+
     func togglePlayback() {
         guard let player else { return }
         if player.rate != 0 || loading { pause() }
