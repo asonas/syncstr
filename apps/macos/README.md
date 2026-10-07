@@ -1,8 +1,14 @@
 # syncstr for macOS
 
-A native player that browses albums, artists, and tracks from Navidrome. Enter the HTTPS URL and account credentials for a server you manage. The app uses the OpenSubsonic API for listing and streaming music.
+A native player that browses albums, artists, and tracks from a local music folder or Navidrome. Choose a folder to listen locally and copy albums to an iPhone. Alternatively, enter the HTTPS URL and account credentials for a server you manage; that path uses OpenSubsonic for listing and streaming music.
 
 After a successful login, the app saves connection credentials in this Mac's Keychain and reconnects on launch. Failed reconnects return to the login screen. Log out from Settings (Command+,); confirmation stops playback and removes the saved Navidrome credentials.
+
+## Local music and iPhone pairing
+
+Choose **Select Music Folder** on first launch. Syncstr reads supported audio and tags without editing your files, and remembers folder access through a security-scoped bookmark. Open **Transfer to iPhone** in the sidebar, select the Mac from Syncstr on the phone, scan its QR code or enter its code, then approve the phone on the Mac. Keep both apps open during transfer.
+
+The phone can save albums and listen after the Mac is closed. Use Settings to change folders or choose another connection method. Navidrome login remains available from onboarding. See [the local-transfer guide](../../docs/local-music-transfer.md) for trust, retry behavior, limits, and physical-device acceptance checks.
 
 ## Uploads
 
@@ -51,7 +57,7 @@ The library opens on albums. Use the sidebar to switch between albums, artists, 
 
 Previous/next, pause/resume, and seeking operate on the list from which playback started. Albums are ordered by disc and track number. Navigation and search do not change the active queue. Tracks advance automatically; playback stops after the last track. Pressing play after the final track ends restarts that track.
 
-Retry a failed connection after checking the server and network. Select a track again after a playback failure. Playlist editing, download/offline storage, playback history submission, and editing existing files' metadata are not implemented in this macOS client.
+Retry a failed connection after checking the server and network. Select a track again after a playback failure. Playlist editing, offline caching of Navidrome streams, playback history submission, and editing existing files' metadata are not implemented in this macOS client. Local-folder audio plays directly from the selected folder.
 
 The screen structure follows the [Apple MVP operation model decision](https://github.com/asonas/syncstr/issues/5#issuecomment-5472974010).
 
@@ -103,12 +109,14 @@ xcrun swiftc -parse-as-library -module-cache-path apps/macos/.build/module-cache
 apps/macos/.build/navidrome-check
 ```
 
-Verify continuous playback, end-of-queue behavior, seeking, and credential restoration with the real AVPlayer and a short silent audio fixture. This check requires access to macOS audio services and Keychain. It uses a unique test-only Keychain service and fictional credentials, removes its entries afterward, and does not access normal saved credentials:
+The macOS test suite above also checks local transfer over a real TLS loopback connection, pairing rejection, interruption/retry, and file integrity.
+
+Verify continuous playback, end-of-queue behavior, seeking, and credential restoration with the real AVPlayer and a short silent audio fixture. Run this as a standalone executable with access to macOS audio services and Keychain. It uses a unique test-only Keychain service and fictional credentials, removes its entries afterward, and does not access normal saved credentials:
 
 ```sh
-mkdir -p apps/macos/.build/module-cache
-xcrun swiftc -parse-as-library -module-cache-path apps/macos/.build/module-cache -o apps/macos/.build/library-check apps/macos/Library.swift apps/macos/Navidrome.swift apps/macos/CredentialStore.swift apps/macos/LibraryCheck.swift
-apps/macos/.build/library-check
+mise exec -- xcodegen generate --spec apps/ios/project.yml
+env DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer xcodebuild -project apps/ios/Syncstr.xcodeproj -scheme LibraryCheck -destination 'platform=macOS' -derivedDataPath apps/macos/.build/Checks CODE_SIGNING_ALLOWED=NO build
+apps/macos/.build/Checks/Build/Products/Debug/LibraryCheck
 ```
 
 Manually verify login, your own sample tracks, audible playback, pause/resume, track changes, seeking, credential restoration after restart, and credential removal on logout. A passing build does not establish audible playback.

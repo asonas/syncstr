@@ -105,6 +105,7 @@ struct LibraryCheck {
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: folder) }
         let audio = folder.appendingPathComponent("silence.wav")
+        let localFiles = LocalMusicStore(root: folder.appendingPathComponent("local"))
         try silence(at: audio)
 
         let configuration = URLSessionConfiguration.ephemeral
@@ -125,7 +126,7 @@ struct LibraryCheck {
             pollingStep?()
             if holdPolling { try await Task.sleep(for: .seconds(60)) }
             else { await Task.yield() }
-        })
+        }, localStore: localFiles)
 
         do {
             await library.restoreCredentials()
@@ -135,7 +136,7 @@ struct LibraryCheck {
             try require(library.connected && library.message == nil)
             let saved = try await store.load()
             try require(saved == LoginCredentials(server: "https://fixture.invalid", username: "listener", password: "fixture-one"))
-            let reopened = Library(session: session, credentials: store)
+            let reopened = Library(session: session, credentials: store, localStore: localFiles)
             await reopened.restoreCredentials()
             try require(reopened.connected && reopened.tracks.count == 3 && reopened.password.isEmpty && !reopened.restoringSession)
 
@@ -143,7 +144,7 @@ struct LibraryCheck {
             try await wait("Credential update did not finish") { !library.refreshing }
             try require(try await store.load()?.password == "fixture-two")
             LibraryFixtureProtocol.reject = true
-            let rejected = Library(session: session, credentials: store)
+            let rejected = Library(session: session, credentials: store, localStore: localFiles)
             await rejected.restoreCredentials()
             try require(!rejected.connected && !rejected.restoringSession && rejected.message != nil)
             try require(rejected.username == "listener" && rejected.password == "fixture-two")

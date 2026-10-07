@@ -22,6 +22,14 @@
 	<string>$(CURRENT_PROJECT_VERSION)</string>
 	<key>ITSAppUsesNonExemptEncryption</key>
 	<false/>
+	<key>NSBonjourServices</key>
+	<array>
+		<string>_syncstr-music._tcp</string>
+	</array>
+	<key>NSCameraUsageDescription</key>
+	<string>Macのペアリング用QRコードを読み取るために使用します。</string>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>MacとiPhoneの間で音楽を転送するために使用します。</string>
 	<key>UIBackgroundModes</key>
 	<array>
 		<string>audio</string>

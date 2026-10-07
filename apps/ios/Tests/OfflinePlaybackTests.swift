@@ -37,7 +37,7 @@ final class OfflinePlaybackTests: XCTestCase {
             let created = AVPlayer(url: $0)
             player = created
             return created
-        })
+        }, localStore: LocalMusicStore(root: root.appendingPathComponent("local")))
         library.offlineTracks = OfflineTracks(root: root)
         await library.restoreCredentials()
         XCTAssertEqual(library.downloaded, ["voyager"])

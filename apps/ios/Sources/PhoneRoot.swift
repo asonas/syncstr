@@ -13,6 +13,7 @@ struct PhoneRoot: View {
     @ObservedObject var library: Library
     @State private var tab = PhoneTab.library
     @State private var showingPlayer = false
+    @State private var showingServerLogin = false
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
     var body: some View {
@@ -25,8 +26,18 @@ struct PhoneRoot: View {
                     Text("ライブラリに接続中…")
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else if showingServerLogin {
+                VStack { Button("戻る") { showingServerLogin = false }; login }
             } else {
-                login
+                ScrollView {
+                    VStack(spacing: 24) {
+                        PhonePairingView(transfer: library.transfer)
+                        if library.hasSavedLocalLibrary {
+                            Button("保存した音楽を開く") { Task { await library.openSavedLocalLibrary() } }
+                        }
+                        Button("Navidromeに接続する") { showingServerLogin = true }
+                    }.padding(24)
+                }
             }
         }
         .background(PhoneStyle.graphite)
@@ -54,7 +65,7 @@ struct PhoneRoot: View {
             }
         }
         .onChange(of: library.connected) { _, connected in
-            if !connected { tab = .library }
+            if !connected { tab = .library; showingServerLogin = false }
         }
     }
 
@@ -222,6 +233,9 @@ struct PhoneRoot: View {
                     .buttonStyle(.plain)
                     .disabled(album.tracks.isEmpty)
                     .accessibilityLabel("アルバムを先頭から再生")
+                    if library.local {
+                        AlbumTransferButton(transfer: library.transfer, tracks: album.tracks).padding(.top, 16)
+                    }
                 }
                 .frame(maxWidth: .infinity)
                 .padding(.top, 8)
@@ -309,7 +323,7 @@ struct PhoneRoot: View {
             .buttonStyle(.plain)
             .accessibilityIdentifier("track-\(track.id)")
             .accessibilityValue(library.current?.id == track.id ? (library.loading ? "再生を準備中" : library.playing ? "再生中" : "選択中") : "")
-            if library.downloading.contains(track.id) {
+            if library.downloading.contains(track.id) || library.transfer.activeTrack == track.id {
                 ProgressView().frame(width: 44, height: 44)
                     .accessibilityLabel("ダウンロード中")
             } else if library.downloaded.contains(track.id) {
@@ -326,6 +340,7 @@ struct PhoneRoot: View {
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel("\(track.title)、未ダウンロード。端末に保存")
+                .disabled(library.local && library.transfer.busy)
             }
         }
     }
@@ -364,6 +379,10 @@ struct PhoneRoot: View {
 
     private var settings: some View {
         Form {
+            if library.local {
+                Section { PhonePairingView(transfer: library.transfer) }
+                Section { Button("別の接続方法を選ぶ") { library.disconnect() } }
+            } else {
             Section("接続") {
                 LabeledContent("サーバー", value: library.server)
                 LabeledContent("ユーザー", value: library.username)
@@ -373,6 +392,7 @@ struct PhoneRoot: View {
             Section {
                 Button("ログアウト", role: .destructive) { library.disconnect() }
             } footer: { Text("この iPhone に保存したログイン情報を削除します。") }
+            }
         }
         .scrollContentBackground(.hidden)
         .background(PhoneStyle.graphite)

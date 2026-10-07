@@ -18,6 +18,7 @@ This document separates established decisions from questions to resolve before i
 | D-008 | Limit Navidrome to a media adapter | Ratings and play counts do not satisfy the product's history-event contract | Add an authoritative syncstr SyncService |
 | D-009 | Do not adopt a shared Rust synchronization core | FFI, cancellation, thread boundaries, and distribution remain unmeasured; a smaller failure surface has not been demonstrated | Share synchronization vectors and conformance tests instead |
 | D-010 | Implement macOS and iPhone first | Validate native audio paths early | Windows and Android follow as conforming implementations |
+| D-011 | Provide a Mac-folder-to-iPhone local copy path ([issue #12](https://github.com/asonas/syncstr/issues/12)) | Nontechnical users can start without administering a server | For this path, replace D-001's NAS requirement with a Mac source and durable phone copies; defer D-006 server ordering, D-007 passkeys, and D-008 SyncService. Keep the existing Navidrome path as an alternative |
 
 ## Decisions to resolve before the relevant implementation
 

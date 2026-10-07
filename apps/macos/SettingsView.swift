@@ -88,8 +88,11 @@ private struct ConnectionSettingsView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            Text("Navidromeの接続").font(.headline)
-            if library.connected {
+            LocalFolderButton(library: library)
+            if library.local {
+                Text("Macの音楽フォルダを使用しています。")
+                Button("別の接続方法を選ぶ") { library.disconnect() }
+            } else if library.connected {
                 Text(library.server).textSelection(.enabled)
                 Text("ユーザー: \(library.username)").foregroundStyle(Studio.fog)
                 Button("ログアウト…", role: .destructive) { confirmingLogout = true }

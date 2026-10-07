@@ -29,5 +29,11 @@
 	<false/>
 	<key>LSApplicationCategoryType</key>
 	<string>public.app-category.music</string>
+	<key>NSBonjourServices</key>
+	<array>
+		<string>_syncstr-music._tcp</string>
+	</array>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>MacとiPhoneの間で音楽を転送するために使用します。</string>
 </dict>
 </plist>

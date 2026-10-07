@@ -2,6 +2,7 @@ import SwiftUI
 
 @main
 struct SyncstrApp: App {
+    @Environment(\.scenePhase) private var scenePhase
     @StateObject private var library: Library
     @StateObject private var playback: PhonePlayback
 
@@ -19,6 +20,12 @@ struct SyncstrApp: App {
                 .task {
                     _ = playback
                     await library.restoreCredentials()
+                }
+                .onChange(of: scenePhase) { _, phase in
+                    if phase == .background {
+                        library.transfer.cancel()
+                        library.transfer.stopBrowsing()
+                    }
                 }
         }
     }

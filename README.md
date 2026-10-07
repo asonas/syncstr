@@ -4,10 +4,12 @@ A native macOS and iPhone player for a music library you manage yourself.
 
 ## Current implementation
 
-The apps connect to Navidrome over HTTPS and use the OpenSubsonic API to browse and stream music. They authenticate with a Navidrome account and store connection credentials in each device's Keychain.
+The apps support a local music folder on macOS and direct album copies to a paired iPhone on the same LAN. Received music and its catalog can be opened without a network connection. See [local music onboarding](docs/local-music-transfer.md) for setup, the transfer contract, and verification limits.
+
+Navidrome over HTTPS/OpenSubsonic remains an alternative for browsing and streaming a server library. Its account credentials are stored in each device's Keychain.
 
 - **macOS:** album, artist, and track browsing; search; continuous playback; seeking; and uploads through a separate upload service.
-- **iPhone:** library browsing, search, playback, local track downloads, background audio, and lock-screen controls. Loading the library at startup still requires a connection.
+- **iPhone:** library browsing, search, playback, local track downloads, background audio, and lock-screen controls. The Navidrome library path still needs a server connection at startup; the local-copy path does not.
 
 Start with the [macOS guide](apps/macos/README.md) or [iPhone guide](apps/ios/README.md) for build and verification steps. [Issue #11](https://github.com/asonas/syncstr/issues/11) records implementation milestones; [open issues](https://github.com/asonas/syncstr/issues) track follow-up work. Record local builds, distribution, and device verification separately.
 
@@ -16,6 +18,7 @@ Start with the [macOS guide](apps/macos/README.md) or [iPhone guide](apps/ios/RE
 | Task | Start here |
 |---|---|
 | macOS UI and launch | [Syncstr.swift](apps/macos/Syncstr.swift), [macOS guide](apps/macos/README.md) |
+| Local catalog, pairing, and transfer | [LocalCatalog.swift](apps/macos/LocalCatalog.swift), [LocalTransfer.swift](apps/macos/LocalTransfer.swift), [LocalSetup.swift](apps/macos/LocalSetup.swift), [protocol and setup](docs/local-music-transfer.md) |
 | Shared playback, API, and credentials | [Library.swift](apps/macos/Library.swift), [Navidrome.swift](apps/macos/Navidrome.swift), [CredentialStore.swift](apps/macos/CredentialStore.swift). The iOS target compiles these same files |
 | iPhone UI and device features | [Sources](apps/ios/Sources/), [iPhone guide](apps/ios/README.md) |
 | Uploads and settings | [Upload.swift](apps/macos/Upload.swift), [UploadView.swift](apps/macos/UploadView.swift), [SettingsView.swift](apps/macos/SettingsView.swift), [server and deployment sources](apps/macos/README.md#server-and-deployment-sources) |

@@ -26,12 +26,14 @@ final class LoginTests: XCTestCase {
     @MainActor
     func testSavedLoginLoadsLibraryAndLogoutRemovesIt() async throws {
         let store = CredentialStore(service: "as.ason.syncstr.test." + UUID().uuidString)
+        let localRoot = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: localRoot) }
         let configuration = URLSessionConfiguration.ephemeral
         configuration.protocolClasses = [PhoneAPIProtocol.self]
         let session = URLSession(configuration: configuration)
         do {
             try await store.save(LoginCredentials(server: "https://fixture.invalid", username: "listener", password: "fixture-password"))
-            let library = Library(session: session, credentials: store)
+            let library = Library(session: session, credentials: store, localStore: LocalMusicStore(root: localRoot))
             await library.restoreCredentials()
             XCTAssertTrue(library.connected)
             XCTAssertFalse(library.restoringSession)

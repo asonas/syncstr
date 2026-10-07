@@ -18,7 +18,7 @@ struct PhoneArtwork: View {
     let url: URL?
 
     var body: some View {
-        AsyncImage(url: url) { image in
+        MusicImage(url: url) { image in
             image.resizable().scaledToFill()
         } placeholder: {
             PhoneStyle.carbon.overlay {

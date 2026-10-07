@@ -1,7 +1,7 @@
 import CryptoKit
 import Foundation
 
-struct Track: Decodable, Identifiable, Equatable {
+struct Track: Codable, Identifiable, Equatable {
     let id: String
     let title: String
     let artist: String?

@@ -51,6 +51,8 @@ struct StudioInput: ViewModifier {
 struct LibraryView: View {
     @ObservedObject var library: Library
     @State private var showingUpload = false
+    @State private var showingPairing = false
+    @State private var showingServerLogin = false
     @State private var hoveredTrack: String?
 
     var body: some View {
@@ -71,7 +73,20 @@ struct LibraryView: View {
                     Text("ライブラリに接続中…")
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else { login }
+            } else if showingServerLogin {
+                VStack { Button("戻る") { showingServerLogin = false }; login }
+            }
+            else {
+                VStack(spacing: 20) {
+                    Text("自分の音楽を、どの端末でも").font(.title)
+                    Text("音楽フォルダを選ぶと、このMacで聴いたり、iPhoneへ持ち出したりできます。")
+                    LocalFolderButton(library: library).buttonStyle(.borderedProminent)
+                    if library.hasSavedLocalLibrary {
+                        Button("前の音楽フォルダを開く") { Task { await library.openSavedLocalLibrary() } }
+                    }
+                    Button("Navidromeに接続する") { showingServerLogin = true }
+                }.padding(32).frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
             if let message = library.message {
                 HStack(alignment: .top, spacing: 8) {
                     MacIcon("circle-alert").accessibilityHidden(true)
@@ -102,6 +117,10 @@ struct LibraryView: View {
         }
         .toolbarBackground(.hidden, for: .windowToolbar)
         .task { await library.restoreCredentials() }
+        .onChange(of: library.connected) { _, connected in if !connected { showingServerLogin = false } }
+        .sheet(isPresented: $showingPairing) {
+            MacPairingView(transfer: library.transfer) { Task { await library.startPairing() } }
+        }
         .sheet(isPresented: $showingUpload) {
             UploadView(onUploaded: { library.pollForLibraryUpdates(uploads: [$0]) })
         }
@@ -127,13 +146,13 @@ struct LibraryView: View {
                 .accessibilityAddTraits(library.destination == destination && !library.showingNowPlaying ? .isSelected : [])
             }
             rule.padding(.vertical, 16)
-            Button { showingUpload = true } label: {
-                HStack(spacing: 8) { MacIcon("cloud-upload"); Text("音楽を追加") }
+            Button { if library.local { showingPairing = true } else { showingUpload = true } } label: {
+                HStack(spacing: 8) { MacIcon("cloud-upload"); Text(library.local ? "iPhoneに転送" : "音楽を追加") }
                     .frame(maxWidth: .infinity, minHeight: 32, alignment: .leading)
                     .padding(.horizontal, 8)
                     .contentShape(Rectangle())
             }
-            .buttonStyle(.plain).accessibilityLabel("音楽をアップロード")
+            .buttonStyle(.plain).accessibilityLabel(library.local ? "iPhoneに音楽を転送" : "音楽をアップロード")
             Button(action: library.reload) {
                 HStack(spacing: 8) { MacIcon("refresh"); Text(library.refreshing ? "更新中…" : "ライブラリを更新") }
                     .frame(maxWidth: .infinity, minHeight: 32, alignment: .leading)
@@ -628,7 +647,7 @@ private struct Artwork: View {
 
     var body: some View {
         GeometryReader { geometry in
-            AsyncImage(url: url) { image in
+            MusicImage(url: url) { image in
                 image.resizable().scaledToFill()
                     .frame(width: geometry.size.width, height: geometry.size.height)
             } placeholder: {

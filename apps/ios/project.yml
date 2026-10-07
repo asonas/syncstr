@@ -19,6 +19,9 @@ targets:
     platform: macOS
     sources:
       - path: ../macos/Syncstr.swift
+      - path: ../macos/LocalCatalog.swift
+      - path: ../macos/LocalTransfer.swift
+      - path: ../macos/LocalSetup.swift
       - path: ../macos/Library.swift
       - path: ../macos/Navidrome.swift
       - path: ../macos/CredentialStore.swift
@@ -49,6 +52,8 @@ targets:
       properties:
         CFBundleLocalizations: [ja, en]
         CFBundleDisplayName: syncstr
+        NSLocalNetworkUsageDescription: "MacとiPhoneの間で音楽を転送するために使用します。"
+        NSBonjourServices: ["_syncstr-music._tcp"]
         CFBundleShortVersionString: $(MARKETING_VERSION)
         CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         ITSAppUsesNonExemptEncryption: false
@@ -60,6 +65,9 @@ targets:
       - path: Sources
       - path: Licenses
         buildPhase: resources
+      - path: ../macos/LocalCatalog.swift
+      - path: ../macos/LocalTransfer.swift
+      - path: ../macos/LocalSetup.swift
       - path: ../macos/Library.swift
       - path: ../macos/Navidrome.swift
       - path: ../macos/CredentialStore.swift
@@ -74,9 +82,12 @@ targets:
       path: Info.plist
       properties:
         CFBundleDisplayName: syncstr
+        NSLocalNetworkUsageDescription: "MacとiPhoneの間で音楽を転送するために使用します。"
+        NSBonjourServices: ["_syncstr-music._tcp"]
         CFBundleShortVersionString: $(MARKETING_VERSION)
         CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         ITSAppUsesNonExemptEncryption: false
+        NSCameraUsageDescription: "Macのペアリング用QRコードを読み取るために使用します。"
         UILaunchScreen: {}
         UISupportedInterfaceOrientations:
           - UIInterfaceOrientationPortrait
@@ -97,6 +108,10 @@ targets:
     platform: macOS
     sources:
       - path: ../macos/Tests
+      - path: ../macos/LocalCatalog.swift
+      - path: ../macos/LocalTransfer.swift
+      - path: ../macos/Navidrome.swift
+      - path: ../macos/CredentialStore.swift
       - path: ../macos/MusicMetadata.swift
       - path: ../macos/Upload.swift
     dependencies:
@@ -104,7 +119,23 @@ targets:
     settings:
       base:
         GENERATE_INFOPLIST_FILE: YES
+  LibraryCheck:
+    type: tool
+    platform: macOS
+    sources:
+      - path: ../macos/LibraryCheck.swift
+      - path: ../macos/Library.swift
+      - path: ../macos/LocalCatalog.swift
+      - path: ../macos/LocalTransfer.swift
+      - path: ../macos/Navidrome.swift
+      - path: ../macos/CredentialStore.swift
+    dependencies:
+      - package: AudioTags
 schemes:
+  LibraryCheck:
+    build:
+      targets:
+        LibraryCheck: all
   SyncstrMac:
     build:
       targets:
