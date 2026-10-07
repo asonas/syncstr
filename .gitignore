@@ -23,3 +23,7 @@ apps/ios/Syncstr.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/*
 !apps/ios/Syncstr.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved
 apps/ios/Syncstr.xcodeproj/xcshareddata/xcschemes/
 server/target/
+headless/data/
+headless/identity/
+headless/syncstr-headless
+headless/target/

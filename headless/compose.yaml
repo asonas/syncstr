@@ -1,0 +1,13 @@
+services:
+  syncstr:
+    build: .
+    user: "${SYNCSTR_UID:-1000}:${SYNCSTR_GID:-1000}"
+    restart: unless-stopped
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    ports:
+      - "${SYNCSTR_BIND_ADDRESS:-127.0.0.1}:${SYNCSTR_PORT:-8443}:8443"
+    volumes:
+      - ./data:/data
+      - ./identity:/identity:ro

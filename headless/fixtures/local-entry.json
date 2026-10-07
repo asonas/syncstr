@@ -1,0 +1,17 @@
+{
+  "track": {
+    "id": "fixture-track",
+    "title": "夜の音楽",
+    "artist": "Fixture Artist",
+    "album": "Fixture Album",
+    "albumId": "fixture-album",
+    "coverArt": "fixture-track",
+    "duration": 1.25,
+    "track": 2,
+    "discNumber": 1,
+    "suffix": "wav",
+    "size": 3
+  },
+  "sha256": "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
+  "artwork": "AQID"
+}

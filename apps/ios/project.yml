@@ -97,6 +97,8 @@ targets:
     sources:
       - path: Tests
       - path: ../macos/Tests/CatalogMigrationTests.swift
+      - path: ../../headless/fixtures/local-entry.json
+        buildPhase: resources
     settings:
       base:
         GENERATE_INFOPLIST_FILE: YES
@@ -107,6 +109,8 @@ targets:
     platform: macOS
     sources:
       - path: ../macos/Tests
+      - path: ../../headless/fixtures/local-entry.json
+        buildPhase: resources
       - path: ../macos/LocalCatalog.swift
       - path: ../macos/CatalogDatabase.swift
       - path: ../macos/LocalTransfer.swift

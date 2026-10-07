@@ -6,6 +6,22 @@ import XCTest
 #endif
 
 final class CatalogMigrationTests: XCTestCase {
+    func testHeadlessEntryJSONContractRoundTripsInNativeModel() throws {
+        let fixture = try XCTUnwrap(Bundle(for: Self.self).url(forResource: "local-entry", withExtension: "json"))
+        let data = try Data(contentsOf: fixture)
+        let entry = try JSONDecoder().decode(LocalEntry.self, from: data)
+        XCTAssertEqual(entry.track.id, "fixture-track")
+        XCTAssertEqual(entry.track.title, "夜の音楽")
+        XCTAssertEqual(entry.track.albumId, "fixture-album")
+        XCTAssertEqual(entry.track.duration, 1.25)
+        XCTAssertEqual(entry.track.discNumber, 1)
+        XCTAssertEqual(entry.artwork, Data([1, 2, 3]))
+        XCTAssertTrue(LocalMusicStore.valid(entry))
+        let original = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? NSDictionary)
+        let encoded = try JSONEncoder().encode(entry)
+        XCTAssertEqual(try JSONSerialization.jsonObject(with: encoded) as? NSDictionary, original)
+    }
+
     private func legacyStore() throws -> (LocalMusicStore, LocalCatalog) {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         addTeardownBlock { try? FileManager.default.removeItem(at: root) }
