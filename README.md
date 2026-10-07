@@ -25,6 +25,12 @@ Start with the [macOS guide](apps/macos/README.md) or [iPhone guide](apps/ios/RE
 | Earlier UI prototype | [Apple MVP operation model](https://github.com/asonas/syncstr/tree/be9fd4d9f06fca3676ec0426dbfe4b6606aae0ea/prototypes/apple-mvp-operation-model), [decision #5](https://github.com/asonas/syncstr/issues/5). The prototype is preserved on a separate branch, outside main |
 | Interpreting design decisions | [Domain docs](docs/agents/domain.md) |
 
+### Changes to app interactions
+
+Before changing an app interaction, inspect its macOS and iOS entry points and any shared implementation using the map above. When the request does not specify a platform, fix the same defect on both platforms where that interaction is supported. For a platform-specific request, check the other platform for effects of changes to shared code and keep edits within the requested scope.
+
+Record the expected behavior before, during, and after the interaction, including its return action where applicable, such as playback, pause, and resume. Validate the affected behavior on each platform. Report each platform as changed, unchanged with a reason, or unverified, and distinguish builds and automated tests from screen interaction and physical-device checks.
+
 ## Long-term design and deferred work
 
 Playback-state synchronization, passkey authentication, Music XML migration, and Windows/Android clients belong to the long-term design. They are not prerequisites for running or changing the local music player.
