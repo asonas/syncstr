@@ -168,7 +168,7 @@ struct PhonePairingView: View {
     }
 }
 
-private struct PairingScanner: UIViewControllerRepresentable {
+struct PairingScanner: UIViewControllerRepresentable {
     var onCode: (String) -> Void
     func makeCoordinator() -> Coordinator { Coordinator(onCode: onCode) }
     func makeUIViewController(context: Context) -> DataScannerViewController {

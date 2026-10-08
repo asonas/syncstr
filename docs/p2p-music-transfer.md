@@ -29,7 +29,17 @@ The address file is routing information, not an access credential. Share it and 
    target/debug/syncstr-headless peer-pair --state peer --peer <device-public-id>
    ```
 
-3. In the app, enter a name, the independently confirmed node ID, and the contents of `address.json`. Connect. A mismatch is rejected before connecting.
+3. Export the current connection information on the node:
+
+   ```sh
+   target/debug/syncstr-headless peer-info --state peer --address address.json --ip 192.0.2.10
+   ```
+
+   Replace the fictional IP with a reachable node IP from the address record. The command preserves the current UDP port and verifies that the record belongs to the node's identity. Without `--ip`, it exports all recorded addresses and rejects records exceeding the app's 32-address limit. After restarting the node, export again because the UDP port may change.
+
+   For iPhone, add `--qr` to display a terminal QR code followed by the same JSON. Use a monospace terminal with light foreground on a dark background and keep the entire QR visible. In Docker, run `docker exec <container> syncstr-headless peer-info --state /data/peer --address /data/peer/address.json --ip 192.0.2.10 --qr`.
+
+   On macOS, paste the JSON into **Connection information**. On iPhone, paste it or select **Scan the connection QR code**. Both paths display the node ID and require confirmation before connecting. Compare that ID with the trusted node terminal or administrator's information. Scanning alone does not grant access or connect. Devices without the scanner or camera access can use JSON. The separate duplicate node-ID input is no longer needed; saved registrations still pin the approved identity.
 4. Open an album and save it. iPhone retains the existing album/track download controls; macOS provides an album save button and a track context-menu save action. Completed files remain playable offline.
 5. Use **Add audio files to the connected device** to select files through the native file picker. Uploads preserve original bytes and use the filename as the title. Embedded tag extraction for this picker is not implemented. Reconnect to refresh the catalog after additions.
 

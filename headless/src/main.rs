@@ -60,6 +60,17 @@ enum Command {
         state: std::path::PathBuf,
     },
     #[cfg(feature = "p2p")]
+    PeerInfo {
+        #[arg(long)]
+        state: std::path::PathBuf,
+        #[arg(long)]
+        address: std::path::PathBuf,
+        #[arg(long)]
+        ip: Option<std::net::IpAddr>,
+        #[arg(long)]
+        qr: bool,
+    },
+    #[cfg(feature = "p2p")]
     PeerPair {
         #[arg(long)]
         state: std::path::PathBuf,
@@ -192,6 +203,43 @@ async fn run(cli: crate::Cli) -> anyhow::Result<()> {
         #[cfg(feature = "p2p")]
         crate::Command::PeerInit { state } => {
             println!("{}", syncstr_headless::peer::Identity::initialize(&state)?);
+        }
+        #[cfg(feature = "p2p")]
+        crate::Command::PeerInfo {
+            state,
+            address,
+            ip,
+            qr,
+        } => {
+            let identity = syncstr_headless::peer::Identity::open(&state)?;
+            let mut address = syncstr_headless::peer::Address::read(&address, identity.id())?;
+            if let Some(ip) = ip {
+                address.addresses.retain(|value| value.ip() == ip);
+                anyhow::ensure!(
+                    !address.addresses.is_empty(),
+                    "IP is not in the node's address record"
+                );
+            }
+            anyhow::ensure!(
+                address.addresses.len() <= 32,
+                "too many addresses; select a reachable IP with --ip"
+            );
+            anyhow::ensure!(
+                !address.addresses.is_empty() || address.relay.is_some(),
+                "no reachable address"
+            );
+            let text = serde_json::to_string(&address)?;
+            if qr {
+                let code = qrcode::QrCode::new(text.as_bytes())?;
+                println!(
+                    "{}",
+                    code.render::<qrcode::render::unicode::Dense1x2>()
+                        .dark_color(qrcode::render::unicode::Dense1x2::Light)
+                        .light_color(qrcode::render::unicode::Dense1x2::Dark)
+                        .build()
+                );
+            }
+            println!("{text}");
         }
         #[cfg(feature = "p2p")]
         crate::Command::PeerPair {

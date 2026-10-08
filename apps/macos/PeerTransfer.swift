@@ -16,6 +16,14 @@ struct PeerAddress: Codable {
     let addresses: [String]
     let relay: String?
 
+    static func parse(_ text: String) throws -> PeerAddress {
+        guard text.utf8.count <= 16384 else { throw LocalMusicError.invalidData }
+        let address = try JSONDecoder().decode(PeerAddress.self, from: Data(text.utf8))
+        _ = try address.endpoint(expected: address.id)
+        guard !address.addresses.isEmpty || address.relay != nil else { throw LocalMusicError.invalidData }
+        return address
+    }
+
     func endpoint(expected: String) throws -> IrohLib.EndpointAddr {
         guard version == 1, id == expected, addresses.count <= 32,
               addresses.allSatisfy({ $0.utf8.count <= 128 }) else { throw LocalMusicError.invalidData }

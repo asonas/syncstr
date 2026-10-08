@@ -3,6 +3,18 @@ import XCTest
 
 @MainActor
 final class PeerTransferTests: XCTestCase {
+    func testEnrollmentReadsTheAdvertisedIdentityAndRejectsInvalidRecords() throws {
+        let id = String(repeating: "a", count: 64)
+        let text = "{\"version\":1,\"id\":\"\(id)\",\"addresses\":[\"192.0.2.10:40000\"],\"relay\":null}"
+        XCTAssertEqual(try PeerAddress.parse(text).id, id)
+        XCTAssertEqual(try PeerAddress.parse(text).addresses, ["192.0.2.10:40000"])
+        XCTAssertThrowsError(try PeerAddress.parse(text.replacingOccurrences(of: id, with: "invalid")))
+        XCTAssertThrowsError(try PeerAddress.parse(text.replacingOccurrences(of: "\"version\":1", with: "\"version\":2")))
+        XCTAssertThrowsError(try PeerAddress.parse(text.replacingOccurrences(of: "[\"192.0.2.10:40000\"]", with: "[]")))
+        XCTAssertThrowsError(try PeerAddress.parse(String(repeating: " ", count: 16385) + text))
+        XCTAssertThrowsError(try PeerAddress.parse("https://example.com"))
+    }
+
     private func wait(_ condition: () -> Bool) async throws {
         for _ in 0..<400 {
             if condition() { return }

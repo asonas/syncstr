@@ -95,7 +95,7 @@ targets:
         CFBundleShortVersionString: $(MARKETING_VERSION)
         CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         ITSAppUsesNonExemptEncryption: false
-        NSCameraUsageDescription: "Macのペアリング用QRコードを読み取るために使用します。"
+        NSCameraUsageDescription: "接続先のペアリング用QRコードを読み取るために使用します。"
         UILaunchScreen: {}
         UISupportedInterfaceOrientations:
           - UIInterfaceOrientationPortrait
