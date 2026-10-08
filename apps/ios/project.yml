@@ -55,7 +55,7 @@ targets:
       path: ../macos/TestFlight-Info.plist
       properties:
         CFBundleLocalizations: [ja, en]
-        CFBundleDisplayName: syncstr
+        CFBundleDisplayName: Syncstr
         NSLocalNetworkUsageDescription: "MacとiPhoneの間で音楽を転送するために使用します。"
         NSBonjourServices: ["_syncstr-music._tcp"]
         CFBundleShortVersionString: $(MARKETING_VERSION)
@@ -91,7 +91,7 @@ targets:
     info:
       path: Info.plist
       properties:
-        CFBundleDisplayName: syncstr
+        CFBundleDisplayName: Syncstr
         NSLocalNetworkUsageDescription: "MacとiPhoneの間で音楽を転送するために使用します。"
         NSBonjourServices: ["_syncstr-music._tcp"]
         CFBundleShortVersionString: $(MARKETING_VERSION)

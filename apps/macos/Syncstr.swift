@@ -643,7 +643,7 @@ private struct Artwork: View {
 struct SyncstrApp: App {
     @StateObject private var library = Library()
     var body: some Scene {
-        WindowGroup("syncstr") { LibraryView(library: library) }
+        WindowGroup("Syncstr") { LibraryView(library: library) }
             .defaultSize(width: 1080, height: 740)
             .windowToolbarStyle(.unifiedCompact)
             .commands { PlaybackCommands() }
