@@ -29,6 +29,13 @@ struct PhoneRoot: View {
             }
         }
         .background(PhoneStyle.graphite)
+        .onChange(of: library.showingNowPlaying) { _, showing in
+            if showing { tab = .playing }
+            else if tab == .playing { tab = .library }
+        }
+        .onChange(of: tab) { _, selected in
+            library.showingNowPlaying = selected == .playing
+        }
         .onChange(of: scenePhase) { _, phase in
             if phase == .background, library.transfer.peerConnected { library.transfer.cancel() }
         }

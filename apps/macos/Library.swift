@@ -24,6 +24,12 @@ enum LibraryDestination: String, CaseIterable {
     }
 }
 
+enum PlaybackRepeat: String, CaseIterable {
+    case off = "オフ"
+    case all = "すべて"
+    case one = "1曲"
+}
+
 @MainActor
 final class Library: ObservableObject {
     @Published var tracks: [Track] = []
@@ -37,6 +43,9 @@ final class Library: ObservableObject {
     @Published var position = 0.0
     @Published var duration = 0.0
     @Published var queue: [Track] = []
+    @Published private(set) var shuffled = false
+    @Published var repeatMode = PlaybackRepeat.off
+    @Published private(set) var volume = 1.0
     @Published var destination = LibraryDestination.albums
     @Published var selectedAlbum: String?
     @Published var selectedArtist: String?
@@ -65,6 +74,7 @@ final class Library: ObservableObject {
     private var finishObserver: NSObjectProtocol?
     private var seeking: UUID?
     private var restoredLibrary = false
+    private var orderedQueue: [Track] = []
     private let makePlayer: (URL) -> AVPlayer
 
     init(makePlayer: @escaping (URL) -> AVPlayer = { AVPlayer(url: $0) },
@@ -128,8 +138,8 @@ final class Library: ObservableObject {
     }
 
     var currentIndex: Int? { queue.firstIndex { $0.id == current?.id } }
-    var canGoPrevious: Bool { currentIndex.map { $0 > 0 } ?? false }
-    var canGoNext: Bool { currentIndex.map { $0 + 1 < queue.count } ?? false }
+    var canGoPrevious: Bool { currentIndex.map { $0 > 0 || repeatMode == .all } ?? false }
+    var canGoNext: Bool { currentIndex.map { $0 + 1 < queue.count || repeatMode == .all } ?? false }
 
     func navigate(_ destination: LibraryDestination) {
         self.destination = destination
@@ -160,6 +170,7 @@ final class Library: ObservableObject {
         stop()
         current = nil
         queue = []
+        orderedQueue = []
         localCatalog = catalog
         tracks = catalog.entries.map(\.track)
         artworkURLs = Dictionary(uniqueKeysWithValues: catalog.entries.compactMap { entry in
@@ -258,8 +269,11 @@ final class Library: ObservableObject {
 #if os(iOS)
         guard activateAudio() else { return }
 #endif
-        if let tracks { queue = tracks }
-        if !queue.contains(where: { $0.id == track.id }) { queue = [track] }
+        if let tracks {
+            orderedQueue = tracks
+            queue = shuffled ? [track] + tracks.filter { $0.id != track.id }.shuffled() : tracks
+        }
+        if !queue.contains(where: { $0.id == track.id }) { queue = [track]; orderedQueue = [track] }
         stop()
         current = track
         duration = max(0, track.duration ?? 0)
@@ -270,6 +284,7 @@ final class Library: ObservableObject {
         }
         loading = true
         let player = makePlayer(url)
+        player.volume = Float(volume)
         guard let item = player.currentItem else { return }
         self.player = player
         observation = player.observe(\.timeControlStatus, options: [.initial, .new]) { [weak self] player, _ in
@@ -307,7 +322,8 @@ final class Library: ObservableObject {
                 playing = false
                 loading = false
                 position = duration
-                next()
+                if repeatMode == .one, let current { play(current) }
+                else { next() }
             }
         }
         player.play()
@@ -315,12 +331,28 @@ final class Library: ObservableObject {
 
     func previous() {
         guard canGoPrevious, let index = currentIndex else { return }
-        play(queue[index - 1])
+        play(queue[index > 0 ? index - 1 : queue.count - 1])
     }
 
     func next() {
         guard canGoNext, let index = currentIndex else { return }
-        play(queue[index + 1])
+        play(queue[(index + 1) % queue.count])
+    }
+
+    func setShuffle(_ enabled: Bool) {
+        guard shuffled != enabled else { return }
+        shuffled = enabled
+        if enabled {
+            if let current, queue.contains(where: { $0.id == current.id }) {
+                queue = [current] + orderedQueue.filter { $0.id != current.id }.shuffled()
+            } else { queue = orderedQueue.shuffled() }
+        } else { queue = orderedQueue }
+    }
+
+    func setVolume(_ value: Double) {
+        guard value.isFinite else { return }
+        volume = min(1, max(0, value))
+        player?.volume = Float(volume)
     }
 
     func seek(to seconds: Double) {
@@ -401,6 +433,7 @@ final class Library: ObservableObject {
         current = nil
         tracks = []
         queue = []
+        orderedQueue = []
         artworkURLs = [:]
         connected = false
         search = ""

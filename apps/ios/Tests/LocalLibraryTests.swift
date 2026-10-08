@@ -66,12 +66,16 @@ final class LocalLibraryTests: XCTestCase {
         XCTAssertTrue(restored.connected)
         XCTAssertEqual(restored.albums.first?.title, "Fixture Album")
         XCTAssertEqual(restored.downloaded, [track.id])
+        restored.setVolume(0.4)
         restored.play(restored.tracks[0])
         XCTAssertEqual(playbackURL, files.fileURL(entry))
         for _ in 0..<100 where player?.currentItem?.status == .unknown {
             try await Task.sleep(for: .milliseconds(20))
         }
         XCTAssertEqual(player?.currentItem?.status, .readyToPlay)
+        XCTAssertEqual(player!.volume, 0.4, accuracy: 0.001)
+        restored.setVolume(0)
+        XCTAssertEqual(player?.volume, 0)
         restored.pause()
         restored.closeLibrary()
         XCTAssertTrue(files.hasFile(entry))

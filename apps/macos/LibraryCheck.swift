@@ -122,8 +122,16 @@ struct LibraryCheck {
         try require(library.current?.title == "Second" && library.queue.map(\.title) == ["First", "Second"])
         try require(mediaPlayers.last! === pausedPlayer && pausedPlayer.currentTime().seconds >= pausedPosition)
         print("PASS: album action starts, switches albums, pauses and resumes without replacing the queue")
+        library.setShuffle(true)
+        try require(library.queue.map(\.title) == ["Second", "First"])
+        try require(mediaPlayers.last! === pausedPlayer && library.current?.title == "Second")
+        library.setShuffle(false)
+        try require(library.queue.map(\.title) == ["First", "Second"])
+        library.setVolume(0.4)
+        try require(abs(mediaPlayers.last!.volume - 0.4) < 0.001)
         library.previous()
         try require(library.current?.title == "First")
+        try require(abs(mediaPlayers.last!.volume - 0.4) < 0.001)
         try await wait("Previous track did not play") { library.playing && library.position > 0 }
         library.togglePlayback()
         try await wait("Pause failed") { !library.playing }
@@ -138,6 +146,26 @@ struct LibraryCheck {
         try require(library.current?.title == "Second" && !library.canGoNext)
         library.togglePlayback()
         try await wait("Last track did not restart") { library.playing && library.position < 2 }
+        library.setVolume(-1)
+        try require(library.volume == 0 && mediaPlayers.last!.volume == 0)
+        library.setVolume(2)
+        try require(library.volume == 1 && mediaPlayers.last!.volume == 1)
+        library.setVolume(.nan)
+        try require(library.volume == 1)
+        library.repeatMode = .all
+        library.next()
+        try require(library.current?.title == "First")
+        library.previous()
+        try require(library.current?.title == "Second")
+        library.seek(to: 3.5)
+        try await wait("Repeat all did not wrap at track end") { library.current?.title == "First" }
+        library.repeatMode = .one
+        let repeatedPlayer = mediaPlayers.last!
+        library.seek(to: 3.5)
+        try await wait("Repeat one did not restart") { mediaPlayers.last! !== repeatedPlayer }
+        try require(library.current?.title == "First" && library.queue.map(\.title) == ["First", "Second"])
+        library.repeatMode = .off
+        print("PASS: shuffle preserves the player and restores order; repeat all/one follow real track endings; volume clamps and survives track changes")
         library.closeLibrary()
         try require(!library.connected && library.current == nil && library.queue.isEmpty)
         try require(mediaPlayers.allSatisfy { $0.rate == 0 })

@@ -15,6 +15,7 @@ struct SyncstrApp: App {
     var body: some Scene {
         WindowGroup {
             PhoneRoot(library: library)
+                .focusedSceneObject(library)
                 .preferredColorScheme(.dark)
                 .tint(PhoneStyle.signal)
                 .task {
@@ -28,5 +29,6 @@ struct SyncstrApp: App {
                     }
                 }
         }
+        .commands { PlaybackCommands() }
     }
 }

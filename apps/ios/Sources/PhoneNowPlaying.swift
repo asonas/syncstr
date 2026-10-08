@@ -121,6 +121,25 @@ struct PhoneNowPlaying: View {
                             .disabled(!library.canGoNext).accessibilityLabel("次の曲")
                         }
                         .buttonStyle(.plain)
+                        VStack(spacing: 16) {
+                            Toggle("シャッフル", isOn: Binding(
+                                get: { library.shuffled }, set: { library.setShuffle($0) }
+                            ))
+                            Picker("リピート", selection: $library.repeatMode) {
+                                ForEach(PlaybackRepeat.allCases, id: \.self) { mode in
+                                    Text(mode.rawValue).tag(mode)
+                                }
+                            }.pickerStyle(.menu)
+                            HStack(spacing: 8) {
+                                Text("音量")
+                                Slider(value: Binding(
+                                    get: { library.volume }, set: { library.setVolume($0) }
+                                ), in: 0...1)
+                                    .accessibilityLabel("音量")
+                            }
+                        }
+                        .padding(.horizontal, 20)
+                        .padding(.top, 32)
                         if library.loading {
                             ProgressView("読み込み中…").padding(.top, 16)
                         }

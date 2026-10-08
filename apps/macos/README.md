@@ -43,6 +43,14 @@ Select a track again after a playback failure and check folder access. Playlist 
 
 The screen structure follows the [Apple MVP operation model decision](https://github.com/asonas/syncstr/issues/5#issuecomment-5472974010).
 
+### Keyboard controls
+
+The Controls menu provides playback commands while the library window is active. Space toggles play/pause for the selected track. Command-Right/Left skips to the next/previous track; Command-L opens Now Playing, and Command-[ returns from Now Playing to the library.
+
+Option-Space toggles ordinary shuffle. Repeat supports Off, All, and One through the menu and Now Playing controls. Shuffle retains the current track and restores the original queue order when turned off. Repeat All wraps the queue; Repeat One restarts the current track when it ends, while manual next/previous still change tracks.
+
+Command-Up/Down adjusts app playback volume in 10% steps. Command-Shift-Up/Down sets it to maximum/minimum. These controls affect Syncstr audio, not the system output volume. The same commands are available on iOS with a hardware keyboard; its Now Playing screen also exposes shuffle, repeat, and volume without a keyboard. Playback options apply to the current app session.
+
 ## TestFlight and Xcode Cloud
 
 Both platform targets are generated from [apps/ios/project.yml](../ios/project.yml). Set its signing team and bundle identifiers to match your Apple Developer registration. Add the macOS platform to your App Store Connect app and keep the platform settings consistent.

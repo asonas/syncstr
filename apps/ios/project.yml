@@ -29,6 +29,7 @@ targets:
       - path: ../macos/PeerSetup.swift
       - path: ../macos/LocalSetup.swift
       - path: ../macos/Library.swift
+      - path: ../macos/PlaybackCommands.swift
       - path: ../macos/Track.swift
       - path: ../macos/CredentialStore.swift
       - path: ../macos/Licenses
@@ -75,6 +76,7 @@ targets:
       - path: ../macos/PeerSetup.swift
       - path: ../macos/LocalSetup.swift
       - path: ../macos/Library.swift
+      - path: ../macos/PlaybackCommands.swift
       - path: ../macos/Track.swift
       - path: ../macos/CredentialStore.swift
     dependencies:

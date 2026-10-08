@@ -86,6 +86,7 @@ struct LibraryView: View {
         .preferredColorScheme(.dark)
         .frame(minWidth: 640, minHeight: 560)
         .navigationTitle("")
+        .focusedSceneObject(library)
         .toolbar {
             if library.connected {
                 ToolbarItem(placement: .primaryAction) {
@@ -454,6 +455,20 @@ struct LibraryView: View {
                         }
                     }
                     seeking
+                    HStack(spacing: 20) {
+                        Toggle("シャッフル", isOn: Binding(
+                            get: { library.shuffled }, set: { library.setShuffle($0) }
+                        ))
+                        Picker("リピート", selection: $library.repeatMode) {
+                            ForEach(PlaybackRepeat.allCases, id: \.self) { mode in
+                                Text(mode.rawValue).tag(mode)
+                            }
+                        }.pickerStyle(.menu)
+                        Slider(value: Binding(
+                            get: { library.volume }, set: { library.setVolume($0) }
+                        ), in: 0...1) { Text("音量") }
+                            .frame(maxWidth: 180)
+                    }
                     trackRows(library.queue, showArtist: false, preservingQueue: true)
                 }
             }.padding(32)
@@ -631,6 +646,7 @@ struct SyncstrApp: App {
         WindowGroup("syncstr") { LibraryView(library: library) }
             .defaultSize(width: 1080, height: 740)
             .windowToolbarStyle(.unifiedCompact)
+            .commands { PlaybackCommands() }
         Settings { SettingsView(library: library) }
     }
 }
