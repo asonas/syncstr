@@ -1,4 +1,5 @@
 import Foundation
+import AudioTags
 import XCTest
 
 @MainActor
@@ -74,9 +75,12 @@ final class PeerTransferTests: XCTestCase {
         transfer.connectPeer(addressText: text, expected: serverID, name: "Fixture Node")
         try await wait { !transfer.busy }
         XCTAssertTrue(transfer.peerConnected, transfer.status ?? "")
-        let fixture = root.appendingPathComponent("Fixture.wav")
-        let payload = Data(repeating: 0xA7, count: 131079)
-        try payload.write(to: fixture)
+        let fixture = root.appendingPathComponent("12345.mp3")
+        let source = URL(fileURLWithPath: #filePath).deletingLastPathComponent().appendingPathComponent("Fixtures/untagged.mp3")
+        try FileManager.default.copyItem(at: source, to: fixture)
+        try AudioTags.writeFile(fixture, fields: ["TITLE": "Tagged title", "ARTIST": "Tagged artist", "ALBUM": "Tagged album",
+            "TRACKNUMBER": "3/12", "DISCNUMBER": "2/3"], artwork: nil, mimeType: nil, changeArtwork: false)
+        let payload = try Data(contentsOf: fixture)
         for _ in 0..<2 {
             transfer.uploadPeer(files: [fixture])
             try await wait { !transfer.busy }
@@ -87,10 +91,24 @@ final class PeerTransferTests: XCTestCase {
         try await wait { !transfer.busy }
         let catalog = try XCTUnwrap(files.load())
         XCTAssertEqual(catalog.entries.count, 1)
+        XCTAssertEqual(catalog.entries.first?.track.title, "Tagged title")
+        XCTAssertEqual(catalog.entries.first?.track.artist, "Tagged artist")
+        XCTAssertEqual(catalog.entries.first?.track.album, "Tagged album")
+        XCTAssertEqual(catalog.entries.first?.track.track, 3)
+        XCTAssertEqual(catalog.entries.first?.track.discNumber, 2)
+        XCTAssertGreaterThan(catalog.entries.first?.track.duration ?? 0, 0)
         transfer.copy(catalog.entries.map(\.track))
         try await wait { !transfer.busy }
         let entry = try XCTUnwrap(catalog.entries.first)
         XCTAssertEqual(try Data(contentsOf: files.fileURL(entry)), payload)
+        var stale = entry
+        stale.track = Track(id: entry.track.id, title: "12345", artist: nil, suffix: entry.track.suffix, size: entry.track.size)
+        try files.save(LocalCatalog(id: catalog.id, name: catalog.name, entries: [stale]))
+        await transfer.reconnectPeer()
+        try await wait { !transfer.busy }
+        XCTAssertEqual(try files.load()?.entries.first?.track.title, "Tagged title")
+        XCTAssertEqual(try files.load()?.entries.first?.track.artist, "Tagged artist")
+        XCTAssertTrue(files.hasFile(entry))
         let reopened = LocalMusicStore(root: files.root)
         XCTAssertTrue(reopened.hasFile(entry))
         XCTAssertEqual(try reopened.load()?.entries.count, 1)

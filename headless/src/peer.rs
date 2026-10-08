@@ -206,7 +206,7 @@ async fn serve_connection(
                 file.flush().await?;
                 file.sync_all().await?;
                 drop(file);
-                let saved = store.commit(entry, temporary).await?;
+                let saved = store.commit(entry, temporary, true).await?;
                 let mut response = crate::peer::Message::new("saved");
                 response.entry = Some(saved);
                 crate::peer::send(&mut output, &response).await?;

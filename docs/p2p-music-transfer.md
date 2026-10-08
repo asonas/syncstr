@@ -41,7 +41,7 @@ The address file is routing information, not an access credential. Share it and 
 
    On macOS, paste the JSON into **Connection information**. On iPhone, paste it or select **Scan the connection QR code**. Both paths display the node ID and require confirmation before connecting. Compare that ID with the trusted node terminal or administrator's information. Scanning alone does not grant access or connect. Devices without the scanner or camera access can use JSON. The separate duplicate node-ID input is no longer needed; saved registrations still pin the approved identity.
 4. Open an album and save it. iPhone retains the existing album/track download controls; macOS provides an album save button and a track context-menu save action. Completed files remain playable offline.
-5. Use **Add audio files to the connected device** to select files through the native file picker. Uploads preserve original bytes and use the filename as the title. Embedded tag extraction for this picker is not implemented. Reconnect to refresh the catalog after additions.
+5. Use **Add audio files to the connected device** to select files through the native file picker. Uploads preserve original bytes and read embedded title, artist, album, and duration; macOS also reads track/disc numbers and artwork through TagLib. Untagged files fall back to the filename. Re-uploading identical audio over P2P updates its metadata while retaining the node's track ID. Reconnect to refresh the catalog after additions; already saved audio remains available with the refreshed metadata.
 
 The app stores its private device key and registered node record in separate Keychain services. Removing a P2P connection retains downloaded files, the app's device identity, and Bonjour pairing. Removing an app-side record does not revoke access at the node. Revoke explicitly:
 
@@ -65,7 +65,7 @@ ALPN is `syncstr/music/1`. QUIC authenticates the remote Ed25519 endpoint ID and
 
 One bidirectional stream carries four-byte big-endian lengths and JSON `MusicMessage` frames, matching the native transfer fields. Frames are capped at 2 MiB. A `hello` receives `catalog`, `entry` frames, then `ready`. `get` takes an opaque track ID and returns `data` frames with Base64 chunks of at most 64 KiB, followed by `end`. `put` supplies an entry, waits for `accept`, sends `data` and `end`, and receives `saved` with the canonical node entry. There is no remote filesystem-path argument.
 
-Audio is staged and checked against the exact size and SHA-256 before publication. Metadata and audio limits match the HTTPS service. The node allows four P2P connections and applies handshake, frame-read, and session timeouts. Invalid, corrupt, partial, or revoked transfers cannot publish an incomplete object. Exact hash/suffix retries preserve the first node ID and metadata. Automatic collection, metadata editing, deletion, and multi-library merging remain deferred.
+Audio is staged and checked against the exact size and SHA-256 before publication. Metadata and audio limits match the HTTPS service. The node allows four P2P connections and applies handshake, frame-read, and session timeouts. Invalid, corrupt, partial, or revoked transfers cannot publish an incomplete object. Exact hash/suffix retries preserve the first node ID and refresh metadata from the newly uploaded record. Automatic collection, explicit metadata editing, deletion, and multi-library merging remain deferred.
 
 ## Verification
 

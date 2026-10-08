@@ -13,6 +13,52 @@ struct LocalEntry: Codable, Equatable {
     var artwork: Data?
 }
 
+enum UploadedMusic {
+    static func entry(file: URL, original: URL) async throws -> LocalEntry {
+        let asset = AVURLAsset(url: file)
+        let duration = try await asset.load(.duration).seconds
+        var fields: [String: String] = [:]
+        var artwork: Data?
+#if os(macOS)
+        let tags = try AudioTags.readFile(file)
+        for key in ["TITLE", "ARTIST", "ALBUM", "TRACKNUMBER", "DISCNUMBER"] {
+            if let value = (tags[key] as? [String])?.first, !value.isEmpty { fields[key] = value }
+        }
+        if let data = tags["artwork"] as? Data, data.count <= 10 * 1024 * 1024,
+           let source = CGImageSourceCreateWithData(data as CFData, nil),
+           let image = CGImageSourceCreateThumbnailAtIndex(source, 0, [
+               kCGImageSourceCreateThumbnailFromImageAlways: true,
+               kCGImageSourceCreateThumbnailWithTransform: true,
+               kCGImageSourceThumbnailMaxPixelSize: 400
+           ] as CFDictionary) {
+            let output = NSMutableData()
+            if let destination = CGImageDestinationCreateWithData(output, UTType.jpeg.identifier as CFString, 1, nil) {
+                CGImageDestinationAddImage(destination, image, [kCGImageDestinationLossyCompressionQuality: 0.8] as CFDictionary)
+                if CGImageDestinationFinalize(destination) { artwork = output as Data }
+            }
+        }
+#else
+        for item in try await asset.load(.commonMetadata) {
+            let key: String?
+            switch item.commonKey {
+            case .commonKeyTitle: key = "TITLE"
+            case .commonKeyArtist: key = "ARTIST"
+            case .commonKeyAlbumName: key = "ALBUM"
+            default: key = nil
+            }
+            if let key, let value = try await item.load(.stringValue), !value.isEmpty { fields[key] = value }
+        }
+#endif
+        func number(_ key: String) -> Int? { fields[key]?.split(separator: "/").first.flatMap { Int($0) } }
+        let id = UUID().uuidString
+        let track = Track(id: id, title: fields["TITLE"] ?? original.deletingPathExtension().lastPathComponent,
+            artist: fields["ARTIST"], album: fields["ALBUM"], coverArt: artwork == nil ? nil : id,
+            duration: duration.isFinite ? duration : nil, track: number("TRACKNUMBER"), discNumber: number("DISCNUMBER"),
+            suffix: original.pathExtension.lowercased(), size: UInt64(try file.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0))
+        return LocalEntry(track: track, sha256: try LocalMusicStore.digest(file: file), artwork: artwork)
+    }
+}
+
 struct LocalCatalog: Codable {
     var id: String
     var name: String

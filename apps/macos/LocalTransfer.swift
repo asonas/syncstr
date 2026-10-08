@@ -275,8 +275,6 @@ final class LocalTransfer: ObservableObject {
                 guard generation == attempt, !Task.isCancelled else { channel.close(); return }
                 if let previous = try store.load(), previous.id == id {
                     let saved = previous.entries.filter { store.hasFile($0) }
-                    let savedByID = Dictionary(uniqueKeysWithValues: saved.map { ($0.track.id, $0) })
-                    entries = entries.map { savedByID[$0.track.id] ?? $0 }
                     entries += saved.filter { !ids.contains($0.track.id) }
                 }
                 let catalog = LocalCatalog(id: id, name: header.name ?? name, entries: entries)
@@ -321,6 +319,7 @@ final class LocalTransfer: ObservableObject {
                     let scoped = url.startAccessingSecurityScopedResource()
                     defer { if scoped { url.stopAccessingSecurityScopedResource() } }
                     let temporary = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+                        .appendingPathExtension(url.pathExtension)
                     defer { try? FileManager.default.removeItem(at: temporary) }
                     let entry = try await Task.detached {
                         let source = try url.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey])
@@ -330,10 +329,7 @@ final class LocalTransfer: ObservableObject {
                             throw LocalMusicError.invalidData
                         }
                         try FileManager.default.copyItem(at: url, to: temporary)
-                        let size = try temporary.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0
-                        let track = Track(id: UUID().uuidString, title: url.deletingPathExtension().lastPathComponent, artist: nil,
-                            suffix: url.pathExtension.lowercased(), size: UInt64(size))
-                        return LocalEntry(track: track, sha256: try LocalMusicStore.digest(file: temporary), artwork: nil)
+                        return try await UploadedMusic.entry(file: temporary, original: url)
                     }.value
                     guard LocalMusicStore.valid(entry) else { throw LocalMusicError.invalidData }
                     try Task.checkCancellation()

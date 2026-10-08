@@ -142,6 +142,7 @@ impl crate::store::Store {
         &self,
         mut entry: crate::model::Entry,
         temporary: tempfile::NamedTempFile,
+        update_metadata: bool,
     ) -> anyhow::Result<crate::model::Entry> {
         self.run(move |connection, root| {
             use rusqlite::OptionalExtension as _;
@@ -154,7 +155,14 @@ impl crate::store::Store {
                 )
                 .optional()?;
             if let Some(previous) = previous {
-                entry = serde_json::from_slice(&previous)?;
+                let previous: crate::model::Entry = serde_json::from_slice(&previous)?;
+                if update_metadata {
+                    entry.track.id = previous.track.id;
+                    entry.track.album_id = None;
+                    entry.track.cover_art = entry.artwork.as_ref().map(|_| entry.track.id.clone());
+                } else {
+                    entry = previous;
+                }
             } else {
                 entry.track.id = uuid::Uuid::new_v4().to_string();
                 entry.track.album_id = None;
@@ -166,7 +174,7 @@ impl crate::store::Store {
             temporary.persist(destination)?;
             std::fs::File::open(root.join("objects"))?.sync_all()?;
             transaction.execute(
-                "INSERT OR IGNORE INTO tracks VALUES (?, ?, ?, ?)",
+                "INSERT INTO tracks VALUES (?, ?, ?, ?) ON CONFLICT(sha256, suffix) DO UPDATE SET payload = excluded.payload",
                 rusqlite::params![
                     entry.track.id,
                     entry.sha256,

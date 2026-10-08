@@ -77,6 +77,11 @@ async fn paired_peers_upload_retry_restart_download_and_revoke() {
     entry.sha256 = hex::encode(sha2::Sha256::digest(&payload));
     let mut saved_id = String::new();
     for _ in 0..2 {
+        if !saved_id.is_empty() {
+            entry.track.title = "Recovered ID3 title".into();
+            entry.track.artist = Some("Tagged artist".into());
+            entry.track.duration = Some(403.5);
+        }
         let mut put = syncstr_headless::peer::Message::new("put");
         put.entry = Some(entry.clone());
         syncstr_headless::peer::send(&mut send, &put).await.unwrap();
@@ -103,6 +108,9 @@ async fn paired_peers_upload_retry_restart_download_and_revoke() {
             .entry
             .unwrap();
         assert_eq!(saved.sha256, entry.sha256);
+        assert_eq!(saved.track.title, entry.track.title);
+        assert_eq!(saved.track.artist, entry.track.artist);
+        assert_eq!(saved.track.duration, entry.track.duration);
         if !saved_id.is_empty() {
             assert_eq!(saved_id, saved.track.id)
         }
