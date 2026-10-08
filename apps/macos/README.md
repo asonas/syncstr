@@ -64,6 +64,8 @@ Configure Xcode Cloud with:
 
 Distribution builds enable App Sandbox, outgoing network access, and read access to user-selected files. Their bundle ID and container differ from the manual `build.sh` build, so select the music folder and pair your phone in that distribution variant. Check Archive success and TestFlight delivery separately in App Store Connect.
 
+macOS builds target Apple Silicon (`arm64`). The pinned IrohLib 1.1.0 release provides only an arm64 macOS binary, so Intel Mac distribution requires a compatible x86_64 library before enabling that architecture.
+
 ## Verification
 
 Run the launcher fixtures with `mise exec -- python3 apps/macos/Tests/test_run.py`. They replace process-listing, termination, and launch commands in a temporary environment; they do not operate on running apps.
