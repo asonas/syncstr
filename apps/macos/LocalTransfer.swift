@@ -171,6 +171,7 @@ final class LocalTransfer: ObservableObject {
     private let peerPairing: CredentialStore
     @Published var peerID = ""
     @Published var peerName: String?
+    @Published var peerAddressText = ""
     var peerConnected: Bool { connected && client is PeerMusicConnection }
     private var operation: Task<Void, Never>?
     private var approval: CheckedContinuation<Bool, Never>?
@@ -239,7 +240,10 @@ final class LocalTransfer: ObservableObject {
     func restorePeer() async {
         do {
             peerID = try await PeerMusicConnection.publicID(secrets: peerSecrets)
-            peerName = try await peerPairing.load()?.name
+            let saved = try await peerPairing.load()
+            peerName = saved?.name
+            peerAddressText = saved.flatMap { Data(base64Encoded: $0.key) }
+                .flatMap { String(data: $0, encoding: .utf8) } ?? ""
         } catch { status = error.localizedDescription }
     }
 
@@ -283,6 +287,7 @@ final class LocalTransfer: ObservableObject {
                 guard generation == attempt else { return }
                 self.catalog = catalog
                 peerName = name
+                peerAddressText = addressText
                 connected = true
                 status = "P2Pで接続しました。アルバムを選んで保存できます。"
             } catch {
@@ -301,7 +306,7 @@ final class LocalTransfer: ObservableObject {
 
     func forgetPeer() async {
         cancel()
-        do { try await peerPairing.remove(); peerName = nil; status = "P2Pの接続先を削除しました。保存済みの音楽は残ります。" }
+        do { try await peerPairing.remove(); peerName = nil; peerAddressText = ""; status = "P2Pの接続先を削除しました。保存済みの音楽は残ります。" }
         catch { status = error.localizedDescription }
     }
 

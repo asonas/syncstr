@@ -77,10 +77,15 @@ struct PeerSetupView: View {
                 confirmedID = peer.id
                 confirming = true
             }.buttonStyle(.borderedProminent).disabled(transfer.busy || parsedAddress == nil)
-            if let name = transfer.peerName {
-                Text("登録済み: \(name)")
+            if let savedName = transfer.peerName {
+                Text("登録済み: \(savedName)")
                 Button("登録した接続先に再接続") { Task { await transfer.reconnectPeer() } }.disabled(transfer.busy)
-                Button("P2Pの接続先を削除", role: .destructive) { Task { await transfer.forgetPeer() } }
+                Button("P2Pの接続先を削除", role: .destructive) {
+                    Task {
+                        await transfer.forgetPeer()
+                        if transfer.peerName == nil { address = ""; name = "NAS" }
+                    }
+                }
             }
             if transfer.peerConnected {
                 Button("音源ファイルを接続先に追加") { importing = true }.disabled(transfer.busy)
@@ -121,7 +126,13 @@ struct PeerSetupView: View {
             }
         }
 #endif
-        .task { await transfer.restorePeer() }
+        .task {
+            await transfer.restorePeer()
+            if address.isEmpty {
+                address = transfer.peerAddressText
+                name = transfer.peerName ?? "NAS"
+            }
+        }
         .fileImporter(isPresented: $importing, allowedContentTypes: [.audio], allowsMultipleSelection: true) { result in
             switch result {
             case .success(let files): transfer.uploadPeer(files: files)

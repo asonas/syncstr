@@ -4,6 +4,24 @@ import XCTest
 
 @MainActor
 final class PeerTransferTests: XCTestCase {
+    func testSavedPeerSettingsRestoreWithoutConnectingAndClearOnRemoval() async throws {
+        let identity = CredentialStore(service: "syncstr-settings-identity-" + UUID().uuidString)
+        let pairing = CredentialStore(service: "syncstr-settings-peer-" + UUID().uuidString)
+        let text = "{\"version\":1,\"id\":\"\(String(repeating: "a", count: 64))\",\"addresses\":[\"192.0.2.10:40000\"],\"relay\":null}"
+        try await pairing.save(PairingCredentials(libraryID: String(repeating: "a", count: 64),
+            name: "Fixture Node", key: Data(text.utf8).base64EncodedString()))
+        let transfer = LocalTransfer(peerSecrets: identity, peerPairing: pairing)
+        await transfer.restorePeer()
+        XCTAssertEqual(transfer.peerName, "Fixture Node")
+        XCTAssertEqual(transfer.peerAddressText, text)
+        XCTAssertFalse(transfer.connected)
+        await transfer.forgetPeer()
+        await transfer.restorePeer()
+        XCTAssertNil(transfer.peerName)
+        XCTAssertEqual(transfer.peerAddressText, "")
+        try await identity.remove()
+    }
+
     func testEnrollmentReadsTheAdvertisedIdentityAndRejectsInvalidRecords() throws {
         let id = String(repeating: "a", count: 64)
         let text = "{\"version\":1,\"id\":\"\(id)\",\"addresses\":[\"192.0.2.10:40000\"],\"relay\":null}"

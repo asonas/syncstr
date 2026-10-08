@@ -1,4 +1,5 @@
 import SwiftUI
+import UniformTypeIdentifiers
 
 enum Studio {
     static let carbon = Color(red: 18 / 255, green: 18 / 255, blue: 20 / 255)
@@ -32,6 +33,9 @@ struct StudioButton: ButtonStyle {
 struct LibraryView: View {
     @ObservedObject var library: Library
     @State private var showingPairing = false
+    @State private var importingAudio = false
+    @State private var showingPeerSetup = false
+    @State private var showingUploadStatus = false
     @State private var hoveredTrack: String?
 
     var body: some View {
@@ -62,7 +66,7 @@ struct LibraryView: View {
                     }
                 }.padding(32).frame(maxWidth: .infinity, maxHeight: .infinity)
             }
-            if let message = library.message {
+            if let message = library.message ?? (showingUploadStatus ? library.transfer.status : nil) {
                 HStack(alignment: .top, spacing: 8) {
                     MacIcon("circle-alert").accessibilityHidden(true)
                     Text(message).textSelection(.enabled)
@@ -95,6 +99,19 @@ struct LibraryView: View {
         .sheet(isPresented: $showingPairing) {
             MacPairingView(transfer: library.transfer) { Task { await library.startPairing() } }
         }
+        .sheet(isPresented: $showingPeerSetup) {
+            ScrollView { PeerSetupView(transfer: library.transfer).padding(24) }
+                .frame(width: 500, height: 600)
+                .toolbar { Button("閉じる") { showingPeerSetup = false } }
+        }
+        .fileImporter(isPresented: $importingAudio, allowedContentTypes: [.audio], allowsMultipleSelection: true) { result in
+            switch result {
+            case .success(let files):
+                showingUploadStatus = true
+                library.transfer.uploadPeer(files: files)
+            case .failure(let error): library.message = error.localizedDescription
+            }
+        }
     }
 
     private var rule: some View { Rectangle().fill(Studio.iron).frame(height: 1) }
@@ -117,6 +134,21 @@ struct LibraryView: View {
                 .accessibilityAddTraits(library.destination == destination && !library.showingNowPlaying ? .isSelected : [])
             }
             rule.padding(.vertical, 16)
+            Button {
+                if library.transfer.peerConnected { importingAudio = true }
+                else { showingPeerSetup = true }
+            } label: {
+                HStack(spacing: 8) { MacIcon("cloud-upload"); Text("音源ファイルを追加") }
+                    .frame(maxWidth: .infinity, minHeight: 32, alignment: .leading)
+                    .padding(.horizontal, 8)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain).disabled(library.transfer.busy)
+            .help("P2Pの接続先に音源ファイルを追加します")
+            if showingUploadStatus && library.transfer.busy {
+                ProgressView(value: library.transfer.progress).padding(.horizontal, 8)
+                Button("中断する") { library.transfer.cancel() }.buttonStyle(.plain).padding(.horizontal, 8)
+            }
             Button { showingPairing = true } label: {
                 HStack(spacing: 8) { MacIcon("cloud-upload"); Text("iPhoneに転送") }
                     .frame(maxWidth: .infinity, minHeight: 32, alignment: .leading)
