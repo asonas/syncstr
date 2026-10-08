@@ -15,6 +15,8 @@ struct PeerSetupView: View {
     @State private var confirmedID = ""
 #if os(iOS)
     @State private var scanning = false
+    private enum Field: Hashable { case name, address }
+    @FocusState private var editing: Field?
 #endif
 
     private var parsedAddress: PeerAddress? { try? PeerAddress.parse(address) }
@@ -35,12 +37,23 @@ struct PeerSetupView: View {
 #endif
             }.disabled(transfer.peerID.isEmpty)
             TextField("接続先の名前", text: $name).textFieldStyle(.roundedBorder)
+#if os(iOS)
+                .focused($editing, equals: .name)
+                .submitLabel(.done)
+                .onSubmit { editing = nil }
+#endif
             Text("接続情報（JSON）")
             TextEditor(text: $address).font(.system(.caption, design: .monospaced)).frame(height: 100)
                 .accessibilityLabel("接続先のアドレス情報")
 #if os(iOS)
+                .focused($editing, equals: .address)
+                .textInputAutocapitalization(.never)
+                .autocorrectionDisabled()
+#endif
+#if os(iOS)
             if DataScannerViewController.isSupported && DataScannerViewController.isAvailable {
                 Button("接続先のQRコードを読み取る") {
+                    editing = nil
                     Task {
                         if await AVCaptureDevice.requestAccess(for: .video) { scanning = true }
                         else { transfer.status = "設定でカメラへのアクセスを許可するか、接続情報を貼り付けてください。" }
@@ -56,6 +69,9 @@ struct PeerSetupView: View {
                     .foregroundStyle(.secondary)
             }
             Button("接続先を確認して登録") {
+#if os(iOS)
+                editing = nil
+#endif
                 guard let peer = parsedAddress else { return }
                 confirmedAddress = address
                 confirmedID = peer.id
@@ -84,6 +100,15 @@ struct PeerSetupView: View {
             Text("接続先のIDを、信頼できる接続先の画面や管理者の案内と照合してください。\n\n\(confirmedID)")
         }
 #if os(iOS)
+        .onDisappear { editing = nil }
+        .toolbar {
+            ToolbarItemGroup(placement: .keyboard) {
+                if editing != nil {
+                    Spacer()
+                    Button("完了") { editing = nil }
+                }
+            }
+        }
         .sheet(isPresented: $scanning) {
             NavigationStack {
                 PairingScanner { value in

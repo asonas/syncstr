@@ -18,25 +18,14 @@ struct PhoneRoot: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            if library.connected {
-                tabs.tabViewBottomAccessory(isEnabled: library.current != nil && tab != .playing) { miniPlayer }
-            } else if library.restoringSession {
+            if library.restoringSession {
                 VStack(spacing: 16) {
                     ProgressView()
                     Text("ライブラリに接続中…")
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
-                ScrollView {
-                    VStack(spacing: 24) {
-                        PhonePairingView(transfer: library.transfer)
-                        Divider()
-                        PeerSetupView(transfer: library.transfer)
-                        if library.hasSavedLocalLibrary {
-                            Button("保存した音楽を開く") { Task { await library.openSavedLocalLibrary() } }
-                        }
-                    }.padding(24)
-                }
+                tabs.tabViewBottomAccessory(isEnabled: library.current != nil && tab != .playing) { miniPlayer }
             }
         }
         .background(PhoneStyle.graphite)
@@ -67,7 +56,10 @@ struct PhoneRoot: View {
             }
         }
         .onChange(of: library.connected) { _, connected in
-            if !connected { tab = .library }
+            tab = connected ? .library : .settings
+        }
+        .onChange(of: library.restoringSession) { _, restoring in
+            if !restoring && !library.connected { tab = .settings }
         }
     }
 
@@ -112,7 +104,13 @@ struct PhoneRoot: View {
                 .buttonStyle(.plain)
                 VStack(alignment: .leading, spacing: 8) {
                     Text("アルバム").font(.title3.bold())
-                    if library.albums.isEmpty { Text("音楽はまだありません。Macの音楽フォルダに音源を追加してください。") }
+                    if !library.connected {
+                        Text("設定からMacまたはP2Pの接続先を選び、音楽を追加してください。")
+                        Button("設定を開く") { tab = .settings }
+                        if library.hasSavedLocalLibrary {
+                            Button("保存した音楽を開く") { Task { await library.openSavedLocalLibrary() } }
+                        }
+                    } else if library.albums.isEmpty { Text("音楽はまだありません。Macの音楽フォルダに音源を追加してください。") }
                     albumGrid
                 }
             }
@@ -332,12 +330,22 @@ struct PhoneRoot: View {
             Section { PeerSetupView(transfer: library.transfer) }
             Section {
                 LabeledContent("曲数", value: "\(library.tracks.count)")
-                Button("別のMacを選ぶ") { library.closeLibrary() }
+                if library.connected {
+                    Button("別のMacを選ぶ") { library.closeLibrary() }
+                } else if library.hasSavedLocalLibrary {
+                    Button("保存した音楽を開く") { Task { await library.openSavedLocalLibrary() } }
+                }
             } header: { Text("ライブラリ") } footer: { Text("受け取った音楽はこのiPhoneに残ります。") }
         }
         .scrollContentBackground(.hidden)
         .background(PhoneStyle.graphite)
         .navigationTitle("設定")
+        .scrollDismissesKeyboard(.interactively)
+        .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+                Button("ライブラリへ戻る") { tab = .library }
+            }
+        }
     }
 
     private func artwork(_ id: String?, size: CGFloat) -> some View {

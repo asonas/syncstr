@@ -97,6 +97,7 @@ struct PhonePairingView: View {
     @State private var selected: String?
     @State private var code = ""
     @State private var scanning = false
+    @FocusState private var enteringCode: Bool
     @Environment(\.scenePhase) private var scenePhase
 
     var body: some View {
@@ -109,7 +110,7 @@ struct PhonePairingView: View {
                 Button("もう一度探す") { transfer.stopBrowsing(); transfer.browse() }
             }
             ForEach(transfer.nearby) { device in
-                Button { selected = device.id; code = "" } label: {
+                Button { enteringCode = false; selected = device.id; code = "" } label: {
                     HStack {
                         Text(device.name).lineLimit(2)
                         Spacer()
@@ -121,15 +122,22 @@ struct PhonePairingView: View {
             if let selected, let device = transfer.nearby.first(where: { $0.id == selected }) {
                 TextField("初回はMacのコードを入力", text: $code)
                     .textInputAutocapitalization(.never).autocorrectionDisabled().textFieldStyle(.roundedBorder)
+                    .focused($enteringCode)
+                    .submitLabel(.done)
+                    .onSubmit { enteringCode = false }
                 if DataScannerViewController.isSupported {
                     Button("MacのQRコードを読み取る") {
+                        enteringCode = false
                         Task {
                             if await AVCaptureDevice.requestAccess(for: .video) { scanning = true }
                             else { transfer.status = "カメラが許可されていません。コードを入力するか、設定からカメラを許可してください。" }
                         }
                     }
                 }
-                Button("接続する") { transfer.connect(device, code: code, name: UIDevice.current.name) }
+                Button("接続する") {
+                    enteringCode = false
+                    transfer.connect(device, code: code, name: UIDevice.current.name)
+                }
                     .buttonStyle(.borderedProminent).disabled(transfer.busy)
                 Text("ペアリング済みの場合は、コードを入力せずに接続できます。")
                     .font(.caption).foregroundStyle(.secondary)
@@ -144,7 +152,15 @@ struct PhonePairingView: View {
             }
         }
         .task { await transfer.restorePairing(); if !Task.isCancelled { transfer.browse() } }
-        .onDisappear { transfer.stopBrowsing() }
+        .onDisappear { enteringCode = false; transfer.stopBrowsing() }
+        .toolbar {
+            ToolbarItemGroup(placement: .keyboard) {
+                if enteringCode {
+                    Spacer()
+                    Button("完了") { enteringCode = false }
+                }
+            }
+        }
         .onChange(of: scenePhase) { _, phase in
             if phase == .background { transfer.cancel(); transfer.stopBrowsing() }
             else if phase == .active { transfer.browse() }
