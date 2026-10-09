@@ -29,6 +29,13 @@ enum Command {
         #[cfg(feature = "p2p")]
         #[arg(long, value_enum, default_value = "direct")]
         peer_mode: syncstr_headless::peer::Mode,
+        #[cfg(feature = "p2p")]
+        #[arg(
+            long,
+            requires = "peer_state",
+            help = "Fixed UDP listen address for P2P"
+        )]
+        peer_listen: Option<std::net::SocketAddr>,
     },
     Catalog {
         #[command(flatten)]
@@ -125,6 +132,8 @@ async fn run(cli: crate::Cli) -> anyhow::Result<()> {
             peer_address_out,
             #[cfg(feature = "p2p")]
             peer_mode,
+            #[cfg(feature = "p2p")]
+            peer_listen,
         } => {
             let token = syncstr_headless::identity::token(&identity.join("token"))?;
             let tls = syncstr_headless::identity::tls(&identity).await?;
@@ -132,7 +141,7 @@ async fn run(cli: crate::Cli) -> anyhow::Result<()> {
             #[cfg(feature = "p2p")]
             let peer = if let Some(state) = peer_state {
                 let identity = std::sync::Arc::new(syncstr_headless::peer::Identity::open(&state)?);
-                let (endpoint, lock) = identity.endpoint(peer_mode).await?;
+                let (endpoint, lock) = identity.endpoint(peer_mode, peer_listen).await?;
                 syncstr_headless::peer::Address::write(&endpoint, &peer_address_out.unwrap())?;
                 let task = tokio::spawn(syncstr_headless::peer::serve(
                     identity,

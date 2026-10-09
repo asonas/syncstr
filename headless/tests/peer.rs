@@ -49,15 +49,26 @@ async fn paired_peers_upload_retry_restart_download_and_revoke() {
         std::sync::Arc::new(syncstr_headless::peer::Identity::open(&server_state).unwrap());
     server.pair(client_id).unwrap();
     let client = syncstr_headless::peer::Identity::open(&client_state).unwrap();
+    let reservation = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+    let listen = reservation.local_addr().unwrap();
+    assert!(
+        server
+            .endpoint(syncstr_headless::peer::Mode::Direct, Some(listen))
+            .await
+            .is_err()
+    );
+    drop(reservation);
     let (endpoint, lock) = server
-        .endpoint(syncstr_headless::peer::Mode::Direct)
+        .endpoint(syncstr_headless::peer::Mode::Direct, Some(listen))
         .await
         .unwrap();
     let (client_endpoint, _client_lock) = client
-        .endpoint(syncstr_headless::peer::Mode::Direct)
+        .endpoint(syncstr_headless::peer::Mode::Direct, None)
         .await
         .unwrap();
     let store = syncstr_headless::store::Store::open(&data).unwrap();
+    let saved_address = endpoint.addr();
+    assert!(saved_address.ip_addrs().any(|address| *address == listen));
     let task = tokio::spawn(syncstr_headless::peer::serve(
         server.clone(),
         endpoint.clone(),
@@ -120,11 +131,12 @@ async fn paired_peers_upload_retry_restart_download_and_revoke() {
     connection.close(0u32.into(), b"restart");
     endpoint.close().await;
     task.await.unwrap();
+    drop(endpoint);
     drop(lock);
     drop(store);
     let store = syncstr_headless::store::Store::open(&data).unwrap();
     let (endpoint, _lock) = server
-        .endpoint(syncstr_headless::peer::Mode::Direct)
+        .endpoint(syncstr_headless::peer::Mode::Direct, Some(listen))
         .await
         .unwrap();
     let task = tokio::spawn(syncstr_headless::peer::serve(
@@ -133,7 +145,7 @@ async fn paired_peers_upload_retry_restart_download_and_revoke() {
         store,
     ));
     let (_connection, mut send, mut receive, entries) =
-        crate::hello(&client_endpoint, endpoint.addr()).await;
+        crate::hello(&client_endpoint, saved_address).await;
     assert_eq!(entries.len(), 1);
     assert_eq!(entries[0].track.id, saved_id);
     let mut request = syncstr_headless::peer::Message::new("get");
@@ -175,12 +187,12 @@ async fn corrupt_or_interrupted_audio_is_not_published() {
     let identity = std::sync::Arc::new(syncstr_headless::peer::Identity::open(&state).unwrap());
     identity.pair(client_id).unwrap();
     let (server, _lock) = identity
-        .endpoint(syncstr_headless::peer::Mode::Direct)
+        .endpoint(syncstr_headless::peer::Mode::Direct, None)
         .await
         .unwrap();
     let client = syncstr_headless::peer::Identity::open(&client_state).unwrap();
     let (endpoint, _client_lock) = client
-        .endpoint(syncstr_headless::peer::Mode::Direct)
+        .endpoint(syncstr_headless::peer::Mode::Direct, None)
         .await
         .unwrap();
     let store = syncstr_headless::store::Store::open(&root.path().join("data")).unwrap();

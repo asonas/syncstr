@@ -18,6 +18,8 @@ For an existing node, retain its `data` and HTTPS `identity` directories and omi
 
 `--peer-mode direct` is the default and disables relays. The address file contains the node's public ID and current UDP addresses. Firewalls must permit the node's UDP socket. This mode does not solve arbitrary NAT traversal. For remote networks, `--peer-mode auto` enables iroh's default public relays for connectivity and encrypted fallback while preferring direct paths. `relay-only` is available for diagnostics. No self-hosted relay or Cloudflare login service is added by this feature.
 
+For a continuously running node, set `--peer-listen 192.0.2.10:58024` to bind P2P to a fixed UDP address. Keep the host's LAN address stable, persist the peer state directory, and allow that UDP port through the firewall. Saved connection JSON can then be reused after restart. Binding fails if the address is unavailable or the port is occupied; it does not select another port. Without this option, the node chooses an available port on startup. A fixed listen address cannot be combined with `relay-only` mode. When migrating an existing node, choose its currently advertised LAN port to preserve saved client connection information.
+
 The address file is routing information, not an access credential. Share it and the node's independently verified public ID with the user. Restarting updates an existing address file only when it belongs to the same node; old direct addresses can become stale. The file does not update automatically after subsequent interface changes. Re-export it by restarting the node and replace the saved app connection when necessary.
 
 ## Register an app
