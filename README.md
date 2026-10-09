@@ -19,6 +19,7 @@ Start with the [macOS guide](apps/macos/README.md) or [iPhone guide](apps/ios/RE
 |---|---|
 | macOS UI and launch | [Syncstr.swift](apps/macos/Syncstr.swift), [macOS guide](apps/macos/README.md) |
 | Local catalog, pairing, and transfer | [LocalCatalog.swift](apps/macos/LocalCatalog.swift), [CatalogDatabase.swift](apps/macos/CatalogDatabase.swift), [LocalTransfer.swift](apps/macos/LocalTransfer.swift), [LocalSetup.swift](apps/macos/LocalSetup.swift), [protocol and setup](docs/local-music-transfer.md) |
+| Compilation album data design (not yet implemented) | [Retention policy](docs/compilation-data-design.md), [glossary](GLOSSARY.md), [metadata preservation decision](docs/adr/0001-preserve-imported-metadata-and-user-choices.md) |
 | Shared playback and pairing credentials | [Library.swift](apps/macos/Library.swift), [Track.swift](apps/macos/Track.swift), [CredentialStore.swift](apps/macos/CredentialStore.swift). The iOS target compiles these same files |
 | iPhone UI and device features | [Sources](apps/ios/Sources/), [iPhone guide](apps/ios/README.md) |
 | Folder settings | [SettingsView.swift](apps/macos/SettingsView.swift) |
