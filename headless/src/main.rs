@@ -36,6 +36,12 @@ enum Command {
             help = "Fixed UDP listen address for P2P"
         )]
         peer_listen: Option<std::net::SocketAddr>,
+        #[cfg(feature = "p2p")]
+        #[arg(long, requires = "peer_state")]
+        peer_directory: Option<String>,
+        #[cfg(feature = "p2p")]
+        #[arg(long, requires = "peer_directory")]
+        peer_public_address: Option<std::net::SocketAddr>,
     },
     Catalog {
         #[command(flatten)]
@@ -76,6 +82,17 @@ enum Command {
         ip: Option<std::net::IpAddr>,
         #[arg(long)]
         qr: bool,
+        #[arg(long, conflicts_with = "ip")]
+        directory: Option<String>,
+    },
+    #[cfg(feature = "p2p")]
+    PeerResolve {
+        #[arg(long)]
+        state: std::path::PathBuf,
+        #[arg(long)]
+        directory: String,
+        #[arg(long)]
+        peer: iroh::EndpointId,
     },
     #[cfg(feature = "p2p")]
     PeerPair {
@@ -134,6 +151,10 @@ async fn run(cli: crate::Cli) -> anyhow::Result<()> {
             peer_mode,
             #[cfg(feature = "p2p")]
             peer_listen,
+            #[cfg(feature = "p2p")]
+            peer_directory,
+            #[cfg(feature = "p2p")]
+            peer_public_address,
         } => {
             let token = syncstr_headless::identity::token(&identity.join("token"))?;
             let tls = syncstr_headless::identity::tls(&identity).await?;
@@ -142,13 +163,58 @@ async fn run(cli: crate::Cli) -> anyhow::Result<()> {
             let peer = if let Some(state) = peer_state {
                 let identity = std::sync::Arc::new(syncstr_headless::peer::Identity::open(&state)?);
                 let (endpoint, lock) = identity.endpoint(peer_mode, peer_listen).await?;
+                let publisher = if let Some(directory) = peer_directory {
+                    anyhow::ensure!(
+                        peer_mode == syncstr_headless::peer::Mode::Direct,
+                        "Directory currently supports direct-only nodes"
+                    );
+                    let origin = syncstr_headless::rendezvous::service(&directory)?;
+                    if syncstr_headless::rendezvous::publish(
+                        &identity,
+                        &endpoint,
+                        &origin,
+                        peer_listen,
+                        peer_public_address,
+                    )
+                    .await
+                    .is_err()
+                    {
+                        eprintln!("Directory announcement failed; direct P2P remains available");
+                    }
+                    let identity = identity.clone();
+                    let endpoint = endpoint.clone();
+                    Some(tokio::spawn(async move {
+                        let mut interval =
+                            tokio::time::interval(std::time::Duration::from_secs(60));
+                        interval.tick().await;
+                        loop {
+                            interval.tick().await;
+                            if syncstr_headless::rendezvous::publish(
+                                &identity,
+                                &endpoint,
+                                &origin,
+                                peer_listen,
+                                peer_public_address,
+                            )
+                            .await
+                            .is_err()
+                            {
+                                eprintln!(
+                                    "Directory announcement failed; direct P2P remains available"
+                                );
+                            }
+                        }
+                    }))
+                } else {
+                    None
+                };
                 syncstr_headless::peer::Address::write(&endpoint, &peer_address_out.unwrap())?;
                 let task = tokio::spawn(syncstr_headless::peer::serve(
                     identity,
                     endpoint.clone(),
                     store.clone(),
                 ));
-                Some((endpoint, lock, task))
+                Some((endpoint, lock, task, publisher))
             } else {
                 None
             };
@@ -174,7 +240,10 @@ async fn run(cli: crate::Cli) -> anyhow::Result<()> {
                 .serve(syncstr_headless::api::router(store, &token).into_make_service())
                 .await?;
             #[cfg(feature = "p2p")]
-            if let Some((endpoint, _lock, task)) = peer {
+            if let Some((endpoint, _lock, task, publisher)) = peer {
+                if let Some(publisher) = publisher {
+                    publisher.abort();
+                }
                 endpoint.close().await;
                 task.await?;
             }
@@ -219,9 +288,16 @@ async fn run(cli: crate::Cli) -> anyhow::Result<()> {
             address,
             ip,
             qr,
+            directory,
         } => {
             let identity = syncstr_headless::peer::Identity::open(&state)?;
             let mut address = syncstr_headless::peer::Address::read(&address, identity.id())?;
+            if let Some(directory) = directory {
+                address.directory =
+                    Some(syncstr_headless::rendezvous::service(&directory)?.to_string());
+                address.addresses.clear();
+                address.relay = None;
+            }
             if let Some(ip) = ip {
                 address.addresses.retain(|value| value.ip() == ip);
                 anyhow::ensure!(
@@ -234,7 +310,9 @@ async fn run(cli: crate::Cli) -> anyhow::Result<()> {
                 "too many addresses; select a reachable IP with --ip"
             );
             anyhow::ensure!(
-                !address.addresses.is_empty() || address.relay.is_some(),
+                !address.addresses.is_empty()
+                    || address.relay.is_some()
+                    || address.directory.is_some(),
                 "no reachable address"
             );
             let text = serde_json::to_string(&address)?;
@@ -249,6 +327,21 @@ async fn run(cli: crate::Cli) -> anyhow::Result<()> {
                 );
             }
             println!("{text}");
+        }
+        #[cfg(feature = "p2p")]
+        crate::Command::PeerResolve {
+            state,
+            directory,
+            peer,
+        } => {
+            let identity = syncstr_headless::peer::Identity::open(&state)?;
+            let origin = syncstr_headless::rendezvous::service(&directory)?;
+            println!(
+                "{}",
+                serde_json::to_string(
+                    &syncstr_headless::rendezvous::resolve(&identity, &origin, peer).await?
+                )?
+            );
         }
         #[cfg(feature = "p2p")]
         crate::Command::PeerPair {

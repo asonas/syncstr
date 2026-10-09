@@ -12,6 +12,7 @@ RUN --mount=type=cache,id=syncstr-rust-registry,target=/usr/local/cargo/registry
     python3 scripts/collect_licenses.py /licenses "$SYNCSTR_FEATURES"
 
 FROM debian:bookworm-slim
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates && rm -rf /var/lib/apt/lists/*
 COPY --from=build /syncstr-headless /usr/local/bin/syncstr-headless
 COPY --from=build /licenses /usr/share/syncstr/licenses
 USER 1000:1000

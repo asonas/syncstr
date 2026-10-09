@@ -16,6 +16,7 @@ fn exports_current_identity_and_selected_ip_without_private_keys() {
                 "172.18.0.1:40000".parse().unwrap(),
             ],
             relay: None,
+            directory: None,
         })
         .unwrap(),
     )
@@ -46,6 +47,27 @@ fn exports_current_identity_and_selected_ip_without_private_keys() {
     );
     assert!(text.lines().count() > 10);
     assert!(!run(&["--ip", "192.0.2.99"]).status.success());
+    let directory = run(&["--directory", "https://directory.example.com"]);
+    assert!(directory.status.success());
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&directory.stdout).unwrap(),
+        serde_json::json!({"version":1,"id":id.to_string(),"addresses":[],"relay":null,"directory":"https://directory.example.com/"})
+    );
+    assert!(
+        !run(&["--directory", "http://directory.example.com"])
+            .status
+            .success()
+    );
+    assert!(
+        !run(&[
+            "--directory",
+            "https://directory.example.com",
+            "--ip",
+            "192.0.2.10"
+        ])
+        .status
+        .success()
+    );
     let wrong_state = root.path().join("other");
     syncstr_headless::peer::Identity::initialize(&wrong_state).unwrap();
     let output = std::process::Command::new(env!("CARGO_BIN_EXE_syncstr-headless"))

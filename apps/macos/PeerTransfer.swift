@@ -1,4 +1,5 @@
 import Foundation
+import CryptoKit
 import IrohLib
 
 @MainActor
@@ -15,13 +16,72 @@ struct PeerAddress: Codable {
     let id: String
     let addresses: [String]
     let relay: String?
+    var directory: String? = nil
 
     static func parse(_ text: String) throws -> PeerAddress {
         guard text.utf8.count <= 16384 else { throw LocalMusicError.invalidData }
         let address = try JSONDecoder().decode(PeerAddress.self, from: Data(text.utf8))
         _ = try address.endpoint(expected: address.id)
-        guard !address.addresses.isEmpty || address.relay != nil else { throw LocalMusicError.invalidData }
+        if let directory = address.directory { _ = try address.directoryURL(directory) }
+        guard !address.addresses.isEmpty || address.relay != nil || address.directory != nil else { throw LocalMusicError.invalidData }
         return address
+    }
+
+    private func directoryURL(_ value: String) throws -> URL {
+        guard value.utf8.count <= 2048, let url = URL(string: value), url.scheme == "https", url.host != nil,
+              url.user == nil, url.password == nil, url.query == nil, url.fragment == nil,
+              url.path.isEmpty || url.path == "/" else { throw LocalMusicError.invalidData }
+        return url
+    }
+
+    func resolved(secrets: CredentialStore) async throws -> PeerAddress {
+        guard let directory else { return self }
+        struct Envelope: Codable { let payload: String; let signature: String }
+        struct Announcement: Decodable { let kind: String; let id: String; let time: Int64; let expires: Int64; let address: PeerAddress }
+        let origin = try directoryURL(directory)
+        let key = try Curve25519.Signing.PrivateKey(rawRepresentation: await PeerMusicConnection.identity(secrets: secrets))
+        let time = Int64(Date().timeIntervalSince1970 * 1000)
+        let payload = String(decoding: try JSONSerialization.data(withJSONObject: [
+            "kind": "lookup", "id": key.publicKey.rawRepresentation.map { String(format: "%02x", $0) }.joined(),
+            "time": time, "target": id
+        ], options: [.sortedKeys]), as: UTF8.self)
+        let signature = try key.signature(for: Data(("syncstr-rendezvous-v1\n" + payload).utf8)).base64EncodedString()
+        var request = URLRequest(url: origin.appendingPathComponent("v1/lookup"), timeoutInterval: 10)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try JSONEncoder().encode(Envelope(payload: payload, signature: signature))
+        let (stream, response) = try await URLSession.shared.bytes(for: request)
+        guard let http = response as? HTTPURLResponse, http.statusCode == 200,
+              response.url?.host == origin.host, response.url?.scheme == "https" else { throw LocalMusicError.disconnected }
+        var bytes = Data()
+        for try await byte in stream {
+            guard bytes.count < 32768 else { throw LocalMusicError.invalidData }
+            bytes.append(byte)
+        }
+        let envelope = try JSONDecoder().decode(Envelope.self, from: bytes)
+        guard let signature = Data(base64Encoded: envelope.signature), id.count == 64,
+              id.allSatisfy({ "0123456789abcdef".contains($0) }) else { throw LocalMusicError.invalidData }
+        var publicBytes = Data()
+        var cursor = id.startIndex
+        while cursor < id.endIndex {
+            let end = id.index(cursor, offsetBy: 2)
+            guard let byte = UInt8(id[cursor..<end], radix: 16) else { throw LocalMusicError.invalidData }
+            publicBytes.append(byte)
+            cursor = end
+        }
+        let publicKey = try Curve25519.Signing.PublicKey(rawRepresentation: publicBytes)
+        guard publicKey.isValidSignature(signature, for: Data(("syncstr-rendezvous-v1\n" + envelope.payload).utf8)) else {
+            throw LocalMusicError.unauthorized
+        }
+        let announcement = try JSONDecoder().decode(Announcement.self, from: Data(envelope.payload.utf8))
+        let now = Int64(Date().timeIntervalSince1970 * 1000)
+        guard announcement.kind == "announce", announcement.id == id, announcement.address.id == id,
+              announcement.time >= 0, announcement.time <= now + 60000,
+              announcement.expires > now, announcement.expires <= announcement.time + 300000,
+              announcement.address.relay == nil,
+              announcement.address.directory == nil, !announcement.address.addresses.isEmpty else { throw LocalMusicError.invalidData }
+        _ = try announcement.address.endpoint(expected: id)
+        return announcement.address
     }
 
     func endpoint(expected: String) throws -> IrohLib.EndpointAddr {
@@ -65,10 +125,12 @@ final class PeerMusicConnection: MusicChannel {
     }
 
     static func connect(address: PeerAddress, expected: String, secrets: CredentialStore) async throws -> PeerMusicConnection {
-        let target = try address.endpoint(expected: expected)
+        guard address.id == expected else { throw LocalMusicError.unauthorized }
+        let resolved = try await address.resolved(secrets: secrets)
+        let target = try resolved.endpoint(expected: expected)
         let endpoint = try await IrohLib.Endpoint.bind(options: IrohLib.EndpointOptions(
             preset: IrohLib.presetMinimal(), secretKey: await identity(secrets: secrets),
-            relayMode: address.relay == nil ? IrohLib.RelayMode.disabled() : IrohLib.RelayMode.defaultMode()))
+            relayMode: resolved.relay == nil ? IrohLib.RelayMode.disabled() : IrohLib.RelayMode.defaultMode()))
         let timeout = Task {
             do { try await Task.sleep(for: .seconds(20)) } catch { return }
             try? await endpoint.close()

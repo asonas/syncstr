@@ -4,4 +4,6 @@ pub mod identity;
 pub mod model;
 #[cfg(feature = "p2p")]
 pub mod peer;
+#[cfg(feature = "p2p")]
+pub mod rendezvous;
 pub mod store;

@@ -44,6 +44,17 @@ final class PeerTransferTests: XCTestCase {
     }
 
     func testNativeClientUploadsRetriesDownloadsAndRestoresAgainstRustNode() async throws {
+        try await exerciseNativeClient(directory: nil)
+    }
+
+    func testNativeClientTransfersThroughSignedDirectoryDiscovery() async throws {
+        guard let directory = ProcessInfo.processInfo.environment["SYNCSTR_DIRECTORY_TEST_URL"] else {
+            throw XCTSkip("Set SYNCSTR_DIRECTORY_TEST_URL to test a deployed directory")
+        }
+        try await exerciseNativeClient(directory: directory)
+    }
+
+    private func exerciseNativeClient(directory: String?) async throws {
         let repository = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
             .deletingLastPathComponent().deletingLastPathComponent()
         let binary = repository.appendingPathComponent("headless/target/debug/syncstr-headless")
@@ -87,11 +98,16 @@ final class PeerTransferTests: XCTestCase {
         process.executableURL = binary
         process.arguments = ["serve", "--data", data.path, "--identity", identity.path, "--listen", "127.0.0.1:0",
             "--peer-state", peer.path, "--peer-address-out", address.path]
+        if let directory { process.arguments?.append(contentsOf: ["--peer-directory", directory]) }
         process.standardOutput = Pipe()
         try process.run()
         defer { transfer.cancel(); process.terminate(); process.waitUntilExit() }
         try await wait { FileManager.default.fileExists(atPath: address.path) }
-        let text = try String(contentsOf: address, encoding: .utf8)
+        var record = try JSONDecoder().decode(PeerAddress.self, from: Data(contentsOf: address))
+        if let directory {
+            record = PeerAddress(version: 1, id: serverID, addresses: [], relay: nil, directory: directory)
+        }
+        let text = String(decoding: try JSONEncoder().encode(record), as: UTF8.self)
         transfer.connectPeer(addressText: text, expected: String(repeating: "0", count: 64), name: "Fixture Node")
         try await wait { !transfer.busy }
         XCTAssertFalse(transfer.connected)

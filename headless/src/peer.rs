@@ -227,6 +227,16 @@ pub struct Identity {
 }
 
 impl crate::peer::Identity {
+    pub fn sign(&self, bytes: &[u8]) -> Vec<u8> {
+        self.key.sign(bytes).to_bytes().to_vec()
+    }
+
+    pub fn allowed_peers(&self) -> anyhow::Result<Vec<iroh::EndpointId>> {
+        std::fs::read_dir(self.root.join("peers"))?
+            .map(|entry| Ok(entry?.file_name().to_string_lossy().parse()?))
+            .collect()
+    }
+
     pub fn initialize(root: &std::path::Path) -> anyhow::Result<iroh::EndpointId> {
         use std::io::Write as _;
         use std::os::unix::fs::{DirBuilderExt as _, OpenOptionsExt as _};
@@ -338,6 +348,8 @@ pub struct Address {
     pub id: iroh::EndpointId,
     pub addresses: Vec<std::net::SocketAddr>,
     pub relay: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub directory: Option<String>,
 }
 
 impl crate::peer::Address {
@@ -368,6 +380,7 @@ impl crate::peer::Address {
             &mut file,
             &Self {
                 version: 1,
+                directory: None,
                 id: endpoint.id(),
                 addresses: endpoint
                     .addr()
