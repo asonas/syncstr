@@ -22,6 +22,23 @@ For a continuously running node, set `--peer-listen 192.0.2.10:58024` to bind P2
 
 The address file is routing information, not an access credential. Share it and the node's independently verified public ID with the user. Restarting updates an existing address file only when it belongs to the same node; old direct addresses can become stale. The file does not update automatically after subsequent interface changes. Re-export it by restarting the node and replace the saved app connection when necessary.
 
+### Direct access from cellular networks
+
+Repeat `--peer-listen` to retain the LAN IPv4 socket and add an IPv6 socket on the same fixed UDP port:
+
+```sh
+target/debug/syncstr-headless serve --data data --identity identity \
+  --listen 192.0.2.10:8443 --peer-state peer --peer-address-out address.json \
+  --peer-listen 192.0.2.10:58024 --peer-listen '[::]:58024' \
+  --peer-directory https://directory.example.com
+```
+
+The IPv6 wildcard socket advertises available IPv6 interface addresses, including a global address when the host has one. The directory republishes current candidates every 60 seconds, so directory-based app registrations do not need a new JSON record when addresses change. Direct-only mode still disables relays.
+
+The host and upstream router must allow inbound UDP on this port to the NAS's global IPv6 address. Keep HTTPS restricted to the LAN. A cellular client must have a usable IPv6 route; an IPv4-only client instead needs a public IPv4 address and UDP port forwarding. Announcing an address does not configure either firewall or forwarding. For IPv4 forwarding, use the existing `--peer-public-address` option to publish the external UDP address alongside the local candidates.
+
+Verify both LAN and an independent cellular network. Inspect the live address record and UDP sockets, then connect from the iPhone with Wi-Fi disabled, retrieve the catalog, and download a previously unsaved track. A local dual-stack test does not prove Internet reachability.
+
 ## Register an app
 
 1. Open Settings → P2P music sharing. On a new iPhone installation the same controls are available on the initial setup screen.
