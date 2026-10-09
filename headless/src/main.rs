@@ -33,9 +33,9 @@ enum Command {
         #[arg(
             long,
             requires = "peer_state",
-            help = "Fixed UDP listen address for P2P"
+            help = "Fixed UDP listen address for P2P; repeat for IPv4 and IPv6"
         )]
-        peer_listen: Option<std::net::SocketAddr>,
+        peer_listen: Vec<std::net::SocketAddr>,
         #[cfg(feature = "p2p")]
         #[arg(long, requires = "peer_state")]
         peer_directory: Option<String>,
@@ -162,7 +162,7 @@ async fn run(cli: crate::Cli) -> anyhow::Result<()> {
             #[cfg(feature = "p2p")]
             let peer = if let Some(state) = peer_state {
                 let identity = std::sync::Arc::new(syncstr_headless::peer::Identity::open(&state)?);
-                let (endpoint, lock) = identity.endpoint(peer_mode, peer_listen).await?;
+                let (endpoint, lock) = identity.endpoint(peer_mode, &peer_listen).await?;
                 let publisher = if let Some(directory) = peer_directory {
                     anyhow::ensure!(
                         peer_mode == syncstr_headless::peer::Mode::Direct,
@@ -173,7 +173,7 @@ async fn run(cli: crate::Cli) -> anyhow::Result<()> {
                         &identity,
                         &endpoint,
                         &origin,
-                        peer_listen,
+                        &peer_listen,
                         peer_public_address,
                     )
                     .await
@@ -193,7 +193,7 @@ async fn run(cli: crate::Cli) -> anyhow::Result<()> {
                                 &identity,
                                 &endpoint,
                                 &origin,
-                                peer_listen,
+                                &peer_listen,
                                 peer_public_address,
                             )
                             .await

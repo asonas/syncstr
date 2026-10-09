@@ -376,7 +376,7 @@ impl crate::peer::Identity {
     pub async fn endpoint(
         &self,
         mode: crate::peer::Mode,
-        listen: Option<std::net::SocketAddr>,
+        listen: &[std::net::SocketAddr],
     ) -> anyhow::Result<(iroh::Endpoint, std::fs::File)> {
         use std::os::unix::fs::OpenOptionsExt as _;
         let lock = std::fs::OpenOptions::new()
@@ -396,14 +396,16 @@ impl crate::peer::Identity {
                 iroh::RelayMode::Disabled
             });
         anyhow::ensure!(
-            listen.is_none() || mode != crate::peer::Mode::RelayOnly,
+            listen.is_empty() || mode != crate::peer::Mode::RelayOnly,
             "A P2P listen address cannot be used in relay-only mode"
         );
-        let builder = if let Some(listen) = listen {
-            builder.clear_ip_transports().bind_addr(listen)?
-        } else {
-            builder
-        };
+        let mut builder = builder;
+        if !listen.is_empty() {
+            builder = builder.clear_ip_transports();
+            for address in listen {
+                builder = builder.bind_addr(*address)?;
+            }
+        }
         let endpoint = if mode == crate::peer::Mode::RelayOnly {
             builder.clear_ip_transports()
         } else {

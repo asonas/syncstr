@@ -36,6 +36,55 @@ async fn hello(
 }
 
 #[tokio::test]
+async fn paired_client_connects_over_both_ip_families_on_a_fixed_port() {
+    let root = tempfile::tempdir().unwrap();
+    let server_state = root.path().join("server");
+    let client_state = root.path().join("client");
+    syncstr_headless::peer::Identity::initialize(&server_state).unwrap();
+    let client_id = syncstr_headless::peer::Identity::initialize(&client_state).unwrap();
+    let identity =
+        std::sync::Arc::new(syncstr_headless::peer::Identity::open(&server_state).unwrap());
+    identity.pair(client_id).unwrap();
+    let reservation = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+    let ipv4 = reservation.local_addr().unwrap();
+    let ipv6 = std::net::SocketAddr::new(std::net::Ipv6Addr::LOCALHOST.into(), ipv4.port());
+    drop(reservation);
+    let (server, _lock) = identity
+        .endpoint(syncstr_headless::peer::Mode::Direct, &[ipv4, ipv6])
+        .await
+        .unwrap();
+    let client = syncstr_headless::peer::Identity::open(&client_state).unwrap();
+    let store = syncstr_headless::store::Store::open(&root.path().join("data")).unwrap();
+    let address_file = root.path().join("address.json");
+    syncstr_headless::peer::Address::write(&server, &address_file).unwrap();
+    let record = syncstr_headless::peer::Address::read(&address_file, server.id()).unwrap();
+    assert!(record.addresses.contains(&ipv4));
+    assert!(record.addresses.contains(&ipv6));
+    assert!(record.relay.is_none());
+    let task = tokio::spawn(syncstr_headless::peer::serve(
+        identity,
+        server.clone(),
+        store,
+    ));
+    for address in [ipv4, ipv6] {
+        let (endpoint, _client_lock) = client
+            .endpoint(
+                syncstr_headless::peer::Mode::Direct,
+                &[std::net::SocketAddr::new(address.ip(), 0)],
+            )
+            .await
+            .unwrap();
+        let target = iroh::EndpointAddr::new(server.id()).with_ip_addr(address);
+        let (connection, _send, _receive, entries) = crate::hello(&endpoint, target).await;
+        assert!(entries.is_empty());
+        connection.close(0u32.into(), b"done");
+        endpoint.close().await;
+    }
+    server.close().await;
+    task.await.unwrap();
+}
+
+#[tokio::test]
 async fn paired_peers_upload_retry_restart_download_and_revoke() {
     use base64::Engine as _;
     use sha2::Digest as _;
@@ -53,17 +102,17 @@ async fn paired_peers_upload_retry_restart_download_and_revoke() {
     let listen = reservation.local_addr().unwrap();
     assert!(
         server
-            .endpoint(syncstr_headless::peer::Mode::Direct, Some(listen))
+            .endpoint(syncstr_headless::peer::Mode::Direct, &[listen])
             .await
             .is_err()
     );
     drop(reservation);
     let (endpoint, lock) = server
-        .endpoint(syncstr_headless::peer::Mode::Direct, Some(listen))
+        .endpoint(syncstr_headless::peer::Mode::Direct, &[listen])
         .await
         .unwrap();
     let (client_endpoint, _client_lock) = client
-        .endpoint(syncstr_headless::peer::Mode::Direct, None)
+        .endpoint(syncstr_headless::peer::Mode::Direct, &[])
         .await
         .unwrap();
     let store = syncstr_headless::store::Store::open(&data).unwrap();
@@ -136,7 +185,7 @@ async fn paired_peers_upload_retry_restart_download_and_revoke() {
     drop(store);
     let store = syncstr_headless::store::Store::open(&data).unwrap();
     let (endpoint, _lock) = server
-        .endpoint(syncstr_headless::peer::Mode::Direct, Some(listen))
+        .endpoint(syncstr_headless::peer::Mode::Direct, &[listen])
         .await
         .unwrap();
     let task = tokio::spawn(syncstr_headless::peer::serve(
@@ -187,12 +236,12 @@ async fn corrupt_or_interrupted_audio_is_not_published() {
     let identity = std::sync::Arc::new(syncstr_headless::peer::Identity::open(&state).unwrap());
     identity.pair(client_id).unwrap();
     let (server, _lock) = identity
-        .endpoint(syncstr_headless::peer::Mode::Direct, None)
+        .endpoint(syncstr_headless::peer::Mode::Direct, &[])
         .await
         .unwrap();
     let client = syncstr_headless::peer::Identity::open(&client_state).unwrap();
     let (endpoint, _client_lock) = client
-        .endpoint(syncstr_headless::peer::Mode::Direct, None)
+        .endpoint(syncstr_headless::peer::Mode::Direct, &[])
         .await
         .unwrap();
     let store = syncstr_headless::store::Store::open(&root.path().join("data")).unwrap();

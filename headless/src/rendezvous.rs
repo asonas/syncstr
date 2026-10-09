@@ -45,7 +45,7 @@ pub async fn publish(
     identity: &crate::peer::Identity,
     endpoint: &iroh::Endpoint,
     origin: &reqwest::Url,
-    listen: Option<std::net::SocketAddr>,
+    listen: &[std::net::SocketAddr],
     public: Option<std::net::SocketAddr>,
 ) -> anyhow::Result<()> {
     let mut addresses: Vec<_> = endpoint
@@ -53,7 +53,11 @@ pub async fn publish(
         .ip_addrs()
         .copied()
         .filter(|address| {
-            listen.is_none_or(|bind| bind.ip().is_unspecified() || address.ip() == bind.ip())
+            listen.is_empty()
+                || listen.iter().any(|bind| {
+                    address.ip() == bind.ip()
+                        || (bind.ip().is_unspecified() && bind.is_ipv4() == address.is_ipv4())
+                })
         })
         .take(32)
         .collect();
