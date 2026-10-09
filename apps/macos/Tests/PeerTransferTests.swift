@@ -76,6 +76,11 @@ final class PeerTransferTests: XCTestCase {
         let localPairing = CredentialStore(service: "syncstr-p2p-test-lan-" + UUID().uuidString)
         let files = LocalMusicStore(root: root.appendingPathComponent("received"))
         let transfer = LocalTransfer(store: files, secrets: localPairing, peerSecrets: secrets, peerPairing: pairing)
+        var displayedCatalog: LocalCatalog?
+        transfer.onCatalog = { catalog in
+            try files.save(catalog)
+            displayedCatalog = catalog
+        }
         await transfer.restorePeer()
         _ = try run(["peer-pair", "--state", peer.path, "--peer", transfer.peerID])
         let process = Process()
@@ -104,9 +109,12 @@ final class PeerTransferTests: XCTestCase {
             try await wait { !transfer.busy }
             XCTAssertEqual(transfer.completed, 1, transfer.status ?? "")
             XCTAssertTrue(transfer.connected, transfer.status ?? "")
+            XCTAssertEqual(try files.load()?.entries.count, 1)
+            XCTAssertEqual(try files.load()?.entries.first?.track.title, "Tagged title")
+            XCTAssertEqual(try files.load()?.entries.first?.track.artist, "Tagged artist")
+            XCTAssertEqual(displayedCatalog?.entries.first?.track.title, "Tagged title")
+            XCTAssertGreaterThan(try files.load()?.entries.first?.track.duration ?? 0, 0)
         }
-        await transfer.reconnectPeer()
-        try await wait { !transfer.busy }
         let catalog = try XCTUnwrap(files.load())
         XCTAssertEqual(catalog.entries.count, 1)
         XCTAssertEqual(catalog.entries.first?.track.title, "Tagged title")

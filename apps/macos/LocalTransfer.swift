@@ -357,7 +357,8 @@ final class LocalTransfer: ObservableObject {
                     completed += 1
                 }
                 progress = 1
-                status = "\(completed)曲を接続先に追加しました。ライブラリは再接続すると更新されます。"
+                status = "\(completed)曲を接続先に追加しました。ライブラリを更新中…"
+                await reconnectPeer()
             } catch {
                 if generation == attempt { client.close(); self.client = nil; connected = false; status = error.localizedDescription }
             }
