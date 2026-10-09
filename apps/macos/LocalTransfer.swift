@@ -312,6 +312,20 @@ final class LocalTransfer: ObservableObject {
 
     func uploadPeer(files: [URL]) {
         guard let client = client as? PeerMusicConnection, connected, !busy else { return }
+        if client.isClosed {
+            do {
+                let address = try PeerAddress.parse(peerAddressText)
+                connectPeer(addressText: peerAddressText, expected: address.id, name: peerName ?? "")
+                let attempt = generation
+                let connection = operation
+                Task {
+                    await connection?.value
+                    guard generation == attempt, connected, !busy else { return }
+                    uploadPeer(files: files)
+                }
+            } catch { status = error.localizedDescription }
+            return
+        }
         let attempt = generation
         busy = true
         total = files.count

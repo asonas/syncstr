@@ -47,6 +47,10 @@ final class PeerTransferTests: XCTestCase {
         try await exerciseNativeClient(directory: nil)
     }
 
+    func testNativeClientUploadsAfterIdleSessionExpires() async throws {
+        try await exerciseNativeClient(directory: nil, idleSeconds: 125)
+    }
+
     func testNativeClientTransfersThroughSignedDirectoryDiscovery() async throws {
         guard let directory = ProcessInfo.processInfo.environment["SYNCSTR_DIRECTORY_TEST_URL"] else {
             throw XCTSkip("Set SYNCSTR_DIRECTORY_TEST_URL to test a deployed directory")
@@ -54,7 +58,15 @@ final class PeerTransferTests: XCTestCase {
         try await exerciseNativeClient(directory: directory)
     }
 
-    private func exerciseNativeClient(directory: String?) async throws {
+    func testExternalUploadBatchAgainstRustNode() async throws {
+        guard let path = ProcessInfo.processInfo.environment["SYNCSTR_UPLOAD_TEST_DIRECTORY"] else {
+            throw XCTSkip("Set SYNCSTR_UPLOAD_TEST_DIRECTORY to reproduce a real upload batch")
+        }
+        let idle = Double(ProcessInfo.processInfo.environment["SYNCSTR_UPLOAD_TEST_IDLE_SECONDS"] ?? "0") ?? 0
+        try await exerciseNativeClient(directory: nil, externalDirectory: URL(fileURLWithPath: path), idleSeconds: idle)
+    }
+
+    private func exerciseNativeClient(directory: String?, externalDirectory: URL? = nil, idleSeconds: Double = 0) async throws {
         let repository = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
             .deletingLastPathComponent().deletingLastPathComponent()
         let binary = repository.appendingPathComponent("headless/target/debug/syncstr-headless")
@@ -114,6 +126,24 @@ final class PeerTransferTests: XCTestCase {
         transfer.connectPeer(addressText: text, expected: serverID, name: "Fixture Node")
         try await wait { !transfer.busy }
         XCTAssertTrue(transfer.peerConnected, transfer.status ?? "")
+        try await Task.sleep(for: .seconds(idleSeconds))
+        if let externalDirectory {
+            let uploads = try FileManager.default.contentsOfDirectory(at: externalDirectory, includingPropertiesForKeys: nil)
+                .filter { ["mp3", "m4a"].contains($0.pathExtension.lowercased()) }.sorted { $0.path < $1.path }
+            transfer.uploadPeer(files: uploads)
+            for _ in 0..<4000 {
+                if !transfer.busy { break }
+                try await Task.sleep(for: .milliseconds(25))
+            }
+            XCTAssertFalse(transfer.busy)
+            XCTAssertEqual(transfer.completed, uploads.count, transfer.status ?? "")
+            XCTAssertEqual(try files.load()?.entries.count, uploads.count)
+            await transfer.forgetPeer()
+            try await secrets.remove()
+            try await pairing.remove()
+            try await localPairing.remove()
+            return
+        }
         let fixture = root.appendingPathComponent("12345.mp3")
         let source = URL(fileURLWithPath: #filePath).deletingLastPathComponent().appendingPathComponent("Fixtures/untagged.mp3")
         try FileManager.default.copyItem(at: source, to: fixture)

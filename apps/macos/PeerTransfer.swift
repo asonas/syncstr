@@ -102,6 +102,7 @@ final class PeerMusicConnection: MusicChannel {
     private let connection: IrohLib.Connection
     private let stream: IrohLib.BiStream
     private var closed = false
+    var isClosed: Bool { closed || connection.closeReason() != nil }
 
     private init(endpoint: IrohLib.Endpoint, connection: IrohLib.Connection, stream: IrohLib.BiStream) {
         self.endpoint = endpoint
