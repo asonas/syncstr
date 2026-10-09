@@ -187,6 +187,7 @@ final class PeerTransferTests: XCTestCase {
         stale.track = Track(id: entry.track.id, title: "12345", artist: nil, suffix: entry.track.suffix, size: entry.track.size)
         try files.save(LocalCatalog(id: catalog.id, name: catalog.name, entries: [stale]))
         await transfer.reconnectPeer()
+        XCTAssertFalse(transfer.busy)
         try await wait { !transfer.busy }
         XCTAssertEqual(try files.load()?.entries.first?.track.title, "Tagged title")
         XCTAssertEqual(try files.load()?.entries.first?.track.artist, "Tagged artist")

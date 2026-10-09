@@ -828,6 +828,7 @@ final class LocalTransfer: ObservableObject {
             guard let saved = credentials, let bytes = Data(base64Encoded: saved.key),
                   let address = String(data: bytes, encoding: .utf8) else { throw LocalMusicError.invalidData }
             connectPeer(addressText: address, expected: saved.libraryID, name: saved.name)
+            await operation?.value
         } catch {
             if stage == "saved_peer_keychain" { savedPeerReadState = "failed" }
             connectionEvent("reconnect_peer", outcome: "failed", fields: ["reason": stage], error: error)
