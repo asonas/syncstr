@@ -84,6 +84,7 @@ pub async fn publish(
 }
 
 fn client() -> anyhow::Result<reqwest::Client> {
+    let _ = rustls::crypto::ring::default_provider().install_default();
     Ok(reqwest::Client::builder()
         .https_only(true)
         .redirect(reqwest::redirect::Policy::none())

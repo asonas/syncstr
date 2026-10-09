@@ -1,6 +1,25 @@
 #![cfg(feature = "p2p")]
 
 #[test]
+fn standalone_directory_lookup_reports_network_failure_without_panicking() {
+    let root = tempfile::tempdir().unwrap();
+    let id = syncstr_headless::peer::Identity::initialize(root.path()).unwrap();
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_syncstr-headless"))
+        .args(["peer-resolve", "--state"])
+        .arg(root.path())
+        .args([
+            "--directory",
+            "https://127.0.0.1:1",
+            "--peer",
+            &id.to_string(),
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(1));
+    assert!(!String::from_utf8_lossy(&output.stderr).contains("panicked"));
+}
+
+#[test]
 fn exports_current_identity_and_selected_ip_without_private_keys() {
     let root = tempfile::tempdir().unwrap();
     let state = root.path().join("peer");
