@@ -89,6 +89,7 @@ struct LibraryView: View {
         .focusedSceneObject(library)
         .toolbar {
             if library.connected {
+                ToolbarItem { Button("アルバムの整理") { library.showingOrganization = true } }
                 ToolbarItem(placement: .primaryAction) {
                     LibrarySearchField(text: $library.search, placeholder: "\(library.destination.rawValue)を検索")
                         .frame(width: 280)
@@ -97,6 +98,7 @@ struct LibraryView: View {
         }
         .toolbarBackground(.hidden, for: .windowToolbar)
         .task { await library.restoreLibrary() }
+        .sheet(isPresented: $library.showingOrganization) { OrganizationView(library: library) }
         .sheet(isPresented: $showingPairing) {
             MacPairingView(transfer: library.transfer) { Task { await library.startPairing() } }
         }
@@ -204,6 +206,7 @@ struct LibraryView: View {
                     .buttonStyle(.plain)
                     .help("\(album.title)\n\(album.artist)")
                     .accessibilityLabel("\(album.title)、\(album.artist)")
+                    .contextMenu { Button("アルバムの整理") { library.showingOrganization = true } }
                 }
             }.padding(32)
             if library.visibleAlbums.isEmpty {
@@ -362,6 +365,7 @@ struct LibraryView: View {
         LazyVStack(spacing: 0) {
             ForEach(Array(tracks.enumerated()), id: \.element.id) { index, track in
                 trackRow(track, index: index, tracks: preservingQueue ? nil : tracks, showArtist: showArtist)
+                    .contextMenu { Button("アルバムの整理") { library.showingOrganization = true } }
                     .overlay(alignment: .bottom) { rule }
             }
         }
@@ -403,6 +407,7 @@ struct LibraryView: View {
                 }
                 Button("アルバムを表示") { library.selectedAlbum = track.albumKey; library.search = ""; library.showingNowPlaying = false }
                 Button("アーティストを表示") { self.showArtist(track.artist ?? "アーティスト不明") }
+                Button("アルバムの整理") { library.showingOrganization = true }
             } label: { Text("\(track.title)のその他の操作").hidden().frame(width: 32, height: 32) }
             .menuStyle(.borderlessButton).menuIndicator(.hidden).frame(width: 32, height: 32)
             .overlay { MacIcon("dots").foregroundStyle(Studio.fog).allowsHitTesting(false) }

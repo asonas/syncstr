@@ -35,10 +35,22 @@ pub fn router(store: crate::store::Store, token: &str) -> axum::Router {
         uploads: std::sync::Arc::new(tokio::sync::Semaphore::new(4)),
     };
     axum::Router::new()
-        .route("/v1/catalog", axum::routing::get(crate::api::catalog))
-        .route("/v1/tracks", axum::routing::post(crate::api::upload))
+        .route("/v1/catalog", axum::routing::get(crate::api::incompatible))
+        .route("/v1/tracks", axum::routing::post(crate::api::incompatible))
         .route(
             "/v1/tracks/{id}/audio",
+            axum::routing::get(crate::api::incompatible),
+        )
+        .route(
+            "/v2/organization",
+            axum::routing::post(crate::api::organization).layer(
+                axum::extract::DefaultBodyLimit::max(crate::model::MAX_METADATA),
+            ),
+        )
+        .route("/v2/catalog", axum::routing::get(crate::api::catalog))
+        .route("/v2/tracks", axum::routing::post(crate::api::upload))
+        .route(
+            "/v2/tracks/{id}/audio",
             axum::routing::get(crate::api::download),
         )
         .layer(axum::extract::DefaultBodyLimit::max(
@@ -310,4 +322,33 @@ fn range(value: &str, size: u64) -> Option<(u64, u64)> {
         end.parse::<u64>().ok()?.min(size - 1)
     };
     (start <= end && start < size).then_some((start, end))
+}
+
+async fn incompatible() -> crate::api::Error {
+    crate::api::Error(
+        axum::http::StatusCode::UPGRADE_REQUIRED,
+        "update Syncstr: organization protocol version 2 required",
+    )
+}
+
+async fn organization(
+    axum::extract::State(state): axum::extract::State<crate::api::State>,
+    axum::Json(incoming): axum::Json<crate::organization::Organization>,
+) -> Result<axum::http::StatusCode, crate::api::Error> {
+    incoming
+        .validate()
+        .map_err(|_| crate::api::Error::bad_request())?;
+    if serde_json::to_vec(&incoming)
+        .map_err(|_| crate::api::Error::bad_request())?
+        .len()
+        > crate::model::MAX_METADATA
+    {
+        return Err(crate::api::Error::bad_request());
+    }
+    state
+        .store
+        .merge_organization(incoming)
+        .await
+        .map_err(crate::api::Error::internal)?;
+    Ok(axum::http::StatusCode::NO_CONTENT)
 }

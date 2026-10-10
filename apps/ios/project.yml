@@ -21,6 +21,7 @@ targets:
     type: application
     platform: macOS
     sources:
+      - path: ../macos/OrganizationView.swift
       - path: ../macos/Syncstr.swift
       - path: ../macos/LocalCatalog.swift
       - path: ../macos/CatalogDatabase.swift
@@ -30,6 +31,7 @@ targets:
       - path: ../macos/LocalSetup.swift
       - path: ../macos/Library.swift
       - path: ../macos/PlaybackCommands.swift
+      - path: ../macos/AlbumOrganization.swift
       - path: ../macos/Track.swift
       - path: ../macos/CredentialStore.swift
       - path: ../macos/Licenses
@@ -67,6 +69,7 @@ targets:
     platform: iOS
     sources:
       - path: Sources
+      - path: ../macos/OrganizationView.swift
       - path: Licenses
         buildPhase: resources
       - path: ../macos/LocalCatalog.swift
@@ -77,10 +80,12 @@ targets:
       - path: ../macos/LocalSetup.swift
       - path: ../macos/Library.swift
       - path: ../macos/PlaybackCommands.swift
+      - path: ../macos/AlbumOrganization.swift
       - path: ../macos/Track.swift
       - path: ../macos/CredentialStore.swift
     dependencies:
       - package: IrohLib
+      - package: AudioTags
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: as.ason.syncstr.ios
@@ -109,7 +114,10 @@ targets:
     platform: iOS
     sources:
       - path: Tests
+      - path: ../macos/Tests/AlbumOrganizationTests.swift
       - path: ../macos/Tests/CatalogMigrationTests.swift
+      - path: ../../headless/fixtures/album-organization.json
+        buildPhase: resources
       - path: ../../headless/fixtures/local-entry.json
         buildPhase: resources
     settings:
@@ -122,12 +130,15 @@ targets:
     platform: macOS
     sources:
       - path: ../macos/Tests
+      - path: ../../headless/fixtures/album-organization.json
+        buildPhase: resources
       - path: ../../headless/fixtures/local-entry.json
         buildPhase: resources
       - path: ../macos/LocalCatalog.swift
       - path: ../macos/CatalogDatabase.swift
       - path: ../macos/LocalTransfer.swift
       - path: ../macos/PeerTransfer.swift
+      - path: ../macos/AlbumOrganization.swift
       - path: ../macos/Track.swift
       - path: ../macos/CredentialStore.swift
     dependencies:
@@ -146,6 +157,7 @@ targets:
       - path: ../macos/CatalogDatabase.swift
       - path: ../macos/LocalTransfer.swift
       - path: ../macos/PeerTransfer.swift
+      - path: ../macos/AlbumOrganization.swift
       - path: ../macos/Track.swift
       - path: ../macos/CredentialStore.swift
     dependencies:

@@ -107,6 +107,15 @@ struct LibraryCheck {
         try await wait("Other album did not play") { library.playing }
         library.togglePlayback(in: albumTracks)
         try await wait("First track did not play") { library.playing && library.position > 0 }
+        let playingID = library.current?.id
+        let activeQueue = library.queue.map(\.id)
+        let playerCount = mediaPlayers.count
+        var organization = try localFiles.load()!.organization!
+        organization.set(subject: library.albums[0].id, kind: "classification", value: "true")
+        try library.saveOrganization(organization)
+        try require(library.playing && library.current?.id == playingID && library.queue.map(\.id) == activeQueue)
+        try require(mediaPlayers.count == playerCount)
+        print("PASS: album organization changes preserve active playback and queue")
         try require(!library.canGoPrevious && library.canGoNext)
         library.navigate(.artists)
         library.next()

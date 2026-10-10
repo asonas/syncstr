@@ -56,9 +56,10 @@ Every endpoint requires `Authorization: Bearer <token>` over HTTPS. The node tok
 
 | Method and path | Contract |
 |---|---|
-| `GET /v1/catalog` | Returns `{id, name, entries}` using the native catalog JSON field names |
-| `POST /v1/tracks` | Multipart body: an `entry` JSON part followed by an `audio` binary part; returns the stored entry |
-| `GET /v1/tracks/{id}/audio` | Returns original bytes by opaque track ID; supports one HTTP byte range and a SHA-256 ETag |
+| `GET /v2/catalog` | Returns `{id, name, entries, organization}` using the native catalog JSON field names |
+| `POST /v2/tracks` | Multipart body: an `entry` JSON part followed by an `audio` binary part; returns the stored entry |
+| `POST /v2/organization` | Merges bounded, validated organization JSON; retains competing explicit choices |
+| `GET /v2/tracks/{id}/audio` | Returns original bytes by opaque track ID; supports one HTTP byte range and a SHA-256 ETag |
 
 The entry contains `track`, `sha256`, and optional Base64 `artwork`. Track metadata uses the fields documented in the [local transfer contract](../docs/local-music-transfer.md). IDs and album grouping IDs from uploaders are not authoritative: the node assigns a track UUID and adjusts `coverArt` to that ID. Filesystem paths and multipart filenames are ignored. The node uses a separate HTTP transport; existing Bonjour/TLS-PSK clients cannot connect to it without a native client integration.
 
@@ -68,7 +69,7 @@ The node deduplicates exact byte content with the same suffix. A retry from any 
 
 ## Storage and recovery
 
-- `node.sqlite` stores the node library UUID and track entries. Its schema version is 1.
+- `node.sqlite` stores the node library UUID and track entries. Its schema version is 2, including organization records independent of audio entries.
 - `objects/<sha256>.<suffix>` stores original bytes. Only committed catalog entries are accessible through the API.
 - `staging/upload-*` holds incomplete uploads, removed on failure or at the next exclusive startup.
 - `node.lock` prevents a second process from opening the same data directory. The OS releases the lock when the process exits; the lock file can remain.
@@ -97,3 +98,5 @@ The container check requires Python 3 and Docker. It creates dedicated temporary
 The service uses Axum/Tokio for HTTP and asynchronous I/O, rustls for TLS, and rusqlite with bundled SQLite. Database operations run in Tokio's blocking execution pool and serialize through one connection; uploads stream directly to staging rather than being buffered in memory. Dependencies are pinned in `Cargo.lock`.
 
 The Docker build runs [collect_licenses.py](scripts/collect_licenses.py), collecting packaged license and notice files for the target platform's dependency graph, plus available Rust toolchain notices. Its generated inventory records package names, versions, and declared licenses. Syncstr's own release license remains undecided.
+
+The former `/v1` API returns HTTP 426 and requests a client update. Version 2 preserves imported metadata, album identity, former references, and explicit organization revisions without rewriting audio. Update both the node and native clients together; existing deployments are not updated by a local build. See [compilation verification](../docs/validation/compilation-albums.md).

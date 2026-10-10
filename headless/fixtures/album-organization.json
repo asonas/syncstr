@@ -1,0 +1,17 @@
+{
+  "albums": [{"id": "album-a", "title": "Collection", "releases": []}],
+  "tracks": [{
+    "id": "track-a",
+    "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "imported": {"title": "Collection", "artist": "Artist A", "albumArtist": "Various Artists", "compilationValues": ["1"]},
+    "importedAlbumID": "album-a",
+    "title": "First song",
+    "folderEvidence": "Collection"
+  }],
+  "aliases": {},
+  "choices": [
+    {"id": "revision-a", "subject": "album-a", "kind": "classification", "value": "true", "parents": []},
+    {"id": "revision-b", "subject": "album-a", "kind": "classification", "parents": ["revision-a"]}
+  ],
+  "preferred": {"classification:album-a": "revision-b"}
+}

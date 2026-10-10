@@ -14,3 +14,17 @@ fn native_entry_fixture_round_trips_without_changing_field_names_or_base64() {
         serde_json::from_slice::<serde_json::Value>(data).unwrap()
     );
 }
+
+#[test]
+fn organization_fixture_round_trips_with_native_field_names_and_clear_revision() {
+    let data = include_bytes!("../fixtures/album-organization.json");
+    let organization: syncstr_headless::organization::Organization =
+        serde_json::from_slice(data).unwrap();
+    organization.validate().unwrap();
+    assert_eq!(organization.tracks[0].imported_album_id, "album-a");
+    assert_eq!(organization.choices[1].value, None);
+    assert_eq!(
+        serde_json::to_value(organization).unwrap(),
+        serde_json::from_slice::<serde_json::Value>(data).unwrap()
+    );
+}

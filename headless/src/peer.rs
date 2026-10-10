@@ -22,16 +22,18 @@ pub struct Message {
     pub track: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub bytes: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub organization: Option<crate::organization::Organization>,
 }
 
 fn version() -> u8 {
-    1
+    2
 }
 
 impl crate::peer::Message {
     pub fn new(kind: &str) -> Self {
         Self {
-            version: 1,
+            version: 2,
             kind: kind.to_owned(),
             ..Self::default()
         }
@@ -70,8 +72,75 @@ pub async fn receive(
     )
     .await??;
     let message: crate::peer::Message = serde_json::from_slice(&body)?;
-    anyhow::ensure!(message.version == 1, "unsupported protocol version");
+    anyhow::ensure!(
+        message.version == 2,
+        "update Syncstr: organization protocol version 2 required"
+    );
     Ok(message)
+}
+
+async fn receive_organization(
+    stream: &mut iroh::endpoint::RecvStream,
+    header: &crate::peer::Message,
+) -> anyhow::Result<Option<crate::organization::Organization>> {
+    use base64::Engine as _;
+    if let Some(organization) = &header.organization {
+        organization.validate()?;
+        return Ok(Some(organization.clone()));
+    }
+    if header.track.as_deref() != Some("organization") {
+        return Ok(None);
+    }
+    let mut bytes = Vec::new();
+    loop {
+        let message = crate::peer::receive(stream).await?;
+        if message.kind == "organization-end" {
+            break;
+        }
+        anyhow::ensure!(
+            message.kind == "organization",
+            "expected organization chunk"
+        );
+        let chunk = base64::engine::general_purpose::STANDARD.decode(
+            message
+                .bytes
+                .ok_or_else(|| anyhow::anyhow!("missing organization bytes"))?,
+        )?;
+        anyhow::ensure!(
+            !chunk.is_empty()
+                && chunk.len() <= 65536
+                && bytes.len() + chunk.len() <= 64 * 1024 * 1024,
+            "invalid organization size"
+        );
+        bytes.extend(chunk);
+    }
+    let organization: crate::organization::Organization = serde_json::from_slice(&bytes)?;
+    organization.validate()?;
+    Ok(Some(organization))
+}
+
+async fn send_organized(
+    stream: &mut iroh::endpoint::SendStream,
+    mut header: crate::peer::Message,
+    organization: crate::organization::Organization,
+) -> anyhow::Result<()> {
+    use base64::Engine as _;
+    let bytes = serde_json::to_vec(&organization)?;
+    anyhow::ensure!(bytes.len() <= 64 * 1024 * 1024, "organization too large");
+    if bytes.len() <= 1024 * 1024 {
+        header.organization = Some(organization);
+        crate::peer::send(stream, &header).await?;
+    } else {
+        header.track = Some("organization".to_owned());
+        crate::peer::send(stream, &header).await?;
+        for chunk in bytes.chunks(65536) {
+            let mut message = crate::peer::Message::new("organization");
+            message.bytes = Some(base64::engine::general_purpose::STANDARD.encode(chunk));
+            crate::peer::send(stream, &message).await?;
+        }
+        crate::peer::send(stream, &crate::peer::Message::new("organization-end")).await?;
+    }
+    Ok(())
 }
 
 pub async fn serve(
@@ -119,11 +188,14 @@ async fn serve_connection(
     let (mut output, mut input) = connection.accept_bi().await?;
     let hello = crate::peer::receive(&mut input).await?;
     anyhow::ensure!(hello.kind == "hello", "expected hello");
+    if let Some(organization) = crate::peer::receive_organization(&mut input, &hello).await? {
+        store.merge_organization(organization).await?;
+    }
     let catalog = store.catalog().await?;
     let mut header = crate::peer::Message::new("catalog");
     header.library = Some(catalog.id);
     header.name = Some(catalog.name);
-    crate::peer::send(&mut output, &header).await?;
+    crate::peer::send_organized(&mut output, header, catalog.organization).await?;
     for entry in catalog.entries {
         let mut message = crate::peer::Message::new("entry");
         message.entry = Some(entry);
@@ -164,6 +236,8 @@ async fn serve_connection(
                 crate::peer::send(&mut output, &end).await?;
             }
             "put" => {
+                let incoming_organization =
+                    crate::peer::receive_organization(&mut input, &request).await?;
                 let entry = request
                     .entry
                     .ok_or_else(|| anyhow::anyhow!("missing entry"))?;
@@ -206,7 +280,9 @@ async fn serve_connection(
                 file.flush().await?;
                 file.sync_all().await?;
                 drop(file);
-                let saved = store.commit(entry, temporary, true).await?;
+                let saved = store
+                    .commit_organized(entry, temporary, true, incoming_organization)
+                    .await?;
                 let mut response = crate::peer::Message::new("saved");
                 response.entry = Some(saved);
                 crate::peer::send(&mut output, &response).await?;

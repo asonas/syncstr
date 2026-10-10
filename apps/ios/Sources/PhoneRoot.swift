@@ -39,6 +39,7 @@ struct PhoneRoot: View {
         .onChange(of: scenePhase) { _, phase in
             if phase == .background, library.transfer.peerConnected { library.transfer.cancel() }
         }
+        .sheet(isPresented: $library.showingOrganization) { OrganizationView(library: library) }
         .sheet(isPresented: $showingPlayer) {
             PhoneNowPlaying(library: library)
                 .presentationDragIndicator(.visible)
@@ -127,6 +128,7 @@ struct PhoneRoot: View {
         }
         .background(PhoneStyle.graphite)
         .navigationTitle("ライブラリ")
+        .toolbar { Button("アルバムの整理") { library.showingOrganization = true } }
         .toolbarTitleDisplayMode(.inlineLarge)
         .refreshable { library.reload() }
     }
@@ -156,6 +158,7 @@ struct PhoneRoot: View {
                     }
                 }
                 .buttonStyle(.plain)
+                .contextMenu { Button("アルバムの整理") { library.showingOrganization = true } }
             }
         }
     }
@@ -297,6 +300,7 @@ struct PhoneRoot: View {
                 .disabled(library.transfer.busy)
             }
         }
+        .contextMenu { Button("アルバムの整理") { library.showingOrganization = true } }
     }
 
     private var miniPlayer: some View {

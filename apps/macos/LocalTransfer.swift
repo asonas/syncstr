@@ -4,13 +4,14 @@ import Security
 import SwiftUI
 
 struct MusicMessage: Codable {
-    var version = 1
+    var version = 2
     var kind: String
     var name: String? = nil
     var library: String? = nil
     var entry: LocalEntry? = nil
     var track: String? = nil
     var bytes: Data? = nil
+    var organization: AlbumOrganization? = nil
 }
 
 @MainActor
@@ -134,7 +135,7 @@ final class MusicConnection {
         let count = header.reduce(0) { ($0 << 8) | Int($1) }
         guard count > 0, count <= 2 * 1024 * 1024 else { throw LocalMusicError.invalidData }
         let message = try JSONDecoder().decode(MusicMessage.self, from: await read(count))
-        guard message.version == 1 else { throw LocalMusicError.invalidData }
+        guard message.version == 2 else { throw LocalMusicError.incompatiblePeer }
         if message.kind == "denied" { throw LocalMusicError.unauthorized }
         if message.kind == "changed" { throw LocalMusicError.changedFile }
         return message
@@ -149,6 +150,9 @@ struct NearbyMusicDevice: Identifiable {
 
 @MainActor
 final class LocalTransfer: ObservableObject {
+    private var hostedCatalog: LocalCatalog?
+
+    func updateHostedCatalog(_ catalog: LocalCatalog) { hostedCatalog = catalog }
     static let service = "_syncstr-music._tcp"
     @Published var nearby: [NearbyMusicDevice] = []
     @Published var code = ""
@@ -261,9 +265,10 @@ final class LocalTransfer: ObservableObject {
                 let channel = try await PeerMusicConnection.connect(address: address, expected: expected, secrets: peerSecrets)
                 guard generation == attempt, !Task.isCancelled else { channel.close(); return }
                 client = channel
-                try await channel.send(MusicMessage(kind: "hello", name: name))
+                try await channel.sendOrganized(MusicMessage(kind: "hello", name: name), organization: try store.load()?.organization)
                 let header = try await channel.receive()
                 guard header.kind == "catalog", let id = header.library, UUID(uuidString: id) != nil else { throw LocalMusicError.invalidData }
+                let incomingOrganization = try await channel.receiveOrganization(header)
                 var entries: [LocalEntry] = []
                 var metadataBytes = 0
                 var ids = Set<String>()
@@ -281,7 +286,7 @@ final class LocalTransfer: ObservableObject {
                     let saved = previous.entries.filter { store.hasFile($0) }
                     entries += saved.filter { !ids.contains($0.track.id) }
                 }
-                let catalog = LocalCatalog(id: id, name: header.name ?? name, entries: entries)
+                let catalog = try mergedCatalog(id: id, name: header.name ?? name, entries: entries, incoming: incomingOrganization)
                 if let onCatalog { try onCatalog(catalog) } else { try store.save(catalog) }
                 try await peerPairing.save(PairingCredentials(libraryID: expected, name: name, key: bytes.base64EncodedString()))
                 guard generation == attempt else { return }
@@ -340,7 +345,7 @@ final class LocalTransfer: ObservableObject {
                     let temporary = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
                         .appendingPathExtension(url.pathExtension)
                     defer { try? FileManager.default.removeItem(at: temporary) }
-                    let entry = try await Task.detached {
+                    var entry = try await Task.detached {
                         let source = try url.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey])
                         guard source.isRegularFile == true, let sourceSize = source.fileSize, sourceSize > 0,
                               UInt64(sourceSize) <= 20 * 1024 * 1024 * 1024,
@@ -350,11 +355,17 @@ final class LocalTransfer: ObservableObject {
                         try FileManager.default.copyItem(at: url, to: temporary)
                         return try await UploadedMusic.entry(file: temporary, original: url)
                     }.value
+                    let previous = try store.load()
+                    if let known = previous?.entries.first(where: { $0.sha256 == entry.sha256 }) {
+                        entry.track.id = known.track.id
+                        if entry.track.coverArt != nil { entry.track.coverArt = known.track.id }
+                        entry.track.albumId = previous?.organization?.albumID(for: known.track.id)
+                    }
                     guard LocalMusicStore.valid(entry) else { throw LocalMusicError.invalidData }
                     try Task.checkCancellation()
                     guard generation == attempt else { return }
                     status = "「\(entry.track.title)」を送信中…"
-                    try await client.send(MusicMessage(kind: "put", entry: entry))
+                    try await client.sendOrganized(MusicMessage(kind: "put", entry: entry), organization: previous?.organization)
                     guard try await client.receive().kind == "accept" else { throw LocalMusicError.invalidData }
                     let handle = try FileHandle(forReadingFrom: temporary)
                     defer { try? handle.close() }
@@ -377,6 +388,19 @@ final class LocalTransfer: ObservableObject {
                 if generation == attempt { client.close(); self.client = nil; connected = false; status = error.localizedDescription }
             }
         }
+    }
+
+    var onOrganization: ((AlbumOrganization) -> Void)?
+
+    private func mergedCatalog(id: String, name: String, entries: [LocalEntry], incoming: AlbumOrganization?) throws -> LocalCatalog {
+        guard let incoming else { throw LocalMusicError.incompatiblePeer }
+        var catalog = LocalCatalog(id: id, name: name, entries: entries,
+            organization: try store.load()?.organization)
+        var organization = catalog.organization ?? AlbumOrganization()
+        try organization.merge(incoming)
+        catalog.organization = organization
+        catalog.organize()
+        return catalog
     }
 
     func cancel() {
@@ -427,6 +451,7 @@ final class LocalTransfer: ObservableObject {
         stopHosting()
         let epoch = hosting
         self.folder = folder
+        hostedCatalog = folder.catalog
         peerCredential = try await secrets.load()
         guard hosting == epoch else { return }
         if let credential = peerCredential, credential.libraryID != folder.catalog.id {
@@ -488,13 +513,22 @@ final class LocalTransfer: ObservableObject {
             pairedName = name
             code = ""
         }
-        try await channel.send(MusicMessage(kind: "catalog", name: folder.catalog.name, library: folder.catalog.id))
-        for entry in folder.catalog.entries { try await channel.send(MusicMessage(kind: "entry", entry: entry)) }
+        var catalog = hostedCatalog ?? folder.catalog
+        if let incoming = try await channel.receiveOrganization(hello) {
+            var organization = catalog.organization ?? AlbumOrganization()
+            try organization.merge(incoming)
+            catalog.organization = organization
+            try store.save(catalog)
+            hostedCatalog = catalog
+            onOrganization?(organization)
+        }
+        try await channel.sendOrganized(MusicMessage(kind: "catalog", name: catalog.name, library: catalog.id), organization: catalog.organization)
+        for entry in catalog.entries { try await channel.send(MusicMessage(kind: "entry", entry: entry)) }
         try await channel.send(MusicMessage(kind: "ready"))
         while true {
             let request = try await channel.receive()
             guard request.kind == "get", let id = request.track,
-                  let entry = folder.catalog.entries.first(where: { $0.track.id == id }),
+                  let entry = (hostedCatalog ?? folder.catalog).entries.first(where: { $0.track.id == id }),
                   let url = folder.files[id],
                   url.resolvingSymlinksInPath().path.hasPrefix(folder.root.path + "/") else {
                 throw LocalMusicError.unauthorized
@@ -535,10 +569,11 @@ final class LocalTransfer: ObservableObject {
                     using: try MusicConnection.parameters(code: secret, identity: identity)))
                 client = channel
                 try await channel.start()
-                try await channel.send(MusicMessage(kind: "hello", name: name))
+                try await channel.sendOrganized(MusicMessage(kind: "hello", name: name), organization: try store.load()?.organization)
                 status = "Macでこの端末とのペアリングを承認してください。"
                 let header = try await channel.receive()
                 guard header.kind == "catalog", header.library == identity else { throw LocalMusicError.invalidData }
+                let incomingOrganization = try await channel.receiveOrganization(header)
                 var entries: [LocalEntry] = []
                 var metadataBytes = 0
                 while true {
@@ -553,12 +588,10 @@ final class LocalTransfer: ObservableObject {
                 guard generation == attempt else { return }
                 if let previous = try store.load(), previous.id == identity {
                     let savedEntries = previous.entries.filter { store.hasFile($0) }
-                    let savedByID = Dictionary(uniqueKeysWithValues: savedEntries.map { ($0.track.id, $0) })
                     let incomingIDs = Set(entries.map { $0.track.id })
-                    entries = entries.map { savedByID[$0.track.id] ?? $0 }
                     entries += savedEntries.filter { !incomingIDs.contains($0.track.id) }
                 }
-                let catalog = LocalCatalog(id: identity, name: header.name ?? "Mac", entries: entries)
+                let catalog = try mergedCatalog(id: identity, name: header.name ?? "Mac", entries: entries, incoming: incomingOrganization)
                 if let onCatalog { try onCatalog(catalog) }
                 else { try store.save(catalog) }
                 try await secrets.save(PairingCredentials(libraryID: identity, name: device.name, key: secret))

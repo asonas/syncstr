@@ -17,7 +17,7 @@ The local copy workflow does not propagate deletions or edit source tags.
 
 ## Version 1 wire contract
 
-Each message is UTF-8 JSON, preceded by a four-byte unsigned big-endian body length. The maximum JSON body is 2 MiB. Every message includes integer `version: 1` and string `kind`. Unknown versions, invalid framing, unexpected message types, and invalid metadata terminate the operation. Binary JSON fields use standard Base64. Exchanges are sequential, with one requested track at a time per connection.
+Each message is UTF-8 JSON, preceded by a four-byte unsigned big-endian body length. The maximum JSON body is 2 MiB. Every message includes integer `version: 2` and string `kind`. Unknown versions, invalid framing, unexpected message types, and invalid metadata terminate the operation. Binary JSON fields use standard Base64. Exchanges are sequential, with one requested track at a time per connection.
 
 | Direction | Kind | Fields and meaning |
 | --- | --- | --- |
@@ -37,15 +37,16 @@ The receiver persists the catalog independently of the connection. It writes aud
 
 ## Catalog storage
 
-Each app stores its current library in `LocalMusic/catalog.sqlite`, using the system SQLite library and schema version 1. The database is local to that app; it is not transferred between devices. The version 1 JSON wire contract is unchanged.
+Each app stores its current library in `LocalMusic/catalog.sqlite`, using the system SQLite library and schema version 2. The database is local to that app; organization records accompany the version 2 catalog messages. Both peers must support version 2.
 
 - `catalog` stores the library identity, display name, and optional local source root.
 - `entries` stores stable track IDs, ordering, content hashes, encoded entry metadata, and source-relative file paths. Source paths remain private to the device and are never accepted from peers.
+- `organization` stores album identities, imported evidence, unavailable track identities, choices and their revision parents, local conflict preferences, and former-ID aliases independently of current audio availability.
 - `received_files` records content hashes and private-storage relative paths after audio publication. Filesystem presence and size remain the authority for playback availability. A file published immediately before a database write failure is rediscovered when its catalog is saved again.
 
 Catalog and source-location replacement commits in one transaction. An unsuccessful write leaves the preceding catalog intact. The first successful load imports `catalog.json`, preserving the library and track IDs and indexing existing received files. JSON remains untouched as a migration backup; after SQLite contains a catalog, JSON is no longer read or updated. Failed imports can retry, while a corrupt or unsupported SQLite database reports an error rather than silently reopening a stale JSON catalog. Artwork, audio filenames, the active-library marker, the security-scoped folder bookmark, and Keychain credentials retain their existing locations.
 
-The scanner reconciles files with persisted relative paths before assigning IDs. On the first migrated scan, it recognizes legacy path-derived IDs. A file at an existing path retains its ID when metadata or content changes. Among unmatched entries, an exact content hash preserves identity only when there is one old candidate and one new candidate. Ambiguous duplicate matches receive separate new UUIDs. A move combined with a content change cannot be identified by this rule. New files receive UUIDs independent of their paths. The app still supports one selected source folder and one current received catalog; this does not implement multi-node ownership, uploads to a NAS, or distributed catalog conflict resolution.
+The scanner reconciles files with persisted relative paths before assigning IDs. On the first migrated scan, it recognizes legacy path-derived IDs. A file at an existing path retains its ID only when its exact content hash matches. A replacement, including an unproven metadata-only change, requires explicit reassociation to inherit organization choices. Among unmatched entries, an exact content hash preserves identity only when there is one old candidate and one new candidate. Ambiguous duplicate matches receive separate new UUIDs. A move combined with a content change cannot be identified by this rule. New files receive UUIDs independent of their paths. Organization for unmatched files remains in the catalog and participates in later exact-content matching. The app still supports one selected source folder and one current received catalog. Explicit organization revisions reconcile independently of file availability; conflicting concurrent choices retain local behavior until resolved.
 
 ## Format and execution limits
 
@@ -58,3 +59,13 @@ Mac folder access uses the system directory picker and a security-scoped bookmar
 The Mac test suite exercises a real TLS loopback connection, approval/rejection, source indexing, album transfer, interruption at completed-track boundaries, reconnecting with saved credentials, repeat-copy idempotence, source-change rejection, and corrupt/partial file rejection. Tests use temporary folders and unique test-only Keychain services. iPhone tests restore a local catalog without a server account and open received audio with AVPlayer.
 
 The Mac-to-iPhone transfer, Mac closure, offline iPhone cold launch, and audible playback were confirmed by the user through TestFlight on 2026-10-07. Recheck this journey after changes. Before release, complete the remaining physical-device acceptance checks from issue #12: system folder authorization, Bonjour discovery between devices, pairing QR and manual entry, denied-permission recovery, album transfer and interruption, Mac closure, offline iPhone cold launch, audible playback, seeking, and locked-screen controls. Automated tests and build success do not establish these device results. App Store submission and license selection remain separate work.
+
+## Album organization
+
+Open **Album Organization** from the library toolbar or an album/track menu on either platform. Changes remain in the sheet until Save; Cancel discards them. Select tracks to create an album, choose an existing album for a track, or return membership/classification to imported interpretation. Classification controls preserve true, false, unknown, and conflicting imported evidence. Missing source identities offer an explicit replacement selection. Organization changes preserve the active playback queue.
+
+`hello`, `catalog`, and P2P `put` messages may include an `organization` object. For objects exceeding 1 MiB, the header instead carries `track: "organization"`, followed immediately by `organization` messages whose `bytes` contain at most 64 KiB of the encoded organization JSON, and an `organization-end` message. The assembled object is limited to 64 MiB and validated before merge. This marker is a framing field, not a music track request. The catalog's entry stream follows organization reception. Source-root and source-file paths are not transferred; folder evidence contains only relative grouping information.
+
+Entries may include `importedAlbum`, retaining imported artist/album artist credits, raw compilation assertions, source-qualified MusicBrainz release evidence, and original tag values. Effective album membership and classification are stored separately. A release-group or recording identifier is not edition evidence. Multiple incompatible release identifiers remain raw metadata rather than choosing one for automatic grouping.
+
+Explicit revisions include parent revision IDs, including when an override is cleared. Concurrent incompatible revisions remain unresolved; arrival timestamps never select a winner. Former album IDs remain resolvable after compatible edition reconciliation or a confirmed merge. Exact-content identities also retain references when a node deduplicates incoming audio. See the [retention policy](compilation-data-design.md), [implementation specification](compilation-implementation-spec.md), and [verification record](validation/compilation-albums.md).

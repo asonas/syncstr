@@ -42,13 +42,36 @@ impl crate::store::Store {
         connection.busy_timeout(std::time::Duration::from_secs(5))?;
         let version: i64 = connection.query_row("PRAGMA user_version", [], |row| row.get(0))?;
         anyhow::ensure!(
-            version == 0 || version == 1,
+            version == 0 || version == 1 || version == 2,
             "unsupported catalog schema {version}"
         );
         let transaction = connection.transaction()?;
         transaction.execute_batch("CREATE TABLE IF NOT EXISTS library (singleton INTEGER PRIMARY KEY CHECK(singleton = 1), id TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS tracks (id TEXT PRIMARY KEY, sha256 TEXT NOT NULL, suffix TEXT NOT NULL, payload BLOB NOT NULL, UNIQUE(sha256, suffix));
-            PRAGMA user_version = 1;")?;
+            CREATE TABLE IF NOT EXISTS organization (singleton INTEGER PRIMARY KEY CHECK(singleton = 1), payload BLOB NOT NULL);
+            PRAGMA user_version = 2;")?;
+        let stored: Option<Vec<u8>> = {
+            use rusqlite::OptionalExtension as _;
+            transaction
+                .query_row(
+                    "SELECT payload FROM organization WHERE singleton = 1",
+                    [],
+                    |row| row.get(0),
+                )
+                .optional()?
+        };
+        if stored.is_none() {
+            let mut organization = crate::organization::Organization::default();
+            let mut statement = transaction.prepare("SELECT payload FROM tracks ORDER BY id")?;
+            let rows = statement.query_map([], |row| row.get::<_, Vec<u8>>(0))?;
+            for row in rows {
+                organization.import(&serde_json::from_slice::<crate::model::Entry>(&row?)?);
+            }
+            transaction.execute(
+                "INSERT INTO organization VALUES (1, ?)",
+                [serde_json::to_vec(&organization)?],
+            )?;
+        }
         transaction.execute(
             "INSERT OR IGNORE INTO library VALUES (1, ?)",
             [uuid::Uuid::new_v4().to_string()],
@@ -112,6 +135,7 @@ impl crate::store::Store {
                 id,
                 name: "Syncstr".to_owned(),
                 entries,
+                organization: crate::store::read_organization(connection)?,
             })
         })
         .await
@@ -140,13 +164,45 @@ impl crate::store::Store {
 
     pub async fn commit(
         &self,
+        entry: crate::model::Entry,
+        temporary: tempfile::NamedTempFile,
+        update_metadata: bool,
+    ) -> anyhow::Result<crate::model::Entry> {
+        self.commit_organized(entry, temporary, update_metadata, None)
+            .await
+    }
+
+    pub async fn merge_organization(
+        &self,
+        incoming: crate::organization::Organization,
+    ) -> anyhow::Result<()> {
+        self.run(move |connection, _| {
+            let transaction = connection.transaction()?;
+            let mut organization = crate::store::read_organization(&transaction)?;
+            organization.merge(&incoming)?;
+            transaction.execute(
+                "UPDATE organization SET payload = ? WHERE singleton = 1",
+                [serde_json::to_vec(&organization)?],
+            )?;
+            transaction.commit()?;
+            Ok(())
+        })
+        .await
+    }
+
+    pub async fn commit_organized(
+        &self,
         mut entry: crate::model::Entry,
         temporary: tempfile::NamedTempFile,
         update_metadata: bool,
+        incoming: Option<crate::organization::Organization>,
     ) -> anyhow::Result<crate::model::Entry> {
         self.run(move |connection, root| {
             use rusqlite::OptionalExtension as _;
             let transaction = connection.transaction()?;
+            let mut organization = crate::store::read_organization(&transaction)?;
+            let original_id = entry.track.id.clone();
+            if let Some(incoming) = incoming { organization.merge(&incoming)?; }
             let previous: Option<Vec<u8>> = transaction
                 .query_row(
                     "SELECT payload FROM tracks WHERE sha256 = ? AND suffix = ?",
@@ -158,16 +214,19 @@ impl crate::store::Store {
                 let previous: crate::model::Entry = serde_json::from_slice(&previous)?;
                 if update_metadata {
                     entry.track.id = previous.track.id;
-                    entry.track.album_id = None;
                     entry.track.cover_art = entry.artwork.as_ref().map(|_| entry.track.id.clone());
                 } else {
                     entry = previous;
                 }
             } else {
                 entry.track.id = uuid::Uuid::new_v4().to_string();
-                entry.track.album_id = None;
                 entry.track.cover_art = entry.artwork.as_ref().map(|_| entry.track.id.clone());
             }
+            if original_id != entry.track.id && organization.tracks.iter().any(|t| t.id == original_id) {
+                organization.track_aliases.get_or_insert_with(Default::default).insert(entry.track.id.clone(), original_id);
+            } else { organization.import(&entry); }
+            organization.validate()?;
+            transaction.execute("UPDATE organization SET payload = ? WHERE singleton = 1", [serde_json::to_vec(&organization)?])?;
             let destination = root
                 .join("objects")
                 .join(format!("{}.{}", entry.sha256, entry.track.suffix));
@@ -187,4 +246,17 @@ impl crate::store::Store {
         })
         .await
     }
+}
+
+fn read_organization(
+    connection: &rusqlite::Connection,
+) -> anyhow::Result<crate::organization::Organization> {
+    let payload: Vec<u8> = connection.query_row(
+        "SELECT payload FROM organization WHERE singleton = 1",
+        [],
+        |row| row.get(0),
+    )?;
+    let organization: crate::organization::Organization = serde_json::from_slice(&payload)?;
+    organization.validate()?;
+    Ok(organization)
 }

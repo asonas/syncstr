@@ -52,11 +52,12 @@ final class Library: ObservableObject {
     @Published var search = ""
     @Published var sidebarVisible = true
     @Published var showingNowPlaying = false
+    @Published var showingOrganization = false
     @Published private(set) var artworkURLs: [String: URL] = [:]
     let localStore: LocalMusicStore
     let transfer: LocalTransfer
     private var localFiles: [String: URL] = [:]
-    private var localCatalog: LocalCatalog?
+    private(set) var localCatalog: LocalCatalog?
     private var transferChanges: AnyCancellable?
 #if os(macOS)
     private var localFolder: LocalFolder?
@@ -84,6 +85,10 @@ final class Library: ObservableObject {
         self.localStore = localStore
         self.transfer = LocalTransfer(store: localStore, secrets: pairingSecrets)
         transfer.onCatalog = { [weak self] catalog in try self?.openLocal(catalog) }
+        transfer.onOrganization = { [weak self] organization in
+            do { try self?.saveOrganization(organization) }
+            catch { self?.message = error.localizedDescription }
+        }
         transfer.onSaved = { [weak self] in self?.refreshLocalFiles() }
         transferChanges = transfer.objectWillChange.sink { [weak self] in self?.objectWillChange.send() }
     }
@@ -91,7 +96,9 @@ final class Library: ObservableObject {
     var albums: [Album] {
         Dictionary(grouping: tracks, by: \.albumKey).map { key, tracks in
             Album(id: key, title: tracks.first?.album ?? "アルバム名不明",
-                  artist: tracks.first?.artist ?? "アーティスト不明",
+                  artist: localCatalog?.organization?.artistCredit(for: tracks.sorted {
+                      ($0.discNumber ?? 1, $0.track ?? 0, $0.id) < ($1.discNumber ?? 1, $1.track ?? 0, $1.id)
+                  }) ?? tracks.first?.artist ?? "アーティスト不明",
                   tracks: tracks.sorted {
                       if ($0.discNumber ?? 1) != ($1.discNumber ?? 1) {
                           return ($0.discNumber ?? 1) < ($1.discNumber ?? 1)
@@ -165,14 +172,19 @@ final class Library: ObservableObject {
     }
 
     func openLocal(_ catalog: LocalCatalog) throws {
+        var catalog = catalog
+        catalog.organize()
         try localStore.save(catalog)
         try Data().write(to: localStore.root.appendingPathComponent("active"), options: .atomic)
-        stop()
-        current = nil
-        queue = []
-        orderedQueue = []
+        let sameLibrary = localCatalog?.id == catalog.id
+        if !sameLibrary {
+            stop()
+            current = nil
+            queue = []
+            orderedQueue = []
+        }
         localCatalog = catalog
-        tracks = catalog.entries.map(\.track)
+        tracks = organizedTracks(catalog)
         artworkURLs = Dictionary(uniqueKeysWithValues: catalog.entries.compactMap { entry in
             entry.track.coverArt.map { ($0, localStore.artworkURL(entry)) }
         })
@@ -180,8 +192,74 @@ final class Library: ObservableObject {
         restoringSession = false
         refreshing = false
         message = nil
-        navigate(.albums)
+        if !sameLibrary { navigate(.albums) }
+        else if let selectedAlbum { self.selectedAlbum = catalog.organization?.canonical(selectedAlbum) }
         refreshLocalFiles()
+    }
+
+    private func organizedTracks(_ catalog: LocalCatalog) -> [Track] {
+        catalog.entries.map { entry in
+            var track = entry.track
+            track.albumId = catalog.organization?.albumID(for: track.id) ?? track.albumId
+            if let album = catalog.organization?.albums.first(where: { $0.id == track.albumId }) { track.album = album.title }
+            return track
+        }
+    }
+
+    func saveOrganization(_ organization: AlbumOrganization) throws {
+        guard var catalog = localCatalog else { throw LocalMusicError.invalidData }
+        let selectedMembers = albums.first { $0.id == selectedAlbum }?.tracks.map(\.id) ?? []
+        try organization.validate()
+        catalog.organization = organization
+        try localStore.save(catalog)
+        localCatalog = catalog
+        tracks = organizedTracks(catalog)
+        if let selectedAlbum { self.selectedAlbum = organization.canonical(selectedAlbum) }
+        if let selectedAlbum, !albums.contains(where: { $0.id == selectedAlbum }) {
+            let moved = Set(selectedMembers.compactMap { organization.albumID(for: $0) })
+            self.selectedAlbum = moved.count == 1 ? moved.first : nil
+        }
+#if os(macOS)
+        if var folder = localFolder, folder.catalog.id == catalog.id {
+            folder.catalog = catalog
+            localFolder = folder
+            transfer.updateHostedCatalog(catalog)
+        }
+#endif
+    }
+
+    func reassociate(old: String, replacement: String, organization: AlbumOrganization) throws {
+        guard var catalog = localCatalog, old != replacement,
+              !catalog.entries.contains(where: { $0.track.id == old }),
+              let index = catalog.entries.firstIndex(where: { $0.track.id == replacement }),
+              let oldRecord = organization.tracks.first(where: { $0.id == old }),
+              !organization.choices.contains(where: { $0.subject == replacement && $0.kind == "membership" }) else {
+            throw LocalMusicError.invalidData
+        }
+        var organization = organization
+        var entry = catalog.entries[index]
+        entry.track.id = old
+        if entry.track.coverArt != nil { entry.track.coverArt = old }
+        catalog.entries[index] = entry
+        organization.tracks.removeAll { $0.id == replacement }
+        if let recordIndex = organization.tracks.firstIndex(where: { $0.id == oldRecord.id }) {
+            organization.tracks[recordIndex].sha256 = entry.sha256
+            if let imported = entry.importedAlbum { organization.tracks[recordIndex].imported = imported }
+        }
+        catalog.organization = organization
+#if os(macOS)
+        if var folder = localFolder {
+            folder.files[old] = folder.files.removeValue(forKey: replacement)
+            folder.catalog = catalog
+            try localStore.save(folder)
+            localFolder = folder
+        }
+#endif
+        try localStore.save(catalog)
+        localCatalog = catalog
+        tracks = organizedTracks(catalog)
+        refreshLocalFiles()
+        transfer.updateHostedCatalog(catalog)
     }
 
     func refreshLocalFiles() {
@@ -253,6 +331,15 @@ final class Library: ObservableObject {
             try await transfer.host(folder)
         } catch {
             if releaseScopeOnFailure { url.stopAccessingSecurityScopedResource() }
+            if localCatalog == nil, let saved = try? localStore.load() {
+                localCatalog = saved
+                tracks = organizedTracks(saved).filter { track in
+                    saved.entries.first { $0.track.id == track.id }.map(localStore.hasFile) ?? false
+                }
+                connected = true
+                restoringSession = false
+                refreshLocalFiles()
+            }
             message = error.localizedDescription
         }
     }

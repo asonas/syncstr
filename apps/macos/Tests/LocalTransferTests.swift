@@ -51,6 +51,31 @@ final class LocalTransferTests: XCTestCase {
         return url
     }
 
+    func testUnavailableTrackReturnsByExactContentWithoutLosingOrganization() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let source = root.appendingPathComponent("source")
+        let first = try fixture(source)
+        _ = try fixture(source, name: "Second")
+        let store = LocalMusicStore(root: root.appendingPathComponent("catalog"))
+        var initial = try await LocalFolder.scan(source, id: "fixture-library")
+        let entry = try XCTUnwrap(initial.catalog.entries.first { initial.files[$0.track.id] == first })
+        let album = try XCTUnwrap(initial.catalog.organization?.albumID(for: entry.track.id))
+        initial.catalog.organization?.set(subject: album, kind: "classification", value: "true")
+        try store.save(initial)
+        let absent = root.appendingPathComponent("unavailable.wav")
+        try FileManager.default.moveItem(at: first, to: absent)
+        let reduced = try await LocalFolder.scan(source, id: "fixture-library", previous: store.snapshot())
+        try store.save(reduced)
+        XCTAssertFalse(reduced.catalog.entries.contains { $0.track.id == entry.track.id })
+        XCTAssertEqual(reduced.catalog.organization?.albumID(for: entry.track.id), album)
+        try FileManager.default.moveItem(at: absent, to: source.appendingPathComponent("Returned.wav"))
+        let returned = try await LocalFolder.scan(source, id: "fixture-library", previous: store.snapshot())
+        XCTAssertTrue(returned.catalog.entries.contains { $0.track.id == entry.track.id })
+        XCTAssertEqual(returned.catalog.organization?.choice(subject: album, kind: "classification")?.value, "true")
+        XCTAssertEqual(try LocalMusicStore.digest(file: returned.files[entry.track.id]!), entry.sha256)
+    }
+
     func testPairTransferRetryAndRestorePreserveOriginalAudio() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }
@@ -59,7 +84,9 @@ final class LocalTransferTests: XCTestCase {
         let second = try fixture(source, name: "Second")
         let originalBytes = try Data(contentsOf: original)
         let expected = SHA256.hash(data: originalBytes).map { String(format: "%02x", $0) }.joined()
-        let folder = try await LocalFolder.scan(source, id: UUID().uuidString)
+        var folder = try await LocalFolder.scan(source, id: UUID().uuidString)
+        let organizedAlbum = try XCTUnwrap(folder.catalog.organization?.albumID(for: folder.catalog.entries[0].track.id))
+        folder.catalog.organization?.set(subject: organizedAlbum, kind: "classification", value: "true")
         XCTAssertEqual(folder.catalog.entries.count, 2)
         let senderStore = CredentialStore(service: "syncstr-test-sender-" + UUID().uuidString)
         let receiverStore = CredentialStore(service: "syncstr-test-receiver-" + UUID().uuidString)
@@ -78,6 +105,7 @@ final class LocalTransferTests: XCTestCase {
             sender.approve(true)
             try await wait { !receiver.busy }
             XCTAssertTrue(receiver.connected, receiver.status ?? "")
+            XCTAssertEqual(try files.load()?.organization?.choice(subject: organizedAlbum, kind: "classification")?.value, "true")
             receiver.onSaved = { if receiver.completed == 1 { receiver.cancel() } }
             receiver.copy(folder.catalog.entries.map(\.track))
             try await wait { !receiver.busy }
@@ -109,6 +137,10 @@ final class LocalTransferTests: XCTestCase {
             XCTAssertNil(sender.pendingName, "Saved pairing must reconnect without approval")
             receiver.cancel()
             var reduced = folder
+            var phoneCatalog = try XCTUnwrap(files.load())
+            phoneCatalog.organization?.set(subject: organizedAlbum, kind: "classification", value: "false")
+            try files.save(phoneCatalog)
+            reduced.catalog.organization?.set(subject: organizedAlbum, kind: "classification", value: nil)
             reduced.catalog.entries.removeFirst()
             reduced.catalog.entries[0].track = Track(id: reduced.catalog.entries[0].track.id, title: "Changed title",
                 artist: nil, suffix: "wav", size: reduced.catalog.entries[0].track.size)
@@ -118,8 +150,12 @@ final class LocalTransferTests: XCTestCase {
             receiver.connect(device, code: "", name: "Fixture Phone")
             try await wait { !receiver.busy }
             let retained = try XCTUnwrap(files.load())
-            XCTAssertEqual(Set(retained.entries.map { $0.track.title }), ["First", "Second"],
-                "Source deletions and tag edits must not replace completed local copies")
+            XCTAssertTrue(retained.organization?.hasConflict(subject: organizedAlbum, kind: "classification") ?? false)
+            XCTAssertEqual(retained.organization?.choice(subject: organizedAlbum, kind: "classification")?.value, "false")
+            let removed = folder.catalog.entries[0]
+            XCTAssertEqual(retained.entries.first { $0.track.id == removed.track.id }?.track.title, removed.track.title)
+            XCTAssertEqual(retained.entries.first { $0.track.id == reduced.catalog.entries[0].track.id }?.track.title, "Changed title")
+            XCTAssertTrue(retained.entries.allSatisfy(files.hasFile), "Metadata refresh must retain completed local audio")
             let missing = reduced.catalog.entries[0]
             try FileManager.default.removeItem(at: files.fileURL(missing))
             try Data("changed source".utf8).write(to: folder.files[missing.track.id]!)
@@ -237,6 +273,7 @@ final class LocalTransferTests: XCTestCase {
         let original = try fixture(source)
         let store = LocalMusicStore(root: root.appendingPathComponent("catalog"))
         var legacy = try await LocalFolder.scan(source, id: "fixture-library").catalog
+        legacy.organization = nil
         let enumerated = try XCTUnwrap(FileManager.default.enumerator(at: source.standardizedFileURL.resolvingSymlinksInPath(),
             includingPropertiesForKeys: nil)?.nextObject() as? URL)
         let legacyRelative = String(enumerated.path.dropFirst(source.standardizedFileURL.resolvingSymlinksInPath().path.count))
@@ -278,6 +315,7 @@ final class LocalTransferTests: XCTestCase {
         let original = try fixture(source)
         try FileManager.default.copyItem(at: original, to: source.appendingPathComponent("Copy.wav"))
         var catalog = try await LocalFolder.scan(source, id: "legacy").catalog
+        catalog.organization = nil
         let canonical = source.standardizedFileURL.resolvingSymlinksInPath()
         let enumerator = try XCTUnwrap(FileManager.default.enumerator(at: canonical, includingPropertiesForKeys: nil))
         var idsByName: [String: String] = [:]

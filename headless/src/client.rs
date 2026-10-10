@@ -78,7 +78,7 @@ impl crate::client::Client {
 
     pub async fn catalog(&self) -> anyhow::Result<crate::model::Catalog> {
         let response =
-            crate::client::Client::response(self.request(reqwest::Method::GET, "v1/catalog")?)
+            crate::client::Client::response(self.request(reqwest::Method::GET, "v2/catalog")?)
                 .await?;
         crate::client::Client::json(response, 256 * 1024 * 1024).await
     }
@@ -134,6 +134,7 @@ impl crate::client::Client {
             },
             sha256: hex::encode(hash.finalize()),
             artwork: None,
+            imported_album: None,
         };
         entry.validate()?;
         let encoded = serde_json::to_string(&entry)?;
@@ -150,7 +151,7 @@ impl crate::client::Client {
             .text("entry", encoded)
             .part("audio", audio);
         let response = crate::client::Client::response(
-            self.request(reqwest::Method::POST, "v1/tracks")?
+            self.request(reqwest::Method::POST, "v2/tracks")?
                 .multipart(form),
         )
         .await?;
@@ -183,7 +184,7 @@ impl crate::client::Client {
         url.path_segments_mut()
             .map_err(|_| anyhow::anyhow!("invalid node URL"))?
             .clear()
-            .extend(["v1", "tracks", id, "audio"]);
+            .extend(["v2", "tracks", id, "audio"]);
         let response =
             crate::client::Client::response(self.http.get(url).bearer_auth(&self.token)).await?;
         let parent = output

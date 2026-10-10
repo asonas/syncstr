@@ -1,16 +1,15 @@
 import AVFoundation
 import CryptoKit
 import Foundation
-#if os(macOS)
 import AudioTags
 import ImageIO
 import UniformTypeIdentifiers
-#endif
 
 struct LocalEntry: Codable, Equatable {
     var track: Track
     var sha256: String
     var artwork: Data?
+    var importedAlbum: ImportedAlbumMetadata? = nil
 }
 
 enum UploadedMusic {
@@ -19,7 +18,6 @@ enum UploadedMusic {
         let duration = try await asset.load(.duration).seconds
         var fields: [String: String] = [:]
         var artwork: Data?
-#if os(macOS)
         let tags = try AudioTags.readFile(file)
         for key in ["TITLE", "ARTIST", "ALBUM", "TRACKNUMBER", "DISCNUMBER"] {
             if let value = (tags[key] as? [String])?.first, !value.isEmpty { fields[key] = value }
@@ -37,25 +35,16 @@ enum UploadedMusic {
                 if CGImageDestinationFinalize(destination) { artwork = output as Data }
             }
         }
-#else
-        for item in try await asset.load(.commonMetadata) {
-            let key: String?
-            switch item.commonKey {
-            case .commonKeyTitle: key = "TITLE"
-            case .commonKeyArtist: key = "ARTIST"
-            case .commonKeyAlbumName: key = "ALBUM"
-            default: key = nil
-            }
-            if let key, let value = try await item.load(.stringValue), !value.isEmpty { fields[key] = value }
-        }
-#endif
+
         func number(_ key: String) -> Int? { fields[key]?.split(separator: "/").first.flatMap { Int($0) } }
         let id = UUID().uuidString
         let track = Track(id: id, title: fields["TITLE"] ?? original.deletingPathExtension().lastPathComponent,
             artist: fields["ARTIST"], album: fields["ALBUM"], coverArt: artwork == nil ? nil : id,
             duration: duration.isFinite ? duration : nil, track: number("TRACKNUMBER"), discNumber: number("DISCNUMBER"),
             suffix: original.pathExtension.lowercased(), size: UInt64(try file.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0))
-        return LocalEntry(track: track, sha256: try LocalMusicStore.digest(file: file), artwork: artwork)
+        var entry = LocalEntry(track: track, sha256: try LocalMusicStore.digest(file: file), artwork: artwork)
+        entry.importedAlbum = ImportedAlbumMetadata.read(tags)
+        return entry
     }
 }
 
@@ -63,10 +52,17 @@ struct LocalCatalog: Codable {
     var id: String
     var name: String
     var entries: [LocalEntry]
+    var organization: AlbumOrganization? = nil
+
+    mutating func organize(folders: [String: String] = [:]) {
+        var organization = organization ?? AlbumOrganization()
+        organization.importEntries(entries, folders: folders)
+        self.organization = organization
+    }
 }
 
 enum LocalMusicError: LocalizedError {
-    case invalidData, disconnected, unauthorized, changedFile, noMusic, invalidCode
+    case invalidData, disconnected, unauthorized, changedFile, noMusic, invalidCode, incompatiblePeer
 
     var errorDescription: String? {
         switch self {
@@ -76,6 +72,7 @@ enum LocalMusicError: LocalizedError {
         case .changedFile: "音源が変更されたか読み込めません。Macのライブラリを更新してください。"
         case .noMusic: "再生できる音源が見つかりませんでした。別のフォルダを選んでください。"
         case .invalidCode: "Macに表示された32文字のコードを入力してください。"
+        case .incompatiblePeer: "接続先のSyncstrを更新してください。アルバムの整理情報に対応していません。"
         }
     }
 }
@@ -272,7 +269,7 @@ struct LocalFolder {
                     coverArt: artwork == nil ? nil : trackID, duration: duration.isFinite ? duration : nil,
                     track: number("TRACKNUMBER"), discNumber: number("DISCNUMBER"),
                     suffix: url.pathExtension.lowercased(), size: UInt64(try url.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0))
-                let entry = LocalEntry(track: track, sha256: try LocalMusicStore.digest(file: url), artwork: artwork)
+                let entry = LocalEntry(track: track, sha256: try LocalMusicStore.digest(file: url), artwork: artwork, importedAlbum: ImportedAlbumMetadata.read(tags))
                 guard LocalMusicStore.valid(entry) else { skipped.append(url.lastPathComponent); continue }
                 entries.append(entry)
                 files[trackID] = url
@@ -287,19 +284,24 @@ struct LocalFolder {
         var retained: [String: String] = [:]
         for entry in entries {
             let path = String(files[entry.track.id]!.path.dropFirst(root.path.count + 1))
-            if let existing = oldPaths[path] { retained[entry.track.id] = existing }
+            if let existing = oldPaths[path], oldEntries[existing]?.sha256 == entry.sha256 { retained[entry.track.id] = existing }
             else if old?.sourceRoot == nil, oldEntries[entry.track.id] != nil {
                 // The first SQLite scan preserves IDs derived from legacy relative paths.
                 retained[entry.track.id] = entry.track.id
             }
         }
         let used = Set(retained.values)
-        let missing = Dictionary(grouping: oldEntries.values.filter { !used.contains($0.track.id) }, by: \.sha256)
+        let retainedIdentities = old?.catalog.organization?.tracks ?? oldEntries.values.map {
+            OrganizationTrack(id: $0.track.id, sha256: $0.sha256,
+                imported: $0.importedAlbum ?? ImportedAlbumMetadata(title: $0.track.album, artist: $0.track.artist,
+                    albumArtist: nil, compilationValues: [], release: nil), importedAlbumID: "")
+        }
+        let missing = Dictionary(grouping: retainedIdentities.filter { !used.contains($0.id) && (old?.catalog.organization?.canonicalTrack($0.id) ?? $0.id) == $0.id }, by: \.sha256)
         let added = Dictionary(grouping: entries.filter { retained[$0.track.id] == nil }, by: \.sha256)
         var stableFiles: [String: URL] = [:]
         entries = entries.map { entry in
             let matches = missing[entry.sha256] ?? []
-            let renamedID = matches.count == 1 && added[entry.sha256]?.count == 1 ? matches[0].track.id : nil
+            let renamedID = matches.count == 1 && added[entry.sha256]?.count == 1 ? matches[0].id : nil
             let stableID = retained[entry.track.id] ?? renamedID ?? UUID().uuidString
             stableFiles[stableID] = files[entry.track.id]
             var updated = entry
@@ -307,8 +309,11 @@ struct LocalFolder {
             if updated.track.coverArt != nil { updated.track.coverArt = stableID }
             return updated
         }
-        return LocalFolder(root: root, catalog: LocalCatalog(id: id, name: root.lastPathComponent,
-            entries: entries.sorted { $0.track.id < $1.track.id }), files: stableFiles, skipped: skipped)
+        var catalog = LocalCatalog(id: id, name: root.lastPathComponent,
+            entries: entries.sorted { $0.track.id < $1.track.id }, organization: old?.catalog.organization)
+        let folders = stableFiles.mapValues { String($0.deletingLastPathComponent().path.dropFirst(root.path.count)).trimmingCharacters(in: CharacterSet(charactersIn: "/")) }
+        catalog.organize(folders: folders)
+        return LocalFolder(root: root, catalog: catalog, files: stableFiles, skipped: skipped)
     }
 }
 #endif

@@ -35,6 +35,12 @@ pub struct Entry {
         skip_serializing_if = "Option::is_none"
     )]
     pub artwork: Option<Vec<u8>>,
+    #[serde(
+        default,
+        rename = "importedAlbum",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub imported_album: Option<crate::organization::Imported>,
 }
 
 impl crate::model::Entry {
@@ -78,6 +84,7 @@ pub struct Catalog {
     pub id: String,
     pub name: String,
     pub entries: Vec<crate::model::Entry>,
+    pub organization: crate::organization::Organization,
 }
 
 mod artwork {

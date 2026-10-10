@@ -21,13 +21,14 @@ final class CatalogDatabase {
         sqlite3_busy_timeout(connection, 5000)
         do {
             let version = try rows("PRAGMA user_version").first?.first ?? nil
-            guard version == "0" || version == "1" else { throw LocalMusicError.invalidData }
+            guard version == "0" || version == "1" || version == "2" else { throw LocalMusicError.invalidData }
             try transaction {
                 try execute("CREATE TABLE IF NOT EXISTS catalog (singleton INTEGER PRIMARY KEY CHECK(singleton = 1), id TEXT NOT NULL, name TEXT NOT NULL, source_root TEXT)")
                 try execute("CREATE TABLE IF NOT EXISTS entries (id TEXT PRIMARY KEY, position INTEGER NOT NULL, sha256 TEXT NOT NULL, payload TEXT NOT NULL, source_path TEXT)")
                 try execute("CREATE INDEX IF NOT EXISTS entries_content ON entries(sha256)")
                 try execute("CREATE TABLE IF NOT EXISTS received_files (relative_path TEXT PRIMARY KEY, sha256 TEXT NOT NULL)")
-                try execute("PRAGMA user_version = 1")
+                try execute("CREATE TABLE IF NOT EXISTS organization (singleton INTEGER PRIMARY KEY CHECK(singleton = 1), payload TEXT NOT NULL)")
+                try execute("PRAGMA user_version = 2")
             }
         } catch {
             sqlite3_close(connection)
@@ -112,7 +113,17 @@ final class CatalogDatabase {
             entries.append(entry)
             paths[trackID] = row[2]
         }
-        return CatalogSnapshot(catalog: LocalCatalog(id: id, name: name, entries: entries),
+        var catalog = LocalCatalog(id: id, name: name, entries: entries)
+        if let payload = try rows("SELECT payload FROM organization WHERE singleton = 1").first?.first ?? nil {
+            catalog.organization = try JSONDecoder().decode(AlbumOrganization.self, from: Data(payload.utf8))
+            try catalog.organization?.validate()
+        }
+        catalog.organize(folders: paths.mapValues { ($0 as NSString).deletingLastPathComponent })
+        if try rows("SELECT singleton FROM organization WHERE singleton = 1").isEmpty {
+            try execute("INSERT INTO organization VALUES (1, ?)",
+                [String(decoding: try JSONEncoder().encode(catalog.organization!), as: UTF8.self)])
+        }
+        return CatalogSnapshot(catalog: catalog,
             sourceRoot: header[2].map { URL(fileURLWithPath: $0, isDirectory: true) }, sourcePaths: paths)
     }
 
@@ -125,6 +136,12 @@ final class CatalogDatabase {
             let sameLibrary = previous?.catalog.id == catalog.id
             let root = sourceRoot ?? (sameLibrary ? previous?.sourceRoot : nil)
             let paths = sourcePaths ?? (sameLibrary ? previous?.sourcePaths ?? [:] : [:])
+            var organized = catalog
+            if organized.organization == nil, sameLibrary { organized.organization = previous?.catalog.organization }
+            organized.organize()
+            try organized.organization?.validate()
+            let organization = String(decoding: try JSONEncoder().encode(organized.organization!), as: UTF8.self)
+            try execute("INSERT OR REPLACE INTO organization VALUES (1, ?)", [organization])
             try execute("DELETE FROM entries")
             try execute("INSERT OR REPLACE INTO catalog VALUES (1, ?, ?, ?)", [catalog.id, catalog.name, root?.path])
             for (position, entry) in catalog.entries.enumerated() {

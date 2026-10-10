@@ -11,6 +11,42 @@ protocol MusicChannel: AnyObject {
 
 extension MusicConnection: MusicChannel {}
 
+extension MusicChannel {
+    func sendOrganized(_ message: MusicMessage, organization: AlbumOrganization?) async throws {
+        var header = message
+        guard let organization else { try await send(header); return }
+        let data = try JSONEncoder().encode(organization)
+        guard data.count <= 64 * 1024 * 1024 else { throw LocalMusicError.invalidData }
+        if data.count <= 1024 * 1024 {
+            header.organization = organization
+            try await send(header)
+        } else {
+            header.track = "organization"
+            try await send(header)
+            for offset in stride(from: 0, to: data.count, by: 65536) {
+                try await send(MusicMessage(kind: "organization", bytes: data.subdata(in: offset..<min(offset + 65536, data.count))))
+            }
+            try await send(MusicMessage(kind: "organization-end"))
+        }
+    }
+
+    func receiveOrganization(_ header: MusicMessage) async throws -> AlbumOrganization? {
+        if let organization = header.organization { try organization.validate(); return organization }
+        guard header.track == "organization" else { return nil }
+        var bytes = Data()
+        while true {
+            let message = try await receive()
+            if message.kind == "organization-end" { break }
+            guard message.kind == "organization", let chunk = message.bytes, !chunk.isEmpty,
+                  chunk.count <= 65536, bytes.count + chunk.count <= 64 * 1024 * 1024 else { throw LocalMusicError.invalidData }
+            bytes.append(chunk)
+        }
+        let organization = try JSONDecoder().decode(AlbumOrganization.self, from: bytes)
+        try organization.validate()
+        return organization
+    }
+}
+
 struct PeerAddress: Codable {
     let version: Int
     let id: String
@@ -174,7 +210,7 @@ final class PeerMusicConnection: MusicChannel {
         guard count > 0, count <= 2 * 1024 * 1024 else { throw LocalMusicError.invalidData }
         let body = try await stream.recv().readExact(size: UInt32(count))
         let message = try JSONDecoder().decode(MusicMessage.self, from: body)
-        guard message.version == 1 else { throw LocalMusicError.invalidData }
+        guard message.version == 2 else { throw LocalMusicError.incompatiblePeer }
         return message
     }
 }
