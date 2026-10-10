@@ -1,6 +1,6 @@
-# Syncstr Music Library
+# Syncstr
 
-Terms for organizing owned music while preserving its original artist credits.
+Terms for organizing owned music and making it available across a listener's devices.
 
 ## Language
 
@@ -41,3 +41,39 @@ An explicit listener choice that takes precedence over imported metadata until t
 
 **Playlist**:
 A listener's selection of tracks that retains each track's original album membership.
+
+**Sync Conflict**:
+Competing changes within a cluster that cannot be reconciled without choosing which data or intention takes precedence. The listener resolves the conflict by choosing what to prioritize.
+
+## Device connectivity
+
+**Cluster**:
+A listener-managed group of Syncstr devices that share music through authorized relationships. A device remains part of its cluster when it moves between networks.
+_Avoid_: LAN as a synonym for cluster membership
+
+**Library Host**:
+A device assigned to retain the complete cluster library and supply music to other devices, referred to as a mother ship in product discussions. A cluster may contain multiple library hosts, and a host may support playback or temporarily be incompletely synchronized.
+_Avoid_: Headless Syncstr as a synonym for the library host role
+
+**Playback Device**:
+A Syncstr device used to listen to music, which may retain only part of the available library. A playback device may also act as a library host.
+
+**Headless Syncstr**:
+The form of Syncstr that stores and supplies music without playback functionality.
+
+**Remote Access**:
+Access to a listener's music from outside the library-holding device's local network. It is an optional capability supported by infrastructure supplied by the listener.
+
+**Device Pairing**:
+The explicit authorization relationship that allows Syncstr devices to share music. Discovering a device or knowing its connection information does not by itself establish this relationship.
+
+**Pairing Invitation**:
+An expiring, single-use authorization to enroll a device in a listener's Syncstr installation. It is distinct from connection information, which alone grants no access.
+
+**Peer Directory**:
+The service through which Syncstr devices find a peer's current connection information. It is distinct from the service that carries relayed music transfers.
+_Avoid_: Relay when referring only to finding a peer
+
+**Transfer Relay**:
+An intermediary carrying end-to-end encrypted communication between Syncstr devices when needed for connectivity. It is distinct from a library-holding device that supplies music.
+_Avoid_: Music library server when referring to the transfer intermediary
