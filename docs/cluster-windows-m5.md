@@ -1,8 +1,10 @@
 # M5 Windows implementation handoff
 
-Status: implementation preparation only. No Windows native build or playback
-acceptance has been completed. The Android LAN slice is recorded separately in
-[its acceptance record](cluster-android-m5.md).
+Status: the initial native Windows playback client is implemented and builds on
+Windows. Protocol integration tests and Windows identity-restoration tests pass.
+Real LAN enrollment, firewall behavior, audible playback, offline restart and
+screen inspection still require physical acceptance. The Android LAN slice is
+recorded separately in [its acceptance record](cluster-android-m5.md).
 
 ## Product boundary
 
@@ -108,3 +110,28 @@ cargo clippy --manifest-path headless/Cargo.toml --features p2p --all-targets --
 
 WSL SSH access can assist with repository work, but native PowerShell builds and
 Windows screen/audio checks must supply the acceptance evidence.
+
+## Initial Windows implementation record
+
+The client is implemented in [apps/windows](../apps/windows/). It uses native
+Win32 controls, DPAPI scoped to the current Windows user, DNS-SD browsing through
+the shared discovery contract, the existing Rust `PlaybackClient`, and Windows
+multimedia playback. The per-user catalog and saved originals live under the
+local application-data directory. A missing protected key beside an existing
+catalog produces a recovery error rather than a replacement identity.
+
+On the native Windows checkout, Rust 1.99 completed the following checks:
+
+- headless `cargo check` with `p2p`;
+- the playback-client, multi-host replication and wire-contract integration
+  suites (nine tests total);
+- Clippy with warnings denied for the headless crate and Windows application;
+- two Windows tests covering DPAPI reopen and missing-identity recovery;
+- an optimized Windows executable build and a launch/close smoke check whose
+  top-level window title was `Syncstr for Windows`.
+
+The Windows screen automation helper was unavailable during this run, so no
+screenshot was captured. No disposable LAN host was available for enrollment,
+transfer or audible playback. Android Gradle regression checks could not be
+rerun on this host because only JDK 11 and JDK 25 were installed; the Android
+build requires JDK 21. These are recorded gaps rather than successful checks.

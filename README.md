@@ -28,6 +28,7 @@ Start with the [macOS guide](apps/macos/README.md) or [iPhone guide](apps/ios/RE
 | Optional user-operated remote access | [M4 implementation and limits](docs/cluster-remote-m4.md), [relay deployment package](headless/remote-access/README.md), [relay admission and health](headless/src/relay.rs) |
 | Android LAN playback client | [Android build and setup](apps/android/README.md), [M5 verification](docs/cluster-android-m5.md), [Windows UI-development handoff](docs/android-ui-development-handoff.md), [Rust playback boundary](headless/src/cluster_client.rs) |
 | Windows implementation preparation | [M5 native development handoff](docs/cluster-windows-m5.md); native Windows acceptance is pending |
+| Windows playback client | [Windows build and operation guide](apps/windows/README.md) |
 | App-to-node P2P transfer | [P2P setup and protocol](docs/p2p-music-transfer.md), [Rust transport](headless/src/peer.rs), [native transport](apps/macos/PeerTransfer.swift), [setup controls](apps/macos/PeerSetup.swift) |
 | Signed endpoint discovery | [Rendezvous setup and protocol](docs/peer-rendezvous.md), [Cloudflare directory](rendezvous/src/index.ts), [headless publisher](headless/src/rendezvous.rs) |
 | Device identity and direct/relay connectivity experiment | [Connectivity probe](headless/connectivity-probe/README.md). Isolated from deployed services; independent-network verification is pending |

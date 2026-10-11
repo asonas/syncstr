@@ -215,8 +215,8 @@ impl crate::client::Client {
         let output = output.to_owned();
         let parent = parent.to_owned();
         tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
-            temporary.persist_noclobber(output)?;
-            std::fs::File::open(parent)?.sync_all()?;
+            temporary.into_temp_path().persist_noclobber(output)?;
+            crate::platform_fs::sync_directory(&parent)?;
             Ok(())
         })
         .await??;

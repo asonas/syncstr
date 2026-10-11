@@ -68,8 +68,14 @@ pub async fn run(listen: std::net::SocketAddr, allowed: std::path::PathBuf) -> a
         "{}",
         serde_json::json!({"version": "1.3.0", "listen": server.http_addr()})
     );
-    let mut terminate = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
-    tokio::select! { result = tokio::signal::ctrl_c() => result?, _ = terminate.recv() => {} }
+    #[cfg(unix)]
+    {
+        let mut terminate =
+            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
+        tokio::select! { result = tokio::signal::ctrl_c() => result?, _ = terminate.recv() => {} }
+    }
+    #[cfg(windows)]
+    tokio::signal::ctrl_c().await?;
     server.shutdown().await?;
     Ok(())
 }

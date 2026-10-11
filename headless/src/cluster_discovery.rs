@@ -6,6 +6,17 @@ pub struct Discovery {
 }
 
 impl crate::cluster_discovery::Discovery {
+    pub fn browse() -> anyhow::Result<Self> {
+        let daemon = mdns_sd::ServiceDaemon::new()?;
+        match daemon.browse(crate::cluster_discovery::SERVICE) {
+            Ok(events) => Ok(Self { daemon, events }),
+            Err(error) => {
+                let _ = daemon.shutdown();
+                Err(error.into())
+            }
+        }
+    }
+
     pub fn start(endpoint: &iroh::Endpoint) -> anyhow::Result<Self> {
         let daemon = mdns_sd::ServiceDaemon::new()?;
         let result = (|| {
@@ -15,14 +26,14 @@ impl crate::cluster_discovery::Discovery {
                 .find(|address| address.is_ipv4() && !address.ip().is_loopback());
             let id = endpoint.id().to_string();
             if let Some(ip) = ip {
-            daemon.register(mdns_sd::ServiceInfo::new(
-                crate::cluster_discovery::SERVICE,
-                &id[..16],
-                &format!("syncstr-{}.local.", &id[..16]),
-                ip.ip(),
-                ip.port(),
-                &[("id", id.as_str()), ("version", "1")][..],
-            )?)?;
+                daemon.register(mdns_sd::ServiceInfo::new(
+                    crate::cluster_discovery::SERVICE,
+                    &id[..16],
+                    &format!("syncstr-{}.local.", &id[..16]),
+                    ip.ip(),
+                    ip.port(),
+                    &[("id", id.as_str()), ("version", "1")][..],
+                )?)?;
             }
             daemon
                 .browse(crate::cluster_discovery::SERVICE)

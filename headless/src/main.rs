@@ -5,6 +5,20 @@ struct Cli {
     command: crate::Command,
 }
 
+async fn wait_for_shutdown() {
+    #[cfg(unix)]
+    {
+        let mut terminate =
+            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+                .expect("install terminate handler");
+        tokio::select! { _ = tokio::signal::ctrl_c() => {}, _ = terminate.recv() => {} }
+    }
+    #[cfg(windows)]
+    {
+        let _ = tokio::signal::ctrl_c().await;
+    }
+}
+
 #[derive(clap::Subcommand)]
 enum Command {
     Init {
@@ -357,10 +371,8 @@ async fn run(cli: crate::Cli) -> anyhow::Result<()> {
             println!("Listening on https://{}", listener.local_addr()?);
             let handle = axum_server::Handle::new();
             let shutdown = handle.clone();
-            let mut terminate =
-                tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
             tokio::spawn(async move {
-                tokio::select! { _ = tokio::signal::ctrl_c() => {}, _ = terminate.recv() => {} }
+                wait_for_shutdown().await;
                 shutdown.graceful_shutdown(Some(std::time::Duration::from_secs(30)));
             });
             let mut server = axum_server::from_tcp_rustls(listener, tls)?.handle(handle);
@@ -435,7 +447,6 @@ async fn run(cli: crate::Cli) -> anyhow::Result<()> {
             qr,
         } => {
             use std::io::Write as _;
-            use std::os::unix::fs::OpenOptionsExt as _;
             let identity = syncstr_headless::peer::Identity::open(&peer_state)?;
             let store = syncstr_headless::store::Store::open(&data)?;
             let invite = store
@@ -446,58 +457,80 @@ async fn run(cli: crate::Cli) -> anyhow::Result<()> {
                     expires,
                 )
                 .await?;
-            let mut file = std::fs::OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .mode(0o600)
-                .open(&output)?;
+            let mut options = syncstr_headless::platform_fs::private_file_options();
+            let mut file = options.write(true).create_new(true).open(&output)?;
             file.write_all(&serde_json::to_vec(&invite)?)?;
             file.sync_all()?;
-            std::fs::File::open(
+            syncstr_headless::platform_fs::sync_directory(
                 output
                     .parent()
                     .filter(|parent| !parent.as_os_str().is_empty())
                     .unwrap_or(std::path::Path::new(".")),
-            )?
-            .sync_all()?;
+            )?;
             println!("Invitation written to {}", output.display());
             if qr {
                 let code = qrcode::QrCode::new(serde_json::to_vec(&invite)?)?;
-                println!("{}", code.render::<qrcode::render::unicode::Dense1x2>()
-                    .dark_color(qrcode::render::unicode::Dense1x2::Light)
-                    .light_color(qrcode::render::unicode::Dense1x2::Dark)
-                    .build());
+                println!(
+                    "{}",
+                    code.render::<qrcode::render::unicode::Dense1x2>()
+                        .dark_color(qrcode::render::unicode::Dense1x2::Light)
+                        .light_color(qrcode::render::unicode::Dense1x2::Dark)
+                        .build()
+                );
             }
         }
         #[cfg(feature = "p2p")]
-        crate::Command::ClusterRelay { data, url, disable: _ } => {
+        crate::Command::ClusterRelay {
+            data,
+            url,
+            disable: _,
+        } => {
             let store = syncstr_headless::store::Store::open(&data)?;
             store.set_cluster_relay(url).await?;
-            println!("{}", serde_json::to_string(&serde_json::json!({"relay": store.cluster_relay().await?}))?);
+            println!(
+                "{}",
+                serde_json::to_string(&serde_json::json!({"relay": store.cluster_relay().await?}))?
+            );
         }
         #[cfg(feature = "p2p")]
         crate::Command::ClusterRelayIds { data } => {
             let store = syncstr_headless::store::Store::open(&data)?;
             let proof = store.cluster_membership_proof().await?;
-            let members: std::collections::BTreeSet<_> = proof.grants.iter()
-                .filter(|grant| proof.verify(&grant.id).is_ok()).map(|grant| &grant.member).collect();
+            let members: std::collections::BTreeSet<_> = proof
+                .grants
+                .iter()
+                .filter(|grant| proof.verify(&grant.id).is_ok())
+                .map(|grant| &grant.member)
+                .collect();
             println!("{}", serde_json::to_string(&members)?);
         }
         #[cfg(feature = "p2p")]
-        crate::Command::RelayServe { listen, allowed_ids } => {
+        crate::Command::RelayServe {
+            listen,
+            allowed_ids,
+        } => {
             syncstr_headless::relay::run(listen, allowed_ids).await?;
         }
         #[cfg(feature = "p2p")]
         crate::Command::RelayHealth { url } => {
-            println!("{}", serde_json::to_string(&syncstr_headless::relay::health(&url).await?)?);
+            println!(
+                "{}",
+                serde_json::to_string(&syncstr_headless::relay::health(&url).await?)?
+            );
         }
         #[cfg(feature = "p2p")]
-        crate::Command::ClusterServe { data, peer_state, relay_only } => {
+        crate::Command::ClusterServe {
+            data,
+            peer_state,
+            relay_only,
+        } => {
             let identity =
                 std::sync::Arc::new(syncstr_headless::peer::Identity::open(&peer_state)?);
             let store = syncstr_headless::store::Store::open(&data)?;
             let relay = store.cluster_relay().await?;
-            let (endpoint, _lock) = identity.cluster_remote_endpoint(&[], relay.as_deref(), relay_only).await?;
+            let (endpoint, _lock) = identity
+                .cluster_remote_endpoint(&[], relay.as_deref(), relay_only)
+                .await?;
             let discovery = syncstr_headless::cluster_discovery::Discovery::start(&endpoint)?;
             println!("Cluster LAN endpoint {}", identity.id());
             let task = tokio::spawn(syncstr_headless::cluster_net::serve(
@@ -505,42 +538,86 @@ async fn run(cli: crate::Cli) -> anyhow::Result<()> {
                 endpoint.clone(),
                 store.clone(),
             ));
-            let mut replication = tokio::spawn(syncstr_headless::cluster_sync::run_lan(identity, endpoint.clone(), store, discovery));
-            let mut terminate =
-                tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
-            tokio::select! { _ = tokio::signal::ctrl_c() => {}, _ = terminate.recv() => {}, result = &mut replication => { result??; } }
+            let mut replication = tokio::spawn(syncstr_headless::cluster_sync::run_lan(
+                identity,
+                endpoint.clone(),
+                store,
+                discovery,
+            ));
+            tokio::select! { _ = wait_for_shutdown() => {}, result = &mut replication => { result??; } }
             replication.abort();
             endpoint.close().await;
             task.await?;
         }
         #[cfg(feature = "p2p")]
-        crate::Command::ClusterImport { data, peer_state, entry, organization, file, restore } => {
+        crate::Command::ClusterImport {
+            data,
+            peer_state,
+            entry,
+            organization,
+            file,
+            restore,
+        } => {
             let identity = syncstr_headless::peer::Identity::open(&peer_state)?;
             let store = syncstr_headless::store::Store::open(&data)?;
             let entry = serde_json::from_slice(&std::fs::read(entry)?)?;
-            let organization = organization.map(std::fs::read).transpose()?.map(|bytes| serde_json::from_slice(&bytes)).transpose()?;
-            store.import_cluster_file(&identity, entry, organization, &file, restore).await?;
+            let organization = organization
+                .map(std::fs::read)
+                .transpose()?
+                .map(|bytes| serde_json::from_slice(&bytes))
+                .transpose()?;
+            store
+                .import_cluster_file(&identity, entry, organization, &file, restore)
+                .await?;
             println!("Audio verified and stored");
         }
         #[cfg(feature = "p2p")]
-        crate::Command::ClusterDelete { data, peer_state, object } => {
+        crate::Command::ClusterDelete {
+            data,
+            peer_state,
+            object,
+        } => {
             let identity = syncstr_headless::peer::Identity::open(&peer_state)?;
             let store = syncstr_headless::store::Store::open(&data)?;
-            let record = store.publish_cluster_change(&identity, object, syncstr_headless::cluster_changes::Action::Delete).await?;
-            store.project_cluster_metadata(record.object.clone()).await?;
+            let record = store
+                .publish_cluster_change(
+                    &identity,
+                    object,
+                    syncstr_headless::cluster_changes::Action::Delete,
+                )
+                .await?;
+            store
+                .project_cluster_metadata(record.object.clone())
+                .await?;
             println!("{}", serde_json::to_string_pretty(&record)?);
         }
         #[cfg(feature = "p2p")]
-        crate::Command::ClusterResolve { data, peer_state, object, selected } => {
+        crate::Command::ClusterResolve {
+            data,
+            peer_state,
+            object,
+            selected,
+        } => {
             let identity = syncstr_headless::peer::Identity::open(&peer_state)?;
             let store = syncstr_headless::store::Store::open(&data)?;
-            let record = store.publish_cluster_change(&identity, object, syncstr_headless::cluster_changes::Action::Resolve { selected }).await?;
+            let record = store
+                .publish_cluster_change(
+                    &identity,
+                    object,
+                    syncstr_headless::cluster_changes::Action::Resolve { selected },
+                )
+                .await?;
             println!("{}", serde_json::to_string_pretty(&record)?);
         }
         #[cfg(feature = "p2p")]
         crate::Command::ClusterStatus { data } => {
             let store = syncstr_headless::store::Store::open(&data)?;
-            println!("{}", serde_json::to_string_pretty(&serde_json::json!({ "objects": store.cluster_object_states().await?, "receipts": store.cluster_receipts().await?, "jobs": store.cluster_jobs().await?, "membershipConflicts": store.cluster_membership_proof().await?.membership_conflicts()? }))?);
+            println!(
+                "{}",
+                serde_json::to_string_pretty(
+                    &serde_json::json!({ "objects": store.cluster_object_states().await?, "receipts": store.cluster_receipts().await?, "jobs": store.cluster_jobs().await?, "membershipConflicts": store.cluster_membership_proof().await?.membership_conflicts()? })
+                )?
+            );
         }
         #[cfg(feature = "p2p")]
         crate::Command::ClusterJoin {

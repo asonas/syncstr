@@ -7,31 +7,78 @@ fn relay_configuration_survives_restart_and_is_carried_by_invitations() {
     let state = root.path().join("identity");
     let data = root.path().join("data");
     let identity = syncstr_headless::peer::Identity::initialize(&state).unwrap();
-    let initialized = crate::command().args(["cluster-init", "--data"]).arg(&data)
-        .arg("--peer-state").arg(&state).output().unwrap();
+    let initialized = crate::command()
+        .args(["cluster-init", "--data"])
+        .arg(&data)
+        .arg("--peer-state")
+        .arg(&state)
+        .output()
+        .unwrap();
     assert!(initialized.status.success());
-    let configured = crate::command().args(["cluster-relay", "--data"]).arg(&data)
-        .args(["--url", "https://relay.example.net/"]).output().unwrap();
-    assert!(configured.status.success(), "{}", String::from_utf8_lossy(&configured.stderr));
-    for (index, invalid) in ["https://listener:password@relay.example.net/", "http://relay.example.net/", "https://relay.example.net/?secret=example"].iter().enumerate() {
-        let rejected = crate::command().args(["cluster-relay", "--data"]).arg(&data)
-            .args(["--url", invalid]).output().unwrap();
+    let configured = crate::command()
+        .args(["cluster-relay", "--data"])
+        .arg(&data)
+        .args(["--url", "https://relay.example.net/"])
+        .output()
+        .unwrap();
+    assert!(
+        configured.status.success(),
+        "{}",
+        String::from_utf8_lossy(&configured.stderr)
+    );
+    for (index, invalid) in [
+        "https://listener:password@relay.example.net/",
+        "http://relay.example.net/",
+        "https://relay.example.net/?secret=example",
+    ]
+    .iter()
+    .enumerate()
+    {
+        let rejected = crate::command()
+            .args(["cluster-relay", "--data"])
+            .arg(&data)
+            .args(["--url", invalid])
+            .output()
+            .unwrap();
         assert!(!rejected.status.success());
         let invitation = root.path().join(format!("invite-{index}.json"));
-        let invited = crate::command().args(["cluster-invite", "--data"]).arg(&data)
-            .arg("--peer-state").arg(&state).arg("--output").arg(&invitation).output().unwrap();
+        let invited = crate::command()
+            .args(["cluster-invite", "--data"])
+            .arg(&data)
+            .arg("--peer-state")
+            .arg(&state)
+            .arg("--output")
+            .arg(&invitation)
+            .output()
+            .unwrap();
         assert!(invited.status.success());
-        let payload: serde_json::Value = serde_json::from_slice(&std::fs::read(invitation).unwrap()).unwrap();
+        let payload: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(invitation).unwrap()).unwrap();
         assert_eq!(payload["relay"], "https://relay.example.net/");
         assert_eq!(payload["host"], identity.to_string());
     }
-    let disabled = crate::command().args(["cluster-relay", "--data"]).arg(&data)
-        .arg("--disable").output().unwrap();
+    let disabled = crate::command()
+        .args(["cluster-relay", "--data"])
+        .arg(&data)
+        .arg("--disable")
+        .output()
+        .unwrap();
     assert!(disabled.status.success());
     let invitation = root.path().join("lan.json");
-    assert!(crate::command().args(["cluster-invite", "--data"]).arg(&data)
-        .arg("--peer-state").arg(&state).arg("--output").arg(&invitation).status().unwrap().success());
-    let payload: serde_json::Value = serde_json::from_slice(&std::fs::read(invitation).unwrap()).unwrap();
+    assert!(
+        crate::command()
+            .args(["cluster-invite", "--data"])
+            .arg(&data)
+            .arg("--peer-state")
+            .arg(&state)
+            .arg("--output")
+            .arg(&invitation)
+            .status()
+            .unwrap()
+            .success()
+    );
+    let payload: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(invitation).unwrap()).unwrap();
     assert!(payload.get("relay").is_none());
 }
 
@@ -49,12 +96,29 @@ fn command() -> std::process::Command {
 #[cfg(feature = "p2p")]
 fn start_cluster(root: &std::path::Path) -> crate::Server {
     use std::io::BufRead as _;
-    let mut child = crate::command().arg("cluster-serve").arg("--data").arg(root.join("data")).arg("--peer-state").arg(root.join("identity")).stdout(std::process::Stdio::piped()).spawn().unwrap();
+    let mut child = crate::command()
+        .arg("cluster-serve")
+        .arg("--data")
+        .arg(root.join("data"))
+        .arg("--peer-state")
+        .arg(root.join("identity"))
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
     let stdout = child.stdout.take().unwrap();
     let server = crate::Server(child);
     let (sender, receiver) = std::sync::mpsc::channel();
-    std::thread::spawn(move || { let mut line = String::new(); let _ = std::io::BufReader::new(stdout).read_line(&mut line); let _ = sender.send(line); });
-    assert!(receiver.recv_timeout(std::time::Duration::from_secs(10)).unwrap().starts_with("Cluster LAN endpoint "));
+    std::thread::spawn(move || {
+        let mut line = String::new();
+        let _ = std::io::BufReader::new(stdout).read_line(&mut line);
+        let _ = sender.send(line);
+    });
+    assert!(
+        receiver
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .unwrap()
+            .starts_with("Cluster LAN endpoint ")
+    );
     server
 }
 
@@ -62,11 +126,28 @@ fn start_cluster(root: &std::path::Path) -> crate::Server {
 fn wait_for_replica(root: &std::path::Path, hash: &str) {
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(45);
     loop {
-        let connection = rusqlite::Connection::open_with_flags(root.join("data/node.sqlite"), rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY).unwrap();
-        connection.busy_timeout(std::time::Duration::from_secs(1)).unwrap();
-        let found: bool = connection.query_row("SELECT EXISTS(SELECT 1 FROM cluster_receipts WHERE object = ?)", [hash], |row| row.get(0)).unwrap();
-        if found { return; }
-        assert!(std::time::Instant::now() < deadline, "replica did not arrive");
+        let connection = rusqlite::Connection::open_with_flags(
+            root.join("data/node.sqlite"),
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+        )
+        .unwrap();
+        connection
+            .busy_timeout(std::time::Duration::from_secs(1))
+            .unwrap();
+        let found: bool = connection
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM cluster_receipts WHERE object = ?)",
+                [hash],
+                |row| row.get(0),
+            )
+            .unwrap();
+        if found {
+            return;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "replica did not arrive"
+        );
         std::thread::sleep(std::time::Duration::from_millis(100));
     }
 }
@@ -83,21 +164,42 @@ fn separate_lan_hosts_catch_up_after_offline_import_and_restart() {
         let mut nodes = Vec::new();
         for path in [&a_root, &b_root] {
             syncstr_headless::peer::Identity::initialize(&path.join("identity")).unwrap();
-            nodes.push((syncstr_headless::peer::Identity::open(&path.join("identity")).unwrap(), syncstr_headless::store::Store::open(&path.join("data")).unwrap()));
+            nodes.push((
+                syncstr_headless::peer::Identity::open(&path.join("identity")).unwrap(),
+                syncstr_headless::store::Store::open(&path.join("data")).unwrap(),
+            ));
         }
         let (a, a_store) = &nodes[0];
         let (b, b_store) = &nodes[1];
         a_store.create_cluster(a.id().to_string()).await.unwrap();
-        let invite = a_store.create_cluster_invitation(a, true, 1000, 600).await.unwrap();
-        let grant = a_store.redeem_cluster_invitation(a, &invite.secret, b.id().to_string(), 1100).await.unwrap();
-        b_store.join_cluster(b, a.id(), grant.id, a_store.cluster_membership_proof().await.unwrap()).await.unwrap();
+        let invite = a_store
+            .create_cluster_invitation(a, true, 1000, 600)
+            .await
+            .unwrap();
+        let grant = a_store
+            .redeem_cluster_invitation(a, &invite.secret, b.id().to_string(), 1100)
+            .await
+            .unwrap();
+        b_store
+            .join_cluster(
+                b,
+                a.id(),
+                grant.id,
+                a_store.cluster_membership_proof().await.unwrap(),
+            )
+            .await
+            .unwrap();
         let bytes = b"first process fixture";
         let source = root.path().join("first.mp3");
         std::fs::write(&source, bytes).unwrap();
-        let mut entry: syncstr_headless::model::Entry = serde_json::from_slice(include_bytes!("../fixtures/local-entry.json")).unwrap();
+        let mut entry: syncstr_headless::model::Entry =
+            serde_json::from_slice(include_bytes!("../fixtures/local-entry.json")).unwrap();
         entry.sha256 = hex::encode(sha2::Sha256::digest(bytes));
         entry.track.size = bytes.len() as u64;
-        a_store.import_cluster_file(a, entry.clone(), None, &source, false).await.unwrap();
+        a_store
+            .import_cluster_file(a, entry.clone(), None, &source, false)
+            .await
+            .unwrap();
         entry.sha256
     });
     let mut a = crate::start_cluster(&a_root);
@@ -106,8 +208,15 @@ fn separate_lan_hosts_catch_up_after_offline_import_and_restart() {
     crate::stop(&mut a);
     crate::stop(&mut b);
     let interrupted = rusqlite::Connection::open(b_root.join("data/node.sqlite")).unwrap();
-    interrupted.execute("DELETE FROM cluster_receipts WHERE object = ?", [&first]).unwrap();
-    interrupted.execute("UPDATE cluster_jobs SET state = 'running' WHERE sha256 = ?", [&first]).unwrap();
+    interrupted
+        .execute("DELETE FROM cluster_receipts WHERE object = ?", [&first])
+        .unwrap();
+    interrupted
+        .execute(
+            "UPDATE cluster_jobs SET state = 'running' WHERE sha256 = ?",
+            [&first],
+        )
+        .unwrap();
     drop(interrupted);
     let second = runtime.block_on(async {
         use sha2::Digest as _;
@@ -116,11 +225,15 @@ fn separate_lan_hosts_catch_up_after_offline_import_and_restart() {
         let bytes = b"import while other host is offline";
         let source = root.path().join("second.mp3");
         std::fs::write(&source, bytes).unwrap();
-        let mut entry: syncstr_headless::model::Entry = serde_json::from_slice(include_bytes!("../fixtures/local-entry.json")).unwrap();
+        let mut entry: syncstr_headless::model::Entry =
+            serde_json::from_slice(include_bytes!("../fixtures/local-entry.json")).unwrap();
         entry.track.id = uuid::Uuid::new_v4().to_string();
         entry.sha256 = hex::encode(sha2::Sha256::digest(bytes));
         entry.track.size = bytes.len() as u64;
-        store.import_cluster_file(&identity, entry.clone(), None, &source, false).await.unwrap();
+        store
+            .import_cluster_file(&identity, entry.clone(), None, &source, false)
+            .await
+            .unwrap();
         assert_eq!(store.cluster_changes().await.unwrap().len(), 2);
         entry.sha256
     });
@@ -137,7 +250,14 @@ fn separate_lan_hosts_catch_up_after_offline_import_and_restart() {
             assert_eq!(store.catalog().await.unwrap().entries.len(), 2);
             assert_eq!(store.cluster_changes().await.unwrap().len(), 2);
             assert_eq!(store.cluster_receipts().await.unwrap().len(), 2);
-            assert!(store.cluster_jobs().await.unwrap().iter().all(|job| job.state == syncstr_headless::cluster::JobState::Complete));
+            assert!(
+                store
+                    .cluster_jobs()
+                    .await
+                    .unwrap()
+                    .iter()
+                    .all(|job| job.state == syncstr_headless::cluster::JobState::Complete)
+            );
         }
     });
 }
@@ -146,6 +266,7 @@ fn separate_lan_hosts_catch_up_after_offline_import_and_restart() {
 #[test]
 fn cli_enrollment_discovers_the_pinned_host_without_an_ip_address() {
     use std::io::BufRead as _;
+    #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt as _;
     let root = tempfile::tempdir().unwrap();
     let host_state = root.path().join("host-state");
@@ -191,6 +312,7 @@ fn cli_enrollment_discovers_the_pinned_host_without_an_ip_address() {
         "{}",
         String::from_utf8_lossy(&result.stderr)
     );
+    #[cfg(unix)]
     assert_eq!(
         std::fs::metadata(&invite).unwrap().permissions().mode() & 0o777,
         0o600

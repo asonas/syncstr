@@ -401,9 +401,11 @@ pub struct Identity {
 impl crate::peer::Identity {
     /// Uses a key supplied by the platform secure store without persisting it.
     pub fn from_secret(root: &std::path::Path, bytes: [u8; 32]) -> anyhow::Result<Self> {
-        use std::os::unix::fs::DirBuilderExt as _;
-        std::fs::DirBuilder::new().recursive(true).mode(0o700).create(root)?;
-        Ok(Self { root: root.to_owned(), key: iroh::SecretKey::from_bytes(&bytes) })
+        crate::platform_fs::create_private_dir(root)?;
+        Ok(Self {
+            root: root.to_owned(),
+            key: iroh::SecretKey::from_bytes(&bytes),
+        })
     }
 
     pub fn sign(&self, bytes: &[u8]) -> Vec<u8> {
@@ -418,20 +420,16 @@ impl crate::peer::Identity {
 
     pub fn initialize(root: &std::path::Path) -> anyhow::Result<iroh::EndpointId> {
         use std::io::Write as _;
-        use std::os::unix::fs::{DirBuilderExt as _, OpenOptionsExt as _};
-        std::fs::DirBuilder::new()
-            .recursive(true)
-            .mode(0o700)
-            .create(root)?;
+        crate::platform_fs::create_private_dir(root)?;
         let key = iroh::SecretKey::generate();
-        let mut file = std::fs::OpenOptions::new()
+        let mut options = crate::platform_fs::private_file_options();
+        let mut file = options
             .write(true)
             .create_new(true)
-            .mode(0o600)
             .open(root.join("device.key"))?;
         file.write_all(&key.to_bytes())?;
         file.sync_all()?;
-        std::fs::File::open(root)?.sync_all()?;
+        crate::platform_fs::sync_directory(root)?;
         Ok(key.public())
     }
 
@@ -450,25 +448,21 @@ impl crate::peer::Identity {
     }
 
     pub fn pair(&self, peer: iroh::EndpointId) -> anyhow::Result<()> {
-        use std::os::unix::fs::{DirBuilderExt as _, OpenOptionsExt as _};
         anyhow::ensure!(peer != self.id(), "cannot pair with this device");
-        std::fs::DirBuilder::new()
-            .mode(0o700)
-            .recursive(true)
-            .create(self.root.join("peers"))?;
-        let file = std::fs::OpenOptions::new()
+        crate::platform_fs::create_private_dir(&self.root.join("peers"))?;
+        let mut options = crate::platform_fs::private_file_options();
+        let file = options
             .write(true)
             .create_new(true)
-            .mode(0o600)
             .open(self.root.join("peers").join(peer.to_string()))?;
         file.sync_all()?;
-        std::fs::File::open(self.root.join("peers"))?.sync_all()?;
+        crate::platform_fs::sync_directory(&self.root.join("peers"))?;
         Ok(())
     }
 
     pub fn unpair(&self, peer: iroh::EndpointId) -> anyhow::Result<()> {
         std::fs::remove_file(self.root.join("peers").join(peer.to_string()))?;
-        std::fs::File::open(self.root.join("peers"))?.sync_all()?;
+        crate::platform_fs::sync_directory(&self.root.join("peers"))?;
         Ok(())
     }
 
@@ -481,13 +475,11 @@ impl crate::peer::Identity {
         mode: crate::peer::Mode,
         listen: &[std::net::SocketAddr],
     ) -> anyhow::Result<(iroh::Endpoint, std::fs::File)> {
-        use std::os::unix::fs::OpenOptionsExt as _;
-        let lock = std::fs::OpenOptions::new()
+        let lock = crate::platform_fs::private_file_options()
             .create(true)
             .truncate(false)
             .read(true)
             .write(true)
-            .mode(0o600)
             .open(self.root.join("device.lock"))?;
         fs2::FileExt::try_lock_exclusive(&lock)?;
         let builder = iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
@@ -535,21 +527,25 @@ impl crate::peer::Identity {
         relay: Option<&str>,
         relay_only: bool,
     ) -> anyhow::Result<(iroh::Endpoint, std::fs::File)> {
-        use std::os::unix::fs::OpenOptionsExt as _;
         let relay = relay.map(crate::cluster_remote::validate_url).transpose()?;
         let remote = relay.is_some();
-        anyhow::ensure!(!relay_only || (relay.is_some() && listen.is_empty()), "relay-only requires a configured relay and no listen address");
-        let lock = std::fs::OpenOptions::new()
+        anyhow::ensure!(
+            !relay_only || (relay.is_some() && listen.is_empty()),
+            "relay-only requires a configured relay and no listen address"
+        );
+        let lock = crate::platform_fs::private_file_options()
             .create(true)
             .truncate(false)
             .read(true)
             .write(true)
-            .mode(0o600)
             .open(self.root.join("device.lock"))?;
         fs2::FileExt::try_lock_exclusive(&lock)?;
         let mut builder = iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
             .secret_key(self.key.clone())
-            .alpns(vec![crate::cluster_net::ENROLLMENT_ALPN.to_vec(), crate::cluster_sync::ALPN.to_vec()])
+            .alpns(vec![
+                crate::cluster_net::ENROLLMENT_ALPN.to_vec(),
+                crate::cluster_sync::ALPN.to_vec(),
+            ])
             .relay_mode(match relay {
                 Some(url) => iroh::RelayMode::Custom(iroh::RelayMap::from_iter([url])),
                 None => iroh::RelayMode::Disabled,
@@ -559,34 +555,59 @@ impl crate::peer::Identity {
             builder = builder.clear_ip_transports();
         } else if listen.is_empty() {
             let interfaces = if_addrs::get_if_addrs()?;
-            let mut addresses: Vec<_> = interfaces.iter()
+            let mut addresses: Vec<_> = interfaces
+                .iter()
                 .filter(|interface| interface.is_oper_up())
                 .filter_map(|interface| match interface.ip() {
                     std::net::IpAddr::V4(ip) if ip.is_private() || ip.is_link_local() => Some(ip),
                     _ => None,
-                }).collect();
+                })
+                .collect();
             addresses.sort();
             addresses.dedup();
             // A concrete bind keeps QUIC replies on the advertised interface on multihomed Macs.
-            let preferred = std::net::UdpSocket::bind("0.0.0.0:0").and_then(|socket| {
-                socket.connect("192.0.2.1:9")?;
-                socket.local_addr()
-            }).ok().and_then(|address| match address.ip() {
-                std::net::IpAddr::V4(ip) if addresses.contains(&ip) => Some(ip),
-                _ => None,
-            });
-            let address = preferred.or_else(|| addresses.first().copied())
+            let preferred = std::net::UdpSocket::bind("0.0.0.0:0")
+                .and_then(|socket| {
+                    socket.connect("192.0.2.1:9")?;
+                    socket.local_addr()
+                })
+                .ok()
+                .and_then(|address| match address.ip() {
+                    std::net::IpAddr::V4(ip) if addresses.contains(&ip) => Some(ip),
+                    _ => None,
+                });
+            let address = preferred
+                .or_else(|| addresses.first().copied())
                 .ok_or_else(|| anyhow::anyhow!("no IPv4 LAN interface for cluster endpoint"))?;
-            builder = builder.clear_ip_transports().bind_addr(std::net::SocketAddr::from((address, 0)))?;
-            if remote && let Some(interface) = interfaces.iter().find(|interface| interface.ip() == std::net::IpAddr::V4(address)) {
-                let mut ipv6: Vec<_> = interfaces.iter().filter(|candidate| candidate.name == interface.name && candidate.is_oper_up())
+            builder = builder
+                .clear_ip_transports()
+                .bind_addr(std::net::SocketAddr::from((address, 0)))?;
+            if remote
+                && let Some(interface) = interfaces
+                    .iter()
+                    .find(|interface| interface.ip() == std::net::IpAddr::V4(address))
+            {
+                let mut ipv6: Vec<_> = interfaces
+                    .iter()
+                    .filter(|candidate| candidate.name == interface.name && candidate.is_oper_up())
                     .filter_map(|candidate| match candidate.ip() {
-                        std::net::IpAddr::V6(ip) if !ip.is_loopback() && !ip.is_unspecified() && !ip.is_multicast()
-                            && !ip.is_unique_local() && !ip.is_unicast_link_local() => Some(ip),
+                        std::net::IpAddr::V6(ip)
+                            if !ip.is_loopback()
+                                && !ip.is_unspecified()
+                                && !ip.is_multicast()
+                                && !ip.is_unique_local()
+                                && !ip.is_unicast_link_local() =>
+                        {
+                            Some(ip)
+                        }
                         _ => None,
-                    }).collect();
-                ipv6.sort(); ipv6.dedup();
-                if let Some(ip) = ipv6.first() { builder = builder.bind_addr(std::net::SocketAddr::from((*ip, 0)))?; }
+                    })
+                    .collect();
+                ipv6.sort();
+                ipv6.dedup();
+                if let Some(ip) = ipv6.first() {
+                    builder = builder.bind_addr(std::net::SocketAddr::from((*ip, 0)))?;
+                }
             }
         } else {
             builder = builder.clear_ip_transports();
@@ -657,11 +678,11 @@ impl crate::peer::Address {
         file.as_file().sync_all()?;
         if path.exists() {
             Self::read(path, endpoint.id())?;
-            file.persist(path)?;
+            file.into_temp_path().persist(path)?;
         } else {
-            file.persist_noclobber(path)?;
+            file.into_temp_path().persist_noclobber(path)?;
         }
-        std::fs::File::open(parent)?.sync_all()?;
+        crate::platform_fs::sync_directory(parent)?;
         Ok(())
     }
 }
