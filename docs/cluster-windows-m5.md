@@ -126,12 +126,15 @@ On the native Windows checkout, Rust 1.99 completed the following checks:
 - the playback-client, multi-host replication and wire-contract integration
   suites (nine tests total);
 - Clippy with warnings denied for the headless crate and Windows application;
-- two Windows tests covering DPAPI reopen and missing-identity recovery;
+- three Windows tests covering DPAPI reopen, missing-identity recovery and
+  invitation endpoint validation;
 - an optimized Windows executable build and a launch/close smoke check whose
   top-level window title was `Syncstr for Windows`.
 
 The Windows screen automation helper was unavailable during this run, so no
 screenshot was captured. No disposable LAN host was available for enrollment,
-transfer or audible playback. Android Gradle regression checks could not be
-rerun on this host because only JDK 11 and JDK 25 were installed; the Android
-build requires JDK 21. These are recorded gaps rather than successful checks.
+transfer or audible playback. The Android ARM64 JNI library was rebuilt with NDK
+28.2.13676358, then the debug APK, instrumentation APK, Lint and unit tests
+completed with portable JDK 21 and Gradle 8.13. The same Gradle tasks also
+completed offline from the populated task-local cache. These build checks do not
+replace physical Android-device regression testing.

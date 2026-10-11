@@ -5,7 +5,8 @@ use std::sync::{Mutex, OnceLock};
 use windows::{
     Win32::{
         Foundation::*, Graphics::Gdi::*, Media::Multimedia::*, Security::Cryptography::*,
-        System::LibraryLoader::*, UI::WindowsAndMessaging::*,
+        System::LibraryLoader::*, UI::Input::KeyboardAndMouse::EnableWindow,
+        UI::WindowsAndMessaging::*,
     },
     core::*,
 };
@@ -26,9 +27,11 @@ struct Ui {
     hosts: HWND,
     tracks: HWND,
     status: HWND,
+    action_buttons: Vec<HWND>,
     discovered: Vec<iroh::EndpointAddr>,
     entries: Vec<syncstr_headless::model::Entry>,
     paused: bool,
+    busy: bool,
 }
 
 // HWND values are only read and used by the creating UI thread. The mutex is
@@ -92,16 +95,27 @@ fn device_secret(root: &std::path::Path) -> anyhow::Result<[u8; 32]> {
             &mut output,
         )?
     };
-    let protected = unsafe { std::slice::from_raw_parts(output.pbData, output.cbData as usize) };
-    let mut options = syncstr_headless::platform_fs::private_file_options();
-    use std::io::Write as _;
-    let mut file = options.write(true).create_new(true).open(&path)?;
-    file.write_all(protected)?;
-    file.sync_all()?;
+    let protected =
+        unsafe { std::slice::from_raw_parts(output.pbData, output.cbData as usize) }.to_vec();
     unsafe {
         let _ = LocalFree(Some(HLOCAL(output.pbData.cast())));
     }
+    use std::io::Write as _;
+    let mut file = tempfile::Builder::new()
+        .prefix("device-key-")
+        .tempfile_in(root)?;
+    file.write_all(&protected)?;
+    file.as_file().sync_all()?;
+    file.into_temp_path().persist_noclobber(path)?;
     Ok(secret)
+}
+
+fn invitation_host(invitation: &str) -> anyhow::Result<String> {
+    serde_json::from_str::<serde_json::Value>(invitation)?["host"]
+        .as_str()
+        .filter(|host| host.len() == 64 && host.bytes().all(|b| b.is_ascii_hexdigit()))
+        .map(str::to_owned)
+        .ok_or_else(|| anyhow::anyhow!("Invitation does not identify a valid host"))
 }
 
 fn runtime() -> anyhow::Result<tokio::runtime::Runtime> {
@@ -169,8 +183,23 @@ unsafe fn selected(hwnd: HWND) -> Option<usize> {
 
 unsafe fn status(text: &str) {
     if let Some(ui) = UI.get() {
-        set_text(ui.lock().unwrap().status, text);
+        let status = ui.lock().unwrap().status;
+        set_text(status, text);
+        let _ = UpdateWindow(status);
     }
+}
+
+unsafe fn set_busy(value: bool) -> bool {
+    let Some(ui) = UI.get() else { return false };
+    let mut ui = ui.lock().unwrap();
+    if value && ui.busy {
+        return false;
+    }
+    ui.busy = value;
+    for button in &ui.action_buttons {
+        let _ = EnableWindow(*button, !value);
+    }
+    true
 }
 
 fn discover() -> anyhow::Result<Vec<iroh::EndpointAddr>> {
@@ -219,10 +248,7 @@ unsafe fn perform(id: i32) -> anyhow::Result<()> {
             let (invite, address) = {
                 let ui = UI.get().unwrap().lock().unwrap();
                 let invite = get_text(ui.invite);
-                let expected = serde_json::from_str::<serde_json::Value>(&invite)?["host"]
-                    .as_str()
-                    .ok_or_else(|| anyhow::anyhow!("Invitation does not identify a host"))?
-                    .to_owned();
+                let expected = invitation_host(&invite)?;
                 let selected = selected(ui.hosts)
                     .ok_or_else(|| anyhow::anyhow!("Select the expected discovered host"))?;
                 let address = ui
@@ -391,7 +417,7 @@ unsafe extern "system" fn wndproc(
                 86,
                 ID_INVITE,
             );
-            create(
+            let discover_button = create(
                 w!("BUTTON"),
                 "Discover",
                 WINDOW_STYLE(BS_PUSHBUTTON as u32),
@@ -401,7 +427,7 @@ unsafe extern "system" fn wndproc(
                 30,
                 ID_DISCOVER,
             );
-            create(
+            let register_button = create(
                 w!("BUTTON"),
                 "Register",
                 WINDOW_STYLE(BS_PUSHBUTTON as u32),
@@ -431,7 +457,7 @@ unsafe extern "system" fn wndproc(
                 88,
                 ID_HOSTS,
             );
-            create(
+            let refresh_button = create(
                 w!("BUTTON"),
                 "Refresh library",
                 WINDOW_STYLE(BS_PUSHBUTTON as u32),
@@ -452,7 +478,7 @@ unsafe extern "system" fn wndproc(
                 190,
                 ID_TRACKS,
             );
-            create(
+            let save_button = create(
                 w!("BUTTON"),
                 "Save",
                 WINDOW_STYLE(BS_PUSHBUTTON as u32),
@@ -462,7 +488,7 @@ unsafe extern "system" fn wndproc(
                 32,
                 ID_SAVE,
             );
-            create(
+            let play_button = create(
                 w!("BUTTON"),
                 "Play",
                 WINDOW_STYLE(BS_PUSHBUTTON as u32),
@@ -472,7 +498,7 @@ unsafe extern "system" fn wndproc(
                 32,
                 ID_PLAY,
             );
-            create(
+            let pause_button = create(
                 w!("BUTTON"),
                 "Pause / Resume",
                 WINDOW_STYLE(BS_PUSHBUTTON as u32),
@@ -497,6 +523,14 @@ unsafe extern "system" fn wndproc(
                 hosts,
                 tracks,
                 status: status_hwnd,
+                action_buttons: vec![
+                    discover_button,
+                    register_button,
+                    refresh_button,
+                    save_button,
+                    play_button,
+                    pause_button,
+                ],
                 ..Default::default()
             }));
             if data_root().is_ok_and(|root| root.join("node.sqlite").exists()) {
@@ -512,9 +546,15 @@ unsafe extern "system" fn wndproc(
             if matches!(
                 id,
                 ID_DISCOVER | ID_REGISTER | ID_REFRESH | ID_SAVE | ID_PLAY | ID_PAUSE
-            ) && let Err(error) = perform(id)
+            ) && set_busy(true)
             {
-                status(&format!("Action failed: {error}"));
+                let result = perform(id);
+                set_busy(false);
+                if let Err(error) = result {
+                    status(&format!(
+                        "Action failed: {error}. You can retry this action."
+                    ));
+                }
             }
             LRESULT(0)
         }
@@ -601,6 +641,22 @@ mod tests {
                 .unwrap_err()
                 .to_string()
                 .contains("missing")
+        );
+    }
+
+    #[test]
+    fn invitation_host_requires_a_full_endpoint_id() {
+        let id = "a".repeat(64);
+        assert_eq!(
+            super::invitation_host(&format!(r#"{{"host":"{id}"}}"#)).unwrap(),
+            id
+        );
+        assert!(super::invitation_host(r#"{"host":"short"}"#).is_err());
+        assert!(
+            super::invitation_host(
+                r#"{"host":"zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz"}"#
+            )
+            .is_err()
         );
     }
 }
