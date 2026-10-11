@@ -76,7 +76,16 @@ The implemented tests cover:
   download, registration restoration, hash verification, and observed direct
   LAN reconciliation after stopping the relay.
 
-The public HTTPS frontend, production Compose startup, physical iPhone on
+An isolated Linux NAS image built successfully and includes the reachable
+dependency license inventory. A private relay backend and a separate fixture
+library started through Docker Compose. A user-managed Tunnel HTTPS frontend
+passed the real `relay-health` version check from both macOS and the NAS.
+LAN enrollment of a separate physical iPhone test app succeeded, and its verified
+endpoint was added to relay admission. The library can run with `--relay-only`
+for cellular checks without depending on an existing home-router UDP rule.
+These checks preserve the existing library service and device registrations.
+
+The published Caddy Compose package, physical iPhone audio download on
 cellular, transfer interruption, traffic inspection for implicit services, and
 direct/relay paths across independent networks remain unverified. Preserve the
 [M3 manual checks](cluster-apple-m3.md) in TestFlight validation. Do not merge M4
