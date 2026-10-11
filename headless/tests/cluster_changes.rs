@@ -1,6 +1,42 @@
 #![cfg(feature = "p2p")]
 
 #[tokio::test]
+async fn late_revocation_reprojects_previously_accepted_changes_after_restart() -> anyhow::Result<()>
+{
+    let root = tempfile::tempdir()?;
+    let nodes = crate::hosts(root.path()).await?;
+    let (a, a_store) = &nodes[0];
+    let (b, b_store) = &nodes[1];
+    let (hash, import) = crate::fixture();
+    let first = a_store
+        .publish_cluster_change(a, hash.clone(), import)
+        .await?;
+    b_store
+        .apply_cluster_changes(a.id().to_string(), vec![first.clone()])
+        .await?;
+    a_store
+        .publish_cluster_change(a, hash, syncstr_headless::cluster_changes::Action::Delete)
+        .await?;
+    b_store.revoke_cluster_member(b, a.id().to_string()).await?;
+    a_store
+        .merge_cluster_membership(b_store.cluster_membership_proof().await?)
+        .await?;
+    assert_eq!(
+        a_store.cluster_object_states().await?[0].heads,
+        vec![first.clone()]
+    );
+    assert_eq!(a_store.cluster_changes().await?.len(), 2);
+    drop(nodes);
+    let reopened = syncstr_headless::store::Store::open(&root.path().join("a/data"))?;
+    assert_eq!(
+        reopened.cluster_object_states().await?[0].heads,
+        vec![first]
+    );
+    assert_eq!(reopened.cluster_changes().await?.len(), 2);
+    Ok(())
+}
+
+#[tokio::test]
 async fn revoked_history_catches_up_out_of_order_but_new_changes_stay_quarantined()
 -> anyhow::Result<()> {
     let root = tempfile::tempdir()?;

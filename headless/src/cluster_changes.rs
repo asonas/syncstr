@@ -10,6 +10,10 @@ pub enum Action {
         entry: Box<crate::model::Entry>,
         organization: Box<crate::organization::Organization>,
     },
+    Edit {
+        entry: Box<crate::model::Entry>,
+        organization: Box<crate::organization::Organization>,
+    },
     Resolve {
         selected: String,
     },
@@ -102,6 +106,10 @@ impl crate::cluster_changes::Change {
             | crate::cluster_changes::Action::Restore {
                 entry,
                 organization,
+            }
+            | crate::cluster_changes::Action::Edit {
+                entry,
+                organization,
             } => {
                 entry.validate()?;
                 organization.validate()?;
@@ -164,8 +172,10 @@ impl crate::cluster_changes::Change {
                     observed = true;
                     break;
                 }
-                if let Some(record) = by_id.get(id) && record.author == self.author {
-                        pending.extend(record.previous.iter().map(String::as_str));
+                if let Some(record) = by_id.get(id)
+                    && record.author == self.author
+                {
+                    pending.extend(record.previous.iter().map(String::as_str));
                 }
             }
             if !observed {
@@ -199,7 +209,7 @@ pub(crate) fn migrate(connection: &rusqlite::Connection) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn records(
+pub(crate) fn records(
     connection: &rusqlite::Connection,
 ) -> anyhow::Result<Vec<crate::cluster_changes::Change>> {
     let mut statement = connection.prepare("SELECT payload FROM cluster_changes ORDER BY rowid")?;
@@ -209,7 +219,7 @@ fn records(
         .collect()
 }
 
-fn object_heads(
+pub(crate) fn object_heads(
     records: &[crate::cluster_changes::Change],
     object: &str,
 ) -> Vec<crate::cluster_changes::Change> {
@@ -231,6 +241,21 @@ fn object_heads(
         .collect();
     heads.sort_by(|a, b| a.id.cmp(&b.id));
     heads
+}
+
+pub(crate) fn projected_records(
+    connection: &rusqlite::Connection,
+) -> anyhow::Result<Vec<crate::cluster_changes::Change>> {
+    let records = crate::cluster_changes::records(connection)?;
+    let proof = crate::enrollment::read_proof(connection)?;
+    records
+        .iter()
+        .filter_map(|record| match record.authorized(&proof, &records) {
+            Ok(true) => Some(Ok(record.clone())),
+            Ok(false) => None,
+            Err(error) => Some(Err(error)),
+        })
+        .collect()
 }
 
 fn insert(
@@ -279,10 +304,17 @@ impl crate::store::Store {
             .await
     }
 
+    pub async fn cluster_active_changes(
+        &self,
+    ) -> anyhow::Result<Vec<crate::cluster_changes::Change>> {
+        self.run(|connection, _| crate::cluster_changes::projected_records(connection))
+            .await
+    }
+
     pub async fn cluster_object_states(
         &self,
     ) -> anyhow::Result<Vec<crate::cluster_changes::ObjectState>> {
-        let records = self.cluster_changes().await?;
+        let records = self.cluster_active_changes().await?;
         let objects: std::collections::BTreeSet<_> =
             records.iter().map(|record| &record.object).collect();
         Ok(objects
@@ -304,7 +336,8 @@ impl crate::store::Store {
         let authority = self.local_cluster_grant(identity).await?;
         let proof = self.cluster_membership_proof().await?;
         let records = self.cluster_changes().await?;
-        let heads = crate::cluster_changes::object_heads(&records, &object);
+        let heads =
+            crate::cluster_changes::object_heads(&self.cluster_active_changes().await?, &object);
         if matches!(action, crate::cluster_changes::Action::Import { .. }) {
             anyhow::ensure!(
                 heads.is_empty(),

@@ -363,6 +363,12 @@ async fn concurrent_redemption_has_one_winner_and_failed_commit_retains_invitati
     assert_ne!(a.is_ok(), b.is_ok());
     let grant = a.or(b)?;
     assert!(!grant.host);
+    assert!(
+        store
+            .redeem_cluster_invitation(&host, &invite.secret, grant.member.clone(), 1102)
+            .await
+            .is_err()
+    );
     assert_eq!(
         sql.query_row(
             "SELECT count(*) FROM cluster_enrollment_grants",
@@ -377,7 +383,8 @@ async fn concurrent_redemption_has_one_winner_and_failed_commit_retains_invitati
             [&invite.secret],
             |row| row.get::<_, i64>(0)
         )?,
-        0
+        0,
+        "the invitation secret must not be stored as plaintext"
     );
     Ok(())
 }

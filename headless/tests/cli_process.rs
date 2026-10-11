@@ -70,6 +70,10 @@ fn separate_lan_hosts_catch_up_after_offline_import_and_restart() {
     crate::wait_for_replica(&b_root, &first);
     crate::stop(&mut a);
     crate::stop(&mut b);
+    let interrupted = rusqlite::Connection::open(b_root.join("data/node.sqlite")).unwrap();
+    interrupted.execute("DELETE FROM cluster_receipts WHERE object = ?", [&first]).unwrap();
+    interrupted.execute("UPDATE cluster_jobs SET state = 'running' WHERE sha256 = ?", [&first]).unwrap();
+    drop(interrupted);
     let second = runtime.block_on(async {
         use sha2::Digest as _;
         let identity = syncstr_headless::peer::Identity::open(&b_root.join("identity")).unwrap();
@@ -89,6 +93,7 @@ fn separate_lan_hosts_catch_up_after_offline_import_and_restart() {
     let mut a = crate::start_cluster(&a_root);
     crate::wait_for_replica(&a_root, &second);
     crate::wait_for_replica(&a_root, &first);
+    crate::wait_for_replica(&b_root, &first);
     crate::stop(&mut a);
     crate::stop(&mut b);
     runtime.block_on(async {

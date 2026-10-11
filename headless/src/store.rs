@@ -267,7 +267,7 @@ impl crate::store::Store {
     }
 }
 
-fn read_organization(
+pub(crate) fn read_organization(
     connection: &rusqlite::Connection,
 ) -> anyhow::Result<crate::organization::Organization> {
     let payload: Vec<u8> = connection.query_row(

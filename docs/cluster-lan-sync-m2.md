@@ -106,7 +106,7 @@ sequence. Receivers persist the record or pending inbox entry before advancing a
 per-peer cursor. Reconnect and periodic reconciliation resume from that cursor;
 duplicate delivery is harmless. The first implementation does not require gossip.
 
-Imports, explicit restorations, deletions, and resolutions retain causal parents.
+Imports, metadata edits, explicit restorations, deletions, and resolutions retain causal parents.
 An ordinary stale import cannot replace an explicit deletion. Concurrent explicit
 operations remain competing heads; a resolution names the selected head. No clock
 chooses a winner. Object-scoped organization metadata carries the relevant causal
@@ -151,6 +151,10 @@ organization choices. `--restore` explicitly re-adds a deleted object. This CLI
 expects supplied metadata; it does not claim to extract tags. On first cluster
 serve, existing legacy catalog entries with no cluster history are imported using
 their stored metadata. Known tombstones are never converted to fresh imports.
+Re-importing identical bytes with changed metadata creates a causal edit; unchanged
+input remains idempotent. Metadata projection does not require another audio copy.
+Receiving a later revocation also re-evaluates previously accepted history for
+projection; the original signed records remain available for diagnosis.
 
 `cluster-status --data host-a/data` shows object heads, jobs, local receipts, and
 membership conflicts. `cluster-delete --data host-a/data --peer-state

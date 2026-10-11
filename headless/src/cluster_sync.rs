@@ -9,7 +9,7 @@ pub async fn run_lan(
     store.local_cluster_grant(&identity).await?;
     let catalog = store.catalog().await?;
     let mut known: std::collections::HashSet<_> = store
-        .cluster_object_states()
+        .cluster_changes()
         .await?
         .into_iter()
         .map(|state| state.object)
@@ -45,7 +45,8 @@ pub async fn run_lan(
                         session.reconcile(&store).await?;
                         for state in store.cluster_object_states().await? {
                             if state.conflicted() || store.cluster_selected_change(&state.object).await?.is_none() { continue; }
-                            if store.cluster_local_file(&state.object).await?.is_none()
+                            store.project_cluster_metadata(state.object.clone()).await?;
+                            if !store.has_cluster_replica(&state.object).await?
                                 && let Err(error) = session.download(&identity, &store, &state.object).await { eprintln!("Cluster replica unavailable: {error}"); }
                         }
                         anyhow::Ok(())
@@ -285,7 +286,8 @@ impl crate::cluster_sync::Session {
             .ok_or_else(|| anyhow::anyhow!("object unavailable or deleted"))?;
         let entry = match &change.action {
             crate::cluster_changes::Action::Import { entry, .. }
-            | crate::cluster_changes::Action::Restore { entry, .. } => entry.as_ref().clone(),
+            | crate::cluster_changes::Action::Restore { entry, .. }
+            | crate::cluster_changes::Action::Edit { entry, .. } => entry.as_ref().clone(),
             _ => anyhow::bail!("no selected audio"),
         };
         let job = store

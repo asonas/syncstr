@@ -104,10 +104,11 @@ impl crate::organization::Organization {
         let aliases = self.aliases.iter().filter(|(id, _)| self.canonical(id).is_ok_and(|id| albums.contains(id))).map(|(a,b)| (a.clone(),b.clone())).collect();
         let automatic_aliases = self.automatic_aliases.as_ref().map(|aliases| aliases.iter().filter(|(id, _)| self.canonical(id).is_ok_and(|id| albums.contains(id))).map(|(a,b)| (a.clone(),b.clone())).collect());
         let track_aliases = self.track_aliases.as_ref().map(|aliases| aliases.iter().filter(|(id, _)| track_ids.contains(self.canonical_track(id).as_str())).map(|(a,b)| (a.clone(),b.clone())).collect());
+        let preferred = self.preferred.iter().filter(|(_, id)| choices.iter().any(|choice| &choice.id == *id)).map(|(a,b)| (a.clone(),b.clone())).collect();
         let subset = Self {
             albums: self.albums.iter().filter(|album| albums.contains(&album.id)).cloned().collect(),
             tracks, choices, aliases, automatic_aliases, track_aliases,
-            preferred: self.preferred.iter().filter(|(_, album)| self.canonical(album).is_ok_and(|id| albums.contains(id))).map(|(a,b)| (a.clone(),b.clone())).collect(),
+            preferred,
         };
         subset.validate()?;
         Ok(subset)

@@ -96,6 +96,30 @@ async fn two_hosts_replicate_verified_audio_and_a_client_uses_the_surviving_host
         organization.choices
     );
     assert_eq!(std::fs::read(&source)?, bytes);
+    let mut corrected = entry.clone();
+    corrected.track.title = "Corrected imported title".into();
+    a_store
+        .import_cluster_file(a, corrected.clone(), None, &source, false)
+        .await?;
+    session.reconcile(b_store).await?;
+    let jobs = b_store.cluster_jobs().await?.len();
+    b_store
+        .project_cluster_metadata(entry.sha256.clone())
+        .await?;
+    assert_eq!(
+        b_store.catalog().await?.entries[0].track.title,
+        corrected.track.title
+    );
+    assert_eq!(
+        b_store.catalog().await?.organization.choices,
+        organization.choices
+    );
+    assert_eq!(b_store.cluster_jobs().await?.len(), jobs);
+    assert_eq!(b_store.cluster_changes().await?.len(), 2);
+    a_store
+        .import_cluster_file(a, corrected, None, &source, false)
+        .await?;
+    assert_eq!(a_store.cluster_changes().await?.len(), 2);
     drop(session);
     let second_bytes = b"different complete audio";
     let second = crate::fixture(second_bytes);
