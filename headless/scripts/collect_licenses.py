@@ -49,13 +49,21 @@ def main():
                 target.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copyfile(source, target)
                 copied.append(source.name)
-        if not copied and package["license"] in ("MIT OR Apache-2.0", "Apache-2.0 OR MIT", "Apache-2.0/MIT"):
+        if not copied and package["license"] in ("MIT OR Apache-2.0", "Apache-2.0 OR MIT", "Apache-2.0/MIT", "MIT/Apache-2.0"):
             target = destination / f'{package["name"]}-{package["version"]}' / "LICENSE-APACHE"
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_text("The crate manifest offers Apache-2.0. No separate notice is packaged.\n"
                               + "Source: " + package["repository"] + "\n"
                               + (Path(__file__).parent / "licenses/Apache-2.0.txt").read_text())
             copied.append("LICENSE-APACHE")
+        if not copied and package["license"] == "MIT" and package["repository"] == "https://github.com/MOZGIII/rustls-cert-utils":
+            target = destination / f'{package["name"]}-{package["version"]}' / "LICENSE-MIT"
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text("The crate manifest declares MIT. No separate license or copyright notice is packaged.\n"
+                              + "Source: " + package["repository"] + "\n"
+                              + (Path(__file__).parent / "licenses/MIT.txt").read_text())
+            shutil.copyfile(root / "Cargo.toml", target.parent / "LICENSE-MANIFEST.toml")
+            copied.extend(["LICENSE-MIT", "LICENSE-MANIFEST.toml"])
         if not copied:
             raise RuntimeError(f'No packaged license notice found for {package["name"]}')
         inventory.append({"name": package["name"], "version": package["version"],
