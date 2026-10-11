@@ -85,8 +85,15 @@ endpoint was added to relay admission. The library can run with `--relay-only`
 for cellular checks without depending on an existing home-router UDP rule.
 These checks preserve the existing library service and device registrations.
 
-The published Caddy Compose package, physical iPhone audio download on
-cellular, transfer interruption, traffic inspection for implicit services, and
+The user confirmed a previously unsaved audio file downloaded on the physical
+iPhone over 4G while the serving endpoint had all direct IP transports disabled.
+This verifies the public relay transfer without a home-router permission rule.
+Physical playback also succeeded. The user could not confirm the displayed
+path; playback alone does not verify that UI state. Relay-off LAN transfer
+remains a separate acceptance check.
+
+The published Caddy Compose package, transfer interruption,
+traffic inspection for implicit services, and
 direct/relay paths across independent networks remain unverified. Preserve the
 [M3 manual checks](cluster-apple-m3.md) in TestFlight validation. Do not merge M4
 as a completed milestone until its authorized physical acceptance setup passes.
