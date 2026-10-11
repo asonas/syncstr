@@ -75,6 +75,30 @@ async fn paired_client_connects_over_both_ip_families_on_a_fixed_port() {
             .await
             .unwrap();
         let target = iroh::EndpointAddr::new(server.id()).with_ip_addr(address);
+        let negotiation = endpoint
+            .connect(target.clone(), syncstr_headless::peer::ALPN)
+            .await
+            .unwrap();
+        let (mut send, mut receive) = negotiation.open_bi().await.unwrap();
+        let mut request = syncstr_headless::peer::Message::new("cluster-hello");
+        request.cluster_capabilities = Some(syncstr_headless::cluster::Capabilities {
+            version: 1,
+            membership: true,
+            deletions: true,
+            conflicts: true,
+        });
+        syncstr_headless::peer::send(&mut send, &request)
+            .await
+            .unwrap();
+        let response = syncstr_headless::peer::receive(&mut receive).await.unwrap();
+        assert_eq!(response.kind, "upgrade-required");
+        assert!(
+            !response
+                .cluster_capabilities
+                .unwrap()
+                .allows_automatic_writer()
+        );
+        negotiation.close(0u32.into(), b"done");
         let (connection, _send, _receive, entries) = crate::hello(&endpoint, target).await;
         assert!(entries.is_empty());
         connection.close(0u32.into(), b"done");

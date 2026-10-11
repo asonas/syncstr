@@ -1,5 +1,6 @@
 pub mod api;
 pub mod client;
+pub mod cluster;
 pub mod identity;
 pub mod membership;
 pub mod model;

@@ -73,6 +73,17 @@ enum Command {
         state: std::path::PathBuf,
     },
     #[cfg(feature = "p2p")]
+    ClusterInit {
+        #[arg(long, default_value = "data")]
+        data: std::path::PathBuf,
+        #[arg(long)]
+        peer_state: std::path::PathBuf,
+    },
+    ClusterInfo {
+        #[arg(long, default_value = "data")]
+        data: std::path::PathBuf,
+    },
+    #[cfg(feature = "p2p")]
     PeerInfo {
         #[arg(long)]
         state: std::path::PathBuf,
@@ -162,6 +173,21 @@ async fn run(cli: crate::Cli) -> anyhow::Result<()> {
             #[cfg(feature = "p2p")]
             let peer = if let Some(state) = peer_state {
                 let identity = std::sync::Arc::new(syncstr_headless::peer::Identity::open(&state)?);
+                if state.join("peers").is_dir() {
+                    let known = store.cluster_inventory().await?.peers;
+                    for peer in identity.allowed_peers()? {
+                        if known.iter().any(|saved| saved.id == peer.to_string()) {
+                            continue;
+                        }
+                        store
+                            .remember_cluster_peer(syncstr_headless::cluster::KnownPeer {
+                                id: peer.to_string(),
+                                name: "Legacy peer".into(),
+                                address: None,
+                            })
+                            .await?;
+                    }
+                }
                 let (endpoint, lock) = identity.endpoint(peer_mode, &peer_listen).await?;
                 let publisher = if let Some(directory) = peer_directory {
                     anyhow::ensure!(
@@ -281,6 +307,22 @@ async fn run(cli: crate::Cli) -> anyhow::Result<()> {
         #[cfg(feature = "p2p")]
         crate::Command::PeerInit { state } => {
             println!("{}", syncstr_headless::peer::Identity::initialize(&state)?);
+        }
+        #[cfg(feature = "p2p")]
+        crate::Command::ClusterInit { data, peer_state } => {
+            let identity = syncstr_headless::peer::Identity::open(&peer_state)?;
+            let store = syncstr_headless::store::Store::open(&data)?;
+            println!(
+                "{}",
+                serde_json::to_string(&store.create_cluster(identity.id().to_string()).await?)?
+            );
+        }
+        crate::Command::ClusterInfo { data } => {
+            let store = syncstr_headless::store::Store::open(&data)?;
+            println!(
+                "{}",
+                serde_json::to_string(&store.cluster_inventory().await?)?
+            );
         }
         #[cfg(feature = "p2p")]
         crate::Command::PeerInfo {

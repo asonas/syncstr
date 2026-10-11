@@ -1,6 +1,7 @@
 import AVFoundation
 import Foundation
 import AudioTags
+import SQLite3
 
 struct CheckFailure: Error {
     let message: String
@@ -64,6 +65,30 @@ struct LibraryCheck {
         try AudioTags.writeFile(folder.appendingPathComponent("First.wav"), fields: ["TITLE": "First", "ARTIST": "Artist A", "ALBUM": "Album A", "TRACKNUMBER": "1"], artwork: nil, mimeType: nil, changeArtwork: false)
         try AudioTags.writeFile(folder.appendingPathComponent("Second.wav"), fields: ["TITLE": "Second", "ARTIST": "Artist A", "ALBUM": "Album A", "TRACKNUMBER": "2"], artwork: nil, mimeType: nil, changeArtwork: false)
         try AudioTags.writeFile(folder.appendingPathComponent("Third.wav"), fields: ["TITLE": "Third", "ARTIST": "Artist B", "ALBUM": "Album B", "TRACKNUMBER": "1"], artwork: nil, mimeType: nil, changeArtwork: false)
+        let savedStore = LocalMusicStore(root: FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString))
+        defer { try? FileManager.default.removeItem(at: savedStore.root) }
+        try savedStore.prepare()
+        let audio = try Data(contentsOf: folder.appendingPathComponent("First.wav"))
+        let saved = LocalEntry(track: Track(id: "offline-fixture", title: "Offline fixture", artist: "Fixture", suffix: "wav", size: UInt64(audio.count)),
+            sha256: try LocalMusicStore.digest(file: folder.appendingPathComponent("First.wav")), artwork: nil)
+        try audio.write(to: savedStore.fileURL(saved))
+        try savedStore.save(LocalCatalog(id: "offline-library", name: "Offline", entries: [saved]))
+        var legacy: OpaquePointer?
+        try require(sqlite3_open(savedStore.root.appendingPathComponent("catalog.sqlite").path, &legacy) == SQLITE_OK)
+        let removed = sqlite3_exec(legacy, "DROP TABLE cluster_locations; DROP TABLE cluster_objects; DROP TABLE cluster_peers; DROP TABLE cluster_identity; DROP TABLE cluster_pending_changes; DROP TABLE cluster_jobs; DROP TABLE cluster_schema;", nil, nil, nil)
+        sqlite3_close(legacy)
+        try require(removed == SQLITE_OK)
+        let migrated = try savedStore.load()!
+        let offline = Library(makePlayer: { url in
+            let player = AVPlayer(url: url)
+            player.isMuted = true
+            return player
+        }, localStore: savedStore, pairingSecrets: CredentialStore(service: "syncstr-offline-check-" + UUID().uuidString))
+        try offline.openLocal(migrated)
+        offline.togglePlayback(in: offline.tracks)
+        try await wait("Migrated saved music did not play offline") { offline.playing && offline.position > 0 }
+        offline.closeLibrary()
+        print("PASS: saved audio plays offline after cluster migration without a peer or source folder")
         var mediaPlayers: [AVPlayer] = []
         let secrets = CredentialStore(service: "syncstr-library-check-" + UUID().uuidString)
         let localFiles = LocalMusicStore(root: folder.appendingPathComponent("local"))

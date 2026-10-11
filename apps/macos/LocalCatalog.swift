@@ -167,6 +167,14 @@ struct LocalMusicStore {
         try database.save(catalog, received: catalog.entries.filter(hasFile))
     }
 
+    func rememberClusterPeer(_ peer: ClusterKnownPeer) throws {
+        try database().rememberClusterPeer(peer)
+    }
+
+    func forgetClusterPeer(_ id: String) throws {
+        try database().forgetClusterPeer(id)
+    }
+
     private func writeArtwork(_ catalog: LocalCatalog) throws {
         guard Set(catalog.entries.map { $0.track.id }).count == catalog.entries.count else {
             throw LocalMusicError.invalidData

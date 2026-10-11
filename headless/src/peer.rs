@@ -24,6 +24,11 @@ pub struct Message {
     pub bytes: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub organization: Option<crate::organization::Organization>,
+    #[serde(
+        rename = "clusterCapabilities",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub cluster_capabilities: Option<crate::cluster::Capabilities>,
 }
 
 fn version() -> u8 {
@@ -187,6 +192,17 @@ async fn serve_connection(
     use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
     let (mut output, mut input) = connection.accept_bi().await?;
     let hello = crate::peer::receive(&mut input).await?;
+    if hello.kind == "cluster-hello" {
+        let mut response = crate::peer::Message::new("upgrade-required");
+        response.cluster_capabilities = Some(crate::cluster::Capabilities {
+            version: 1,
+            ..Default::default()
+        });
+        crate::peer::send(&mut output, &response).await?;
+        output.finish()?;
+        output.stopped().await?;
+        return Ok(());
+    }
     anyhow::ensure!(hello.kind == "hello", "expected hello");
     if let Some(organization) = crate::peer::receive_organization(&mut input, &hello).await? {
         store.merge_organization(organization).await?;
@@ -195,6 +211,10 @@ async fn serve_connection(
     let mut header = crate::peer::Message::new("catalog");
     header.library = Some(catalog.id);
     header.name = Some(catalog.name);
+    header.cluster_capabilities = Some(crate::cluster::Capabilities {
+        version: 1,
+        ..Default::default()
+    });
     crate::peer::send_organized(&mut output, header, catalog.organization).await?;
     for entry in catalog.entries {
         let mut message = crate::peer::Message::new("entry");

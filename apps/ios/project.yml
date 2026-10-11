@@ -25,6 +25,7 @@ targets:
       - path: ../macos/Syncstr.swift
       - path: ../macos/LocalCatalog.swift
       - path: ../macos/CatalogDatabase.swift
+      - path: ../macos/ClusterPersistence.swift
       - path: ../macos/LocalTransfer.swift
       - path: ../macos/PeerTransfer.swift
       - path: ../macos/PeerSetup.swift
@@ -75,6 +76,7 @@ targets:
         buildPhase: resources
       - path: ../macos/LocalCatalog.swift
       - path: ../macos/CatalogDatabase.swift
+      - path: ../macos/ClusterPersistence.swift
       - path: ../macos/LocalTransfer.swift
       - path: ../macos/PeerTransfer.swift
       - path: ../macos/PeerSetup.swift
@@ -118,11 +120,14 @@ targets:
       - path: Tests
       - path: ../macos/Tests/AlbumOrganizationTests.swift
       - path: ../macos/Tests/CatalogMigrationTests.swift
+      - path: ../macos/Tests/ClusterPersistenceTests.swift
       - path: ../../headless/fixtures/compilation-membership.json
         buildPhase: resources
       - path: ../../headless/fixtures/album-organization.json
         buildPhase: resources
       - path: ../../headless/fixtures/local-entry.json
+        buildPhase: resources
+      - path: ../../headless/fixtures/cluster-state.json
         buildPhase: resources
     settings:
       base:
@@ -140,8 +145,11 @@ targets:
         buildPhase: resources
       - path: ../../headless/fixtures/local-entry.json
         buildPhase: resources
+      - path: ../../headless/fixtures/cluster-state.json
+        buildPhase: resources
       - path: ../macos/LocalCatalog.swift
       - path: ../macos/CatalogDatabase.swift
+      - path: ../macos/ClusterPersistence.swift
       - path: ../macos/LocalTransfer.swift
       - path: ../macos/PeerTransfer.swift
       - path: ../macos/AlbumOrganization.swift
@@ -162,6 +170,7 @@ targets:
       - path: ../macos/Library.swift
       - path: ../macos/LocalCatalog.swift
       - path: ../macos/CatalogDatabase.swift
+      - path: ../macos/ClusterPersistence.swift
       - path: ../macos/LocalTransfer.swift
       - path: ../macos/PeerTransfer.swift
       - path: ../macos/AlbumOrganization.swift

@@ -231,6 +231,15 @@ final class LocalTransferTests: XCTestCase {
             do { try await wrongKey.start(); XCTFail("A different pairing key must not authenticate") }
             catch { XCTAssertNil(sender.pendingName) }
             wrongKey.close()
+            let cluster = MusicConnection(NWConnection(to: .hostPort(host: "127.0.0.1", port: sender.advertisedPort!),
+                using: try MusicConnection.parameters(code: sender.code, identity: folder.catalog.id)))
+            try await cluster.start()
+            try await cluster.send(MusicMessage(kind: "cluster-hello", clusterCapabilities: ClusterCapabilities(version: 1, membership: true, deletions: true, conflicts: true)))
+            let upgrade = try await cluster.receive()
+            XCTAssertEqual(upgrade.kind, "upgrade-required")
+            XCTAssertFalse(try XCTUnwrap(upgrade.clusterCapabilities).allowsAutomaticWriter)
+            XCTAssertNil(sender.pendingName)
+            cluster.close()
             receiver.connect(NearbyMusicDevice(id: "Syncstr-" + folder.catalog.id, name: "Fixture Mac",
                 endpoint: .hostPort(host: "127.0.0.1", port: sender.advertisedPort!)), code: sender.code, name: "Fixture Phone")
             try await wait { sender.pendingName != nil }

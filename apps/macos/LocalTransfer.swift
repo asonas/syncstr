@@ -12,6 +12,7 @@ struct MusicMessage: Codable {
     var track: String? = nil
     var bytes: Data? = nil
     var organization: AlbumOrganization? = nil
+    var clusterCapabilities: ClusterCapabilities? = nil
 }
 
 @MainActor
@@ -248,6 +249,10 @@ final class LocalTransfer: ObservableObject {
             peerName = saved?.name
             peerAddressText = saved.flatMap { Data(base64Encoded: $0.key) }
                 .flatMap { String(data: $0, encoding: .utf8) } ?? ""
+            if let saved {
+                try store.rememberClusterPeer(ClusterKnownPeer(id: saved.libraryID, name: saved.name,
+                    address: peerAddressText.isEmpty ? nil : peerAddressText))
+            }
         } catch { status = error.localizedDescription }
     }
 
@@ -265,7 +270,7 @@ final class LocalTransfer: ObservableObject {
                 let channel = try await PeerMusicConnection.connect(address: address, expected: expected, secrets: peerSecrets)
                 guard generation == attempt, !Task.isCancelled else { channel.close(); return }
                 client = channel
-                try await channel.sendOrganized(MusicMessage(kind: "hello", name: name), organization: try store.load()?.organization)
+                try await channel.sendOrganized(MusicMessage(kind: "hello", name: name, clusterCapabilities: ClusterCapabilities(version: 1)), organization: try store.load()?.organization)
                 let header = try await channel.receive()
                 guard header.kind == "catalog", let id = header.library, UUID(uuidString: id) != nil else { throw LocalMusicError.invalidData }
                 let incomingOrganization = try await channel.receiveOrganization(header)
@@ -289,6 +294,7 @@ final class LocalTransfer: ObservableObject {
                 let catalog = try mergedCatalog(id: id, name: header.name ?? name, entries: entries, incoming: incomingOrganization)
                 if let onCatalog { try onCatalog(catalog) } else { try store.save(catalog) }
                 try await peerPairing.save(PairingCredentials(libraryID: expected, name: name, key: bytes.base64EncodedString()))
+                try store.rememberClusterPeer(ClusterKnownPeer(id: expected, name: name, address: addressText))
                 guard generation == attempt else { return }
                 self.catalog = catalog
                 peerName = name
@@ -311,7 +317,11 @@ final class LocalTransfer: ObservableObject {
 
     func forgetPeer() async {
         cancel()
-        do { try await peerPairing.remove(); peerName = nil; peerAddressText = ""; status = "P2Pの接続先を削除しました。保存済みの音楽は残ります。" }
+        do {
+            if let saved = try await peerPairing.load() { try store.forgetClusterPeer(saved.libraryID) }
+            try await peerPairing.remove()
+            peerName = nil; peerAddressText = ""; status = "P2Pの接続先を削除しました。保存済みの音楽は残ります。"
+        }
         catch { status = error.localizedDescription }
     }
 
@@ -491,6 +501,10 @@ final class LocalTransfer: ObservableObject {
         try await channel.start()
         let hello = try await channel.receive()
         guard hosting == epoch else { throw LocalMusicError.unauthorized }
+        if hello.kind == "cluster-hello" {
+            try await channel.send(MusicMessage(kind: "upgrade-required", clusterCapabilities: ClusterCapabilities(version: 1)))
+            return
+        }
         guard hello.kind == "hello", let name = hello.name, !name.isEmpty, name.utf8.count <= 128 else { throw LocalMusicError.invalidData }
         if peerCredential == nil {
             guard approval == nil else { throw LocalMusicError.unauthorized }
@@ -519,7 +533,7 @@ final class LocalTransfer: ObservableObject {
             hostedCatalog = catalog
             onOrganization?(organization)
         }
-        try await channel.sendOrganized(MusicMessage(kind: "catalog", name: catalog.name, library: catalog.id), organization: catalog.organization)
+        try await channel.sendOrganized(MusicMessage(kind: "catalog", name: catalog.name, library: catalog.id, clusterCapabilities: ClusterCapabilities(version: 1)), organization: catalog.organization)
         for entry in catalog.entries { try await channel.send(MusicMessage(kind: "entry", entry: entry)) }
         try await channel.send(MusicMessage(kind: "ready"))
         while true {
@@ -566,7 +580,7 @@ final class LocalTransfer: ObservableObject {
                     using: try MusicConnection.parameters(code: secret, identity: identity)))
                 client = channel
                 try await channel.start()
-                try await channel.sendOrganized(MusicMessage(kind: "hello", name: name), organization: try store.load()?.organization)
+                try await channel.sendOrganized(MusicMessage(kind: "hello", name: name, clusterCapabilities: ClusterCapabilities(version: 1)), organization: try store.load()?.organization)
                 status = "Macでこの端末とのペアリングを承認してください。"
                 let header = try await channel.receive()
                 guard header.kind == "catalog", header.library == identity else { throw LocalMusicError.invalidData }

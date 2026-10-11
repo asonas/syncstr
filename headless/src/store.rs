@@ -86,6 +86,7 @@ impl crate::store::Store {
             "INSERT OR IGNORE INTO library VALUES (1, ?)",
             [uuid::Uuid::new_v4().to_string()],
         )?;
+        crate::cluster::migrate(&transaction)?;
         transaction.commit()?;
         // The exclusive directory lock excludes uploads while abandoned staging files are removed.
         for file in std::fs::read_dir(root.join("staging"))? {
@@ -103,7 +104,7 @@ impl crate::store::Store {
         })))
     }
 
-    async fn run<T: Send + 'static>(
+    pub(crate) async fn run<T: Send + 'static>(
         &self,
         action: impl FnOnce(&mut rusqlite::Connection, &std::path::Path) -> anyhow::Result<T>
         + Send
@@ -251,6 +252,8 @@ impl crate::store::Store {
                     serde_json::to_vec(&entry)?
                 ],
             )?;
+            let library: String = transaction.query_row("SELECT id FROM library WHERE singleton = 1", [], |row| row.get(0))?;
+            crate::cluster::index_entry(&transaction, &library, None, &entry)?;
             transaction.commit()?;
             Ok(entry)
         })

@@ -11,6 +11,58 @@ fn command() -> std::process::Command {
     std::process::Command::new(env!("CARGO_BIN_EXE_syncstr-headless"))
 }
 
+#[cfg(feature = "p2p")]
+#[test]
+fn explicit_cluster_creation_preserves_transport_identity_and_pairings() {
+    let root = tempfile::tempdir().unwrap();
+    let state = root.path().join("peer");
+    let data = root.path().join("data");
+    let member = syncstr_headless::peer::Identity::initialize(&state).unwrap();
+    let identity = syncstr_headless::peer::Identity::open(&state).unwrap();
+    let paired = iroh::SecretKey::generate().public();
+    identity.pair(paired).unwrap();
+    let key = std::fs::read(state.join("device.key")).unwrap();
+    let mut previous = None;
+    for _ in 0..2 {
+        let output = crate::command()
+            .arg("cluster-init")
+            .arg("--data")
+            .arg(&data)
+            .arg("--peer-state")
+            .arg(&state)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let cluster: syncstr_headless::cluster::ClusterIdentity =
+            serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(cluster.member_id, member.to_string());
+        if let Some(previous) = &previous {
+            assert_eq!(&cluster, previous);
+        }
+        previous = Some(cluster);
+    }
+    let output = crate::command()
+        .arg("cluster-info")
+        .arg("--data")
+        .arg(&data)
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let inventory: syncstr_headless::cluster::Inventory =
+        serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(inventory.cluster, previous);
+    assert_eq!(std::fs::read(state.join("device.key")).unwrap(), key);
+    assert!(
+        syncstr_headless::peer::Identity::open(&state)
+            .unwrap()
+            .is_paired(paired)
+    );
+}
+
 fn start(root: &std::path::Path) -> (crate::Server, String) {
     use std::io::BufRead as _;
     let mut child = crate::command()

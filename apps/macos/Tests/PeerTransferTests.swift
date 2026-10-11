@@ -5,20 +5,30 @@ import XCTest
 @MainActor
 final class PeerTransferTests: XCTestCase {
     func testSavedPeerSettingsRestoreWithoutConnectingAndClearOnRemoval() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
         let identity = CredentialStore(service: "syncstr-settings-identity-" + UUID().uuidString)
         let pairing = CredentialStore(service: "syncstr-settings-peer-" + UUID().uuidString)
+        let originalKey = PairingCredentials(libraryID: "p2p", name: "device", key: Data(repeating: 7, count: 32).base64EncodedString())
+        try await identity.save(originalKey)
         let text = "{\"version\":1,\"id\":\"\(String(repeating: "a", count: 64))\",\"addresses\":[\"192.0.2.10:40000\"],\"relay\":null}"
         try await pairing.save(PairingCredentials(libraryID: String(repeating: "a", count: 64),
             name: "Fixture Node", key: Data(text.utf8).base64EncodedString()))
-        let transfer = LocalTransfer(peerSecrets: identity, peerPairing: pairing)
+        let transfer = LocalTransfer(store: LocalMusicStore(root: root), peerSecrets: identity, peerPairing: pairing)
         await transfer.restorePeer()
         XCTAssertEqual(transfer.peerName, "Fixture Node")
         XCTAssertEqual(transfer.peerAddressText, text)
         XCTAssertFalse(transfer.connected)
+        let inventory = try CatalogDatabase(root.appendingPathComponent("catalog.sqlite")).clusterInventory()
+        XCTAssertNil(inventory.cluster)
+        XCTAssertEqual(inventory.peers, [ClusterKnownPeer(id: String(repeating: "a", count: 64), name: "Fixture Node", address: text)])
+        let restoredKey = try await identity.load()
+        XCTAssertEqual(restoredKey, originalKey)
         await transfer.forgetPeer()
         await transfer.restorePeer()
         XCTAssertNil(transfer.peerName)
         XCTAssertEqual(transfer.peerAddressText, "")
+        XCTAssertTrue(try CatalogDatabase(root.appendingPathComponent("catalog.sqlite")).clusterInventory().peers.isEmpty)
         try await identity.remove()
     }
 

@@ -28,3 +28,28 @@ fn organization_fixture_round_trips_with_native_field_names_and_clear_revision()
         serde_json::from_slice::<serde_json::Value>(data).unwrap()
     );
 }
+
+#[test]
+fn cluster_persistence_fixture_matches_native_identities_locations_and_pending_state()
+-> anyhow::Result<()> {
+    let fixture: serde_json::Value =
+        serde_json::from_slice(include_bytes!("../fixtures/cluster-state.json"))?;
+    let inventory: syncstr_headless::cluster::Inventory =
+        serde_json::from_value(fixture["inventory"].clone())?;
+    let change: syncstr_headless::cluster::PendingChange =
+        serde_json::from_value(fixture["change"].clone())?;
+    let job: syncstr_headless::cluster::TransferJob =
+        serde_json::from_value(fixture["job"].clone())?;
+    let capabilities: syncstr_headless::cluster::Capabilities =
+        serde_json::from_value(fixture["capabilities"].clone())?;
+    assert_eq!(inventory.objects.len(), 1);
+    assert_eq!(inventory.objects[0].locations.len(), 2);
+    assert_eq!(inventory.objects[0].bytes, 3);
+    assert_eq!(job.state, syncstr_headless::cluster::JobState::Queued);
+    assert!(!capabilities.allows_automatic_writer());
+    assert_eq!(serde_json::to_value(inventory)?, fixture["inventory"]);
+    assert_eq!(serde_json::to_value(change)?, fixture["change"]);
+    assert_eq!(serde_json::to_value(job)?, fixture["job"]);
+    assert_eq!(serde_json::to_value(capabilities)?, fixture["capabilities"]);
+    Ok(())
+}

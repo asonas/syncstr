@@ -1,6 +1,6 @@
 # Cluster connectivity and replication plan
 
-Status: implementation in progress; M0 experiments complete and M1 next. Product requirements are agreed in [the cluster model](cluster-model-design.md) and [ADR 0002](adr/0002-local-first-connectivity-with-user-operated-remote-access.md). This document does not authorize production deployment. Verification claims are limited to the milestone records below.
+Status: implementation in progress; M0 and M1 complete and M2 next. Product requirements are agreed in [the cluster model](cluster-model-design.md) and [ADR 0002](adr/0002-local-first-connectivity-with-user-operated-remote-access.md). This document does not authorize production deployment. Verification claims are limited to the milestone records below.
 
 Research baseline: repository commit `0b8b387`, with upstream documentation checked on 2026-10-10. Concrete dependency versions and platform support must be verified in the implementation spikes below.
 
@@ -100,6 +100,9 @@ Create isolated, disposable experiments before changing production behavior:
 Gate: choose the concrete relay and discovery integration only from measured results. Existing 4G success with a manual router rule does not satisfy the no-manual-rule gate. No production rule is removed as part of planning.
 
 ### M1: Cluster persistence and reversible migration
+
+Completed on 2026-10-11. The additive schema, legacy-access boundary, and measured
+acceptance checks are recorded in [M1 persistence](cluster-persistence-m1.md).
 
 Add stable cluster/member identities, multiple peer records, object locations, and durable change/job state. Preserve current private keys, authorized pairings, files, album identities, and user overrides. A legacy peer ID does not prove common cluster membership; linking previously separate libraries requires an explicit enrollment/join operation.
 
