@@ -1,7 +1,7 @@
 # M2 LAN synchronization
 
-Status: acceptance tests implemented and passing; final regression checks and
-review pending. The explicit `cluster-serve` command runs LAN replication.
+Status: completed on 2026-10-11 after acceptance tests and review fixes.
+The explicit `cluster-serve` command runs LAN replication.
 Legacy music endpoints retain their separate authorization and cannot write the
 cluster replication log.
 
@@ -185,3 +185,9 @@ the same arguments plus `--selected CHANGE_ID` to choose a competing revision.
 
 These tests use disposable local data and keys. They do not establish Apple UI,
 physical iPhone behavior, remote relay deployment, or production NAS verification.
+
+The headless suite has 45 passing tests. Clippy passes with warnings denied for
+both the default and P2P builds. Standards review has no unresolved hard findings;
+specification review confirmed the revocation, metadata-edit, and album-title
+corrections. Apple targets are unchanged in M2; their integration and verification
+are the next milestone.

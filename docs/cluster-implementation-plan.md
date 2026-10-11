@@ -1,6 +1,6 @@
 # Cluster connectivity and replication plan
 
-Status: implementation in progress; M0 and M1 complete and M2 next. Product requirements are agreed in [the cluster model](cluster-model-design.md) and [ADR 0002](adr/0002-local-first-connectivity-with-user-operated-remote-access.md). This document does not authorize production deployment. Verification claims are limited to the milestone records below.
+Status: implementation in progress; M0, M1, and M2 complete and M3 next. Product requirements are agreed in [the cluster model](cluster-model-design.md) and [ADR 0002](adr/0002-local-first-connectivity-with-user-operated-remote-access.md). This document does not authorize production deployment. Verification claims are limited to the milestone records below.
 
 Research baseline: repository commit `0b8b387`, with upstream documentation checked on 2026-10-10. Concrete dependency versions and platform support must be verified in the implementation spikes below.
 
@@ -111,6 +111,10 @@ Gate: repeated migration is idempotent, interruption leaves recoverable state, e
 Negotiate cluster-protocol capabilities separately from the existing address format. Clients that cannot understand cluster membership, deletions, or conflicts must not participate as automatic replication writers; present an upgrade requirement rather than silently downgrading cluster semantics. Keep legacy library access isolated until its explicit migration is verified.
 
 ### M2: LAN enrollment and two-host synchronization
+
+Completed on 2026-10-11. The signed membership/change protocol, development CLI,
+replication acceptance tests, and platform limits are recorded in
+[M2 LAN synchronization](cluster-lan-sync-m2.md).
 
 Implement invitation redemption, verifiable cluster authorization, local discovery, missing-record reconciliation, and verified whole-file replication between two headless nodes. Reconcile imported metadata without erasing overrides. Deletion and concurrent-change records must be representable before enabling automatic bidirectional mutation.
 
