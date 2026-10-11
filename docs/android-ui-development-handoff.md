@@ -1,9 +1,9 @@
 # Android UI development on Windows
 
 Status: the initial LAN playback client is implemented and physically verified.
-Its current screen is a functional development interface. Detailed Android UI
-development will continue on a Windows workstation. This document records the
-baseline and remaining work, not a completed Windows build environment.
+The first user-facing Android interface and reproducible Windows build are
+implemented. The refreshed interface still requires physical-device visual,
+accessibility and playback verification.
 
 ## Start here
 
@@ -21,7 +21,7 @@ baseline and remaining work, not a completed Windows build environment.
 
 | Area | Source | Current responsibility |
 |---|---|---|
-| Screen and playback | [MainActivity.kt](../apps/android/app/src/main/java/as/ason/syncstr/MainActivity.kt) | Native Activity with ScrollView, TextViews and Buttons; invitation confirmation, refresh, track list, explicit save/play and pause/resume |
+| Screen and playback | [MainActivity.kt](../apps/android/app/src/main/java/as/ason/syncstr/MainActivity.kt) | Native Activity with connection management, album-grouped library, saved-only view, explicit save states, mini-player and now-playing view |
 | LAN discovery | [LanDiscovery.kt](../apps/android/app/src/main/java/as/ason/syncstr/LanDiscovery.kt) | Android NSD, endpoint ID validation and address lifecycle |
 | Secure identity | [DeviceKey.kt](../apps/android/app/src/main/java/as/ason/syncstr/DeviceKey.kt) | Device secret encrypted by an Android Keystore AES-GCM key; backups excluded |
 | Native boundary | [Native.kt](../apps/android/app/src/main/java/as/ason/syncstr/Native.kt), [JNI implementation](../apps/android/native/src/lib.rs) | Synchronous JSON operations called on a serialized background worker |
@@ -34,9 +34,9 @@ and the native library is `libsyncstr_android.so`. The app targets Android 9+
 and currently packages only `arm64-v8a`. UI edits must preserve identity,
 membership and saved audio across APK updates.
 
-The application currently pastes an invitation and confirms the host ID. It
+The application pastes an invitation and confirms the host ID. It
 discovers addresses on the LAN, refreshes metadata without downloading every
-track, and saves a verified original when the user chooses play/save. Saved
+track, and saves a verified original only when the user chooses Save. Saved
 tracks play without contacting a host. Catalog conflicts remain visible while
 unrelated tracks can be updated; a missing artist has a fallback label.
 

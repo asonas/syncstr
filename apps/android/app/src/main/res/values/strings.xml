@@ -1,0 +1,49 @@
+<resources>
+    <string name="app_name">Syncstr</string>
+    <string name="refresh">Refresh</string>
+    <string name="connections">Connections</string>
+    <string name="library">Library</string>
+    <string name="saved">Saved</string>
+    <string name="now_playing">Now playing</string>
+    <string name="identity_error">Your saved identity could not be opened.</string>
+    <string name="empty_library_hint">Connect a library, then refresh to see your music.</string>
+    <string name="library_updated">Library updated.</string>
+    <string name="unknown_album">Unknown album</string>
+    <string name="unknown_artist">Unknown artist</string>
+    <string name="album_subtitle">%1$s · %2$s</string>
+    <plurals name="track_count"><item quantity="one">%d track</item><item quantity="other">%d tracks</item></plurals>
+    <string name="no_saved_music">Music saved on this device will appear here.</string>
+    <string name="no_music">No music is available yet.</string>
+    <string name="available_on_library">Available from your library</string>
+    <string name="downloading">Saving…</string>
+    <string name="saved_on_device">Saved on this device</string>
+    <string name="download_failed">Could not save</string>
+    <string name="play">Play</string>
+    <string name="pause">Pause</string>
+    <string name="retry">Retry</string>
+    <string name="save">Save</string>
+    <string name="saved_track">Saved “%1$s”.</string>
+    <string name="saved_file_missing">The saved file is unavailable.</string>
+    <string name="playback_failed">This track could not be played.</string>
+    <string name="playback_position">Playback position</string>
+    <string name="nothing_playing">Choose a saved track to start listening.</string>
+    <string name="connections_explanation">Register a trusted Syncstr library on the same Wi-Fi network.</string>
+    <string name="registered_libraries">Registered libraries</string>
+    <plurals name="library_count"><item quantity="one">%d library</item><item quantity="other">%d libraries</item></plurals>
+    <string name="register_connection">Register connection</string>
+    <string name="invitation_hint">Paste invitation JSON</string>
+    <string name="cancel">Cancel</string>
+    <string name="continue_action">Continue</string>
+    <string name="register">Register</string>
+    <string name="invitation_too_long">The invitation is too long.</string>
+    <string name="invalid_host_id">The library ID is invalid.</string>
+    <string name="invalid_invitation">The invitation could not be read.</string>
+    <string name="confirm_library">Confirm library</string>
+    <string name="confirm_library_message">Confirm this ID with the library owner before registering:\n\n%1$s</string>
+    <string name="connection_registered">Connection registered.</string>
+    <string name="register_first">Register a library first.</string>
+    <string name="library_offline">The library was not found. Connect to the same Wi-Fi network and try again.</string>
+    <plurals name="conflict_count"><item quantity="one">%d track needs review</item><item quantity="other">%d tracks need review</item></plurals>
+    <string name="conflict_explanation">Conflicting library changes were kept. Other music remains available; review conflicts in Syncstr before choosing a version.</string>
+    <string name="operation_failed">The operation could not be completed.</string>
+</resources>

@@ -59,11 +59,13 @@ the same development key. Do not uninstall to work around a signature mismatch:
 uninstalling removes the enrolled device identity and saved music.
 
 Install `app/build/outputs/apk/debug/app-debug.apk` with `adb install -r`.
-Keep the phone and the library host on the same LAN. Create a playback-device
-invitation with the headless CLI, paste its JSON into **Register connection**, and
-register. The host address is discovered locally; no IP address needs entering.
-Use **Refresh library**, then select **Play / Save on this device** for a track.
-Saved audio remains available after restart without a network connection.
+Keep the phone and the library host on the same LAN. Open **Connections**, paste
+a playback-device invitation into **Register connection**, verify the displayed
+host ID, and register. The host address is discovered locally; no IP address
+needs entering. Use **Refresh**, then browse albums in **Library**. **Save** stores
+a verified original on the device; saved tracks expose a separate **Play**
+action and appear under **Saved**. The mini-player opens the full now-playing
+screen. Saved audio remains available after restart without a network connection.
 
 Remote relay configuration and Windows support are subsequent slices. A build
 does not establish Android playback acceptance; see the
