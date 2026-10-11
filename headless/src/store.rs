@@ -10,33 +10,24 @@ pub struct Store(std::sync::Arc<crate::store::Inner>);
 impl crate::store::Store {
     pub fn open(root: &std::path::Path) -> anyhow::Result<Self> {
         use fs2::FileExt as _;
-        use std::os::unix::fs::DirBuilderExt as _;
-        use std::os::unix::fs::OpenOptionsExt as _;
-        std::fs::DirBuilder::new()
-            .recursive(true)
-            .mode(0o700)
-            .create(root)?;
-        let root = root.canonicalize()?;
-        let lock = std::fs::OpenOptions::new()
+        crate::platform_fs::create_private_dir(root)?;
+        let root = crate::platform_fs::absolute_directory(root)?;
+        let lock = crate::platform_fs::private_file_options()
             .read(true)
             .write(true)
             .create(true)
             .truncate(false)
-            .mode(0o600)
             .open(root.join("node.lock"))?;
         lock.try_lock_exclusive()
             .map_err(|error| anyhow::anyhow!("data directory is already in use: {error}"))?;
         for name in ["objects", "staging"] {
-            std::fs::DirBuilder::new()
-                .mode(0o700)
-                .create(root.join(name))
-                .or_else(|error| {
-                    if error.kind() == std::io::ErrorKind::AlreadyExists {
-                        Ok(())
-                    } else {
-                        Err(error)
-                    }
-                })?;
+            crate::platform_fs::create_private_dir(&root.join(name)).or_else(|error| {
+                if error.kind() == std::io::ErrorKind::AlreadyExists {
+                    Ok(())
+                } else {
+                    Err(error)
+                }
+            })?;
         }
         let mut connection = rusqlite::Connection::open(root.join("node.sqlite"))?;
         connection.busy_timeout(std::time::Duration::from_secs(5))?;
@@ -269,8 +260,8 @@ impl crate::store::Store {
             let destination = root
                 .join("objects")
                 .join(format!("{}.{}", entry.sha256, entry.track.suffix));
-            temporary.persist(destination)?;
-            std::fs::File::open(root.join("objects"))?.sync_all()?;
+            crate::platform_fs::persist_replace(temporary, &destination)?;
+            crate::platform_fs::sync_directory(&root.join("objects"))?;
             transaction.execute(
                 "INSERT INTO tracks VALUES (?, ?, ?, ?) ON CONFLICT(sha256, suffix) DO UPDATE SET payload = excluded.payload",
                 rusqlite::params![

@@ -376,11 +376,13 @@ async fn corrupt_download_is_never_published_and_untrusted_tls_is_rejected() {
 
 #[test]
 fn identity_is_private_and_cannot_overwrite_existing_credentials() {
+    #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt as _;
     let (_root, _, identity) = crate::directories();
     let original = std::fs::read(identity.join("token")).unwrap();
     assert!(syncstr_headless::identity::initialize(&identity, "127.0.0.1").is_err());
     assert_eq!(std::fs::read(identity.join("token")).unwrap(), original);
+    #[cfg(unix)]
     for name in ["token", "tls.crt", "tls.key"] {
         assert_eq!(
             std::fs::metadata(identity.join(name))

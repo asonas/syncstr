@@ -11,9 +11,9 @@ pub mod cluster_discovery;
 #[cfg(feature = "p2p")]
 pub mod cluster_net;
 #[cfg(feature = "p2p")]
-pub mod cluster_replica;
-#[cfg(feature = "p2p")]
 pub mod cluster_remote;
+#[cfg(feature = "p2p")]
+pub mod cluster_replica;
 #[cfg(feature = "p2p")]
 pub mod cluster_sync;
 #[cfg(feature = "p2p")]
@@ -24,8 +24,9 @@ pub mod model;
 pub mod organization;
 #[cfg(feature = "p2p")]
 pub mod peer;
-#[cfg(feature = "p2p")]
-pub mod rendezvous;
+pub mod platform_fs;
 #[cfg(feature = "p2p")]
 pub mod relay;
+#[cfg(feature = "p2p")]
+pub mod rendezvous;
 pub mod store;
