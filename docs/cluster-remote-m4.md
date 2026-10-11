@@ -1,7 +1,8 @@
 # M4 optional remote access
 
-Status: implementation and local verification in progress. The physical cellular
-acceptance gate is open. Do not treat loopback relay tests as Internet proof.
+Status: M4 acceptance passed in an isolated user-operated NAS test setup.
+Physical cellular relay transfer and relay-off LAN direct transfer were verified
+separately. The limits of that evidence are recorded below.
 
 ## Transport and registration
 
@@ -95,11 +96,22 @@ was downloaded and played on the physical iPhone over Wi-Fi. Successful transfer
 with the sole configured relay stopped separately verifies the LAN direct path.
 The corresponding on-screen path label remains unconfirmed.
 
-The published Caddy Compose package, transfer interruption,
-traffic inspection for implicit services, and direct WAN traversal across
-independent networks remain unverified. Preserve the
-[M3 manual checks](cluster-apple-m3.md) in TestFlight validation. Do not merge M4
-as a completed milestone until its authorized physical acceptance setup passes.
+A physical iPhone packet capture covered approximately 17 seconds including app
+reopening and LAN catalog refresh. PKTAP process attribution was matched to the
+separate test application's installed executable. Attributed traffic consisted
+of direct NAS UDP, local DNS responses, and attempts to reach the explicitly
+configured relay's resolved addresses over HTTPS and QUIC discovery. DNS
+questions in that capture named only the configured relay. No implicit
+Syncstr-operated or public Iroh endpoint was observed in that interval. This is
+bounded runtime evidence, not a guarantee about every future network state.
+Raw device captures and operational identifiers are not published here.
+
+The authorized setup used an existing user-managed HTTPS Tunnel rather than
+deploying the supplied Caddy frontend. The Caddy configuration passed validation,
+but the complete Caddy Compose deployment was not exercised. Direct WAN traversal
+across independent networks and physical transfer interruption remain unverified;
+remote reachability was demonstrated through encrypted relay fallback. Preserve
+the [M3 manual checks](cluster-apple-m3.md) in TestFlight validation.
 
 The shared registration screen shows the configured relay and the most recent
 observed transfer path. Both Apple targets compile; visual inspection of these

@@ -130,7 +130,7 @@ The Apple integration is approved for main integration before all manual accepta
 
 ### M4: Optional remote deployment package
 
-Implementation and local verification are tracked in [M4 remote access](cluster-remote-m4.md). Physical cellular acceptance remains open.
+M4 acceptance passed in the isolated user-operated NAS setup: physical cellular relay download/playback, relay-off LAN direct transfer, and bounded packet inspection. Evidence and remaining verification limits are tracked in [M4 remote access](cluster-remote-m4.md).
 
 Publish a version-pinned user-operated relay template and instructions, including bootstrap URL export, host/client configuration, access control, health, and upgrade procedure. Provide directory setup only where demonstrated necessary or explicitly selected. A relay is configured once by the cluster administrator and distributed through enrollment.
 
