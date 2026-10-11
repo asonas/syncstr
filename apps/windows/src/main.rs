@@ -114,6 +114,30 @@ fn client() -> anyhow::Result<syncstr_headless::cluster_client::PlaybackClient> 
     syncstr_headless::cluster_client::PlaybackClient::open(&root, secret)
 }
 
+unsafe fn show_library(library: syncstr_headless::cluster_client::Library) {
+    let mut ui = UI.get().unwrap().lock().unwrap();
+    list_clear(ui.tracks);
+    for entry in &library.catalog.entries {
+        list_add(
+            ui.tracks,
+            &format!(
+                "{} — {}",
+                entry.track.title,
+                entry.track.artist.as_deref().unwrap_or("Unknown Artist")
+            ),
+        );
+    }
+    ui.entries = library.catalog.entries;
+    set_text(
+        ui.status,
+        &format!(
+            "{} tracks available. {} unresolved conflicts.",
+            ui.entries.len(),
+            library.conflicts.len()
+        ),
+    );
+}
+
 unsafe fn set_text(hwnd: HWND, value: &str) {
     let value = wide(value);
     let _ = SetWindowTextW(hwnd, PCWSTR(value.as_ptr()));
@@ -231,27 +255,7 @@ unsafe fn perform(id: i32) -> anyhow::Result<()> {
                 .find(|a| trusted.contains(&a.id.to_string()))
                 .ok_or_else(|| anyhow::anyhow!("No trusted library host is currently available"))?;
             let library = runtime()?.block_on(client.refresh(address))?;
-            let mut ui = UI.get().unwrap().lock().unwrap();
-            list_clear(ui.tracks);
-            for entry in &library.catalog.entries {
-                list_add(
-                    ui.tracks,
-                    &format!(
-                        "{} — {}",
-                        entry.track.title,
-                        entry.track.artist.as_deref().unwrap_or("Unknown Artist")
-                    ),
-                );
-            }
-            ui.entries = library.catalog.entries;
-            set_text(
-                ui.status,
-                &format!(
-                    "{} tracks available. {} unresolved conflicts.",
-                    ui.entries.len(),
-                    library.conflicts.len()
-                ),
-            );
+            show_library(library);
         }
         ID_SAVE => {
             let (object, sources) = {
@@ -262,8 +266,7 @@ unsafe fn perform(id: i32) -> anyhow::Result<()> {
                     ui.entries
                         .get(index)
                         .ok_or_else(|| anyhow::anyhow!("Track selection is stale"))?
-                        .track
-                        .id
+                        .sha256
                         .clone(),
                     ui.discovered.clone(),
                 )
@@ -286,8 +289,7 @@ unsafe fn perform(id: i32) -> anyhow::Result<()> {
                 ui.entries
                     .get(index)
                     .ok_or_else(|| anyhow::anyhow!("Track selection is stale"))?
-                    .track
-                    .id
+                    .sha256
                     .clone()
             };
             let path = runtime()?
@@ -497,6 +499,12 @@ unsafe extern "system" fn wndproc(
                 status: status_hwnd,
                 ..Default::default()
             }));
+            if data_root().is_ok_and(|root| root.join("node.sqlite").exists()) {
+                match client().and_then(|client| runtime()?.block_on(client.catalog())) {
+                    Ok(library) => show_library(library),
+                    Err(error) => status(&format!("Saved library could not be restored: {error}")),
+                }
+            }
             LRESULT(0)
         }
         WM_COMMAND => {
