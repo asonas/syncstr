@@ -25,6 +25,7 @@
 	<key>NSBonjourServices</key>
 	<array>
 		<string>_syncstr-music._tcp</string>
+		<string>_syncstr-cluster._udp</string>
 	</array>
 	<key>NSCameraUsageDescription</key>
 	<string>接続先のペアリング用QRコードを読み取るために使用します。</string>

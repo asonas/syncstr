@@ -36,6 +36,7 @@ struct LibraryView: View {
     @State private var importingAudio = false
     @State private var showingPeerSetup = false
     @State private var showingUploadStatus = false
+    @State private var showingClusterResults = false
     @State private var hoveredTrack: String?
 
     var body: some View {
@@ -107,6 +108,10 @@ struct LibraryView: View {
                 .frame(width: 500, height: 600)
                 .toolbar { Button("閉じる") { showingPeerSetup = false } }
         }
+        .sheet(isPresented: $showingClusterResults) { ClusterImportResults(transfer: library.transfer) }
+        .onChange(of: library.transfer.busy) { _, busy in
+            if !busy && !showingPeerSetup && library.transfer.clusterBatches.contains(where: { !$0.awaitingDecision.isEmpty }) { showingClusterResults = true }
+        }
         .fileImporter(isPresented: $importingAudio, allowedContentTypes: [.audio], allowsMultipleSelection: true) { result in
             switch result {
             case .success(let files):
@@ -138,7 +143,7 @@ struct LibraryView: View {
             }
             rule.padding(.vertical, 16)
             Button {
-                if library.transfer.peerConnected { importingAudio = true }
+                if library.transfer.peerConnected || library.transfer.clusterRegistration != nil { importingAudio = true }
                 else { showingPeerSetup = true }
             } label: {
                 HStack(spacing: 8) { MacIcon("cloud-upload"); Text("音源ファイルを追加") }
@@ -236,7 +241,7 @@ struct LibraryView: View {
                             Text("\(album.tracks.count)曲").font(.system(size: 12)).foregroundStyle(Studio.fog)
                             Spacer(minLength: 20)
                             playButton(album.tracks)
-                            if library.transfer.peerConnected {
+                            if library.transfer.peerConnected || library.transfer.clusterRegistration != nil {
                                 Button("アルバムを保存") { library.transfer.copy(album.tracks) }
                                     .buttonStyle(.bordered).disabled(library.transfer.busy)
                                 if library.transfer.busy { ProgressView(value: library.transfer.progress) }
@@ -402,7 +407,7 @@ struct LibraryView: View {
                 .accessibilityAddTraits(library.current?.id == track.id ? .isSelected : [])
             Menu {
                 Button("再生") { library.play(track, in: tracks) }
-                if library.transfer.peerConnected {
+                if library.transfer.peerConnected || library.transfer.clusterRegistration != nil {
                     Button("曲を保存") { library.transfer.copy([track]) }.disabled(library.transfer.busy)
                 }
                 Button("アルバムを表示") { library.selectedAlbum = track.albumKey; library.search = ""; library.showingNowPlaying = false }

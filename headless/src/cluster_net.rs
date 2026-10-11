@@ -66,8 +66,14 @@ pub async fn serve(
         tokio::select! {
             incoming = endpoint.accept() => {
                 let Some(incoming) = incoming else { break; };
-                if !crate::cluster_net::local_address(incoming.remote_addr()) { incoming.refuse(); continue; }
-                let Ok(permit) = slots.clone().try_acquire_owned() else { incoming.refuse(); continue; };
+                if !crate::cluster_net::local_address(incoming.remote_addr()) {
+                    eprintln!("Cluster connection refused: non-LAN source {:?}", incoming.remote_addr());
+                    incoming.refuse(); continue;
+                }
+                let Ok(permit) = slots.clone().try_acquire_owned() else {
+                    eprintln!("Cluster connection refused: connection limit");
+                    incoming.refuse(); continue;
+                };
                 let identity = identity.clone();
                 let store = store.clone();
                 tasks.spawn(async move {

@@ -35,7 +35,7 @@ pub struct Change {
 }
 
 impl crate::cluster_changes::Change {
-    fn signing_bytes(&self) -> anyhow::Result<Vec<u8>> {
+    pub fn signing_bytes(&self) -> anyhow::Result<Vec<u8>> {
         Ok(format!(
             "syncstr-cluster-change-v1\n{}",
             serde_json::to_string(&(
@@ -332,10 +332,7 @@ impl crate::store::Store {
         object: String,
         action: crate::cluster_changes::Action,
     ) -> anyhow::Result<crate::cluster_changes::Change> {
-        use sha2::Digest as _;
-        let authority = self.local_cluster_grant(identity).await?;
-        let proof = self.cluster_membership_proof().await?;
-        let records = self.cluster_changes().await?;
+        self.local_cluster_grant(identity).await?;
         let heads =
             crate::cluster_changes::object_heads(&self.cluster_active_changes().await?, &object);
         if matches!(action, crate::cluster_changes::Action::Import { .. }) {
@@ -344,6 +341,20 @@ impl crate::store::Store {
                 "object already known; explicit restoration or resolution required"
             );
         }
+        self.publish_observed_cluster_change(identity, object, action, heads.into_iter().map(|record| record.id).collect()).await
+    }
+
+    pub async fn publish_observed_cluster_change(
+        &self,
+        identity: &crate::peer::Identity,
+        object: String,
+        action: crate::cluster_changes::Action,
+        parents: Vec<String>,
+    ) -> anyhow::Result<crate::cluster_changes::Change> {
+        use sha2::Digest as _;
+        let authority = self.local_cluster_grant(identity).await?;
+        let proof = self.cluster_membership_proof().await?;
+        let records = self.cluster_changes().await?;
         let superseded: std::collections::HashSet<_> =
             records.iter().flat_map(|record| &record.previous).collect();
         let previous: Vec<_> = records
@@ -359,7 +370,7 @@ impl crate::store::Store {
             grant: authority.id,
             previous,
             object,
-            parents: heads.into_iter().map(|record| record.id).collect(),
+            parents,
             action,
             signature: String::new(),
         };

@@ -91,6 +91,8 @@ enum Command {
         expires: u64,
         #[arg(long)]
         output: std::path::PathBuf,
+        #[arg(long)]
+        qr: bool,
     },
     #[cfg(feature = "p2p")]
     ClusterServe {
@@ -402,6 +404,7 @@ async fn run(cli: crate::Cli) -> anyhow::Result<()> {
             library_host,
             expires,
             output,
+            qr,
         } => {
             use std::io::Write as _;
             use std::os::unix::fs::OpenOptionsExt as _;
@@ -430,6 +433,13 @@ async fn run(cli: crate::Cli) -> anyhow::Result<()> {
             )?
             .sync_all()?;
             println!("Invitation written to {}", output.display());
+            if qr {
+                let code = qrcode::QrCode::new(serde_json::to_vec(&invite)?)?;
+                println!("{}", code.render::<qrcode::render::unicode::Dense1x2>()
+                    .dark_color(qrcode::render::unicode::Dense1x2::Light)
+                    .light_color(qrcode::render::unicode::Dense1x2::Dark)
+                    .build());
+            }
         }
         #[cfg(feature = "p2p")]
         crate::Command::ClusterServe { data, peer_state } => {

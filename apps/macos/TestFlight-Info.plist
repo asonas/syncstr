@@ -34,6 +34,7 @@
 	<key>NSBonjourServices</key>
 	<array>
 		<string>_syncstr-music._tcp</string>
+		<string>_syncstr-cluster._udp</string>
 	</array>
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>MacとiPhoneの間で音楽を転送するために使用します。</string>

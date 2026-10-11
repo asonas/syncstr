@@ -159,6 +159,7 @@ final class Library: ObservableObject {
     func restoreLibrary() async {
         guard !restoredLibrary else { return }
         restoredLibrary = true
+        await transfer.restorePeer()
         defer { restoringSession = false }
         if FileManager.default.fileExists(atPath: localStore.root.appendingPathComponent("active").path) {
             await openSavedLocalLibrary()
@@ -166,6 +167,7 @@ final class Library: ObservableObject {
     }
 
     func reload() {
+        if transfer.clusterRegistration != nil { transfer.connectCluster(); return }
 #if os(macOS)
         if let folder = localFolder, folder.catalog.id == localCatalog?.id { Task { await chooseFolder(folder.root) }; return }
 #endif
@@ -531,7 +533,7 @@ final class Library: ObservableObject {
 
 #if os(iOS)
     func download(_ track: Track) {
-        guard transfer.connected else {
+        guard transfer.connected || transfer.clusterRegistration != nil else {
             message = "設定またはアルバム画面からMacに接続して保存してください。"
             return
         }

@@ -1,0 +1,218 @@
+{
+  "change": {
+    "action": {
+      "entry": {
+        "artwork": "AQID",
+        "sha256": "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
+        "track": {
+          "album": "Fixture Album",
+          "albumId": "fixture-album",
+          "artist": "Fixture Artist",
+          "coverArt": "fixture-track",
+          "discNumber": 1,
+          "duration": 1.0,
+          "id": "fixture-track",
+          "size": 3,
+          "suffix": "wav",
+          "title": "音楽 / \"fixture\"",
+          "track": 2
+        }
+      },
+      "kind": "import",
+      "organization": {
+        "albums": [
+          {
+            "id": "fixture-album",
+            "releases": [],
+            "title": "Fixture Album"
+          }
+        ],
+        "aliases": {},
+        "choices": [],
+        "preferred": {},
+        "tracks": [
+          {
+            "discNumber": 1,
+            "id": "fixture-track",
+            "imported": {
+              "artist": "Fixture Artist",
+              "compilationValues": [],
+              "title": "Fixture Album"
+            },
+            "importedAlbumID": "fixture-album",
+            "sha256": "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
+            "title": "音楽 / \"fixture\"",
+            "trackNumber": 2
+          }
+        ]
+      }
+    },
+    "author": "ea4a6c63e29c520abef5507b132ec5f9954776aebebe7b92421eea691446d22c",
+    "cluster": "fce348e4-9b87-40b0-a2ba-8af14a0a32d3",
+    "grant": "63befc93565a6aa850431481741c028dff77956aecd9869ba172243bfa6e58ca",
+    "id": "589d2366717272dc22bb1e13ff6d4da51871d0fdcb445e4df288cc5112a27070",
+    "object": "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
+    "parents": [],
+    "previous": [],
+    "signature": "3323e11033592cd70957cfa163ac7051cdd63de4a3db32d332340ae2d73aa8ea6a4dbd65e983b2e25cbaa90eea7c08fd386c07b6ec17a288385e2820cc85e601",
+    "version": 1
+  },
+  "client": "fd1724385aa0c75b64fb78cd602fa1d991fdebf76b13c58ed702eac835e9f618",
+  "conflict": {
+    "grants": [
+      {
+        "authority": "63befc93565a6aa850431481741c028dff77956aecd9869ba172243bfa6e58ca",
+        "cluster": "fce348e4-9b87-40b0-a2ba-8af14a0a32d3",
+        "host": false,
+        "id": "60fb96efd2f4d2848e7a6aff01b65752b8b83038f149bb1ddee501a9654a359d",
+        "issuer": "ea4a6c63e29c520abef5507b132ec5f9954776aebebe7b92421eea691446d22c",
+        "member": "fd1724385aa0c75b64fb78cd602fa1d991fdebf76b13c58ed702eac835e9f618",
+        "signature": "11133b507381f12e0789818d991c9215c85249941a788a941d69619deb5c7af100ecf9d9ee39c9148ac1b9cfa8735dd814318a68b696da8439ec70b2e6c5c606",
+        "version": 1
+      },
+      {
+        "authority": null,
+        "cluster": "fce348e4-9b87-40b0-a2ba-8af14a0a32d3",
+        "host": true,
+        "id": "63befc93565a6aa850431481741c028dff77956aecd9869ba172243bfa6e58ca",
+        "issuer": "ea4a6c63e29c520abef5507b132ec5f9954776aebebe7b92421eea691446d22c",
+        "member": "ea4a6c63e29c520abef5507b132ec5f9954776aebebe7b92421eea691446d22c",
+        "signature": "d0731c14fda8443518641582683fa617a0c0bbb83d2f8180c30e199fd73dec140e703f1752df77b66bc8a5acaae0415781f8e28154d340d93e8a49b5faabde0f",
+        "version": 1
+      },
+      {
+        "authority": "63befc93565a6aa850431481741c028dff77956aecd9869ba172243bfa6e58ca",
+        "cluster": "fce348e4-9b87-40b0-a2ba-8af14a0a32d3",
+        "host": true,
+        "id": "a4531baf470f6f468474389c14792991605a4c8b7d8ad02b8acc2fa1e30a04dc",
+        "issuer": "ea4a6c63e29c520abef5507b132ec5f9954776aebebe7b92421eea691446d22c",
+        "member": "1398f62c6d1a457c51ba6a4b5f3dbd2f69fca93216218dc8997e416bd17d93ca",
+        "signature": "0f43f571fbf454f7fef06016767a7cb7ab36ba72928844fdc477e9772f2f6a38d65f340d86b5c955df6433837b1ce9e14395a036e9b3e55c86ad3ceeff4cee02",
+        "version": 1
+      }
+    ],
+    "revocations": [
+      {
+        "authority": "a4531baf470f6f468474389c14792991605a4c8b7d8ad02b8acc2fa1e30a04dc",
+        "change_heads": [
+          "589d2366717272dc22bb1e13ff6d4da51871d0fdcb445e4df288cc5112a27070"
+        ],
+        "cluster": "fce348e4-9b87-40b0-a2ba-8af14a0a32d3",
+        "id": "a404e4cb1bdb46f2ca3a79c656863e6bd3ada84a8b0c63778ad83e2e769aaad3",
+        "issuer": "1398f62c6d1a457c51ba6a4b5f3dbd2f69fca93216218dc8997e416bd17d93ca",
+        "member": "ea4a6c63e29c520abef5507b132ec5f9954776aebebe7b92421eea691446d22c",
+        "observed": [
+          "60fb96efd2f4d2848e7a6aff01b65752b8b83038f149bb1ddee501a9654a359d",
+          "63befc93565a6aa850431481741c028dff77956aecd9869ba172243bfa6e58ca",
+          "a4531baf470f6f468474389c14792991605a4c8b7d8ad02b8acc2fa1e30a04dc"
+        ],
+        "signature": "1735dfce6ccbe5bedd1cdd1e6d11fbcaf99bc557539a10b30dbf66931f6ca9235a86e21cf000e149c29facc7a8fe67db796ea21e47d5ad5665dcd263cb4fa300",
+        "version": 1
+      },
+      {
+        "authority": "63befc93565a6aa850431481741c028dff77956aecd9869ba172243bfa6e58ca",
+        "change_heads": [],
+        "cluster": "fce348e4-9b87-40b0-a2ba-8af14a0a32d3",
+        "id": "dc4f4bae5e318e4d5cd61f561c596f1691562fed0f9e886fa6576374f23ed31c",
+        "issuer": "ea4a6c63e29c520abef5507b132ec5f9954776aebebe7b92421eea691446d22c",
+        "member": "1398f62c6d1a457c51ba6a4b5f3dbd2f69fca93216218dc8997e416bd17d93ca",
+        "observed": [],
+        "signature": "46a0e8bf015f7f6b680b0dbc4b4a4ef624a6c6f60ddd0aba275451ecf54a5e63a438279ed628020e86db391ae6f07d1b82170520014f620d8f3ba9709982ae01",
+        "version": 1
+      }
+    ],
+    "root": "ea4a6c63e29c520abef5507b132ec5f9954776aebebe7b92421eea691446d22c"
+  },
+  "host": "1398f62c6d1a457c51ba6a4b5f3dbd2f69fca93216218dc8997e416bd17d93ca",
+  "membership": {
+    "grants": [
+      {
+        "authority": "63befc93565a6aa850431481741c028dff77956aecd9869ba172243bfa6e58ca",
+        "cluster": "fce348e4-9b87-40b0-a2ba-8af14a0a32d3",
+        "host": false,
+        "id": "60fb96efd2f4d2848e7a6aff01b65752b8b83038f149bb1ddee501a9654a359d",
+        "issuer": "ea4a6c63e29c520abef5507b132ec5f9954776aebebe7b92421eea691446d22c",
+        "member": "fd1724385aa0c75b64fb78cd602fa1d991fdebf76b13c58ed702eac835e9f618",
+        "signature": "11133b507381f12e0789818d991c9215c85249941a788a941d69619deb5c7af100ecf9d9ee39c9148ac1b9cfa8735dd814318a68b696da8439ec70b2e6c5c606",
+        "version": 1
+      },
+      {
+        "authority": null,
+        "cluster": "fce348e4-9b87-40b0-a2ba-8af14a0a32d3",
+        "host": true,
+        "id": "63befc93565a6aa850431481741c028dff77956aecd9869ba172243bfa6e58ca",
+        "issuer": "ea4a6c63e29c520abef5507b132ec5f9954776aebebe7b92421eea691446d22c",
+        "member": "ea4a6c63e29c520abef5507b132ec5f9954776aebebe7b92421eea691446d22c",
+        "signature": "d0731c14fda8443518641582683fa617a0c0bbb83d2f8180c30e199fd73dec140e703f1752df77b66bc8a5acaae0415781f8e28154d340d93e8a49b5faabde0f",
+        "version": 1
+      },
+      {
+        "authority": "63befc93565a6aa850431481741c028dff77956aecd9869ba172243bfa6e58ca",
+        "cluster": "fce348e4-9b87-40b0-a2ba-8af14a0a32d3",
+        "host": true,
+        "id": "a4531baf470f6f468474389c14792991605a4c8b7d8ad02b8acc2fa1e30a04dc",
+        "issuer": "ea4a6c63e29c520abef5507b132ec5f9954776aebebe7b92421eea691446d22c",
+        "member": "1398f62c6d1a457c51ba6a4b5f3dbd2f69fca93216218dc8997e416bd17d93ca",
+        "signature": "0f43f571fbf454f7fef06016767a7cb7ab36ba72928844fdc477e9772f2f6a38d65f340d86b5c955df6433837b1ce9e14395a036e9b3e55c86ad3ceeff4cee02",
+        "version": 1
+      }
+    ],
+    "revocations": [],
+    "root": "ea4a6c63e29c520abef5507b132ec5f9954776aebebe7b92421eea691446d22c"
+  },
+  "revoked": {
+    "grants": [
+      {
+        "authority": "63befc93565a6aa850431481741c028dff77956aecd9869ba172243bfa6e58ca",
+        "cluster": "fce348e4-9b87-40b0-a2ba-8af14a0a32d3",
+        "host": false,
+        "id": "60fb96efd2f4d2848e7a6aff01b65752b8b83038f149bb1ddee501a9654a359d",
+        "issuer": "ea4a6c63e29c520abef5507b132ec5f9954776aebebe7b92421eea691446d22c",
+        "member": "fd1724385aa0c75b64fb78cd602fa1d991fdebf76b13c58ed702eac835e9f618",
+        "signature": "11133b507381f12e0789818d991c9215c85249941a788a941d69619deb5c7af100ecf9d9ee39c9148ac1b9cfa8735dd814318a68b696da8439ec70b2e6c5c606",
+        "version": 1
+      },
+      {
+        "authority": null,
+        "cluster": "fce348e4-9b87-40b0-a2ba-8af14a0a32d3",
+        "host": true,
+        "id": "63befc93565a6aa850431481741c028dff77956aecd9869ba172243bfa6e58ca",
+        "issuer": "ea4a6c63e29c520abef5507b132ec5f9954776aebebe7b92421eea691446d22c",
+        "member": "ea4a6c63e29c520abef5507b132ec5f9954776aebebe7b92421eea691446d22c",
+        "signature": "d0731c14fda8443518641582683fa617a0c0bbb83d2f8180c30e199fd73dec140e703f1752df77b66bc8a5acaae0415781f8e28154d340d93e8a49b5faabde0f",
+        "version": 1
+      },
+      {
+        "authority": "63befc93565a6aa850431481741c028dff77956aecd9869ba172243bfa6e58ca",
+        "cluster": "fce348e4-9b87-40b0-a2ba-8af14a0a32d3",
+        "host": true,
+        "id": "a4531baf470f6f468474389c14792991605a4c8b7d8ad02b8acc2fa1e30a04dc",
+        "issuer": "ea4a6c63e29c520abef5507b132ec5f9954776aebebe7b92421eea691446d22c",
+        "member": "1398f62c6d1a457c51ba6a4b5f3dbd2f69fca93216218dc8997e416bd17d93ca",
+        "signature": "0f43f571fbf454f7fef06016767a7cb7ab36ba72928844fdc477e9772f2f6a38d65f340d86b5c955df6433837b1ce9e14395a036e9b3e55c86ad3ceeff4cee02",
+        "version": 1
+      }
+    ],
+    "revocations": [
+      {
+        "authority": "a4531baf470f6f468474389c14792991605a4c8b7d8ad02b8acc2fa1e30a04dc",
+        "change_heads": [
+          "589d2366717272dc22bb1e13ff6d4da51871d0fdcb445e4df288cc5112a27070"
+        ],
+        "cluster": "fce348e4-9b87-40b0-a2ba-8af14a0a32d3",
+        "id": "a404e4cb1bdb46f2ca3a79c656863e6bd3ada84a8b0c63778ad83e2e769aaad3",
+        "issuer": "1398f62c6d1a457c51ba6a4b5f3dbd2f69fca93216218dc8997e416bd17d93ca",
+        "member": "ea4a6c63e29c520abef5507b132ec5f9954776aebebe7b92421eea691446d22c",
+        "observed": [
+          "60fb96efd2f4d2848e7a6aff01b65752b8b83038f149bb1ddee501a9654a359d",
+          "63befc93565a6aa850431481741c028dff77956aecd9869ba172243bfa6e58ca",
+          "a4531baf470f6f468474389c14792991605a4c8b7d8ad02b8acc2fa1e30a04dc"
+        ],
+        "signature": "1735dfce6ccbe5bedd1cdd1e6d11fbcaf99bc557539a10b30dbf66931f6ca9235a86e21cf000e149c29facc7a8fe67db796ea21e47d5ad5665dcd263cb4fa300",
+        "version": 1
+      }
+    ],
+    "root": "ea4a6c63e29c520abef5507b132ec5f9954776aebebe7b92421eea691446d22c"
+  },
+  "signingPayload": "syncstr-cluster-change-v1\n[1,\"fce348e4-9b87-40b0-a2ba-8af14a0a32d3\",\"ea4a6c63e29c520abef5507b132ec5f9954776aebebe7b92421eea691446d22c\",\"63befc93565a6aa850431481741c028dff77956aecd9869ba172243bfa6e58ca\",[],\"ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad\",[],{\"kind\":\"import\",\"entry\":{\"track\":{\"id\":\"fixture-track\",\"title\":\"音楽 / \\\"fixture\\\"\",\"artist\":\"Fixture Artist\",\"album\":\"Fixture Album\",\"albumId\":\"fixture-album\",\"coverArt\":\"fixture-track\",\"duration\":1.0,\"track\":2,\"discNumber\":1,\"suffix\":\"wav\",\"size\":3},\"sha256\":\"ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad\",\"artwork\":\"AQID\"},\"organization\":{\"albums\":[{\"id\":\"fixture-album\",\"title\":\"Fixture Album\",\"releases\":[]}],\"tracks\":[{\"id\":\"fixture-track\",\"sha256\":\"ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad\",\"imported\":{\"title\":\"Fixture Album\",\"artist\":\"Fixture Artist\",\"compilationValues\":[]},\"importedAlbumID\":\"fixture-album\",\"title\":\"音楽 / \\\"fixture\\\"\",\"discNumber\":1,\"trackNumber\":2}],\"aliases\":{},\"choices\":[],\"preferred\":{}}}]"
+}

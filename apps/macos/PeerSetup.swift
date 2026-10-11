@@ -5,11 +5,107 @@ import AVFoundation
 import VisionKit
 #endif
 
+struct ClusterImportResults: View {
+    @ObservedObject var transfer: LocalTransfer
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        NavigationStack {
+            List {
+                ForEach(transfer.clusterBatches) { batch in
+                    Section {
+                        Text("確認した保存先: \(batch.host)")
+                            .font(.system(.caption, design: .monospaced)).textSelection(.enabled)
+                        Text("他の保存先への複製は、それぞれの接続後に進みます。")
+                            .font(.caption).foregroundStyle(.secondary)
+                        ForEach(batch.items) { item in
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text(item.name)
+                                if item.state == .stored {
+                                    Text("保存先への追加を確認しました").foregroundStyle(.secondary)
+                                } else {
+                                    Text(item.error ?? "追加を待っています").foregroundStyle(.secondary)
+                                }
+                            }
+                        }
+                        if batch.items.contains(where: { $0.state != .stored && $0.entry != nil }) {
+                            Button("追加できなかった音源を再試行") { transfer.retryClusterBatch(batch.id) }.disabled(transfer.busy)
+                        }
+                        if !batch.awaitingDecision.isEmpty {
+                            Text("保存先への追加を確認した\(batch.awaitingDecision.count)曲を、この端末にも残しますか？ 元のファイルと、追加できなかった音源は保持します。")
+                            Button("この端末にも残す") { transfer.decideClusterCopies(batchID: batch.id, keep: true) }.disabled(transfer.busy)
+                            Button("この端末のコピーを削除", role: .destructive) { transfer.decideClusterCopies(batchID: batch.id, keep: false) }.disabled(transfer.busy)
+                        }
+                    }
+                }
+                if transfer.busy { ProgressView(value: transfer.progress) }
+                if let status = transfer.status { Text(status).foregroundStyle(.secondary) }
+            }
+            .navigationTitle("音源の追加結果")
+            .toolbar { Button("閉じる") { dismiss() } }
+        }
+#if os(macOS)
+        .frame(minWidth: 480, idealWidth: 560, minHeight: 360, idealHeight: 500)
+#endif
+    }
+}
+
+struct ClusterConflictsView: View {
+    @ObservedObject var transfer: LocalTransfer
+    @State private var conflict: ClusterObjectState?
+    @State private var selected: String?
+    @State private var confirming = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            if !transfer.clusterConflicts.isEmpty {
+                Text("変更が競合しています").font(.headline)
+                Text("自動では内容を選びません。確認して優先する内容を選んでください。")
+                    .foregroundStyle(.secondary)
+            }
+            ForEach(transfer.clusterConflicts, id: \.object) { state in
+                VStack(alignment: .leading, spacing: 8) {
+                    ForEach(state.heads, id: \.id) { head in
+                        let entry = try? ClusterObjectState(object: state.object, heads: [head]).selected(in: transfer.clusterChanges)?.action.entry
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text(entry?.track.title ?? "ライブラリから削除する変更")
+                            if let artist = entry?.track.artist { Text(artist).foregroundStyle(.secondary) }
+                            if let album = entry?.track.album { Text(album).foregroundStyle(.secondary) }
+                            Text("変更した端末: \(head.author)").font(.system(.caption, design: .monospaced))
+                            Button("この内容を優先") { conflict = state; selected = head.id; confirming = true }
+                                .disabled(transfer.busy || (entry == nil && !canDelete))
+                            if entry == nil && !canDelete {
+                                Text("削除を優先する場合は、保存先の端末で解消してください。")
+                                    .font(.caption).foregroundStyle(.secondary)
+                            }
+                        }
+                    }
+                }
+                Divider()
+            }
+        }
+        .alert("選んだ内容で競合を解消しますか？", isPresented: $confirming) {
+            Button("キャンセル", role: .cancel) {}
+            Button("選んだ内容を優先") {
+                if let conflict, let selected { transfer.resolveCluster(conflict, selected: selected) }
+            }
+        } message: {
+            Text("保存先に解消結果を送信します。他の変更履歴は保持します。")
+        }
+    }
+
+    private var canDelete: Bool {
+        guard let registration = transfer.clusterRegistration else { return false }
+        return (try? registration.membership.verify(registration.localGrant).host) ?? false
+    }
+}
+
 struct PeerSetupView: View {
     @ObservedObject var transfer: LocalTransfer
     @State private var address = ""
     @State private var name = "NAS"
     @State private var importing = false
+    @State private var showingResults = false
     @State private var confirming = false
     @State private var confirmedAddress = ""
     @State private var confirmedID = ""
@@ -20,11 +116,33 @@ struct PeerSetupView: View {
 #endif
 
     private var parsedAddress: PeerAddress? { try? PeerAddress.parse(address) }
+    private var invitation: ClusterInvitation? { try? ClusterInvitation.parse(address) }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
+            if let registration = transfer.clusterRegistration {
+                Text(registration.name).font(.headline)
+                Text("登録済みのライブラリです。同じLANにある保存先を自動で探します。")
+                    .foregroundStyle(.secondary)
+                let hosts = Set(registration.membership.grants.filter {
+                    $0.host && (try? registration.membership.verify($0.id)) != nil
+                }.map(\.member)).sorted()
+                ForEach(hosts, id: \.self) { host in
+                    Text(host).font(.system(.caption, design: .monospaced)).textSelection(.enabled)
+                        .accessibilityLabel("保存先の端末ID \(host)")
+                }
+                Button("ライブラリを更新") { transfer.connectCluster() }.disabled(transfer.busy)
+                Button("音源ファイルを追加") { importing = true }.disabled(transfer.busy)
+                if !transfer.clusterBatches.isEmpty {
+                    Button("音源の追加結果") { showingResults = true }
+                }
+                ClusterConflictsView(transfer: transfer)
+                Toggle("モバイル通信でも自動転送する", isOn: Binding(get: { transfer.automaticCellular }, set: { transfer.setAutomaticCellular($0) }))
+                Text("オフの場合も、曲を選んで保存する操作はモバイル通信で利用できます。")
+                    .font(.caption).foregroundStyle(.secondary)
+            } else {
             Text("P2Pで音楽を共有").font(.headline)
-            Text("この端末のIDを接続先で許可し、接続情報を貼り付けてください。登録前に接続先のIDを確認できます。")
+            Text("ライブラリの招待を貼り付けて参加できます。従来の接続情報を使う場合は、この端末のIDを接続先で許可してください。")
                 .foregroundStyle(.secondary)
             Text("この端末のID")
             Text(transfer.peerID).font(.system(.caption, design: .monospaced)).textSelection(.enabled)
@@ -42,7 +160,7 @@ struct PeerSetupView: View {
                 .submitLabel(.done)
                 .onSubmit { editing = nil }
 #endif
-            Text("接続情報（JSON）")
+            Text("招待または接続情報（JSON）")
             TextEditor(text: $address).font(.system(.caption, design: .monospaced)).frame(height: 100)
                 .accessibilityLabel("接続先のアドレス情報")
 #if os(iOS)
@@ -61,9 +179,9 @@ struct PeerSetupView: View {
                 }
             }
 #endif
-            if let peer = parsedAddress {
+            if let target = invitation?.host ?? parsedAddress?.id {
                 Text("接続先のID")
-                Text(peer.id).font(.system(.caption, design: .monospaced)).textSelection(.enabled)
+                Text(target).font(.system(.caption, design: .monospaced)).textSelection(.enabled)
             } else if !address.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 Text("接続情報を読み取れません。接続先が出力したJSONを貼り付けてください。")
                     .foregroundStyle(.secondary)
@@ -72,11 +190,11 @@ struct PeerSetupView: View {
 #if os(iOS)
                 editing = nil
 #endif
-                guard let peer = parsedAddress else { return }
+                guard let target = invitation?.host ?? parsedAddress?.id else { return }
                 confirmedAddress = address
-                confirmedID = peer.id
+                confirmedID = target
                 confirming = true
-            }.buttonStyle(.borderedProminent).disabled(transfer.busy || parsedAddress == nil)
+            }.buttonStyle(.borderedProminent).disabled(transfer.busy || (parsedAddress == nil && invitation == nil))
             if let savedName = transfer.peerName {
                 Text("登録済み: \(savedName)")
                 Button("登録した接続先に再接続") { Task { await transfer.reconnectPeer() } }.disabled(transfer.busy)
@@ -90,6 +208,7 @@ struct PeerSetupView: View {
             if transfer.peerConnected {
                 Button("音源ファイルを接続先に追加") { importing = true }.disabled(transfer.busy)
             }
+            }
             if transfer.busy {
                 ProgressView(value: transfer.progress)
                 Button("中断する") { transfer.cancel() }
@@ -99,7 +218,11 @@ struct PeerSetupView: View {
         .alert("この接続先を登録しますか？", isPresented: $confirming) {
             Button("キャンセル", role: .cancel) {}
             Button("登録して接続") {
-                transfer.connectPeer(addressText: confirmedAddress, expected: confirmedID, name: name)
+                if (try? ClusterInvitation.parse(confirmedAddress)) != nil {
+                    transfer.connectCluster(invitation: confirmedAddress, name: name)
+                } else {
+                    transfer.connectPeer(addressText: confirmedAddress, expected: confirmedID, name: name)
+                }
             }
         } message: {
             Text("接続先のIDを、信頼できる接続先の画面や管理者の案内と照合してください。\n\n\(confirmedID)")
@@ -118,7 +241,7 @@ struct PeerSetupView: View {
             NavigationStack {
                 PairingScanner { value in
                     scanning = false
-                    if (try? PeerAddress.parse(value)) != nil { address = value; transfer.status = nil }
+                    if (try? PeerAddress.parse(value)) != nil || (try? ClusterInvitation.parse(value)) != nil { address = value; transfer.status = nil }
                     else { transfer.status = "Syncstrの接続情報を含むQRコードを読み取ってください。" }
                 }
                 .navigationTitle("接続先のQRコードを読み取る")
@@ -133,6 +256,13 @@ struct PeerSetupView: View {
                 name = transfer.peerName ?? "NAS"
             }
         }
+        .onChange(of: transfer.clusterRegistration?.localGrant) { _, grant in
+            if grant != nil { address = ""; confirmedAddress = "" }
+        }
+        .onChange(of: transfer.busy) { _, busy in
+            if !busy && transfer.clusterBatches.contains(where: { !$0.awaitingDecision.isEmpty }) { showingResults = true }
+        }
+        .sheet(isPresented: $showingResults) { ClusterImportResults(transfer: transfer) }
         .fileImporter(isPresented: $importing, allowedContentTypes: [.audio], allowsMultipleSelection: true) { result in
             switch result {
             case .success(let files): transfer.uploadPeer(files: files)

@@ -185,6 +185,15 @@ final class LocalTransfer: ObservableObject {
     @Published var peerID = ""
     @Published var peerName: String?
     @Published var peerAddressText = ""
+    @Published private(set) var clusterRegistration: ClusterRegistration?
+    @Published private(set) var clusterBatches: [ClusterImportBatch] = []
+    @Published private(set) var clusterConflicts: [ClusterObjectState] = []
+    @Published private(set) var clusterChanges: [ClusterChange] = []
+    @Published private(set) var automaticCellular = false
+    private let clusterPath = NWPathMonitor()
+    private var automaticAudioOperation = false
+    private lazy var clusterNetwork = ClusterNetwork(store: store, secrets: peerSecrets)
+    private var recoveredClusterJobs = false
     var peerConnected: Bool { connected && client is PeerMusicConnection }
     private var operation: Task<Void, Never>?
     private var approval: CheckedContinuation<Bool, Never>?
@@ -216,6 +225,37 @@ final class LocalTransfer: ObservableObject {
         self.secrets = secrets
         self.peerSecrets = peerSecrets
         self.peerPairing = peerPairing
+        clusterPath.pathUpdateHandler = { [weak self] path in
+            Task { @MainActor in
+                guard let self, self.clusterRegistration != nil else { return }
+                let permitted = ClusterTransferPolicy.permitsAutomaticAudio(online: path.status == .satisfied,
+                    cellular: path.usesInterfaceType(.cellular), optedIn: self.automaticCellular)
+                if !permitted && self.automaticAudioOperation {
+                    self.cancel()
+                    self.status = "自動転送を一時停止しました。音源はこの端末に保持しています。"
+                    return
+                }
+                guard !self.busy, permitted,
+                      self.clusterBatches.contains(where: { $0.items.contains(where: { $0.state == .queued }) }) else { return }
+                self.connectCluster()
+            }
+        }
+        clusterPath.start(queue: .global(qos: .utility))
+    }
+
+    deinit { clusterPath.cancel() }
+
+    func setAutomaticCellular(_ enabled: Bool) {
+        do {
+            try store.database().setClusterAutomaticCellular(enabled)
+            automaticCellular = enabled
+        } catch { status = error.localizedDescription }
+    }
+
+    private var permitsAutomaticAudio: Bool {
+        let path = clusterPath.currentPath
+        return ClusterTransferPolicy.permitsAutomaticAudio(online: path.status == .satisfied,
+            cellular: path.usesInterfaceType(.cellular), optedIn: automaticCellular)
     }
 
     func browse() {
@@ -253,6 +293,16 @@ final class LocalTransfer: ObservableObject {
     func restorePeer() async {
         do {
             peerID = try await PeerMusicConnection.publicID(secrets: peerSecrets)
+            let database = try store.database()
+            clusterRegistration = try database.clusterRegistration()
+            clusterBatches = try database.clusterBatches()
+            clusterChanges = try database.clusterChanges()
+            clusterConflicts = try database.clusterObjectStates().filter(\.conflicted)
+            automaticCellular = try database.clusterAutomaticCellular()
+            if !recoveredClusterJobs {
+                try database.recoverClusterJobs()
+                recoveredClusterJobs = true
+            }
             let saved = try await peerPairing.load()
             peerName = saved?.name
             peerAddressText = saved.flatMap { Data(base64Encoded: $0.key) }
@@ -264,7 +314,174 @@ final class LocalTransfer: ObservableObject {
         } catch { status = error.localizedDescription }
     }
 
+    func connectCluster(invitation: String? = nil, name: String = "ライブラリ") {
+        cancel()
+        let attempt = generation
+        busy = true
+        status = "ライブラリの保存先を探しています…"
+        operation = Task {
+            defer { if generation == attempt { busy = false } }
+            do {
+                if let invitation {
+                    try await clusterNetwork.enroll(ClusterInvitation.parse(invitation), name: name)
+                    clusterRegistration = try store.database().clusterRegistration()
+                }
+                let catalog = try await clusterNetwork.refresh()
+                try Task.checkCancellation()
+                guard generation == attempt else { return }
+                try onCatalog?(catalog)
+                self.catalog = catalog
+                let database = try store.database()
+                clusterChanges = try database.clusterChanges()
+                clusterConflicts = try database.clusterObjectStates().filter(\.conflicted)
+                connected = true
+                status = "ライブラリを更新しました。音源を選んでこの端末に保存できます。"
+                if permitsAutomaticAudio, let batch = clusterBatches.first(where: { $0.items.contains(where: { $0.state == .queued }) }) {
+                    try await sendClusterBatch(batch, database: database, attempt: attempt)
+                }
+            } catch {
+                if generation == attempt { status = error.localizedDescription }
+            }
+        }
+    }
+
+    func resolveCluster(_ conflict: ClusterObjectState, selected: String) {
+        guard !busy else { return }
+        let attempt = generation
+        busy = true
+        operation = Task {
+            defer { if generation == attempt { busy = false } }
+            do {
+                let catalog = try await clusterNetwork.resolve(object: conflict.object, selected: selected, parents: conflict.heads.map(\.id))
+                try Task.checkCancellation()
+                guard generation == attempt else { return }
+                try onCatalog?(catalog)
+                self.catalog = catalog
+                let database = try store.database()
+                clusterChanges = try database.clusterChanges()
+                clusterConflicts = try database.clusterObjectStates().filter(\.conflicted)
+                status = "選んだ内容を保存先に反映しました。"
+            } catch {
+                if generation == attempt { status = error.localizedDescription }
+            }
+        }
+    }
+
+    func importCluster(_ files: [URL]) {
+        guard !busy, clusterRegistration != nil else { return }
+        let attempt = generation
+        busy = true; completed = 0; total = files.count; progress = 0
+        status = "音源の情報を確認しています…"
+        operation = Task {
+            defer { if generation == attempt { busy = false } }
+            do {
+                let database = try store.database()
+                var batch = ClusterImportBatch(id: UUID().uuidString, host: try await clusterNetwork.importHost(), items: [])
+                var organization = try store.load()?.organization ?? AlbumOrganization()
+                for original in files {
+                    try Task.checkCancellation()
+                    var item = ClusterImportBatch.Item(id: UUID().uuidString, name: original.lastPathComponent,
+                        parents: [], state: .queued, createdCopy: false, localCopy: .pending)
+                    do {
+                        let scoped = original.startAccessingSecurityScopedResource()
+                        defer { if scoped { original.stopAccessingSecurityScopedResource() } }
+                        let snapshot = store.root.appendingPathComponent(".import-" + item.id).appendingPathExtension(original.pathExtension)
+                        defer { try? FileManager.default.removeItem(at: snapshot) }
+                        try FileManager.default.copyItem(at: original, to: snapshot)
+                        let entry = try await UploadedMusic.entry(file: snapshot, original: original)
+                        try Task.checkCancellation()
+                        organization.importEntries([entry], sourceID: peerID)
+                        try organization.validate()
+                        item.entry = entry; item.organization = organization
+                        item.parents = try database.clusterObjectStates().first(where: { $0.object == entry.sha256 })?.heads.map(\.id) ?? []
+                        item.createdCopy = !store.hasFile(entry)
+                        try store.importFile(snapshot, entry: entry)
+                    } catch {
+                        try Task.checkCancellation()
+                        item.state = .failed; item.error = error.localizedDescription
+                    }
+                    batch.items.append(item)
+                    try database.saveClusterBatch(batch)
+                    clusterBatches = try database.clusterBatches()
+                }
+                if permitsAutomaticAudio { try await sendClusterBatch(batch, database: database, attempt: attempt) }
+                else { status = "音源をこの端末に保持しました。Wi-Fiに接続すると保存先へ追加します。" }
+            } catch {
+                if generation == attempt { status = error.localizedDescription }
+            }
+        }
+    }
+
+    func retryClusterBatch(_ id: String) {
+        guard !busy, let batch = clusterBatches.first(where: { $0.id == id }) else { return }
+        guard permitsAutomaticAudio else { status = "Wi-Fiへの接続後に再試行してください。音源は保持しています。"; return }
+        let attempt = generation
+        busy = true
+        operation = Task {
+            defer { if generation == attempt { busy = false } }
+            do { try await sendClusterBatch(batch, database: store.database(), attempt: attempt) }
+            catch { if generation == attempt { status = error.localizedDescription } }
+        }
+    }
+
+    private func sendClusterBatch(_ original: ClusterImportBatch, database: CatalogDatabase, attempt: UUID) async throws {
+        automaticAudioOperation = true
+        defer { if generation == attempt { automaticAudioOperation = false } }
+        var batch = original
+        completed = batch.items.filter { $0.state == .stored }.count
+        total = batch.items.count
+        for index in batch.items.indices where batch.items[index].state != .stored {
+            try Task.checkCancellation()
+            guard permitsAutomaticAudio else { status = "自動転送を一時停止しました。音源は保持しています。"; return }
+            guard let entry = batch.items[index].entry, let organization = batch.items[index].organization else { continue }
+            status = "「\(batch.items[index].name)」を追加中…"
+            do {
+                try await clusterNetwork.upload(entry: entry, organization: organization, parents: batch.items[index].parents,
+                    host: batch.host, file: store.fileURL(entry)) { fraction in
+                    self.progress = (Double(self.completed) + fraction) / Double(max(1, self.total))
+                }
+                try Task.checkCancellation()
+                guard generation == attempt else { return }
+                batch.items[index].state = .stored; batch.items[index].error = nil
+                completed += 1
+            } catch {
+                try Task.checkCancellation()
+                batch.items[index].state = .failed; batch.items[index].error = error.localizedDescription
+            }
+            try database.saveClusterBatch(batch)
+            clusterBatches = try database.clusterBatches()
+        }
+        if let catalog = try store.load() { try onCatalog?(catalog); self.catalog = catalog }
+        clusterChanges = try database.clusterChanges()
+        clusterConflicts = try database.clusterObjectStates().filter(\.conflicted)
+        onSaved?()
+        status = "\(total)曲中\(completed)曲を保存先に追加しました。"
+    }
+
+    func decideClusterCopies(batchID: String, keep: Bool) {
+        guard !busy, var batch = clusterBatches.first(where: { $0.id == batchID }) else { return }
+        do {
+            for index in batch.items.indices where batch.items[index].state == .stored && batch.items[index].createdCopy && batch.items[index].localCopy == .pending {
+                guard let entry = batch.items[index].entry else { throw LocalMusicError.invalidData }
+                if !keep {
+                    let needed = clusterBatches.flatMap(\.items).contains {
+                        $0.entry?.sha256 == entry.sha256 && $0.state != .stored
+                    }
+                    guard !needed else { throw LocalMusicError.invalidData }
+                    let file = store.fileURL(entry)
+                    if FileManager.default.fileExists(atPath: file.path) { try FileManager.default.removeItem(at: file) }
+                }
+                batch.items[index].localCopy = keep ? .keep : .remove
+            }
+            let database = try store.database()
+            try database.saveClusterBatch(batch)
+            clusterBatches = try database.clusterBatches()
+            onSaved?()
+        } catch { status = error.localizedDescription }
+    }
+
     func connectPeer(addressText: String, expected: String, name: String) {
+        guard clusterRegistration == nil else { return }
         cancel()
         let attempt = generation
         busy = true
@@ -334,6 +551,7 @@ final class LocalTransfer: ObservableObject {
     }
 
     func uploadPeer(files: [URL]) {
+        if clusterRegistration != nil { importCluster(files); return }
         guard let client = client as? PeerMusicConnection, connected, !busy else { return }
         if client.isClosed {
             do {
@@ -443,11 +661,13 @@ final class LocalTransfer: ObservableObject {
     }
 
     func cancel() {
+        automaticAudioOperation = false
         generation = UUID()
         operation?.cancel()
         operation = nil
         client?.close()
         client = nil
+        clusterNetwork.stop()
         connected = false
         busy = false
         activeTrack = nil
@@ -609,6 +829,7 @@ final class LocalTransfer: ObservableObject {
 #endif
 
     func connect(_ device: NearbyMusicDevice, code: String, name: String) {
+        guard clusterRegistration == nil else { return }
         cancel()
         let attempt = generation
         busy = true
@@ -662,6 +883,7 @@ final class LocalTransfer: ObservableObject {
     }
 
     func copy(_ tracks: [Track]) {
+        if clusterRegistration != nil { copyCluster(tracks); return }
         guard let client, let catalog, connected, !busy else { return }
         let entries = tracks.compactMap { track in catalog.entries.first { $0.track.id == track.id } }
         let attempt = generation
@@ -714,6 +936,42 @@ final class LocalTransfer: ObservableObject {
                 status = "\(completed)曲を保存しました。Macを閉じても聴けます。"
             } catch {
                 if generation == attempt { client.close(); self.client = nil; connected = false; status = error.localizedDescription }
+            }
+        }
+    }
+
+    private func copyCluster(_ tracks: [Track]) {
+        guard !busy else { return }
+        let attempt = generation
+        busy = true; completed = 0; total = tracks.count; progress = 0
+        operation = Task {
+            defer { if generation == attempt { busy = false; activeTrack = nil } }
+            do {
+                let saved = try store.load()
+                for track in tracks {
+                    try Task.checkCancellation()
+                    guard let entry = saved?.entries.first(where: { $0.track.id == track.id }) else { throw LocalMusicError.invalidData }
+                    let files = store
+                    if try await Task.detached(operation: {
+                        try files.hasFile(entry) && LocalMusicStore.digest(file: files.fileURL(entry)) == entry.sha256
+                    }).value {
+                        completed += 1
+                        continue
+                    }
+                    activeTrack = track.id
+                    status = "「\(track.title)」を保存中…"
+                    try await clusterNetwork.download(object: entry.sha256) { fraction in
+                        self.progress = (Double(self.completed) + fraction) / Double(max(1, self.total))
+                    }
+                    try Task.checkCancellation()
+                    guard generation == attempt else { return }
+                    completed += 1
+                    onSaved?()
+                }
+                progress = 1
+                status = "\(completed)曲を保存しました。オフラインでも聴けます。"
+            } catch {
+                if generation == attempt { status = error.localizedDescription }
             }
         }
     }

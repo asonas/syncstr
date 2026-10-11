@@ -26,6 +26,10 @@ targets:
       - path: ../macos/LocalCatalog.swift
       - path: ../macos/CatalogDatabase.swift
       - path: ../macos/ClusterPersistence.swift
+      - path: ../macos/ClusterMembership.swift
+      - path: ../macos/ClusterChanges.swift
+      - path: ../macos/ClusterDiscovery.swift
+      - path: ../macos/ClusterTransport.swift
       - path: ../macos/LocalTransfer.swift
       - path: ../macos/PeerTransfer.swift
       - path: ../macos/PeerSetup.swift
@@ -65,7 +69,7 @@ targets:
         NSAppleMusicUsageDescription: "Musicライブラリから音源に対応するアートワークを読み込むために使用します。"
         CFBundleDisplayName: Syncstr
         NSLocalNetworkUsageDescription: "MacとiPhoneの間で音楽を転送するために使用します。"
-        NSBonjourServices: ["_syncstr-music._tcp"]
+        NSBonjourServices: ["_syncstr-music._tcp", "_syncstr-cluster._udp"]
         CFBundleShortVersionString: $(MARKETING_VERSION)
         CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         ITSAppUsesNonExemptEncryption: false
@@ -81,6 +85,10 @@ targets:
       - path: ../macos/LocalCatalog.swift
       - path: ../macos/CatalogDatabase.swift
       - path: ../macos/ClusterPersistence.swift
+      - path: ../macos/ClusterMembership.swift
+      - path: ../macos/ClusterChanges.swift
+      - path: ../macos/ClusterDiscovery.swift
+      - path: ../macos/ClusterTransport.swift
       - path: ../macos/LocalTransfer.swift
       - path: ../macos/PeerTransfer.swift
       - path: ../macos/PeerSetup.swift
@@ -108,7 +116,7 @@ targets:
       properties:
         CFBundleDisplayName: Syncstr
         NSLocalNetworkUsageDescription: "MacとiPhoneの間で音楽を転送するために使用します。"
-        NSBonjourServices: ["_syncstr-music._tcp"]
+        NSBonjourServices: ["_syncstr-music._tcp", "_syncstr-cluster._udp"]
         CFBundleShortVersionString: $(MARKETING_VERSION)
         CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         ITSAppUsesNonExemptEncryption: false
@@ -128,6 +136,9 @@ targets:
       - path: ../macos/Tests/AlbumArtworkTests.swift
       - path: ../macos/Tests/CatalogMigrationTests.swift
       - path: ../macos/Tests/ClusterPersistenceTests.swift
+      - path: ../macos/Tests/ClusterMembershipTests.swift
+      - path: ../../headless/fixtures/cluster-signed.json
+        buildPhase: resources
       - path: ../../headless/fixtures/compilation-membership.json
         buildPhase: resources
       - path: ../../headless/fixtures/album-artwork.json
@@ -148,6 +159,8 @@ targets:
     platform: macOS
     sources:
       - path: ../macos/Tests
+      - path: ../../headless/fixtures/cluster-signed.json
+        buildPhase: resources
       - path: ../../headless/fixtures/compilation-membership.json
         buildPhase: resources
       - path: ../../headless/fixtures/album-artwork.json
@@ -161,6 +174,10 @@ targets:
       - path: ../macos/LocalCatalog.swift
       - path: ../macos/CatalogDatabase.swift
       - path: ../macos/ClusterPersistence.swift
+      - path: ../macos/ClusterMembership.swift
+      - path: ../macos/ClusterChanges.swift
+      - path: ../macos/ClusterDiscovery.swift
+      - path: ../macos/ClusterTransport.swift
       - path: ../macos/LocalTransfer.swift
       - path: ../macos/PeerTransfer.swift
       - path: ../macos/AlbumOrganization.swift
@@ -185,6 +202,10 @@ targets:
       - path: ../macos/LocalCatalog.swift
       - path: ../macos/CatalogDatabase.swift
       - path: ../macos/ClusterPersistence.swift
+      - path: ../macos/ClusterMembership.swift
+      - path: ../macos/ClusterChanges.swift
+      - path: ../macos/ClusterDiscovery.swift
+      - path: ../macos/ClusterTransport.swift
       - path: ../macos/LocalTransfer.swift
       - path: ../macos/PeerTransfer.swift
       - path: ../macos/AlbumOrganization.swift

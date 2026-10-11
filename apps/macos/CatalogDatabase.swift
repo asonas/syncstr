@@ -7,6 +7,228 @@ struct CatalogSnapshot {
     var sourcePaths: [String: String]
 }
 
+extension CatalogDatabase {
+    private func migrateClusterMembership() throws {
+        try execute("CREATE TABLE IF NOT EXISTS cluster_registration (singleton INTEGER PRIMARY KEY CHECK(singleton = 1), payload TEXT NOT NULL)")
+        try execute("CREATE TABLE IF NOT EXISTS cluster_signed_changes (id TEXT PRIMARY KEY, payload TEXT NOT NULL, accepted INTEGER NOT NULL CHECK(accepted IN (0, 1)))")
+        try execute("CREATE TABLE IF NOT EXISTS cluster_peer_cursors (peer TEXT PRIMARY KEY, sequence INTEGER NOT NULL)")
+        try execute("CREATE TABLE IF NOT EXISTS cluster_track_ids (object TEXT PRIMARY KEY, id TEXT NOT NULL UNIQUE)")
+        try execute("CREATE TABLE IF NOT EXISTS cluster_import_batches (id TEXT PRIMARY KEY, payload TEXT NOT NULL)")
+        try execute("CREATE TABLE IF NOT EXISTS cluster_transfer_settings (singleton INTEGER PRIMARY KEY CHECK(singleton = 1), cellular INTEGER NOT NULL CHECK(cellular IN (0, 1)))")
+    }
+
+    func clusterRegistration() throws -> ClusterRegistration? {
+        guard let payload = try rows("SELECT payload FROM cluster_registration WHERE singleton = 1").first?.first ?? nil else { return nil }
+        return try JSONDecoder().decode(ClusterRegistration.self, from: Data(payload.utf8))
+    }
+
+    func saveClusterBatch(_ batch: ClusterImportBatch) throws {
+        guard UUID(uuidString: batch.id) != nil, ClusterIdentity.isLowercaseHex256(batch.host),
+              Set(batch.items.map(\.id)).count == batch.items.count,
+              batch.items.allSatisfy({ UUID(uuidString: $0.id) != nil && ($0.entry.map(LocalMusicStore.valid) ?? true) }) else { throw LocalMusicError.invalidData }
+        try execute("INSERT INTO cluster_import_batches VALUES (?, ?) ON CONFLICT(id) DO UPDATE SET payload = excluded.payload", [batch.id, String(decoding: try JSONEncoder().encode(batch), as: UTF8.self)])
+    }
+
+    func clusterBatches() throws -> [ClusterImportBatch] {
+        try rows("SELECT payload FROM cluster_import_batches ORDER BY rowid").map { row in
+            guard let value = row[0] else { throw LocalMusicError.invalidData }
+            return try JSONDecoder().decode(ClusterImportBatch.self, from: Data(value.utf8))
+        }
+    }
+
+    func clusterAutomaticCellular() throws -> Bool {
+        try rows("SELECT cellular FROM cluster_transfer_settings WHERE singleton = 1").first?.first == "1"
+    }
+
+    func setClusterAutomaticCellular(_ enabled: Bool) throws {
+        try execute("INSERT OR REPLACE INTO cluster_transfer_settings VALUES (1, ?)", [enabled ? "1" : "0"])
+    }
+
+    func enrollCluster(invitation: ClusterInvitation, grantID: String, membership: ClusterMembership, ownID: String, name: String) throws {
+        guard name.utf8.count <= 2048 else { throw LocalMusicError.invalidData }
+        let grant = try membership.verify(grantID)
+        guard grant.cluster == invitation.cluster, grant.issuer == invitation.host,
+              grant.member == ownID, grant.authority != nil else { throw LocalMusicError.unauthorized }
+        for item in membership.grants {
+            guard item.cluster == grant.cluster else { throw LocalMusicError.unauthorized }
+            _ = try membership.chain(item.id)
+        }
+        for item in membership.revocations { guard item.cluster == grant.cluster else { throw LocalMusicError.unauthorized } }
+        _ = try membership.revocationState()
+        try transaction {
+            var effective = membership
+            if let previous = try clusterRegistration() {
+                guard previous.localGrant == grantID, previous.membership.root == membership.root else { throw LocalMusicError.unauthorized }
+                effective = try previous.membership.merging(membership, presenter: invitation.host)
+            }
+            try execute("INSERT OR IGNORE INTO cluster_identity VALUES (1, ?, ?)", [grant.cluster, ownID])
+            guard let identity = try rows("SELECT id, member_id FROM cluster_identity WHERE singleton = 1").first,
+                  identity == [grant.cluster, ownID] else { throw LocalMusicError.unauthorized }
+            let registration = ClusterRegistration(name: name, localGrant: grantID, membership: effective)
+            try execute("INSERT OR REPLACE INTO cluster_registration VALUES (1, ?)", [String(decoding: try JSONEncoder().encode(registration), as: UTF8.self)])
+        }
+    }
+
+    func authenticateClusterPeer(_ peer: String, membership: ClusterMembership) throws {
+        try transaction {
+            guard var registration = try clusterRegistration() else { throw LocalMusicError.unauthorized }
+            registration.membership = try registration.membership.merging(membership, presenter: peer)
+            try execute("UPDATE cluster_registration SET payload = ? WHERE singleton = 1", [String(decoding: try JSONEncoder().encode(registration), as: UTF8.self)])
+        }
+        guard let registration = try clusterRegistration() else { throw LocalMusicError.unauthorized }
+        _ = try registration.membership.authorize(peer, host: true)
+        _ = try registration.membership.verify(registration.localGrant)
+        try transaction { try acceptPendingClusterChanges(registration.membership) }
+    }
+
+    func clusterCursor(_ peer: String) throws -> Int64 {
+        guard let value = try rows("SELECT sequence FROM cluster_peer_cursors WHERE peer = ?", [peer]).first?.first ?? nil else { return 0 }
+        guard let sequence = Int64(value), sequence >= 0 else { throw LocalMusicError.invalidData }
+        return sequence
+    }
+
+    private func readSignedChanges(acceptedOnly: Bool) throws -> [ClusterSignedChange] {
+        try rows("SELECT payload FROM cluster_signed_changes \(acceptedOnly ? "WHERE accepted = 1" : "") ORDER BY rowid").map { row in
+            guard let payload = row[0] else { throw LocalMusicError.invalidData }
+            return try JSONDecoder().decode(ClusterSignedChange.self, from: Data(payload.utf8))
+        }
+    }
+
+    func clusterChanges() throws -> [ClusterChange] {
+        guard let registration = try clusterRegistration() else { return [] }
+        return try readSignedChanges(acceptedOnly: true).map { try $0.decode(membership: registration.membership) }
+    }
+
+    func receiveClusterPage(peer: String, sequence: Int64, signed: ClusterSignedChange) throws {
+        try transaction {
+            guard sequence > 0, let registration = try clusterRegistration() else { throw LocalMusicError.unauthorized }
+            let membership = registration.membership
+            _ = try membership.authorize(peer, host: true)
+            _ = try membership.verify(registration.localGrant)
+            let change = try signed.decode(membership: membership)
+            guard change.cluster == membership.grants.first?.cluster else { throw LocalMusicError.unauthorized }
+            if let existing = try rows("SELECT payload FROM cluster_signed_changes WHERE id = ?", [signed.id]).first?.first ?? nil {
+                guard try JSONDecoder().decode(ClusterSignedChange.self, from: Data(existing.utf8)) == signed else { throw LocalMusicError.invalidData }
+            } else {
+                try execute("INSERT INTO cluster_signed_changes VALUES (?, ?, 0)", [signed.id, String(decoding: try JSONEncoder().encode(signed), as: UTF8.self)])
+            }
+            guard let row = try rows("SELECT COALESCE(SUM(length(CAST(payload AS BLOB))), 0) FROM cluster_signed_changes WHERE accepted = 0").first,
+                  let value = row[0], let size = Int(value),
+                  size <= 128 * 1024 * 1024 else { throw LocalMusicError.invalidData }
+            try acceptPendingClusterChanges(membership)
+            let current = try clusterCursor(peer)
+            guard sequence >= current else { throw LocalMusicError.invalidData }
+            try execute("INSERT INTO cluster_peer_cursors VALUES (?, ?) ON CONFLICT(peer) DO UPDATE SET sequence = excluded.sequence", [peer, String(sequence)])
+        }
+    }
+
+    private func acceptPendingClusterChanges(_ membership: ClusterMembership) throws {
+        let all = try readSignedChanges(acceptedOnly: false).map { try $0.decode(membership: membership) }
+        var accepted = try clusterChanges()
+        var known = Set(accepted.map(\.id))
+        while true {
+            let previous = known.count
+            for record in all where !known.contains(record.id) {
+                let ready = record.parents.allSatisfy { id in accepted.contains { $0.id == id && $0.object == record.object } }
+                    && record.previous.allSatisfy { id in accepted.contains { $0.id == id && $0.author == record.author } }
+                if ready, try record.authorized(by: membership, history: all) {
+                    if let entry = record.action.entry, let size = entry.track.size {
+                        try execute("INSERT OR IGNORE INTO cluster_objects VALUES (?, ?)", [entry.sha256, String(size)])
+                        guard try rows("SELECT bytes FROM cluster_objects WHERE sha256 = ?", [entry.sha256]).first?.first == String(size) else { throw LocalMusicError.invalidData }
+                    }
+                    try execute("UPDATE cluster_signed_changes SET accepted = 1 WHERE id = ?", [record.id])
+                    known.insert(record.id); accepted.append(record)
+                }
+            }
+            if previous == known.count { break }
+        }
+    }
+
+    func clusterDownloadEntry(object: String, peer: String) throws -> LocalEntry {
+        try transaction {
+            guard let registration = try clusterRegistration() else { throw LocalMusicError.unauthorized }
+            _ = try registration.membership.verify(registration.localGrant)
+            _ = try registration.membership.authorize(peer, host: true)
+            let records = try clusterChanges()
+            let states = try ClusterObjectState.project(records, membership: registration.membership)
+            guard let state = states.first(where: { $0.object == object }),
+                  let entry = try state.selected(in: records)?.action.entry else { throw LocalMusicError.invalidData }
+            return entry
+        }
+    }
+
+    func finishClusterDownload(_ jobID: String, entry: LocalEntry, file: URL) throws {
+        guard try LocalMusicStore.digest(file: file) == entry.sha256 else { throw LocalMusicError.invalidData }
+        try transaction {
+            guard let registration = try clusterRegistration() else { throw LocalMusicError.unauthorized }
+            let member = try registration.membership.verify(registration.localGrant).member
+            let records = try clusterChanges()
+            let states = try ClusterObjectState.project(records, membership: registration.membership)
+            guard let state = states.first(where: { $0.object == entry.sha256 }),
+                  let selected = try state.selected(in: records)?.action.entry,
+                  selected.track.size == entry.track.size else { throw LocalMusicError.invalidData }
+            try execute("UPDATE cluster_jobs SET state = 'complete' WHERE id = ? AND sha256 = ? AND destination = ? AND state = 'running'", [jobID, entry.sha256, member])
+            guard sqlite3_changes(connection) == 1 else { throw LocalMusicError.invalidData }
+        }
+    }
+
+    func retryClusterJob(_ jobID: String) throws {
+        try execute("UPDATE cluster_jobs SET state = 'queued' WHERE id = ? AND state = 'running'", [jobID])
+    }
+
+    func clusterObjectStates() throws -> [ClusterObjectState] {
+        try transaction {
+            guard let registration = try clusterRegistration() else { return [] }
+            return try ClusterObjectState.project(clusterChanges(), membership: registration.membership)
+        }
+    }
+
+    func clusterCatalog() throws -> LocalCatalog {
+        try transaction {
+            guard let registration = try clusterRegistration() else { throw LocalMusicError.unauthorized }
+            let grant = try registration.membership.verify(registration.localGrant)
+            let previous = try readSnapshot()?.catalog
+            let records = try clusterChanges()
+            let states = try ClusterObjectState.project(records, membership: registration.membership)
+            let known = Set(records.map(\.object))
+            let conflicts = Set(states.filter(\.conflicted).map(\.object))
+            var entries = (previous?.entries ?? []).filter { !known.contains($0.sha256) || conflicts.contains($0.sha256) }
+            var organization = previous?.organization ?? AlbumOrganization()
+            var titles: [String: String] = [:]
+            for state in states where !state.conflicted {
+                guard let record = try state.selected(in: records), var entry = record.action.entry,
+                      let incoming = record.action.organization else { continue }
+                try organization.merge(incoming)
+                for album in incoming.albums {
+                    let id = organization.canonical(album.id)
+                    if let title = titles[id], title != album.title { throw LocalMusicError.invalidData }
+                    titles[id] = album.title
+                }
+                let saved = try rows("SELECT id FROM cluster_track_ids WHERE object = ?", [state.object]).first?.first ?? nil
+                let id = saved ?? previous?.entries.first(where: { $0.sha256 == state.object })?.track.id ?? entry.track.id
+                try execute("INSERT OR IGNORE INTO cluster_track_ids VALUES (?, ?)", [state.object, id])
+                guard try rows("SELECT id FROM cluster_track_ids WHERE object = ?", [state.object]).first?.first == id else { throw LocalMusicError.invalidData }
+                if entry.track.id != id {
+                    if organization.trackAliases == nil { organization.trackAliases = [:] }
+                    if organization.tracks.contains(where: { $0.id == id }) {
+                        organization.trackAliases?[entry.track.id] = id
+                    }
+                    entry.track.id = id
+                    if entry.track.coverArt != nil { entry.track.coverArt = id }
+                }
+                entries.append(entry)
+            }
+            for index in organization.albums.indices {
+                if let title = titles[organization.canonical(organization.albums[index].id)] {
+                    organization.albums[index].title = title
+                }
+            }
+            try organization.validate()
+            return LocalCatalog(id: previous?.id ?? grant.cluster, name: registration.name, entries: entries, organization: organization)
+        }
+    }
+}
+
 /// Each operation owns its connection; catalog replacement commits as one transaction.
 final class CatalogDatabase {
     private var connection: OpaquePointer?
@@ -31,6 +253,7 @@ final class CatalogDatabase {
                 try execute("CREATE TABLE IF NOT EXISTS artwork_assets (id TEXT PRIMARY KEY, payload TEXT NOT NULL)")
                 _ = try readSnapshot()
                 try migrateCluster()
+                try migrateClusterMembership()
                 try execute("PRAGMA user_version = 4")
             }
         } catch {

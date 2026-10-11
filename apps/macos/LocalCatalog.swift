@@ -81,6 +81,7 @@ struct LocalCatalog: Codable {
 
 enum LocalMusicError: LocalizedError {
     case invalidData, disconnected, unauthorized, changedFile, noMusic, invalidCode, incompatiblePeer
+    case clusterUnavailable, clusterNeedsAttention
 
     var errorDescription: String? {
         switch self {
@@ -91,6 +92,8 @@ enum LocalMusicError: LocalizedError {
         case .noMusic: "再生できる音源が見つかりませんでした。別のフォルダを選んでください。"
         case .invalidCode: "Macに表示された32文字のコードを入力してください。"
         case .incompatiblePeer: "接続先のSyncstrを更新してください。アルバムの整理情報に対応していません。"
+        case .clusterUnavailable: "ライブラリの保存先に接続できません。同じLANへの接続と保存先の起動を確認してください。保存済みの音源は引き続き再生できます。"
+        case .clusterNeedsAttention: "保存先で変更の確認が必要です。ライブラリを更新して競合を確認し、解消後に再試行してください。音源はこの端末に保持しています。"
         }
     }
 }
@@ -144,7 +147,7 @@ struct LocalMusicStore {
         return snapshot
     }
 
-    private func database() throws -> CatalogDatabase {
+    func database() throws -> CatalogDatabase {
         try prepare()
         let database = try CatalogDatabase(root.appendingPathComponent("catalog.sqlite"))
         let legacy = root.appendingPathComponent("catalog.json")

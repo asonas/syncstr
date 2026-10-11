@@ -1,5 +1,11 @@
 import Foundation
 
+enum ClusterTransferPolicy {
+    static func permitsAutomaticAudio(online: Bool, cellular: Bool, optedIn: Bool) -> Bool {
+        online && (!cellular || optedIn)
+    }
+}
+
 struct ClusterIdentity: Codable, Equatable {
     let id: String
     let memberID: String
@@ -82,4 +88,24 @@ struct ClusterCapabilities: Codable, Equatable {
         deletions = try values.decodeIfPresent(Bool.self, forKey: .deletions) ?? false
         conflicts = try values.decodeIfPresent(Bool.self, forKey: .conflicts) ?? false
     }
+}
+
+struct ClusterImportBatch: Codable, Identifiable {
+    struct Item: Codable, Identifiable {
+        enum State: String, Codable { case queued, stored, failed }
+        enum LocalCopy: String, Codable { case pending, keep, remove }
+        let id: String
+        let name: String
+        var entry: LocalEntry?
+        var organization: AlbumOrganization?
+        var parents: [String]
+        var state: State
+        var createdCopy: Bool
+        var localCopy: LocalCopy
+        var error: String?
+    }
+    let id: String
+    let host: String
+    var items: [Item]
+    var awaitingDecision: [Item] { items.filter { $0.state == .stored && $0.createdCopy && $0.localCopy == .pending } }
 }

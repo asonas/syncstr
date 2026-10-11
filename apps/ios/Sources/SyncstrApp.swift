@@ -26,6 +26,8 @@ struct SyncstrApp: App {
                     if phase == .background {
                         library.transfer.cancel()
                         library.transfer.stopBrowsing()
+                    } else if phase == .active && library.transfer.clusterRegistration != nil && !library.transfer.busy {
+                        library.transfer.connectCluster()
                     }
                 }
         }

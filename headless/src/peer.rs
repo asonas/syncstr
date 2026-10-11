@@ -533,7 +533,9 @@ impl crate::peer::Identity {
             .alpns(vec![crate::cluster_net::ENROLLMENT_ALPN.to_vec(), crate::cluster_sync::ALPN.to_vec()])
             .relay_mode(iroh::RelayMode::Disabled)
             .portmapper_config(iroh::endpoint::PortmapperConfig::Disabled);
-        if !listen.is_empty() {
+        if listen.is_empty() {
+            builder = builder.clear_ip_transports().bind_addr("0.0.0.0:0".parse::<std::net::SocketAddr>()?)?;
+        } else {
             builder = builder.clear_ip_transports();
             for address in listen {
                 builder = builder.bind_addr(*address)?;

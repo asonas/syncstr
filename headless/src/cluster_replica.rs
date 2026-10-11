@@ -66,6 +66,40 @@ fn selected(
 }
 
 impl crate::store::Store {
+    pub async fn receive_cluster_import(
+        &self,
+        identity: &crate::peer::Identity,
+        entry: crate::model::Entry,
+        organization: crate::organization::Organization,
+        parents: Vec<String>,
+        temporary: tempfile::NamedTempFile,
+    ) -> anyhow::Result<()> {
+        crate::cluster_replica::verify_file(temporary.path().to_owned(), entry.clone()).await?;
+        let organization = organization.for_object(&entry.sha256)?;
+        let records = self.cluster_active_changes().await?;
+        anyhow::ensure!(parents.len() <= 64 && parents.iter().all(|id| records.iter().any(|record| record.id == *id && record.object == entry.sha256 && !matches!(record.action, crate::cluster_changes::Action::Delete))), "invalid import history; restoration requires confirmation");
+        if let Ok(Some(selected)) = self.cluster_selected_change(&entry.sha256).await
+            && let crate::cluster_changes::Action::Import { entry: previous, organization: metadata }
+                | crate::cluster_changes::Action::Edit { entry: previous, organization: metadata }
+                | crate::cluster_changes::Action::Restore { entry: previous, organization: metadata } = &selected.action {
+                let mut comparable = entry.clone();
+                comparable.track.id = previous.track.id.clone();
+                comparable.track.cover_art = previous.track.cover_art.clone();
+                if comparable == **previous && organization.choices == metadata.choices {
+                    return self.commit_cluster_replica(identity, selected, temporary, None).await;
+                }
+        }
+        let known = records.iter().any(|record| record.object == entry.sha256);
+        anyhow::ensure!(!known || !parents.is_empty(), "refresh before editing an existing object");
+        let action = if known {
+            crate::cluster_changes::Action::Edit { entry: Box::new(entry.clone()), organization: Box::new(organization) }
+        } else {
+            crate::cluster_changes::Action::Import { entry: Box::new(entry.clone()), organization: Box::new(organization) }
+        };
+        let change = self.publish_observed_cluster_change(identity, entry.sha256.clone(), action, parents).await?;
+        self.commit_cluster_replica(identity, change, temporary, None).await
+    }
+
     pub async fn import_cluster_file(
         &self,
         identity: &crate::peer::Identity,
