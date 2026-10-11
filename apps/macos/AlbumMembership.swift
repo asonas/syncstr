@@ -80,6 +80,7 @@ extension AlbumOrganization {
         guard members.allSatisfy({
             !hasConflict(subject: $0.id, kind: "membership") && choice(subject: $0.id, kind: "membership")?.value == nil
         }) else { return }
+        guard Set(ids.flatMap { heads(subject: $0, kind: "artwork") }.map(\.value)).count <= 1 else { return }
         let classifications = ids.flatMap { heads(subject: $0, kind: "classification") }.map(\.value)
         guard Set(classifications).count <= 1 else { return }
         guard !hasSeparation(between: ids) else { return }

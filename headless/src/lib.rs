@@ -1,4 +1,5 @@
 pub mod api;
+pub mod artwork;
 pub mod client;
 pub mod cluster;
 #[cfg(feature = "p2p")]

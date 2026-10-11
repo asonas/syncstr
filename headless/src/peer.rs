@@ -38,7 +38,7 @@ fn version() -> u8 {
 impl crate::peer::Message {
     pub fn new(kind: &str) -> Self {
         Self {
-            version: 3,
+            version: 4,
             kind: kind.to_owned(),
             ..Self::default()
         }
@@ -78,8 +78,8 @@ pub async fn receive(
     .await??;
     let message: crate::peer::Message = serde_json::from_slice(&body)?;
     anyhow::ensure!(
-        message.version == 3,
-        "update Syncstr: organization protocol version 3 required"
+        message.version == 4,
+        "update Syncstr: organization protocol version 4 required"
     );
     Ok(message)
 }
@@ -97,9 +97,14 @@ async fn receive_organization(
         return Ok(None);
     }
     let mut bytes = Vec::new();
+    let mut has_images = false;
     loop {
         let message = crate::peer::receive(stream).await?;
         if message.kind == "organization-end" {
+            break;
+        }
+        if message.kind == "organization-images" {
+            has_images = true;
             break;
         }
         anyhow::ensure!(
@@ -119,7 +124,45 @@ async fn receive_organization(
         );
         bytes.extend(chunk);
     }
-    let organization: crate::organization::Organization = serde_json::from_slice(&bytes)?;
+    let mut organization: crate::organization::Organization = serde_json::from_slice(&bytes)?;
+    if has_images {
+        use sha2::Digest as _;
+        let mut pending: std::collections::BTreeSet<_> = organization
+            .artwork
+            .iter()
+            .flat_map(|a| a.assets.keys().cloned())
+            .collect();
+        anyhow::ensure!(pending.len() <= 100000, "too many images");
+        loop {
+            let message = crate::peer::receive(stream).await?;
+            if message.kind == "organization-end" {
+                break;
+            }
+            anyhow::ensure!(message.kind == "artwork", "expected image");
+            let id = message
+                .track
+                .ok_or_else(|| anyhow::anyhow!("missing image identity"))?;
+            anyhow::ensure!(pending.remove(&id), "unexpected image");
+            let data = base64::engine::general_purpose::STANDARD.decode(
+                message
+                    .bytes
+                    .ok_or_else(|| anyhow::anyhow!("missing image bytes"))?,
+            )?;
+            anyhow::ensure!(
+                data.len() <= 512 * 1024
+                    && hex::encode(sha2::Sha256::digest(&data)) == id
+                    && crate::artwork::bounded_jpeg(&data),
+                "invalid image"
+            );
+            organization
+                .artwork
+                .as_mut()
+                .expect("declared image")
+                .assets
+                .insert(id, data);
+        }
+        anyhow::ensure!(pending.is_empty(), "missing image");
+    }
     organization.validate()?;
     Ok(Some(organization))
 }
@@ -130,21 +173,41 @@ async fn send_organized(
     organization: crate::organization::Organization,
 ) -> anyhow::Result<()> {
     use base64::Engine as _;
-    let bytes = serde_json::to_vec(&organization)?;
+    let mut metadata = organization;
+    let images = metadata
+        .artwork
+        .as_mut()
+        .map(|a| {
+            let images = a.assets.clone();
+            for bytes in a.assets.values_mut() {
+                bytes.clear();
+            }
+            images
+        })
+        .unwrap_or_default();
+    let bytes = serde_json::to_vec(&metadata)?;
     anyhow::ensure!(bytes.len() <= 64 * 1024 * 1024, "organization too large");
-    if bytes.len() <= 1024 * 1024 {
-        header.organization = Some(organization);
+    if images.is_empty() && bytes.len() <= 1024 * 1024 {
+        header.organization = Some(metadata);
         crate::peer::send(stream, &header).await?;
-    } else {
-        header.track = Some("organization".to_owned());
-        crate::peer::send(stream, &header).await?;
-        for chunk in bytes.chunks(65536) {
-            let mut message = crate::peer::Message::new("organization");
-            message.bytes = Some(base64::engine::general_purpose::STANDARD.encode(chunk));
-            crate::peer::send(stream, &message).await?;
-        }
-        crate::peer::send(stream, &crate::peer::Message::new("organization-end")).await?;
+        return Ok(());
     }
+    header.track = Some("organization".to_owned());
+    crate::peer::send(stream, &header).await?;
+    for chunk in bytes.chunks(65536) {
+        let mut message = crate::peer::Message::new("organization");
+        message.bytes = Some(base64::engine::general_purpose::STANDARD.encode(chunk));
+        crate::peer::send(stream, &message).await?;
+    }
+    crate::peer::send(stream, &crate::peer::Message::new("organization-images")).await?;
+    for (id, bytes) in images {
+        anyhow::ensure!(bytes.len() <= 512 * 1024, "image too large");
+        let mut message = crate::peer::Message::new("artwork");
+        message.track = Some(id);
+        message.bytes = Some(base64::engine::general_purpose::STANDARD.encode(bytes));
+        crate::peer::send(stream, &message).await?;
+    }
+    crate::peer::send(stream, &crate::peer::Message::new("organization-end")).await?;
     Ok(())
 }
 
@@ -254,6 +317,19 @@ async fn serve_connection(
                 let mut end = crate::peer::Message::new("end");
                 end.track = Some(id);
                 crate::peer::send(&mut output, &end).await?;
+            }
+            "organize" => {
+                let organization = crate::peer::receive_organization(&mut input, &request)
+                    .await?
+                    .ok_or_else(|| anyhow::anyhow!("missing organization"))?;
+                store.merge_organization(organization).await?;
+                let catalog = store.catalog().await?;
+                crate::peer::send_organized(
+                    &mut output,
+                    crate::peer::Message::new("organized"),
+                    catalog.organization,
+                )
+                .await?;
             }
             "put" => {
                 let incoming_organization =

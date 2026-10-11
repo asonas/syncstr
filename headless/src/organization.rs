@@ -63,6 +63,8 @@ pub struct Choice {
 
 #[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Organization {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub artwork: Option<crate::artwork::Artwork>,
     pub albums: Vec<crate::organization::Album>,
     pub tracks: Vec<crate::organization::Track>,
     pub aliases: std::collections::BTreeMap<String, String>,
@@ -129,7 +131,7 @@ impl crate::organization::Organization {
     pub(crate) fn subject(&self, choice: &crate::organization::Choice) -> String {
         match choice.kind.as_str() {
             "membership" => self.canonical_track(&choice.subject),
-            "classification" => self
+            "classification" | "artwork" => self
                 .canonical(&choice.subject)
                 .unwrap_or(&choice.subject)
                 .to_owned(),
@@ -204,6 +206,9 @@ impl crate::organization::Organization {
                 );
             }
         }
+        if let Some(artwork) = &self.artwork {
+            artwork.validate(&tracks)?;
+        }
         let mut remaining = std::collections::BTreeMap::new();
         let mut children: std::collections::BTreeMap<&str, Vec<&str>> =
             std::collections::BTreeMap::new();
@@ -233,6 +238,19 @@ impl crate::organization::Organization {
                             .as_deref()
                             .is_none_or(|v| v == "true" || v == "false"),
                         "invalid classification"
+                    );
+                }
+                "artwork" => {
+                    anyhow::ensure!(
+                        albums.contains(self.canonical(&choice.subject)?),
+                        "unknown artwork album"
+                    );
+                    anyhow::ensure!(
+                        choice.value.as_ref().is_none_or(|id| self
+                            .artwork
+                            .as_ref()
+                            .is_some_and(|a| a.assets.contains_key(id))),
+                        "missing chosen image"
                     );
                 }
                 "proposal" => {}
@@ -279,6 +297,11 @@ impl crate::organization::Organization {
 
     pub fn merge(&mut self, incoming: &Self) -> anyhow::Result<()> {
         incoming.validate()?;
+        if let Some(incoming) = &incoming.artwork {
+            self.artwork
+                .get_or_insert_with(Default::default)
+                .merge(incoming)?;
+        }
         let established = self
             .albums
             .iter()
@@ -401,7 +424,12 @@ impl crate::organization::Organization {
             .filter(|c| c.kind == "classification" && ids.contains(&self.subject(c).as_str()))
             .map(|c| &c.value)
             .collect();
-        if classifications.len() > 1 {
+        let images: std::collections::BTreeSet<_> = active
+            .iter()
+            .filter(|c| c.kind == "artwork" && ids.contains(&self.subject(c).as_str()))
+            .map(|c| &c.value)
+            .collect();
+        if classifications.len() > 1 || images.len() > 1 {
             return Ok(false);
         }
         for track in &self.tracks {
@@ -543,7 +571,13 @@ impl crate::organization::Organization {
                         .len()
                         > 1
             });
-            if classifications.len() > 1
+            let images: std::collections::BTreeSet<_> = active
+                .iter()
+                .filter(|c| c.kind == "artwork" && ids.contains(&self.subject(c)))
+                .map(|c| &c.value)
+                .collect();
+            if images.len() > 1
+                || classifications.len() > 1
                 || !memberships.is_empty()
                 || editions.len() > 1
                 || separated

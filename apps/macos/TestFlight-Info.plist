@@ -29,6 +29,8 @@
 	<false/>
 	<key>LSApplicationCategoryType</key>
 	<string>public.app-category.music</string>
+	<key>NSAppleMusicUsageDescription</key>
+	<string>Musicライブラリから音源に対応するアートワークを読み込むために使用します。</string>
 	<key>NSBonjourServices</key>
 	<array>
 		<string>_syncstr-music._tcp</string>

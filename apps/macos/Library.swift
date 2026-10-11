@@ -7,7 +7,8 @@ struct Album: Identifiable {
     let title: String
     let artist: String
     let tracks: [Track]
-    var coverArt: String? { tracks.compactMap(\.coverArt).first }
+    var artwork: String? = nil
+    var coverArt: String? { artwork ?? tracks.compactMap(\.coverArt).first }
 }
 
 enum LibraryDestination: String, CaseIterable {
@@ -105,7 +106,7 @@ final class Library: ObservableObject {
                       }
                       if ($0.track ?? 0) != ($1.track ?? 0) { return ($0.track ?? 0) < ($1.track ?? 0) }
                       return $0.title.localizedStandardCompare($1.title) == .orderedAscending
-                  })
+                  }, artwork: localCatalog?.organization?.coverAsset(for: key))
         }.sorted {
             let titleOrder = $0.title.localizedStandardCompare($1.title)
             if titleOrder != .orderedSame { return titleOrder == .orderedAscending }
@@ -188,6 +189,7 @@ final class Library: ObservableObject {
         artworkURLs = Dictionary(uniqueKeysWithValues: catalog.entries.compactMap { entry in
             entry.track.coverArt.map { ($0, localStore.artworkURL(entry)) }
         })
+        for asset in catalog.organization?.artwork?.assets.keys.map({ $0 }) ?? [] { artworkURLs[asset] = localStore.artworkURL(asset: asset) }
         connected = true
         restoringSession = false
         refreshing = false
@@ -202,6 +204,7 @@ final class Library: ObservableObject {
             var track = entry.track
             track.albumId = catalog.organization?.albumID(for: track.id) ?? track.albumId
             if let album = catalog.organization?.albums.first(where: { $0.id == track.albumId }) { track.album = album.title }
+            if let album = track.albumId, let asset = catalog.organization?.coverAsset(for: album) { track.coverArt = asset }
             return track
         }
     }
@@ -215,6 +218,8 @@ final class Library: ObservableObject {
         try localStore.save(catalog)
         localCatalog = catalog
         tracks = organizedTracks(catalog)
+        for asset in catalog.organization?.artwork?.assets.keys.map({ $0 }) ?? [] { artworkURLs[asset] = localStore.artworkURL(asset: asset) }
+        if let id = current?.id, let updated = tracks.first(where: { $0.id == id }) { current = updated }
         if let selectedAlbum { self.selectedAlbum = catalog.organization?.canonical(selectedAlbum) }
         if let selectedAlbum, !albums.contains(where: { $0.id == selectedAlbum }) {
             let moved = Set(selectedMembers.compactMap { catalog.organization?.albumID(for: $0) })

@@ -198,7 +198,12 @@ impl crate::organization::Organization {
             .filter(|c| c.kind == "classification" && ids.contains(&self.subject(c)))
             .map(|c| &c.value)
             .collect();
-        if classifications.len() > 1 {
+        let images: std::collections::BTreeSet<_> = active
+            .iter()
+            .filter(|c| c.kind == "artwork" && ids.contains(&self.subject(c)))
+            .map(|c| &c.value)
+            .collect();
+        if classifications.len() > 1 || images.len() > 1 {
             return Ok(());
         }
         if active.iter().any(|c| {

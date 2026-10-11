@@ -21,16 +21,17 @@ final class CatalogDatabase {
         sqlite3_busy_timeout(connection, 5000)
         do {
             let version = try rows("PRAGMA user_version").first?.first ?? nil
-            guard ["0", "1", "2", "3"].contains(version) else { throw LocalMusicError.invalidData }
+            guard ["0", "1", "2", "3", "4"].contains(version) else { throw LocalMusicError.invalidData }
             try transaction {
                 try execute("CREATE TABLE IF NOT EXISTS catalog (singleton INTEGER PRIMARY KEY CHECK(singleton = 1), id TEXT NOT NULL, name TEXT NOT NULL, source_root TEXT)")
                 try execute("CREATE TABLE IF NOT EXISTS entries (id TEXT PRIMARY KEY, position INTEGER NOT NULL, sha256 TEXT NOT NULL, payload TEXT NOT NULL, source_path TEXT)")
                 try execute("CREATE INDEX IF NOT EXISTS entries_content ON entries(sha256)")
                 try execute("CREATE TABLE IF NOT EXISTS received_files (relative_path TEXT PRIMARY KEY, sha256 TEXT NOT NULL)")
                 try execute("CREATE TABLE IF NOT EXISTS organization (singleton INTEGER PRIMARY KEY CHECK(singleton = 1), payload TEXT NOT NULL)")
+                try execute("CREATE TABLE IF NOT EXISTS artwork_assets (id TEXT PRIMARY KEY, payload TEXT NOT NULL)")
                 _ = try readSnapshot()
                 try migrateCluster()
-                try execute("PRAGMA user_version = 3")
+                try execute("PRAGMA user_version = 4")
             }
         } catch {
             sqlite3_close(connection)
@@ -118,14 +119,19 @@ final class CatalogDatabase {
         var catalog = LocalCatalog(id: id, name: name, entries: entries)
         if let payload = try rows("SELECT payload FROM organization WHERE singleton = 1").first?.first ?? nil {
             catalog.organization = try JSONDecoder().decode(AlbumOrganization.self, from: Data(payload.utf8))
+            if catalog.organization?.artwork != nil {
+                for row in try rows("SELECT id, payload FROM artwork_assets") {
+                    guard let id = row[0], let payload = row[1], let data = Data(base64Encoded: payload) else { throw LocalMusicError.invalidData }
+                    if catalog.organization?.artwork?.assets[id] != nil { catalog.organization?.artwork?.assets[id] = data }
+                }
+            }
             try catalog.organization?.validate()
         }
         let previous = catalog.organization
         catalog.organize(folders: header[2] == nil ? [:] : paths.mapValues { ($0 as NSString).deletingLastPathComponent })
         try catalog.organization?.validate()
         if previous != catalog.organization {
-            try execute("INSERT OR REPLACE INTO organization VALUES (1, ?)",
-                [String(decoding: try JSONEncoder().encode(catalog.organization!), as: UTF8.self)])
+            try writeOrganization(catalog.organization!)
         }
         return CatalogSnapshot(catalog: catalog,
             sourceRoot: header[2].map { URL(fileURLWithPath: $0, isDirectory: true) }, sourcePaths: paths)
@@ -144,8 +150,7 @@ final class CatalogDatabase {
             if organized.organization == nil, sameLibrary { organized.organization = previous?.catalog.organization }
             organized.organize(folders: root == nil ? [:] : paths.mapValues { ($0 as NSString).deletingLastPathComponent })
             try organized.organization?.validate()
-            let organization = String(decoding: try JSONEncoder().encode(organized.organization!), as: UTF8.self)
-            try execute("INSERT OR REPLACE INTO organization VALUES (1, ?)", [organization])
+            try writeOrganization(organized.organization!)
             try execute("DELETE FROM entries")
             try execute("INSERT OR REPLACE INTO catalog VALUES (1, ?, ?, ?)", [catalog.id, catalog.name, root?.path])
             for (position, entry) in catalog.entries.enumerated() {
@@ -161,6 +166,16 @@ final class CatalogDatabase {
     func recordReceived(_ entry: LocalEntry) throws {
         try execute("INSERT OR REPLACE INTO received_files VALUES (?, ?)",
             [entry.sha256 + "." + (entry.track.suffix ?? "audio"), entry.sha256])
+    }
+
+    private func writeOrganization(_ organization: AlbumOrganization) throws {
+        try organization.validate()
+        for (id, data) in organization.artwork?.assets ?? [:] {
+            try execute("INSERT OR IGNORE INTO artwork_assets VALUES (?, ?)", [id, data.base64EncodedString()])
+        }
+        var metadata = organization
+        metadata.artwork?.assets = organization.artwork?.assets.mapValues { _ in Data() } ?? [:]
+        try execute("INSERT OR REPLACE INTO organization VALUES (1, ?)", [String(decoding: try JSONEncoder().encode(metadata), as: UTF8.self)])
     }
 }
 

@@ -15,33 +15,56 @@ extension MusicChannel {
     func sendOrganized(_ message: MusicMessage, organization: AlbumOrganization?) async throws {
         var header = message
         guard let organization else { try await send(header); return }
-        let data = try JSONEncoder().encode(organization)
+        var metadata = organization
+        let images = metadata.artwork?.assets ?? [:]
+        metadata.artwork?.assets = images.mapValues { _ in Data() }
+        let data = try JSONEncoder().encode(metadata)
         guard data.count <= 64 * 1024 * 1024 else { throw LocalMusicError.invalidData }
-        if data.count <= 1024 * 1024 {
+        if images.isEmpty && data.count <= 1024 * 1024 {
             header.organization = organization
             try await send(header)
-        } else {
-            header.track = "organization"
-            try await send(header)
-            for offset in stride(from: 0, to: data.count, by: 65536) {
-                try await send(MusicMessage(kind: "organization", bytes: data.subdata(in: offset..<min(offset + 65536, data.count))))
-            }
-            try await send(MusicMessage(kind: "organization-end"))
+            return
         }
+        header.track = "organization"
+        try await send(header)
+        for offset in stride(from: 0, to: data.count, by: 65536) {
+            try await send(MusicMessage(kind: "organization", bytes: data.subdata(in: offset..<min(offset + 65536, data.count))))
+        }
+        try await send(MusicMessage(kind: "organization-images"))
+        for id in images.keys.sorted() {
+            guard let image = images[id], image.count <= 512 * 1024 else { throw LocalMusicError.invalidData }
+            try await send(MusicMessage(kind: "artwork", track: id, bytes: image))
+        }
+        try await send(MusicMessage(kind: "organization-end"))
     }
 
     func receiveOrganization(_ header: MusicMessage) async throws -> AlbumOrganization? {
         if let organization = header.organization { try organization.validate(); return organization }
         guard header.track == "organization" else { return nil }
         var bytes = Data()
+        var hasImages = false
         while true {
             let message = try await receive()
             if message.kind == "organization-end" { break }
+            if message.kind == "organization-images" { hasImages = true; break }
             guard message.kind == "organization", let chunk = message.bytes, !chunk.isEmpty,
                   chunk.count <= 65536, bytes.count + chunk.count <= 64 * 1024 * 1024 else { throw LocalMusicError.invalidData }
             bytes.append(chunk)
         }
-        let organization = try JSONDecoder().decode(AlbumOrganization.self, from: bytes)
+        var organization = try JSONDecoder().decode(AlbumOrganization.self, from: bytes)
+        if hasImages {
+            var pending = Set(organization.artwork?.assets.keys.map { $0 } ?? [])
+            guard pending.count <= 100000 else { throw LocalMusicError.invalidData }
+            while true {
+                let message = try await receive()
+                if message.kind == "organization-end" { break }
+                guard message.kind == "artwork", let id = message.track, let data = message.bytes,
+                      pending.remove(id) != nil, data.count <= 512 * 1024,
+                      LocalMusicStore.digest(data) == id, ArtworkImage.valid(data) else { throw LocalMusicError.invalidData }
+                organization.artwork?.assets[id] = data
+            }
+            guard pending.isEmpty else { throw LocalMusicError.invalidData }
+        }
         try organization.validate()
         return organization
     }
@@ -210,7 +233,7 @@ final class PeerMusicConnection: MusicChannel {
         guard count > 0, count <= 2 * 1024 * 1024 else { throw LocalMusicError.invalidData }
         let body = try await stream.recv().readExact(size: UInt32(count))
         let message = try JSONDecoder().decode(MusicMessage.self, from: body)
-        guard message.version == 3 else { throw LocalMusicError.incompatiblePeer }
+        guard message.version == 4 else { throw LocalMusicError.incompatiblePeer }
         return message
     }
 }

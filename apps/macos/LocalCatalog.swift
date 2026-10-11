@@ -34,6 +34,10 @@ enum UploadedMusic {
         }
         var updated = organization
         updated.importEntries(entries, folders: folders, sourceID: sourceID)
+        let originals = Dictionary(zip(entries.map { $0.track.id }, files), uniquingKeysWith: { first, _ in first })
+        let scoped = files.filter { $0.startAccessingSecurityScopedResource() }
+        defer { scoped.forEach { $0.stopAccessingSecurityScopedResource() } }
+        try ArtworkAcquisition.collect(entries: entries, originals: originals, organization: &updated, music: ArtworkAcquisition.musicReader())
         try updated.validate()
         return (entries, updated)
     }
@@ -47,19 +51,7 @@ enum UploadedMusic {
         for key in ["TITLE", "ARTIST", "ALBUM", "TRACKNUMBER", "DISCNUMBER"] {
             if let value = (tags[key] as? [String])?.first, !value.isEmpty { fields[key] = value }
         }
-        if let data = tags["artwork"] as? Data, data.count <= 10 * 1024 * 1024,
-           let source = CGImageSourceCreateWithData(data as CFData, nil),
-           let image = CGImageSourceCreateThumbnailAtIndex(source, 0, [
-               kCGImageSourceCreateThumbnailFromImageAlways: true,
-               kCGImageSourceCreateThumbnailWithTransform: true,
-               kCGImageSourceThumbnailMaxPixelSize: 400
-           ] as CFDictionary) {
-            let output = NSMutableData()
-            if let destination = CGImageDestinationCreateWithData(output, UTType.jpeg.identifier as CFString, 1, nil) {
-                CGImageDestinationAddImage(destination, image, [kCGImageDestinationLossyCompressionQuality: 0.8] as CFDictionary)
-                if CGImageDestinationFinalize(destination) { artwork = output as Data }
-            }
-        }
+        artwork = (tags["artwork"] as? Data).flatMap(ArtworkImage.normalize)
 
         func number(_ key: String) -> Int? { fields[key]?.split(separator: "/").first.flatMap { Int($0) } }
         let id = UUID().uuidString
@@ -82,6 +74,7 @@ struct LocalCatalog: Codable {
     mutating func organize(folders: [String: String] = [:]) {
         var organization = organization ?? AlbumOrganization()
         organization.importEntries(entries, folders: folders, sourceID: id)
+        organization.retainLegacyArtwork(entries)
         self.organization = organization
     }
 }
@@ -146,7 +139,9 @@ struct LocalMusicStore {
 
     func snapshot() throws -> CatalogSnapshot? {
         guard hasStorage else { return nil }
-        return try database().snapshot()
+        let snapshot = try database().snapshot()
+        if let catalog = snapshot?.catalog { try writeArtwork(catalog) }
+        return snapshot
     }
 
     private func database() throws -> CatalogDatabase {
@@ -180,6 +175,11 @@ struct LocalMusicStore {
             throw LocalMusicError.invalidData
         }
         try prepare()
+        for (id, data) in catalog.organization?.artwork?.assets ?? [:] {
+            guard LocalMusicStore.digest(data) == id, ArtworkImage.valid(data) else { throw LocalMusicError.invalidData }
+            let url = artworkURL(asset: id)
+            if (try? Data(contentsOf: url)) != data { try data.write(to: url, options: .atomic) }
+        }
         for entry in catalog.entries {
             guard Self.valid(entry) else { throw LocalMusicError.invalidData }
             if let artwork = entry.artwork { try artwork.write(to: artworkURL(entry), options: .atomic) }
@@ -203,6 +203,8 @@ struct LocalMusicStore {
     func artworkURL(_ entry: LocalEntry) -> URL {
         root.appendingPathComponent(Self.digest(entry.artwork ?? Data()) + ".jpg")
     }
+
+    func artworkURL(asset: String) -> URL { root.appendingPathComponent(asset + ".jpg") }
 
     func hasFile(_ entry: LocalEntry) -> Bool {
         guard Self.valid(entry), let attributes = try? FileManager.default.attributesOfItem(atPath: fileURL(entry).path),
@@ -284,19 +286,7 @@ struct LocalFolder {
                 func number(_ key: String) -> Int? { tag(key)?.split(separator: "/").first.flatMap { Int($0) } }
                 let trackID = LocalMusicStore.digest(Data((id + legacyRelative).utf8))
                 var artwork: Data?
-                if let data = tags["artwork"] as? Data, data.count <= 10 * 1024 * 1024,
-                   let source = CGImageSourceCreateWithData(data as CFData, nil),
-                   let image = CGImageSourceCreateThumbnailAtIndex(source, 0, [
-                       kCGImageSourceCreateThumbnailFromImageAlways: true,
-                       kCGImageSourceCreateThumbnailWithTransform: true,
-                       kCGImageSourceThumbnailMaxPixelSize: 400
-                   ] as CFDictionary) {
-                    let output = NSMutableData()
-                    if let destination = CGImageDestinationCreateWithData(output, UTType.jpeg.identifier as CFString, 1, nil) {
-                        CGImageDestinationAddImage(destination, image, [kCGImageDestinationLossyCompressionQuality: 0.8] as CFDictionary)
-                        if CGImageDestinationFinalize(destination) { artwork = output as Data }
-                    }
-                }
+                artwork = (tags["artwork"] as? Data).flatMap(ArtworkImage.normalize)
                 let track = Track(id: trackID, title: tag("TITLE") ?? url.deletingPathExtension().lastPathComponent,
                     artist: tag("ARTIST"), album: tag("ALBUM") ?? url.deletingLastPathComponent().lastPathComponent,
                     coverArt: artwork == nil ? nil : trackID, duration: duration.isFinite ? duration : nil,
@@ -346,6 +336,7 @@ struct LocalFolder {
             entries: entries.sorted { $0.track.id < $1.track.id }, organization: old?.catalog.organization)
         let folders = stableFiles.mapValues { String($0.deletingLastPathComponent().path.dropFirst(root.path.count)).trimmingCharacters(in: CharacterSet(charactersIn: "/")) }
         catalog.organize(folders: folders)
+        try ArtworkAcquisition.collect(entries: entries, originals: stableFiles, organization: &catalog.organization!, music: ArtworkAcquisition.musicReader())
         return LocalFolder(root: root, catalog: catalog, files: stableFiles, skipped: skipped)
     }
 }

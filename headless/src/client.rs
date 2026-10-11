@@ -78,7 +78,7 @@ impl crate::client::Client {
 
     pub async fn catalog(&self) -> anyhow::Result<crate::model::Catalog> {
         let response =
-            crate::client::Client::response(self.request(reqwest::Method::GET, "v3/catalog")?)
+            crate::client::Client::response(self.request(reqwest::Method::GET, "v4/catalog")?)
                 .await?;
         crate::client::Client::json(response, 256 * 1024 * 1024).await
     }
@@ -151,7 +151,7 @@ impl crate::client::Client {
             .text("entry", encoded)
             .part("audio", audio);
         let response = crate::client::Client::response(
-            self.request(reqwest::Method::POST, "v3/tracks")?
+            self.request(reqwest::Method::POST, "v4/tracks")?
                 .multipart(form),
         )
         .await?;
@@ -184,7 +184,7 @@ impl crate::client::Client {
         url.path_segments_mut()
             .map_err(|_| anyhow::anyhow!("invalid node URL"))?
             .clear()
-            .extend(["v3", "tracks", id, "audio"]);
+            .extend(["v4", "tracks", id, "audio"]);
         let response =
             crate::client::Client::response(self.http.get(url).bearer_auth(&self.token)).await?;
         let parent = output

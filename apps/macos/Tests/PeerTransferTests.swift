@@ -205,6 +205,40 @@ final class PeerTransferTests: XCTestCase {
         XCTAssertEqual(compilation.entries.count, 2)
         XCTAssertEqual(Set(compilation.entries.compactMap { compilation.organization?.albumID(for: $0.track.id) }), [albumID])
         XCTAssertTrue(compilation.organization?.choices.isEmpty == true)
+        let artwork = try AlbumArtworkTests.fixture()
+        let modified = try files.fileURL(entry).resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate
+        transfer.onOrganization = { organization in
+            do {
+                var catalog = try XCTUnwrap(files.load())
+                catalog.organization = organization
+                try files.save(catalog)
+            } catch { XCTFail("Could not persist image synchronization: \(error)") }
+        }
+        var withImage = try XCTUnwrap(files.load())
+        try withImage.organization?.captureArtwork(try XCTUnwrap(artwork.organization.artwork?.assets[artwork.blue]), track: entry.track.id, source: "music", context: "fixture-music-item")
+        withImage.organization?.artwork?.assets[artwork.red] = artwork.organization.artwork?.assets[artwork.red]
+        withImage.organization?.set(subject: albumID, kind: "artwork", value: artwork.red)
+        try files.save(withImage)
+        transfer.syncOrganization()
+        try await wait { !transfer.busy }
+        XCTAssertTrue(transfer.connected, transfer.status ?? "")
+        // Drop local image metadata to prove the next copy comes from the Rust host.
+        try files.save(compilation)
+        await transfer.reconnectPeer()
+        try await wait { !transfer.busy }
+        XCTAssertEqual(try files.load()?.organization?.coverAsset(for: albumID), artwork.red)
+        XCTAssertEqual(try files.load()?.organization?.artwork?.assets[artwork.blue], artwork.organization.artwork?.assets[artwork.blue])
+        var cleared = try XCTUnwrap(files.load())
+        cleared.organization?.set(subject: albumID, kind: "artwork", value: nil)
+        try files.save(cleared)
+        transfer.syncOrganization()
+        try await wait { !transfer.busy }
+        try files.save(compilation)
+        await transfer.reconnectPeer()
+        try await wait { !transfer.busy }
+        XCTAssertEqual(try files.load()?.organization?.coverAsset(for: albumID), artwork.blue)
+        XCTAssertEqual(try files.fileURL(entry).resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate, modified)
+        XCTAssertEqual(try Data(contentsOf: files.fileURL(entry)), payload)
         _ = try run(["peer-pair", "--state", peer.path, "--peer", transfer.peerID, "--revoke"])
         transfer.cancel()
         await transfer.reconnectPeer()

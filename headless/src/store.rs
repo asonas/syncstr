@@ -42,14 +42,15 @@ impl crate::store::Store {
         connection.busy_timeout(std::time::Duration::from_secs(5))?;
         let version: i64 = connection.query_row("PRAGMA user_version", [], |row| row.get(0))?;
         anyhow::ensure!(
-            (0..=3).contains(&version),
+            (0..=4).contains(&version),
             "unsupported catalog schema {version}"
         );
         let transaction = connection.transaction()?;
         transaction.execute_batch("CREATE TABLE IF NOT EXISTS library (singleton INTEGER PRIMARY KEY CHECK(singleton = 1), id TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS tracks (id TEXT PRIMARY KEY, sha256 TEXT NOT NULL, suffix TEXT NOT NULL, payload BLOB NOT NULL, UNIQUE(sha256, suffix));
             CREATE TABLE IF NOT EXISTS organization (singleton INTEGER PRIMARY KEY CHECK(singleton = 1), payload BLOB NOT NULL);
-            PRAGMA user_version = 3;")?;
+            CREATE TABLE IF NOT EXISTS artwork_assets (id TEXT PRIMARY KEY, payload BLOB NOT NULL);
+            PRAGMA user_version = 4;")?;
         let stored: Option<Vec<u8>> = {
             use rusqlite::OptionalExtension as _;
             transaction
@@ -60,28 +61,52 @@ impl crate::store::Store {
                 )
                 .optional()?
         };
-        if let Some(payload) = stored.as_ref() {
-            let mut organization: crate::organization::Organization =
-                serde_json::from_slice(payload)?;
-            organization.validate()?;
-            organization.repair_membership()?;
-            organization.validate()?;
-            transaction.execute(
-                "UPDATE organization SET payload = ? WHERE singleton = 1",
-                [serde_json::to_vec(&organization)?],
-            )?;
+        let mut organization = if stored.is_some() {
+            crate::store::read_organization(&transaction)?
         } else {
-            let mut organization = crate::organization::Organization::default();
+            crate::organization::Organization::default()
+        };
+        {
+            use sha2::Digest as _;
             let mut statement = transaction.prepare("SELECT payload FROM tracks ORDER BY id")?;
-            let rows = statement.query_map([], |row| row.get::<_, Vec<u8>>(0))?;
-            for row in rows {
-                organization.import(&serde_json::from_slice::<crate::model::Entry>(&row?)?);
+            for row in statement.query_map([], |row| row.get::<_, Vec<u8>>(0))? {
+                let entry: crate::model::Entry = serde_json::from_slice(&row?)?;
+                if stored.is_none() {
+                    organization.import(&entry);
+                }
+                let track = organization.canonical_track(&entry.track.id);
+                if !organization.tracks.iter().any(|t| t.id == track) {
+                    continue;
+                }
+                if let Some(bytes) = entry
+                    .artwork
+                    .filter(|b| b.len() <= 512 * 1024 && crate::artwork::bounded_jpeg(b))
+                {
+                    let artwork = organization.artwork.get_or_insert_with(Default::default);
+                    if artwork.candidates.iter().any(|c| c.track == track) {
+                        continue;
+                    }
+                    let asset = hex::encode(sha2::Sha256::digest(&bytes));
+                    artwork.assets.insert(asset.clone(), bytes);
+                    artwork.candidates.push(crate::artwork::Candidate {
+                        id: uuid::Uuid::new_v4().to_string(),
+                        track,
+                        source: "legacy".into(),
+                        context: entry.sha256,
+                        asset,
+                        parents: vec![],
+                    });
+                }
             }
-            transaction.execute(
-                "INSERT INTO organization VALUES (1, ?)",
-                [serde_json::to_vec(&organization)?],
-            )?;
         }
+        organization.repair_membership()?;
+        transaction.execute(
+            "INSERT OR IGNORE INTO organization VALUES (1, ?)",
+            [serde_json::to_vec(
+                &crate::organization::Organization::default(),
+            )?],
+        )?;
+        crate::store::write_organization(&transaction, &organization)?;
         transaction.execute(
             "INSERT OR IGNORE INTO library VALUES (1, ?)",
             [uuid::Uuid::new_v4().to_string()],
@@ -197,10 +222,7 @@ impl crate::store::Store {
             let transaction = connection.transaction()?;
             let mut organization = crate::store::read_organization(&transaction)?;
             organization.merge(&incoming)?;
-            transaction.execute(
-                "UPDATE organization SET payload = ? WHERE singleton = 1",
-                [serde_json::to_vec(&organization)?],
-            )?;
+            crate::store::write_organization(&transaction, &organization)?;
             transaction.commit()?;
             Ok(())
         })
@@ -243,7 +265,7 @@ impl crate::store::Store {
                 organization.track_aliases.get_or_insert_with(Default::default).insert(entry.track.id.clone(), original_id);
             } else { organization.import(&entry); }
             organization.validate()?;
-            transaction.execute("UPDATE organization SET payload = ? WHERE singleton = 1", [serde_json::to_vec(&organization)?])?;
+            crate::store::write_organization(&transaction, &organization)?;
             let destination = root
                 .join("objects")
                 .join(format!("{}.{}", entry.sha256, entry.track.suffix));
@@ -275,7 +297,42 @@ pub(crate) fn read_organization(
         [],
         |row| row.get(0),
     )?;
-    let organization: crate::organization::Organization = serde_json::from_slice(&payload)?;
+    let mut organization: crate::organization::Organization = serde_json::from_slice(&payload)?;
+    if let Some(artwork) = &mut organization.artwork {
+        let mut statement = connection.prepare("SELECT id, payload FROM artwork_assets")?;
+        for row in statement.query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, Vec<u8>>(1)?))
+        })? {
+            let (id, bytes) = row?;
+            if artwork.assets.contains_key(&id) {
+                artwork.assets.insert(id, bytes);
+            }
+        }
+    }
     organization.validate()?;
     Ok(organization)
+}
+
+fn write_organization(
+    connection: &rusqlite::Connection,
+    organization: &crate::organization::Organization,
+) -> anyhow::Result<()> {
+    organization.validate()?;
+    let mut metadata = organization.clone();
+    if let Some(artwork) = &mut metadata.artwork {
+        for (id, bytes) in &artwork.assets {
+            connection.execute(
+                "INSERT OR IGNORE INTO artwork_assets VALUES (?, ?)",
+                rusqlite::params![id, bytes],
+            )?;
+        }
+        for bytes in artwork.assets.values_mut() {
+            bytes.clear();
+        }
+    }
+    connection.execute(
+        "UPDATE organization SET payload = ? WHERE singleton = 1",
+        [serde_json::to_vec(&metadata)?],
+    )?;
+    Ok(())
 }

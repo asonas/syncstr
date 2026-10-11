@@ -4,7 +4,7 @@ import Security
 import SwiftUI
 
 struct MusicMessage: Codable {
-    var version = 3
+    var version = 4
     var kind: String
     var name: String? = nil
     var library: String? = nil
@@ -136,7 +136,7 @@ final class MusicConnection {
         let count = header.reduce(0) { ($0 << 8) | Int($1) }
         guard count > 0, count <= 2 * 1024 * 1024 else { throw LocalMusicError.invalidData }
         let message = try JSONDecoder().decode(MusicMessage.self, from: await read(count))
-        guard message.version == 3 else { throw LocalMusicError.incompatiblePeer }
+        guard message.version == 4 else { throw LocalMusicError.incompatiblePeer }
         if message.kind == "denied" { throw LocalMusicError.unauthorized }
         if message.kind == "changed" { throw LocalMusicError.changedFile }
         return message
@@ -160,7 +160,15 @@ final class LocalTransfer: ObservableObject {
     @Published var status: String?
     @Published var pendingName: String?
     @Published var pairedName: String?
-    @Published var busy = false
+    @Published var busy = false {
+        didSet {
+            if !busy && pendingOrganization {
+                pendingOrganization = false
+                Task { syncOrganization() }
+            }
+        }
+    }
+    private var pendingOrganization = false
     @Published var completed = 0
     @Published var total = 0
     @Published var progress = 0.0
@@ -410,6 +418,30 @@ final class LocalTransfer: ObservableObject {
         return catalog
     }
 
+    func syncOrganization() {
+        guard let client, connected else { return }
+        guard !busy else { pendingOrganization = true; return }
+        busy = true
+        let attempt = generation
+        operation = Task {
+            defer { if generation == attempt { busy = false } }
+            do {
+                try await client.sendOrganized(MusicMessage(kind: "organize"), organization: try store.load()?.organization)
+                let response = try await client.receive()
+                guard response.kind == "organized", let incoming = try await client.receiveOrganization(response) else { throw LocalMusicError.invalidData }
+                var organization = try store.load()?.organization ?? AlbumOrganization()
+                try organization.merge(incoming)
+                guard generation == attempt else { return }
+                onOrganization?(organization)
+            } catch {
+                guard generation == attempt else { return }
+                client.close()
+                connected = false
+                status = "変更は端末に保存しました。再接続すると同期します。"
+            }
+        }
+    }
+
     func cancel() {
         generation = UUID()
         operation?.cancel()
@@ -538,6 +570,18 @@ final class LocalTransfer: ObservableObject {
         try await channel.send(MusicMessage(kind: "ready"))
         while true {
             let request = try await channel.receive()
+            if request.kind == "organize" {
+                guard let incoming = try await channel.receiveOrganization(request) else { throw LocalMusicError.invalidData }
+                var catalog = hostedCatalog ?? folder.catalog
+                var organization = catalog.organization ?? AlbumOrganization()
+                try organization.merge(incoming)
+                catalog.organization = organization
+                try store.save(catalog)
+                hostedCatalog = catalog
+                onOrganization?(organization)
+                try await channel.sendOrganized(MusicMessage(kind: "organized"), organization: organization)
+                continue
+            }
             guard request.kind == "get", let id = request.track,
                   let entry = (hostedCatalog ?? folder.catalog).entries.first(where: { $0.track.id == id }),
                   let url = folder.files[id],

@@ -34,6 +34,8 @@ targets:
       - path: ../macos/PlaybackCommands.swift
       - path: ../macos/AlbumOrganization.swift
       - path: ../macos/AlbumMembership.swift
+      - path: ../macos/AlbumArtwork.swift
+      - path: ../macos/ArtworkAcquisition.swift
       - path: ../macos/Track.swift
       - path: ../macos/CredentialStore.swift
       - path: ../macos/Licenses
@@ -41,6 +43,7 @@ targets:
       - path: ../macos/SettingsView.swift
       - path: ../macos/Assets.xcassets
     dependencies:
+      - sdk: iTunesLibrary.framework
       - package: IrohLib
       - package: AudioTags
     settings:
@@ -59,6 +62,7 @@ targets:
       path: ../macos/TestFlight-Info.plist
       properties:
         CFBundleLocalizations: [ja, en]
+        NSAppleMusicUsageDescription: "Musicライブラリから音源に対応するアートワークを読み込むために使用します。"
         CFBundleDisplayName: Syncstr
         NSLocalNetworkUsageDescription: "MacとiPhoneの間で音楽を転送するために使用します。"
         NSBonjourServices: ["_syncstr-music._tcp"]
@@ -85,6 +89,8 @@ targets:
       - path: ../macos/PlaybackCommands.swift
       - path: ../macos/AlbumOrganization.swift
       - path: ../macos/AlbumMembership.swift
+      - path: ../macos/AlbumArtwork.swift
+      - path: ../macos/ArtworkAcquisition.swift
       - path: ../macos/Track.swift
       - path: ../macos/CredentialStore.swift
     dependencies:
@@ -119,9 +125,12 @@ targets:
     sources:
       - path: Tests
       - path: ../macos/Tests/AlbumOrganizationTests.swift
+      - path: ../macos/Tests/AlbumArtworkTests.swift
       - path: ../macos/Tests/CatalogMigrationTests.swift
       - path: ../macos/Tests/ClusterPersistenceTests.swift
       - path: ../../headless/fixtures/compilation-membership.json
+        buildPhase: resources
+      - path: ../../headless/fixtures/album-artwork.json
         buildPhase: resources
       - path: ../../headless/fixtures/album-organization.json
         buildPhase: resources
@@ -141,6 +150,8 @@ targets:
       - path: ../macos/Tests
       - path: ../../headless/fixtures/compilation-membership.json
         buildPhase: resources
+      - path: ../../headless/fixtures/album-artwork.json
+        buildPhase: resources
       - path: ../../headless/fixtures/album-organization.json
         buildPhase: resources
       - path: ../../headless/fixtures/local-entry.json
@@ -154,9 +165,12 @@ targets:
       - path: ../macos/PeerTransfer.swift
       - path: ../macos/AlbumOrganization.swift
       - path: ../macos/AlbumMembership.swift
+      - path: ../macos/AlbumArtwork.swift
+      - path: ../macos/ArtworkAcquisition.swift
       - path: ../macos/Track.swift
       - path: ../macos/CredentialStore.swift
     dependencies:
+      - sdk: iTunesLibrary.framework
       - package: IrohLib
       - package: AudioTags
     settings:
@@ -175,9 +189,12 @@ targets:
       - path: ../macos/PeerTransfer.swift
       - path: ../macos/AlbumOrganization.swift
       - path: ../macos/AlbumMembership.swift
+      - path: ../macos/AlbumArtwork.swift
+      - path: ../macos/ArtworkAcquisition.swift
       - path: ../macos/Track.swift
       - path: ../macos/CredentialStore.swift
     dependencies:
+      - sdk: iTunesLibrary.framework
       - package: IrohLib
       - package: AudioTags
 schemes:

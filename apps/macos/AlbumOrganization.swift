@@ -73,6 +73,7 @@ struct AlbumOrganization: Codable, Equatable {
     var trackAliases: [String: String]? = nil
     // Derived links can be withdrawn when retained evidence changes. Listener choices are separate.
     var automaticAliases: [String: String]? = nil
+    var artwork: AlbumArtwork? = nil
 
     func canonicalTrack(_ id: String) -> String {
         var cursor = id
@@ -109,6 +110,7 @@ struct AlbumOrganization: Codable, Equatable {
         let members = tracks.filter { ids.contains(albumID(for: $0.id) ?? "") }
         guard members.allSatisfy({ !hasConflict(subject: $0.id, kind: "membership") }),
               ids.allSatisfy({ !hasConflict(subject: $0, kind: "classification") }) else { throw LocalMusicError.invalidData }
+        guard Set(ids.flatMap { heads(subject: $0, kind: "artwork") }.map(\.value)).count <= 1 else { throw LocalMusicError.invalidData }
         let classifications = ids.compactMap { choice(subject: $0, kind: "classification") }.map(\.value)
         guard Set(classifications).count <= 1 else { throw LocalMusicError.invalidData }
         if !confirmed {
@@ -149,14 +151,14 @@ struct AlbumOrganization: Codable, Equatable {
     private func key(_ subject: String, _ kind: String) -> String { kind + ":" + subject }
 
     func heads(subject: String, kind: String) -> [OrganizationChoice] {
-        let subject = kind == "membership" ? canonicalTrack(subject) : kind == "classification" ? canonical(subject) : subject
-        let revisions = choices.filter { ($0.kind == "membership" ? canonicalTrack($0.subject) : $0.kind == "classification" ? canonical($0.subject) : $0.subject) == subject && $0.kind == kind }
+        let subject = kind == "membership" ? canonicalTrack(subject) : (kind == "classification" || kind == "artwork") ? canonical(subject) : subject
+        let revisions = choices.filter { ($0.kind == "membership" ? canonicalTrack($0.subject) : ($0.kind == "classification" || $0.kind == "artwork") ? canonical($0.subject) : $0.subject) == subject && $0.kind == kind }
         let superseded = Set(revisions.flatMap(\.parents))
         return revisions.filter { !superseded.contains($0.id) }.sorted { $0.id < $1.id }
     }
 
     func choice(subject: String, kind: String) -> OrganizationChoice? {
-        let subject = kind == "membership" ? canonicalTrack(subject) : kind == "classification" ? canonical(subject) : subject
+        let subject = kind == "membership" ? canonicalTrack(subject) : (kind == "classification" || kind == "artwork") ? canonical(subject) : subject
         let heads = heads(subject: subject, kind: kind)
         return heads.first { $0.id == preferred[key(subject, kind)] } ?? heads.first
     }
@@ -166,7 +168,7 @@ struct AlbumOrganization: Codable, Equatable {
     }
 
     mutating func set(subject: String, kind: String, value: String?) {
-        if kind == "classification", !(automaticAliases ?? [:]).isEmpty {
+        if (kind == "classification" || kind == "artwork"), !(automaticAliases ?? [:]).isEmpty {
             let target = canonical(subject)
             let members = albums.filter { canonical($0.id) == target }.map(\.id)
             let derived = automaticAliases
@@ -177,7 +179,7 @@ struct AlbumOrganization: Codable, Equatable {
             repairMembership()
             return
         }
-        let subject = kind == "membership" ? canonicalTrack(subject) : kind == "classification" ? canonical(subject) : subject
+        let subject = kind == "membership" ? canonicalTrack(subject) : (kind == "classification" || kind == "artwork") ? canonical(subject) : subject
         if kind == "membership", value == nil,
            let record = tracks.first(where: { $0.id == subject }),
            canonical(record.importedAlbumID) != record.importedAlbumID, record.imported.release == nil {
@@ -258,6 +260,10 @@ struct AlbumOrganization: Codable, Equatable {
 
     mutating func merge(_ incoming: AlbumOrganization) throws {
         try incoming.validate()
+        if let incomingArtwork = incoming.artwork {
+            if artwork == nil { artwork = AlbumArtwork() }
+            try artwork?.merge(incomingArtwork)
+        }
         let established = Set(albums.map { canonical($0.id) })
         if automaticAliases == nil { automaticAliases = incoming.automaticAliases }
         for album in incoming.albums {
@@ -293,6 +299,7 @@ struct AlbumOrganization: Codable, Equatable {
         for (former, survivor) in incoming.aliases {
             if let existing = aliases[former], canonical(existing) != canonical(survivor) { continue }
             let members = tracks.filter { albumID(for: $0.id) == canonical(former) || albumID(for: $0.id) == canonical(survivor) }
+            if Set([former, survivor].flatMap { heads(subject: $0, kind: "artwork") }.map(\.value)).count > 1 { continue }
             let classifications = [former, survivor].compactMap { choice(subject: $0, kind: "classification") }.map(\.value)
             if members.contains(where: { hasConflict(subject: $0.id, kind: "membership") }) || Set(classifications).count > 1 { continue }
             if canonical(survivor) == former { continue }
@@ -320,6 +327,7 @@ struct AlbumOrganization: Codable, Equatable {
         guard albums.count <= 100000, tracks.count <= 100000, choices.count <= 200000,
               Set(albums.map(\.id)).count == albums.count, Set(tracks.map(\.id)).count == tracks.count,
               Set(choices.map(\.id)).count == choices.count else { throw LocalMusicError.invalidData }
+        try artwork?.validate(tracks: Set(tracks.map(\.id)))
         let albumIDs = Set(albums.map(\.id))
         let trackIDs = Set(tracks.map(\.id))
         for (former, _) in trackAliases ?? [:] {
@@ -347,9 +355,11 @@ struct AlbumOrganization: Codable, Equatable {
         var children: [String: [String]] = [:]
         for revision in choices {
             guard revision.id.utf8.count <= 128, revision.parents.count <= 10000,
-                  revision.kind == "membership" || revision.kind == "classification" || revision.kind == "proposal" else { throw LocalMusicError.invalidData }
+                  revision.kind == "membership" || revision.kind == "classification" || revision.kind == "proposal" || revision.kind == "artwork" else { throw LocalMusicError.invalidData }
             if revision.kind == "membership" {
                 guard trackIDs.contains(canonicalTrack(revision.subject)), revision.value.map({ albumIDs.contains(canonical($0)) }) ?? true else { throw LocalMusicError.invalidData }
+            } else if revision.kind == "artwork" {
+                guard albumIDs.contains(canonical(revision.subject)), revision.value.map({ artwork?.assets[$0] != nil }) ?? true else { throw LocalMusicError.invalidData }
             } else if revision.kind == "classification" {
                 guard albumIDs.contains(canonical(revision.subject)), revision.value == nil || revision.value == "true" || revision.value == "false" else { throw LocalMusicError.invalidData }
             }
@@ -357,7 +367,7 @@ struct AlbumOrganization: Codable, Equatable {
             remaining[revision.id] = revision.parents.count
             for parent in revision.parents {
                 guard let ancestor = byID[parent], ancestor.kind == revision.kind,
-                      (revision.kind == "membership" ? canonicalTrack(ancestor.subject) == canonicalTrack(revision.subject) : revision.kind == "classification" ? canonical(ancestor.subject) == canonical(revision.subject) : ancestor.subject == revision.subject) else { throw LocalMusicError.invalidData }
+                      (revision.kind == "membership" ? canonicalTrack(ancestor.subject) == canonicalTrack(revision.subject) : (revision.kind == "classification" || revision.kind == "artwork") ? canonical(ancestor.subject) == canonical(revision.subject) : ancestor.subject == revision.subject) else { throw LocalMusicError.invalidData }
                 children[parent, default: []].append(revision.id)
             }
         }
