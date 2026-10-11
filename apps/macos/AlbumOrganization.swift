@@ -82,16 +82,25 @@ struct AlbumOrganization: Codable, Equatable {
     }
 
     var proposals: [[OrganizationAlbum]] {
-        Dictionary(grouping: albums.filter { canonical($0.id) == $0.id && $0.releases.isEmpty }, by: \.title)
-            .filter { !$0.key.isEmpty && $0.value.count > 1 }
-            .values.map { $0.sorted { $0.id < $1.id } }
-            .filter { group in
-                let records = tracks.filter { group.map(\.id).contains(canonical($0.importedAlbumID)) }
-                let contexts = records.compactMap(\.importContext)
-                return contexts.count == records.count && Set(contexts.map { [$0.sourceID, $0.parent] }).count == 1
+        var groups: [[String]: [OrganizationAlbum]] = [:]
+        for album in albums where canonical(album.id) == album.id && album.releases.isEmpty && !album.title.isEmpty {
+            let records = tracks.filter { canonical($0.importedAlbumID) == album.id }
+            let contexts = records.compactMap(\.importContext)
+            let boundaries = Set(contexts.map { [$0.sourceID, $0.parent, album.title] })
+            if contexts.count == records.count, boundaries.count == 1, let boundary = boundaries.first {
+                groups[boundary, default: []].append(album)
             }
-            .filter { choice(subject: $0.map(\.id).joined(separator: ","), kind: "proposal") == nil }
+        }
+        return groups.values.filter { $0.count > 1 }.map { $0.sorted { $0.id < $1.id } }
+            .filter { !hasSeparation(between: Set($0.map(\.id))) }
             .sorted { $0[0].title < $1[0].title }
+    }
+
+    func hasSeparation(between ids: Set<String>) -> Bool {
+        choices.contains { revision in
+            revision.kind == "proposal" && revision.value != nil && heads(subject: revision.subject, kind: "proposal").contains(revision)
+                && Set(revision.subject.split(separator: ",").map { canonical(String($0)) }).intersection(ids).count > 1
+        }
     }
 
     mutating func join(_ ids: [String], confirmed: Bool) throws {
@@ -106,15 +115,12 @@ struct AlbumOrganization: Codable, Equatable {
             let explicitMemberships = members.compactMap { choice(subject: $0.id, kind: "membership")?.value }.map(canonical)
             guard explicitMemberships.isEmpty,
                   Set(albums.filter { ids.contains(canonical($0.id)) }.flatMap(\.releases)).count <= 1,
-                  !choices.contains(where: { revision in
-                      revision.kind == "proposal" && revision.value != nil && heads(subject: revision.subject, kind: "proposal").contains(revision)
-                          && Set(revision.subject.split(separator: ",").map { canonical(String($0)) }).intersection(ids).count > 1
-                  }) else { throw LocalMusicError.invalidData }
+                  !hasSeparation(between: Set(ids)) else { throw LocalMusicError.invalidData }
         }
         if confirmed {
             for member in members { set(subject: member.id, kind: "membership", value: survivor) }
         }
-        if let classification = classifications.first { set(subject: survivor, kind: "classification", value: classification) }
+        if confirmed, let classification = classifications.first { set(subject: survivor, kind: "classification", value: classification) }
         for id in ids.dropFirst() {
             aliases[id] = survivor
             if preferred[key(survivor, "classification")] == nil { preferred[key(survivor, "classification")] = preferred[key(id, "classification")] }

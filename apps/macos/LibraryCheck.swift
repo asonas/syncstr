@@ -116,6 +116,21 @@ struct LibraryCheck {
         try require(library.playing && library.current?.id == playingID && library.queue.map(\.id) == activeQueue)
         try require(mediaPlayers.count == playerCount)
         print("PASS: album organization changes preserve active playback and queue")
+        let beforeRepair = try localFiles.load()!
+        var repair = beforeRepair
+        let former = library.albums[1].id
+        library.selectedAlbum = former
+        for index in repair.entries.indices {
+            repair.entries[index].importedAlbum?.title = "Album A"
+            repair.entries[index].importedAlbum?.compilationValues = ["1"]
+        }
+        try library.openLocal(repair)
+        try require(library.albums.count == 1 && library.selectedAlbum == library.albums[0].id)
+        try require(library.playing && library.current?.id == playingID && library.queue.map(\.id) == activeQueue)
+        try require(mediaPlayers.count == playerCount)
+        try library.openLocal(beforeRepair)
+        try require(library.albums.count == 2)
+        print("PASS: automatic membership repair preserves player, queue and former selection")
         try require(!library.canGoPrevious && library.canGoNext)
         library.navigate(.artists)
         library.next()

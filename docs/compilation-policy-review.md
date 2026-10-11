@@ -1,6 +1,6 @@
 # Compilation membership and artwork policy review
 
-Status: agreed product policy. All interview decisions, including the cluster-aligned revisions, are confirmed. This review supersedes the external-ID-only automatic compilation grouping rule in the previous [retention policy](compilation-data-design.md). It is not implemented behavior; the existing [implementation specification](compilation-implementation-spec.md) describes the earlier implementation. See [the decision record](adr/0003-infer-album-membership-from-retained-import-evidence.md).
+Status: agreed product policy. All interview decisions, including the cluster-aligned revisions, are confirmed. This review supersedes the external-ID-only automatic compilation grouping rule in the previous [retention policy](compilation-data-design.md). Membership stage A is implemented as recorded in [its verification](validation/compilation-membership-repair.md); artwork and cluster stages remain planned. The existing [implementation specification](compilation-implementation-spec.md) describes the earlier implementation. See [the decision record](adr/0003-infer-album-membership-from-retained-import-evidence.md).
 
 ## Problem and verified observations
 

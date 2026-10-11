@@ -82,10 +82,7 @@ extension AlbumOrganization {
         }) else { return }
         let classifications = ids.flatMap { heads(subject: $0, kind: "classification") }.map(\.value)
         guard Set(classifications).count <= 1 else { return }
-        let rejected = choices.filter { $0.kind == "proposal" && $0.value != nil && heads(subject: $0.subject, kind: "proposal").contains($0) }
-        guard !rejected.contains(where: { revision in
-            Set(revision.subject.split(separator: ",").map { canonical(String($0)) }).intersection(ids).count > 1
-        }) else { return }
+        guard !hasSeparation(between: ids) else { return }
         let formerSurvivors = Set(previous.values).intersection(ids)
         let survivor = (formerSurvivors.isEmpty ? established.intersection(ids) : formerSurvivors).sorted().first ?? ids.sorted()[0]
         if automaticAliases == nil { automaticAliases = [:] }

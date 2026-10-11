@@ -18,6 +18,16 @@ Native transfer messages use version 3; the headless HTTP API uses `/v3`. Older 
 
 The shared `headless/fixtures/compilation-membership.json` cases specify expected partitions independently of both implementations. They cover twenty artists, absent/negative/unrecognized/mixed flags, different releases and import sources, explicit separation, manual membership, incompatible classification choices, compatible sibling discs, concrete shared credits, ambiguous numbering, unrelated parents, and missing context. Both implementations test reversed record order and repeated repair.
 
-Additional checks cover later-disc arrival through merge, withdrawing derived links after a late contradiction, classification history after reassessment, SQLite rollback and restart, actual M4A metadata refresh and relocation without source mutation, and native-to-Rust transfer. Final execution results are recorded after the branch checks complete.
+Additional checks cover later-disc arrival through merge, withdrawing derived links after a late contradiction, classification history after reassessment, SQLite rollback and restart, actual M4A metadata refresh and relocation without source mutation, and native-to-Rust transfer.
+
+Observed results on macOS 27 with Xcode 27 and the iOS 27 simulator:
+
+- Rust: the full P2P-enabled suite passed 22 tests. A subsequently added HTTP compatibility test also passed; `cargo clippy --locked --all-targets --features p2p -- -D warnings` passed after that addition.
+- macOS: the full native suite exercised model, migration, original-file scanning, and real LAN transfer. Two optional cases require an external upload directory or deployed discovery service and were skipped. The P2P cases initially encountered a non-P2P binary, then a build-cache replacement during the idle test; these were test-artifact problems. After completing Rust work and rebuilding the P2P executable, the final focused run passed all 25 model, migration, normal native-to-Rust transfer, and idle-reconnection tests. It includes the review fixes. No test in that final run was skipped.
+- iOS: the full production-target simulator run passed 23 tests. The final shared-model run passed 17 tests, including the additional proposal and classification-history regressions.
+- `LibraryCheck`: a real muted AVPlayer preserved the current track, player instance, queue order, and former selection through automatic membership repair. Existing playback, navigation, pause/resume, seek, shuffle, and repeat checks also passed. These checks use an isolated temporary catalog.
+- Review: the standards axis found no violations. The specification axis found two proposal issues: unrelated same-title sources suppressed candidates, and added tracks revived rejected combinations. Both were fixed, covered by a regression test, and confirmed resolved on re-review.
+
+Native screens were not visually inspected for this change. macOS import, transfer, and playback state transitions were exercised through production components; iOS shared model/catalog/playback checks passed, but interactive on-device import and visual grouping remain unverified. The user's normal application catalog and original music were not modified.
 
 Distribution signing, TestFlight delivery, physical-device playback, and stage B/C behavior are not established by these checks.

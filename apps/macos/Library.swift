@@ -333,11 +333,7 @@ final class Library: ObservableObject {
         } catch {
             if releaseScopeOnFailure { url.stopAccessingSecurityScopedResource() }
             if localCatalog == nil, let saved = try? localStore.load() {
-                localCatalog = saved
-                tracks = organizedTracks(saved)
-                connected = true
-                restoringSession = false
-                refreshLocalFiles()
+                try? openLocal(saved)
             }
             message = error.localizedDescription
         }

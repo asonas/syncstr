@@ -7,6 +7,34 @@ import AudioTags
 #endif
 
 final class AlbumOrganizationTests: XCTestCase {
+    func testReleaseReconciliationDoesNotInventClassificationRevisions() throws {
+        var local = AlbumOrganization()
+        local.importEntries([entry("one", artist: "A", release: "edition")])
+        local.set(subject: try XCTUnwrap(local.albumID(for: "one")), kind: "classification", value: "true")
+        var incoming = AlbumOrganization()
+        var second = entry("two", artist: "B", release: "edition")
+        second.sha256 = String(repeating: "b", count: 64)
+        incoming.importEntries([second])
+        let choices = local.choices
+        try local.merge(incoming)
+        XCTAssertEqual(local.albumID(for: "one"), local.albumID(for: "two"))
+        XCTAssertEqual(local.choices, choices)
+    }
+
+    func testProposalsStayWithinSourceAndRememberSeparationAfterMoreTracksArrive() throws {
+        var organization = AlbumOrganization()
+        organization.importEntries([entry("one", artist: "A"), entry("two", artist: "B")], folders: ["one": "Collection/Disc 1", "two": "Collection/Disc 2"], sourceID: "source-a")
+        organization.importEntries([entry("other", artist: "C")], folders: ["other": "Collection/Disc 1"], sourceID: "unrelated-source")
+        let proposal = try XCTUnwrap(organization.proposals.first)
+        XCTAssertEqual(proposal.count, 2)
+        XCTAssertEqual(organization.proposals.count, 1)
+        organization.set(subject: proposal.map(\.id).sorted().joined(separator: ","), kind: "proposal", value: "separate")
+        organization.importEntries([entry("three", artist: "D")], folders: ["three": "Collection/Disc 3"], sourceID: "source-a")
+        XCTAssertTrue(organization.proposals.isEmpty)
+        let reopened = try JSONDecoder().decode(AlbumOrganization.self, from: JSONEncoder().encode(organization))
+        XCTAssertTrue(reopened.proposals.isEmpty)
+    }
+
     func testSharedMembershipCasesAndReorderedEvidence() throws {
         struct Fixture: Decodable { var name: String; var organization: AlbumOrganization; var groups: [[String]] }
         let file = try XCTUnwrap(Bundle(for: Self.self).url(forResource: "compilation-membership", withExtension: "json"))

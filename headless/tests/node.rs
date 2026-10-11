@@ -91,6 +91,33 @@ fn directories() -> (tempfile::TempDir, std::path::PathBuf, std::path::PathBuf) 
 }
 
 #[tokio::test]
+async fn old_writers_must_upgrade_before_sending_catalog_changes() {
+    let (_root, data, identity) = crate::directories();
+    let node = crate::Node::start(&data, &identity).await;
+    for version in ["v1", "v2"] {
+        let response = node
+            .http()
+            .post(format!("{}/{version}/tracks", node.endpoint))
+            .bearer_auth(node.token())
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), reqwest::StatusCode::UPGRADE_REQUIRED);
+    }
+    let response = node
+        .http()
+        .post(format!("{}/v2/organization", node.endpoint))
+        .bearer_auth(node.token())
+        .json(&serde_json::json!({}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), reqwest::StatusCode::UPGRADE_REQUIRED);
+    assert!(node.client().catalog().await.unwrap().entries.is_empty());
+    node.close().await;
+}
+
+#[tokio::test]
 async fn two_clients_add_retry_restart_and_download_original_bytes() {
     let (root, data, identity) = crate::directories();
     let node = crate::Node::start(&data, &identity).await;

@@ -2,6 +2,8 @@
 
 Status: proposed implementation plan for the [agreed revised policy](compilation-policy-review.md), recorded in `fa65cfb`. No application behavior is changed by this plan. Cluster prerequisites and delivery gates refer to the [cluster implementation plan](cluster-implementation-plan.md); passing a single-peer test does not establish cluster support.
 
+Implementation progress: stage A is implemented; see [membership repair verification](validation/compilation-membership-repair.md) for its contract and checks. Stages B and C remain planned.
+
 ## Outcome and scope
 
 A compilation with a shared source directory and album title, positive compilation evidence, and no external release ID appears as one album with actual participating artist credits. Existing automatically split catalogs are repaired without replacing track identities or overriding listener choices. Missing embedded artwork can be supplemented from album-folder images or the exact corresponding Music library item, retained independently of the audio, and displayed offline after transfer.
