@@ -399,6 +399,13 @@ pub struct Identity {
 }
 
 impl crate::peer::Identity {
+    /// Uses a key supplied by the platform secure store without persisting it.
+    pub fn from_secret(root: &std::path::Path, bytes: [u8; 32]) -> anyhow::Result<Self> {
+        use std::os::unix::fs::DirBuilderExt as _;
+        std::fs::DirBuilder::new().recursive(true).mode(0o700).create(root)?;
+        Ok(Self { root: root.to_owned(), key: iroh::SecretKey::from_bytes(&bytes) })
+    }
+
     pub fn sign(&self, bytes: &[u8]) -> Vec<u8> {
         self.key.sign(bytes).to_bytes().to_vec()
     }

@@ -438,7 +438,8 @@ impl crate::cluster_sync::Session {
             let temporary = store.stage().await?;
             let mut file = tokio::fs::File::from_std(temporary.reopen()?);
             let mut remaining = entry.track.size;
-            let mut buffer = [0; 65536];
+            // Android JNI threads have a smaller stack than desktop worker threads.
+            let mut buffer = vec![0; 65536];
             while remaining > 0 {
                 let limit = remaining.min(buffer.len() as u64) as usize;
                 let size = input

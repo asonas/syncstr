@@ -29,3 +29,7 @@ headless/syncstr-headless
 headless/target/
 headless/connectivity-probe/target/
 headless/connectivity-probe/.probe-state/
+apps/android/.gradle/
+apps/android/local.properties
+apps/android/native/target/
+apps/android/app/src/main/jniLibs/

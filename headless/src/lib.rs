@@ -5,6 +5,8 @@ pub mod cluster;
 #[cfg(feature = "p2p")]
 pub mod cluster_changes;
 #[cfg(feature = "p2p")]
+pub mod cluster_client;
+#[cfg(feature = "p2p")]
 pub mod cluster_discovery;
 #[cfg(feature = "p2p")]
 pub mod cluster_net;

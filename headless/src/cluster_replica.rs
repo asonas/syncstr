@@ -477,11 +477,10 @@ impl crate::store::Store {
                             _ => continue,
                         };
                         for other_album in &metadata.albums {
-                            anyhow::ensure!(
-                                organization.canonical(&other_album.id)? != canonical
-                                    || other_album.title == album.title,
-                                "album metadata conflict requires user resolution: {canonical}"
-                            );
+                            if organization.canonical(&other_album.id)? == canonical
+                                && other_album.title != album.title {
+                                return Err(crate::cluster_replica::AlbumMetadataConflict(canonical.clone()).into());
+                            }
                         }
                     }
                 }
@@ -705,3 +704,13 @@ impl crate::store::Store {
         }).await
     }
 }
+#[derive(Debug)]
+pub struct AlbumMetadataConflict(pub String);
+
+impl std::fmt::Display for crate::cluster_replica::AlbumMetadataConflict {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(formatter, "album metadata conflict requires user resolution: {}", self.0)
+    }
+}
+
+impl std::error::Error for crate::cluster_replica::AlbumMetadataConflict {}
