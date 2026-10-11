@@ -1,4 +1,4 @@
-pub const ALPN: &[u8] = b"syncstr/cluster/2";
+pub const ALPN: &[u8] = b"syncstr/cluster/3";
 
 pub async fn run_lan(
     identity: std::sync::Arc<crate::peer::Identity>,
@@ -43,12 +43,14 @@ pub async fn run_lan(
                     let result = async {
                         let session = crate::cluster_sync::Session::connect(&endpoint, address.clone(), &store).await?;
                         session.reconcile(&store).await?;
+                        store.reconcile_cluster_organization(&identity).await?;
                         for state in store.cluster_object_states().await? {
-                            if state.conflicted() || store.cluster_selected_change(&state.object).await?.is_none() { continue; }
+                            if state.conflicted() { continue; }
                             if let Err(error) = store.project_cluster_metadata(state.object.clone()).await {
                                 eprintln!("Cluster metadata requires attention: {error}");
                                 continue;
                             }
+                            if store.cluster_selected_change(&state.object).await?.is_none() { continue; }
                             if !store.has_cluster_replica(&state.object).await?
                                 && let Err(error) = session.download(&identity, &store, &state.object).await { eprintln!("Cluster replica unavailable: {error}"); }
                         }
@@ -71,6 +73,7 @@ struct Hello {
 #[derive(serde::Serialize, serde::Deserialize)]
 #[serde(tag = "operation", rename_all = "kebab-case", deny_unknown_fields)]
 enum Request {
+    Evidence { object: String },
     Changes { after: i64 },
     Audio { object: String },
     Upload { entry: Box<crate::model::Entry>, organization: Box<crate::organization::Organization>, parents: Vec<String>, #[serde(default)] restore: bool },
@@ -143,7 +146,7 @@ pub(crate) async fn serve_connection(
         crate::cluster_sync::authorized(store, &peer, false).await?;
         crate::cluster_sync::authorized(store, &identity.id().to_string(), true).await?;
         let request: crate::cluster_sync::Request =
-            crate::cluster_net::receive(&mut input, crate::model::MAX_METADATA).await?;
+            crate::cluster_net::receive(&mut input, crate::cluster_changes::MAX_CHANGE).await?;
         match request {
             crate::cluster_sync::Request::Metadata { entry, organization, parents } => {
                 let object = entry.sha256.clone();
@@ -211,7 +214,14 @@ pub(crate) async fn serve_connection(
                 };
                 crate::cluster_net::send(&mut output, &response).await?;
             }
+            crate::cluster_sync::Request::Evidence { object } => {
+                let recovered = store.recover_cluster_evidence(identity, &object).await?;
+                crate::cluster_net::send(&mut output, &if recovered {
+                    crate::cluster_sync::Response::Stored { object }
+                } else { crate::cluster_sync::Response::Unavailable }).await?;
+            }
             crate::cluster_sync::Request::Changes { after } => {
+                store.reconcile_cluster_organization(identity).await?;
                 let page = store.cluster_change_page(after).await?;
                 let (next, change) = page.map_or((after, None), |(next, change)| {
                     (next, Some(Box::new(change)))
@@ -331,7 +341,7 @@ impl crate::cluster_sync::Session {
             .await?;
             output.finish()?;
             let response: crate::cluster_sync::Response =
-                crate::cluster_net::receive(&mut input, 4 * 1024 * 1024).await?;
+                crate::cluster_net::receive(&mut input, crate::cluster_net::MAX_FRAME).await?;
             let crate::cluster_sync::Response::Page { next, change, signing_payload } = response else {
                 anyhow::bail!("invalid change response");
             };
@@ -352,6 +362,17 @@ impl crate::cluster_sync::Session {
         }
         store.receive_cluster_changes(peer, Vec::new()).await?;
         Ok(())
+    }
+
+    pub async fn recover_evidence(&self, object: String) -> anyhow::Result<bool> {
+        let (mut output, mut input) = self.connection.open_bi().await?;
+        crate::cluster_net::send(&mut output, &crate::cluster_sync::Request::Evidence { object: object.clone() }).await?;
+        output.finish()?;
+        match crate::cluster_net::receive::<crate::cluster_sync::Response>(&mut input, crate::model::MAX_METADATA).await? {
+            crate::cluster_sync::Response::Stored { object: received } if received == object => Ok(true),
+            crate::cluster_sync::Response::Unavailable => Ok(false),
+            _ => anyhow::bail!("invalid evidence response"),
+        }
     }
 
     pub async fn download(

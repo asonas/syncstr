@@ -8,6 +8,32 @@ struct ClusterMetadataEdit: Codable {
 }
 
 extension AlbumOrganization {
+    mutating func excludeClusterObjects(_ objects: Set<String>) throws {
+        tracks.removeAll { objects.contains($0.sha256) }
+        let trackIDs = Set(tracks.map(\.id))
+        let albumIDs = Set(tracks.map { canonical($0.importedAlbumID) } + choices.filter {
+            $0.kind == "membership" && trackIDs.contains(canonicalTrack($0.subject))
+        }.compactMap(\.value).map(canonical))
+        choices = choices.filter { choice in
+            switch choice.kind {
+            case "membership": return trackIDs.contains(canonicalTrack(choice.subject))
+            case "classification", "artwork": return albumIDs.contains(canonical(choice.subject))
+            case "proposal": return choice.subject.split(separator: ",").contains { albumIDs.contains(canonical(String($0))) }
+            default: return false
+            }
+        }
+        preferred = preferred.filter { _, id in choices.contains { $0.id == id } }
+        if var images = artwork {
+            images.candidates.removeAll { !trackIDs.contains($0.track) }
+            let assets = Set(images.candidates.map(\.asset) + choices.filter { $0.kind == "artwork" }.compactMap(\.value))
+            images.assets = images.assets.filter { assets.contains($0.key) }
+            images.preferred = images.preferred.filter { assets.contains($0.value) }
+            artwork = images
+        }
+        trackAliases = trackAliases?.filter { trackIDs.contains($0.value) }
+        try validate()
+    }
+
     func forClusterObject(_ object: String) throws -> AlbumOrganization {
         try validate()
         let tracks = tracks.filter { $0.sha256 == object }
@@ -33,7 +59,7 @@ extension AlbumOrganization {
             subset.preferred = subset.preferred.filter { assets.contains($0.value) }
             artwork = subset
         }
-        let result = AlbumOrganization(albums: albums.filter { albumIDs.contains($0.id) }, tracks: tracks,
+        let result = AlbumOrganization(albums: albums.filter { albumIDs.contains(canonical($0.id)) }, tracks: tracks,
             aliases: aliases.filter { albumIDs.contains(canonical($0.key)) }, choices: choices,
             preferred: preferred.filter { choiceIDs.contains($0.value) },
             trackAliases: trackAliases?.filter { trackIDs.contains(canonicalTrack($0.key)) },
@@ -87,13 +113,14 @@ struct ClusterChange: Codable {
 
 /// Preserve the signed bytes rather than re-encoding floating-point metadata.
 struct ClusterSignedChange: Codable, Equatable {
+    static let maximumBytes = 16 * 1024 * 1024
     let id: String
     let signature: String
     let payload: String
 
     func decode(membership: ClusterMembership) throws -> ClusterChange {
         let prefix = "syncstr-cluster-change-v1\n"
-        guard payload.utf8.count <= 1024 * 1024, payload.hasPrefix(prefix),
+        guard payload.utf8.count <= Self.maximumBytes, payload.hasPrefix(prefix),
               let fields = try JSONSerialization.jsonObject(with: Data(payload.dropFirst(prefix.count).utf8)) as? [Any],
               fields.count == 8 else { throw LocalMusicError.invalidData }
         let names = ["version", "cluster", "author", "grant", "previous", "object", "parents", "action"]

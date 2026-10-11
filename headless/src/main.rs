@@ -476,6 +476,7 @@ async fn run(cli: crate::Cli) -> anyhow::Result<()> {
             let identity = syncstr_headless::peer::Identity::open(&peer_state)?;
             let store = syncstr_headless::store::Store::open(&data)?;
             let record = store.publish_cluster_change(&identity, object, syncstr_headless::cluster_changes::Action::Delete).await?;
+            store.project_cluster_metadata(record.object.clone()).await?;
             println!("{}", serde_json::to_string_pretty(&record)?);
         }
         #[cfg(feature = "p2p")]

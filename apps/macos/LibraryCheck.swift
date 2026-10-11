@@ -92,18 +92,20 @@ struct LibraryCheck {
         print("PASS: saved audio plays offline after cluster migration without a peer or source folder")
         var mediaPlayers: [AVPlayer] = []
         let secrets = CredentialStore(service: "syncstr-library-check-" + UUID().uuidString)
+        let peerSecrets = CredentialStore(service: "syncstr-library-check-identity-" + UUID().uuidString)
+        let peerPairing = CredentialStore(service: "syncstr-library-check-peer-" + UUID().uuidString)
         let localFiles = LocalMusicStore(root: folder.appendingPathComponent("local"))
         let library = Library(makePlayer: { url in
             let player = AVPlayer(url: url)
             player.isMuted = true
             mediaPlayers.append(player)
             return player
-        }, localStore: localFiles, pairingSecrets: secrets)
+        }, localStore: localFiles, pairingSecrets: secrets, peerSecrets: peerSecrets, peerPairing: peerPairing)
         await library.restoreLibrary()
         try require(!library.connected && !library.restoringSession)
         await library.chooseFolder(folder)
         try require(library.connected && library.tracks.count == 3 && library.message == nil)
-        let reopened = Library(localStore: localFiles, pairingSecrets: secrets)
+        let reopened = Library(localStore: localFiles, pairingSecrets: secrets, peerSecrets: peerSecrets, peerPairing: peerPairing)
         await reopened.restoreLibrary()
         try require(reopened.connected && reopened.tracks.count == 3 && !reopened.restoringSession)
         reopened.closeLibrary()
@@ -238,5 +240,7 @@ struct LibraryCheck {
         try require(mediaPlayers.allSatisfy { $0.rate == 0 })
         try require(localFiles.load()?.entries.count == 3)
         print("PASS: real AVPlayer advances, stops, restarts, and releases playback on library closure")
+        try await peerSecrets.remove()
+        try await peerPairing.remove()
     }
 }

@@ -79,7 +79,8 @@ final class PeerTransferTests: XCTestCase {
     private func exerciseNativeClient(directory: String?, externalDirectory: URL? = nil, idleSeconds: Double = 0) async throws {
         let repository = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
             .deletingLastPathComponent().deletingLastPathComponent()
-        let binary = repository.appendingPathComponent("headless/target/debug/syncstr-headless")
+        let binary = ProcessInfo.processInfo.environment["SYNCSTR_HEADLESS_TEST_BINARY"].map { URL(fileURLWithPath: $0) }
+            ?? repository.appendingPathComponent("headless/target/debug/syncstr-headless")
         guard FileManager.default.isExecutableFile(atPath: binary.path) else {
             throw XCTSkip("Build headless with --features p2p before running interoperability tests")
         }

@@ -27,7 +27,7 @@ extension CatalogDatabase {
 
     private func saveClusterMetadataEdit(_ edit: ClusterMetadataEdit) throws {
         let payload = try JSONEncoder().encode(edit)
-        guard payload.count <= 1024 * 1024 else { throw LocalMusicError.invalidData }
+        guard payload.count <= ClusterSignedChange.maximumBytes else { throw LocalMusicError.invalidData }
         try execute("INSERT INTO cluster_metadata_queue VALUES (?, ?) ON CONFLICT(object) DO UPDATE SET payload = excluded.payload",
             [edit.entry.sha256, String(decoding: payload, as: UTF8.self)])
     }
@@ -236,6 +236,11 @@ extension CatalogDatabase {
             let conflicts = Set(states.filter(\.conflicted).map(\.object)).union(blocked)
             var entries = (previous?.entries ?? []).filter { !known.contains($0.sha256) || conflicts.contains($0.sha256) }
             var organization = previous?.organization ?? AlbumOrganization()
+            let deleted = try Set(states.filter { state in
+                guard !state.conflicted else { return false }
+                return try state.selected(in: records) == nil
+            }.map(\.object))
+            try organization.excludeClusterObjects(deleted)
             var titles: [String: String] = [:]
             for state in states where !state.conflicted && !blocked.contains(state.object) {
                 guard let record = try state.selected(in: records), var entry = record.action.entry,
@@ -422,7 +427,8 @@ final class CatalogDatabase {
                     let metadata = try organization.forClusterObject(state.object)
                     guard try metadata != previous?.catalog.organization?.forClusterObject(state.object) else { continue }
                     guard !state.conflicted else { throw LocalMusicError.clusterNeedsAttention }
-                    guard let entry = try state.selected(in: records)?.action.entry else { continue }
+                    guard let selected = try state.selected(in: records)?.action.entry else { continue }
+                    let entry = organized.entries.first { $0.sha256 == state.object } ?? selected
                     let parents = pending.first(where: { $0.entry.sha256 == state.object })?.parents ?? state.heads.map(\.id)
                     try saveClusterMetadataEdit(ClusterMetadataEdit(id: UUID().uuidString, entry: entry, organization: metadata, parents: parents))
                 }

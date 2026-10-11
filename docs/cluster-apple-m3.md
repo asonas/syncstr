@@ -44,7 +44,7 @@ iPhone QR reader. `cluster-invite --qr` explicitly renders that invitation in a
 terminal. The invitation secret is consumed during enrollment and is not saved
 in the app's registration. Registration stores the pinned root and signed grants.
 
-The cluster ALPN is `syncstr/cluster/2`. Pages include the exact signature preimage
+The cluster ALPN is `syncstr/cluster/3`. Pages include the exact signature preimage
 so Swift does not reconstruct floating-point JSON before verifying a signature.
 It does not downgrade to the earlier cluster ALPN or the legacy library protocol.
 LAN headless endpoints bind a concrete private or link-local IPv4 interface to

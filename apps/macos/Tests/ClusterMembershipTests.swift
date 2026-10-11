@@ -2,11 +2,98 @@ import Foundation
 import XCTest
 import CryptoKit
 import SQLite3
+#if os(macOS)
+import AudioTags
+#endif
 #if os(iOS)
 @testable import Syncstr
 #endif
 
 final class ClusterMembershipTests: XCTestCase {
+#if os(macOS)
+    func testLocalEvidenceRecoveryKeepsConflictedObjectsAvailableForResolution() async throws {
+        let fixture = try fixture()
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = LocalMusicStore(root: root)
+        try store.prepare()
+        let database = try store.database()
+        let grant = try fixture.membership.authorize(fixture.client)
+        try database.enrollCluster(invitation: ClusterInvitation(version: 1, cluster: grant.cluster, host: grant.issuer,
+            secret: String(repeating: "a", count: 64), expires: 1600), grantID: grant.id,
+            membership: fixture.membership, ownID: fixture.client, name: "Library")
+        let source = root.appendingPathComponent("source.mp3")
+        try FileManager.default.copyItem(at: URL(fileURLWithPath: #filePath).deletingLastPathComponent().appendingPathComponent("Fixtures/untagged.mp3"), to: source)
+        try AudioTags.writeFile(source, fields: ["ALBUM": "Collection", "COMPILATION": "1"], artwork: nil, mimeType: nil, changeArtwork: false)
+        var entry = try await UploadedMusic.entry(file: source, original: source)
+        entry.importedAlbum = nil
+        var catalog = LocalCatalog(id: grant.cluster, name: "Library", entries: [entry])
+        catalog.organize()
+        let original = try ClusterSignedChange(id: fixture.change.id, signature: fixture.change.signature, payload: fixture.signingPayload).decode(membership: fixture.membership)
+        let key = try Curve25519.Signing.PrivateKey(rawRepresentation: Data(repeating: 7, count: 32))
+        func signed(_ entry: LocalEntry, previous: [String]) throws -> ClusterSignedChange {
+            let action = ClusterChange.Action(kind: .import, entry: entry, organization: catalog.organization, selected: nil)
+            let fields: [Any] = [1, original.cluster, original.author, original.grant, previous, entry.sha256, [String](),
+                try JSONSerialization.jsonObject(with: JSONEncoder().encode(action))]
+            let payload = "syncstr-cluster-change-v1\n" + String(decoding: try JSONSerialization.data(withJSONObject: fields), as: UTF8.self)
+            let bytes = Data(payload.utf8)
+            return ClusterSignedChange(id: LocalMusicStore.digest(bytes),
+                signature: try key.signature(for: bytes).map { String(format: "%02x", $0) }.joined(), payload: payload)
+        }
+        let first = try signed(entry, previous: [])
+        try database.receiveClusterPage(peer: fixture.host, sequence: 1, signed: first)
+        try store.importFile(source, entry: entry)
+        try store.save(database.clusterCatalog())
+        var competing = entry
+        competing.track = Track(id: entry.track.id, title: "Competing title", artist: entry.track.artist,
+            album: entry.track.album, albumId: entry.track.albumId, coverArt: entry.track.coverArt,
+            duration: entry.track.duration, track: entry.track.track, discNumber: entry.track.discNumber,
+            suffix: entry.track.suffix, size: entry.track.size)
+        try database.receiveClusterPage(peer: fixture.host, sequence: 2, signed: signed(competing, previous: [first.id]))
+        XCTAssertTrue(try XCTUnwrap(database.clusterObjectStates().first).conflicted)
+        let retained = try database.clusterCatalog()
+        let recovered = try await UploadedMusic.recoverClusterEvidence(retained, store: store)
+        XCTAssertEqual(recovered.organization, retained.organization)
+        XCTAssertNoThrow(try store.save(recovered, clusterEdits: true))
+        XCTAssertTrue(try database.clusterMetadataEdits().isEmpty)
+    }
+#endif
+    func testClusterDeletionExcludesRetainedArtworkWithoutTreatingOfflineAsDeletion() throws {
+        let fixture = try fixture()
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let database = try CatalogDatabase(root.appendingPathComponent("catalog.sqlite"))
+        let grant = try fixture.membership.authorize(fixture.client)
+        try database.enrollCluster(invitation: ClusterInvitation(version: 1, cluster: grant.cluster, host: grant.issuer,
+            secret: String(repeating: "a", count: 64), expires: 1600), grantID: grant.id,
+            membership: fixture.membership, ownID: fixture.client, name: "Library")
+        let original = ClusterSignedChange(id: fixture.change.id, signature: fixture.change.signature, payload: fixture.signingPayload)
+        let record = try original.decode(membership: fixture.membership)
+        try database.receiveClusterPage(peer: fixture.host, sequence: 1, signed: original)
+        var catalog = try database.clusterCatalog()
+        let images = try AlbumArtworkTests.fixture()
+        let image = try XCTUnwrap(images.organization.artwork?.assets[images.blue])
+        let album = try XCTUnwrap(catalog.organization?.albums.first?.id)
+        try catalog.organization?.chooseArtwork(image, album: album)
+        try database.save(catalog)
+        XCTAssertNotNil(try CatalogDatabase(root.appendingPathComponent("catalog.sqlite")).clusterCatalog().organization?.coverAsset(for: album))
+        let action = ClusterChange.Action(kind: .delete, entry: nil, organization: nil, selected: nil)
+        let fields: [Any] = [1, record.cluster, record.author, record.grant, [record.id], record.object, [record.id],
+            try JSONSerialization.jsonObject(with: JSONEncoder().encode(action))]
+        let payload = "syncstr-cluster-change-v1\n" + String(decoding: try JSONSerialization.data(withJSONObject: fields), as: UTF8.self)
+        let data = Data(payload.utf8)
+        let key = try Curve25519.Signing.PrivateKey(rawRepresentation: Data(repeating: 7, count: 32))
+        let deletion = ClusterSignedChange(id: SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined(),
+            signature: try key.signature(for: data).map { String(format: "%02x", $0) }.joined(), payload: payload)
+        try database.receiveClusterPage(peer: fixture.host, sequence: 2, signed: deletion)
+        let deleted = try database.clusterCatalog()
+        XCTAssertTrue(deleted.entries.isEmpty)
+        XCTAssertTrue(try XCTUnwrap(deleted.organization).tracks.isEmpty)
+        XCTAssertNil(deleted.organization?.coverAsset(for: album))
+        XCTAssertTrue(deleted.organization?.artwork?.assets.isEmpty ?? true)
+    }
+
     func testAutomaticAudioRequiresWifiOrExplicitCellularOptInAndSettingsPersist() throws {
         XCTAssertTrue(ClusterTransferPolicy.permitsAutomaticAudio(online: true, cellular: false, optedIn: false))
         XCTAssertFalse(ClusterTransferPolicy.permitsAutomaticAudio(online: true, cellular: true, optedIn: false))

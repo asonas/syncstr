@@ -86,6 +86,31 @@ pub struct Organization {
 
 impl crate::organization::Organization {
     #[cfg(feature = "p2p")]
+    pub(crate) fn exclude_objects(&mut self, objects: &std::collections::BTreeSet<String>) -> anyhow::Result<()> {
+        self.tracks.retain(|track| !objects.contains(&track.sha256));
+        let tracks: std::collections::BTreeSet<_> = self.tracks.iter().map(|track| track.id.clone()).collect();
+        let albums: std::collections::BTreeSet<_> = self.tracks.iter().map(|track| track.imported_album_id.as_str())
+            .chain(self.choices.iter().filter(|choice| choice.kind == "membership" && tracks.contains(&self.canonical_track(&choice.subject))).filter_map(|choice| choice.value.as_deref()))
+            .map(|id| self.canonical(id).map(str::to_owned)).collect::<anyhow::Result<_>>()?;
+        let choices: Vec<_> = self.choices.iter().filter(|choice| match choice.kind.as_str() {
+            "membership" => tracks.contains(&self.canonical_track(&choice.subject)),
+            "classification" | "artwork" => albums.contains(&self.subject(choice)),
+            "proposal" => choice.subject.split(',').any(|album| self.canonical(album).is_ok_and(|id| albums.contains(id))),
+            _ => false,
+        }).cloned().collect();
+        self.choices = choices;
+        self.preferred.retain(|_, id| self.choices.iter().any(|choice| &choice.id == id));
+        if let Some(artwork) = &mut self.artwork {
+            artwork.candidates.retain(|candidate| tracks.contains(&candidate.track));
+            let assets: std::collections::BTreeSet<_> = artwork.candidates.iter().map(|candidate| candidate.asset.as_str())
+                .chain(self.choices.iter().filter(|choice| choice.kind == "artwork").filter_map(|choice| choice.value.as_deref())).collect();
+            artwork.assets.retain(|id, _| assets.contains(id.as_str()));
+            artwork.preferred.retain(|_, asset| assets.contains(asset.as_str()));
+        }
+        if let Some(aliases) = &mut self.track_aliases { aliases.retain(|_, target| tracks.contains(target)); }
+        self.validate()
+    }
+    #[cfg(feature = "p2p")]
     pub fn for_object(&self, hash: &str) -> anyhow::Result<Self> {
         self.validate()?;
         let tracks: Vec<_> = self.tracks.iter().filter(|track| track.sha256 == hash).cloned().collect();
@@ -120,7 +145,7 @@ impl crate::organization::Organization {
         });
         let subset = Self {
             artwork,
-            albums: self.albums.iter().filter(|album| albums.contains(&album.id)).cloned().collect(),
+            albums: self.albums.iter().filter(|album| self.canonical(&album.id).is_ok_and(|id| albums.contains(id))).cloned().collect(),
             tracks, choices, aliases, automatic_aliases, track_aliases,
             preferred,
         };

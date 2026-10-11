@@ -71,6 +71,17 @@ final class ClusterNetwork {
                 session = current
                 defer { current.close(); session = nil }
                 try await current.reconcile(database: database)
+                let missing = try database.clusterCatalog().organization?.tracks.filter { $0.imported.tagValues == nil } ?? []
+                let records = try database.clusterChanges()
+                let live = Set(try database.clusterObjectStates().filter {
+                    guard !$0.conflicted else { return false }
+                    return try $0.selected(in: records)?.action.entry != nil
+                }.map(\.object))
+                for object in Set(missing.map(\.sha256)).intersection(live).sorted() {
+                    try Task.checkCancellation()
+                    try await current.recoverEvidence(object: object)
+                }
+                if !missing.isEmpty { try await current.reconcile(database: database) }
                 successful = true
             } catch {
                 try Task.checkCancellation()
@@ -78,8 +89,8 @@ final class ClusterNetwork {
             }
         }
         guard successful else { throw failure }
-        let catalog = try database.clusterCatalog()
-        try store.save(catalog)
+        let catalog = try await UploadedMusic.recoverClusterEvidence(database.clusterCatalog(), store: store)
+        try store.save(catalog, clusterEdits: true)
         return catalog
     }
 
@@ -95,7 +106,8 @@ final class ClusterNetwork {
                 try await current.reconcile(database: database)
                 let entry = try database.clusterDownloadEntry(object: object, peer: current.peer)
                 try await current.download(entry, store: store, database: database, progress: progress)
-                try store.save(database.clusterCatalog())
+                let catalog = try await UploadedMusic.recoverClusterEvidence(database.clusterCatalog(), store: store)
+                try store.save(catalog, clusterEdits: true)
                 return
             } catch {
                 try Task.checkCancellation()
@@ -265,7 +277,7 @@ final class ClusterSession {
     private func send<T: Encodable>(_ message: T, stream: IrohLib.BiStream) async throws {
         try Task.checkCancellation()
         let body = try JSONEncoder().encode(message)
-        guard body.count <= 4 * 1024 * 1024 else { throw LocalMusicError.invalidData }
+        guard body.count <= 64 * 1024 * 1024 else { throw LocalMusicError.invalidData }
         let length = UInt32(body.count)
         var packet = Data([UInt8(length >> 24), UInt8((length >> 16) & 255), UInt8((length >> 8) & 255), UInt8(length & 255)])
         packet.append(body)
@@ -280,7 +292,7 @@ final class ClusterSession {
         defer { timeout.cancel() }
         let header = try await stream.recv().readExact(size: 4)
         let count = header.reduce(0) { ($0 << 8) | Int($1) }
-        guard count > 0, count <= 4 * 1024 * 1024 else { throw LocalMusicError.invalidData }
+        guard count > 0, count <= 64 * 1024 * 1024 else { throw LocalMusicError.invalidData }
         return try JSONDecoder().decode(type, from: await stream.recv().readExact(size: UInt32(count)))
     }
 
@@ -299,7 +311,7 @@ final class ClusterSession {
 
     static func connect(address: IrohLib.EndpointAddr, secrets: CredentialStore, database: CatalogDatabase) async throws -> ClusterSession {
         guard let registration = try database.clusterRegistration() else { throw LocalMusicError.unauthorized }
-        let session = try await open(address: address, alpn: "syncstr/cluster/2", secrets: secrets)
+        let session = try await open(address: address, alpn: "syncstr/cluster/3", secrets: secrets)
         do {
             let stream = try await session.connection.openBi()
             try await session.send(Hello(capabilities: ClusterCapabilities(version: 1, membership: true, deletions: true, conflicts: true), proof: registration.membership), stream: stream)
@@ -323,6 +335,16 @@ final class ClusterSession {
             guard next > after, let payload = page.signingPayload else { throw LocalMusicError.invalidData }
             try database.receiveClusterPage(peer: peer, sequence: next, signed: ClusterSignedChange(id: change.id, signature: change.signature, payload: payload))
             after = next
+        }
+    }
+
+    func recoverEvidence(object: String) async throws {
+        let stream = try await connection.openBi()
+        try await send(Request(operation: "evidence", object: object), stream: stream)
+        try await stream.send().finish()
+        let response = try await receive(Response.self, stream: stream)
+        guard response.status == "unavailable" || (response.status == "stored" && response.object == object) else {
+            throw LocalMusicError.invalidData
         }
     }
 

@@ -1,13 +1,15 @@
 import Foundation
 import XCTest
 import SQLite3
+import AudioTags
 
 @MainActor
 final class ClusterTransferTests: XCTestCase {
     func testNativeEnrollmentReconciliationAndVerifiedDownloadSurviveRestart() async throws {
         let repository = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
             .deletingLastPathComponent().deletingLastPathComponent()
-        let binary = repository.appendingPathComponent("headless/target/debug/syncstr-headless")
+        let binary = ProcessInfo.processInfo.environment["SYNCSTR_HEADLESS_TEST_BINARY"].map { URL(fileURLWithPath: $0) }
+            ?? repository.appendingPathComponent("headless/target/debug/syncstr-headless")
         guard FileManager.default.isExecutableFile(atPath: binary.path) else {
             throw XCTSkip("Build headless with --features p2p before running interoperability tests")
         }
@@ -32,6 +34,9 @@ final class ClusterTransferTests: XCTestCase {
         let invitationURL = root.appendingPathComponent("invitation.json")
         let source = URL(fileURLWithPath: #filePath).deletingLastPathComponent().appendingPathComponent("Fixtures/untagged.mp3")
         let entry = try await UploadedMusic.entry(file: source, original: source)
+        let images = try AlbumArtworkTests.fixture()
+        let blue = try XCTUnwrap(images.organization.artwork?.assets[images.blue])
+        let red = try XCTUnwrap(images.organization.artwork?.assets[images.red])
         let metadata = root.appendingPathComponent("entry.json")
         try JSONEncoder().encode(entry).write(to: metadata)
         try run(["peer-init", "--state", peer.path])
@@ -70,10 +75,18 @@ final class ClusterTransferTests: XCTestCase {
             defer { session.close() }
             var imported = LocalCatalog(id: invitation.cluster, name: "Fixture", entries: [entry])
             imported.organize()
+            try imported.organization?.captureArtwork(blue, track: entry.track.id, source: "music", context: "exact-file")
             for _ in 0..<2 {
                 try await session.upload(entry: entry, organization: XCTUnwrap(imported.organization), parents: [], file: source) { _ in }
             }
             try await session.reconcile(database: database)
+            let metadataOnly = try database.clusterCatalog()
+            let coverAlbum = try XCTUnwrap(metadataOnly.organization?.albumID(for: entry.track.id))
+            XCTAssertEqual(metadataOnly.organization?.coverAsset(for: coverAlbum), images.blue)
+            XCTAssertEqual(metadataOnly.organization?.artwork?.assets[images.blue], blue)
+            XCTAssertFalse(store.hasFile(entry))
+            try store.save(metadataOnly)
+            XCTAssertEqual(try LocalMusicStore(root: store.root).load()?.organization?.coverAsset(for: coverAlbum), images.blue)
             let states = try database.clusterObjectStates()
             XCTAssertEqual(states.map(\.object), [entry.sha256])
             let selected = try XCTUnwrap(states.first?.selected(in: database.clusterChanges())?.action.entry)
@@ -102,6 +115,32 @@ final class ClusterTransferTests: XCTestCase {
         metadataNetwork.stop()
         XCTAssertTrue(try CatalogDatabase(databaseURL).clusterMetadataEdits().isEmpty)
         XCTAssertEqual(edited.organization?.choice(subject: album, kind: "classification")?.value, "true")
+        let storedBytes = try Data(contentsOf: store.fileURL(entry))
+        let storedDate = try store.fileURL(entry).resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate
+        let jobs = try restored.clusterJobs().count
+        var chosen = edited
+        try chosen.organization?.chooseArtwork(red, album: album)
+        try store.save(chosen, clusterEdits: true)
+        let covers = ClusterNetwork(store: store, secrets: secrets)
+        defer { covers.stop() }
+        try await covers.syncMetadata()
+        let manual = try await covers.refresh()
+        XCTAssertEqual(manual.organization?.coverAsset(for: album), images.red)
+        var cleared = manual
+        cleared.organization?.set(subject: album, kind: "artwork", value: nil)
+        try store.save(cleared, clusterEdits: true)
+        try await covers.syncMetadata()
+        let automatic = try await covers.refresh()
+        XCTAssertEqual(automatic.organization?.coverAsset(for: album), images.blue)
+        var higherPriority = automatic
+        try higherPriority.organization?.captureArtwork(red, track: entry.track.id, source: "embedded", context: entry.sha256)
+        try store.save(higherPriority, clusterEdits: true)
+        try await covers.syncMetadata()
+        let higherPriorityCatalog = try await covers.refresh()
+        XCTAssertEqual(higherPriorityCatalog.organization?.coverAsset(for: album), images.red)
+        XCTAssertEqual(try restored.clusterJobs().count, jobs)
+        XCTAssertEqual(try Data(contentsOf: store.fileURL(entry)), storedBytes)
+        XCTAssertEqual(try store.fileURL(entry).resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate, storedDate)
         try FileManager.default.removeItem(at: store.fileURL(entry))
         let invalid = root.appendingPathComponent("invalid.mp3")
         try Data("not audio".utf8).write(to: invalid)
@@ -167,6 +206,8 @@ final class ClusterTransferTests: XCTestCase {
         defer { network.stop() }
         let catalog = try await network.refresh()
         XCTAssertEqual(catalog.entries.map(\.sha256), [entry.sha256])
+        XCTAssertEqual(catalog.organization?.coverAsset(for: album), images.red)
+        XCTAssertEqual(catalog.organization?.artwork?.assets[images.red], red)
         try await network.download(object: entry.sha256) { _ in }
         let additionalFile = root.appendingPathComponent("another.mp3")
         let additionalBytes = Data("additional audio fixture".utf8)
@@ -190,9 +231,42 @@ final class ClusterTransferTests: XCTestCase {
         XCTAssertEqual(try restored.clusterMetadataEdits().map(\.id), [rejectedEdit.id], "An unrelated edit must be acknowledged despite the first rejection")
         let reconciled = try await network.refresh()
         XCTAssertEqual(reconciled.organization?.choice(subject: additionalAlbum, kind: "classification")?.value, "true")
+        // Only the surviving host has these bytes; the client requests tags.
+        let legacyFile = root.appendingPathComponent("legacy.mp3")
+        try FileManager.default.copyItem(at: source, to: legacyFile)
+        try AudioTags.writeFile(legacyFile, fields: ["ALBUM": "Replica compilation", "COMPILATION": "1"],
+            artwork: nil, mimeType: nil, changeArtwork: false)
+        XCTAssertEqual(try AudioTags.readFile(legacyFile)["COMPILATION"] as? [String], ["1"])
+        var legacy = try await UploadedMusic.entry(file: legacyFile, original: legacyFile)
+        legacy.importedAlbum = nil
+        let otherFile = root.appendingPathComponent("legacy-other.mp3")
+        try FileManager.default.copyItem(at: legacyFile, to: otherFile)
+        try AudioTags.writeFile(otherFile, fields: ["ARTIST": "Another artist"], artwork: nil, mimeType: nil, changeArtwork: false)
+        var other = try await UploadedMusic.entry(file: otherFile, original: otherFile)
+        other.importedAlbum = nil
+        var legacyCatalog = LocalCatalog(id: invitation.cluster, name: "Fixture", entries: [legacy, other])
+        legacyCatalog.organize(folders: [legacy.track.id: "Collection", other.track.id: "Collection"])
+        try legacyCatalog.organization?.captureArtwork(blue, track: legacy.track.id, source: "music", context: legacy.sha256)
+        let context = legacyCatalog.organization?.tracks.first?.importContext
+        _ = try await network.upload(entry: legacy, organization: XCTUnwrap(legacyCatalog.organization), parents: [],
+            host: recipient, file: legacyFile) { _ in }
+        _ = try await network.upload(entry: other, organization: XCTUnwrap(legacyCatalog.organization), parents: [],
+            host: recipient, file: otherFile) { _ in }
+        XCTAssertNil(try restored.clusterCatalog().organization?.tracks.first { $0.sha256 == legacy.sha256 }?.imported.tagValues)
+        XCTAssertFalse(try XCTUnwrap(restored.clusterObjectStates().first { $0.object == legacy.sha256 }).conflicted)
+        let recovered = try await network.refresh()
+        let evidence = try XCTUnwrap(recovered.organization?.tracks.first { $0.sha256 == legacy.sha256 })
+        XCTAssertEqual(evidence.imported.compilationValues, ["1"], String(describing: evidence.imported.tagValues))
+        XCTAssertEqual(evidence.importContext, context)
+        XCTAssertFalse(store.hasFile(legacy))
+        XCTAssertFalse(store.hasFile(other))
+        let recoveredAlbum = try XCTUnwrap(recovered.organization?.albumID(for: legacy.track.id))
+        XCTAssertEqual(recovered.organization?.albumID(for: other.track.id), recoveredAlbum)
+        XCTAssertEqual(recovered.organization?.coverAsset(for: recoveredAlbum), images.blue)
+        XCTAssertEqual(recovered.organization?.tracks.filter { recovered.organization?.albumID(for: $0.id) == recoveredAlbum }.count, 2)
         second.terminate(); second.waitUntilExit()
         XCTAssertEqual(try LocalMusicStore.digest(file: store.fileURL(entry)), entry.sha256)
-        XCTAssertEqual(try store.load()?.entries.count, 2)
+        XCTAssertEqual(try store.load()?.entries.count, 4)
         XCTAssertEqual(try LocalMusicStore.digest(file: source), entry.sha256)
         try await secrets.remove()
     }

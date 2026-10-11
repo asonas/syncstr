@@ -82,10 +82,12 @@ final class Library: ObservableObject {
 
     init(makePlayer: @escaping (URL) -> AVPlayer = { AVPlayer(url: $0) },
          localStore: LocalMusicStore = LocalMusicStore(),
-         pairingSecrets: CredentialStore = CredentialStore(service: "as.ason.syncstr.local-pair")) {
+         pairingSecrets: CredentialStore = CredentialStore(service: "as.ason.syncstr.local-pair"),
+         peerSecrets: CredentialStore = CredentialStore(service: "as.ason.syncstr.p2p.identity"),
+         peerPairing: CredentialStore = CredentialStore(service: "as.ason.syncstr.p2p.peer")) {
         self.makePlayer = makePlayer
         self.localStore = localStore
-        self.transfer = LocalTransfer(store: localStore, secrets: pairingSecrets)
+        self.transfer = LocalTransfer(store: localStore, secrets: pairingSecrets, peerSecrets: peerSecrets, peerPairing: peerPairing)
         transfer.onCatalog = { [weak self] catalog in try self?.openLocal(catalog) }
         transfer.onOrganization = { [weak self] organization in
             do { try self?.saveOrganization(organization) }

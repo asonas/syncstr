@@ -66,6 +66,112 @@ fn selected(
 }
 
 impl crate::store::Store {
+    pub async fn recover_cluster_evidence(&self, identity: &crate::peer::Identity, object: &str) -> anyhow::Result<bool> {
+        let records = self.cluster_active_changes().await?;
+        if crate::cluster_changes::object_heads(&records, object).len() != 1 { return Ok(false); }
+        let Some(selected) = self.cluster_selected_change(object).await? else { return Ok(false); };
+        let (mut entry, mut organization) = match selected.action {
+            crate::cluster_changes::Action::Import { entry, organization }
+            | crate::cluster_changes::Action::Edit { entry, organization }
+            | crate::cluster_changes::Action::Restore { entry, organization } => (*entry, *organization),
+            _ => return Ok(false),
+        };
+        if !organization.tracks.iter().any(|track| track.sha256 == object && track.imported.tag_values.is_none()) { return Ok(false); }
+        let Some(local) = self.cluster_local_file(object).await? else { return Ok(false); };
+        let path = self.path(&local);
+        let values = tokio::task::spawn_blocking(move || -> anyhow::Result<std::collections::BTreeMap<String, Vec<String>>> {
+            use lofty::file::TaggedFileExt as _;
+            lofty::config::apply_global_options(lofty::config::GlobalOptions::new().allocation_limit(crate::model::MAX_METADATA));
+            let tagged = lofty::probe::Probe::open(path)?.guess_file_type()?.options(
+                lofty::config::ParseOptions::new().read_properties(false).read_cover_art(false)
+                    .parsing_mode(lofty::config::ParsingMode::BestAttempt)
+            ).read()?;
+            let mut values = std::collections::BTreeMap::new();
+            for (name, key) in [("TITLE", lofty::tag::ItemKey::TrackTitle), ("ALBUM", lofty::tag::ItemKey::AlbumTitle), ("ARTIST", lofty::tag::ItemKey::TrackArtist),
+                ("ALBUMARTIST", lofty::tag::ItemKey::AlbumArtist), ("COMPILATION", lofty::tag::ItemKey::FlagCompilation),
+                ("MUSICBRAINZ_ALBUMID", lofty::tag::ItemKey::MusicBrainzReleaseId), ("DISCNUMBER", lofty::tag::ItemKey::DiscNumber),
+                ("TRACKNUMBER", lofty::tag::ItemKey::TrackNumber)] {
+                let items: Vec<_> = tagged.tags().iter().flat_map(|tag| tag.get_strings(key)).map(str::to_owned).collect();
+                if !items.is_empty() { values.insert(name.to_owned(), items); }
+            }
+            anyhow::ensure!(serde_json::to_vec(&values)?.len() <= crate::model::MAX_METADATA, "embedded metadata too large");
+            Ok(values)
+        }).await?;
+        let Ok(values) = values else { return Ok(false); };
+        if crate::cluster_replica::verify_file(self.path(&local), local).await.is_err() { return Ok(false); }
+        let first = |key: &str| values.get(key).and_then(|items| items.first()).cloned();
+        let releases: std::collections::BTreeSet<_> = values.get("MUSICBRAINZ_ALBUMID").into_iter().flatten()
+            .filter_map(|value| uuid::Uuid::parse_str(value).ok()).map(|id| id.to_string()).collect();
+        let imported = crate::organization::Imported {
+            title: first("ALBUM"), artist: first("ARTIST"), album_artist: first("ALBUMARTIST"),
+            compilation_values: values.get("COMPILATION").cloned().unwrap_or_default(),
+            release: (releases.len() == 1 && values.get("MUSICBRAINZ_ALBUMID").into_iter().flatten().all(|value| uuid::Uuid::parse_str(value).is_ok()))
+                .then(|| crate::organization::Release { source: "musicbrainz-release".into(), value: releases.first().unwrap().clone() }),
+            tag_values: Some(values.clone()),
+        };
+        let number = |key: &str| first(key).and_then(|value| value.split('/').next()?.parse::<i64>().ok());
+        entry.imported_album = Some(imported.clone());
+        entry.track.disc_number = entry.track.disc_number.or_else(|| number("DISCNUMBER"));
+        entry.track.track = entry.track.track.or_else(|| number("TRACKNUMBER"));
+        for track in &mut organization.tracks {
+            if track.sha256 == object && track.imported.tag_values.is_none() {
+                track.imported = imported.clone();
+                track.disc_number = track.disc_number.or(entry.track.disc_number);
+                track.track_number = track.track_number.or(entry.track.track);
+            }
+        }
+        for album in &mut organization.albums {
+            let titles: Vec<_> = organization.tracks.iter().filter(|track| track.imported_album_id == album.id)
+                .filter_map(|track| track.imported.title.as_deref()).collect();
+            if let Some(title) = titles.first().filter(|title| !title.is_empty() && titles.iter().all(|other| other == *title)) {
+                album.title = (*title).to_owned();
+            }
+        }
+        organization.repair_membership()?;
+        self.publish_observed_cluster_change(identity, object.to_owned(), crate::cluster_changes::Action::Edit {
+            entry: Box::new(entry), organization: Box::new(organization),
+        }, vec![selected.id]).await?;
+        self.project_cluster_metadata(object.to_owned()).await?;
+        Ok(true)
+    }
+
+    pub async fn reconcile_cluster_organization(&self, identity: &crate::peer::Identity) -> anyhow::Result<()> {
+        let records = self.cluster_active_changes().await?;
+        let objects: std::collections::BTreeSet<_> = records.iter().map(|record| record.object.clone()).collect();
+        for object in objects {
+            let heads = crate::cluster_changes::object_heads(&records, &object);
+            if heads.len() < 2 || heads.len() > 64 { continue; }
+            let mut entry = None;
+            let mut baseline = None;
+            let mut merged = crate::organization::Organization::default();
+            let mut compatible = true;
+            for head in &heads {
+                let (incoming_entry, organization) = match &head.action {
+                    crate::cluster_changes::Action::Import { entry, organization }
+                    | crate::cluster_changes::Action::Edit { entry, organization } => (entry, organization),
+                    _ => { compatible = false; break; }
+                };
+                let mut metadata = organization.as_ref().clone();
+                metadata.artwork = None;
+                metadata.choices.clear();
+                metadata.preferred.clear();
+                if entry.as_ref().is_some_and(|entry| entry != incoming_entry)
+                    || baseline.as_ref().is_some_and(|baseline| baseline != &metadata) {
+                    compatible = false; break;
+                }
+                entry = Some(incoming_entry.clone());
+                baseline = Some(metadata);
+                if merged.merge(organization).is_err() { compatible = false; break; }
+            }
+            if compatible {
+                self.publish_observed_cluster_change(identity, object, crate::cluster_changes::Action::Edit {
+                    entry: entry.expect("nonempty heads"), organization: Box::new(merged),
+                }, heads.into_iter().map(|head| head.id).collect()).await?;
+            }
+        }
+        Ok(())
+    }
+
     pub async fn receive_cluster_metadata(
         &self,
         identity: &crate::peer::Identity,
@@ -307,6 +413,12 @@ impl crate::store::Store {
             let transaction = connection.transaction()?;
             let records = crate::cluster_changes::projected_records(&transaction)?;
             let Some(selected) = crate::cluster_replica::selected(&records, &object)? else {
+                let mut organization = crate::store::read_organization(&transaction)?;
+                organization.exclude_objects(&std::collections::BTreeSet::from([object.clone()]))?;
+                transaction.execute("DELETE FROM tracks WHERE sha256 = ?", [&object])?;
+                transaction.execute("DELETE FROM cluster_receipts WHERE object = ?", [&object])?;
+                transaction.execute("UPDATE organization SET payload = ? WHERE singleton = 1", [serde_json::to_vec(&organization)?])?;
+                transaction.commit()?;
                 return Ok(());
             };
             let (entry, incoming) = match selected.action {
@@ -332,9 +444,6 @@ impl crate::store::Store {
                     .map(|row| Ok(serde_json::from_slice(&row?)?))
                     .collect::<anyhow::Result<_>>()?
             };
-            if stored.is_empty() {
-                return Ok(());
-            }
             let mut organization = crate::store::read_organization(&transaction)?;
             organization.merge(&incoming)?;
             for album in &incoming.albums {
@@ -384,6 +493,7 @@ impl crate::store::Store {
                     existing.title = album.title.clone();
                 }
             }
+            let stored = if stored.is_empty() { vec![entry.clone()] } else { stored };
             for previous in stored {
                 let mut projected = entry.clone();
                 projected.track.id = previous.track.id.clone();
@@ -405,8 +515,8 @@ impl crate::store::Store {
                         .insert(previous.track.id.clone(), canonical);
                 }
                 transaction.execute(
-                    "UPDATE tracks SET payload = ? WHERE id = ?",
-                    rusqlite::params![serde_json::to_vec(&projected)?, previous.track.id],
+                    "INSERT INTO tracks (id, sha256, suffix, payload) VALUES (?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET payload = excluded.payload",
+                    rusqlite::params![previous.track.id, projected.sha256, projected.track.suffix, serde_json::to_vec(&projected)?],
                 )?;
             }
             organization.validate()?;

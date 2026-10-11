@@ -1,4 +1,5 @@
 pub const ENROLLMENT_ALPN: &[u8] = b"syncstr/enrollment/1";
+pub const MAX_FRAME: usize = 64 * 1024 * 1024;
 
 #[derive(serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -22,7 +23,7 @@ pub(crate) async fn send<T: serde::Serialize>(
     message: &T,
 ) -> anyhow::Result<()> {
     let payload = serde_json::to_vec(message)?;
-    anyhow::ensure!(payload.len() <= 4 * 1024 * 1024, "cluster frame too large");
+    anyhow::ensure!(payload.len() <= crate::cluster_net::MAX_FRAME, "cluster frame too large");
     stream
         .write_all(&(payload.len() as u32).to_be_bytes())
         .await?;

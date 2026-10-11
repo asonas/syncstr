@@ -13,6 +13,48 @@ struct LocalEntry: Codable, Equatable {
 }
 
 enum UploadedMusic {
+    static func recoverClusterEvidence(_ catalog: LocalCatalog, store: LocalMusicStore) async throws -> LocalCatalog {
+        let database = try store.database()
+        let records = try database.clusterChanges()
+        let blocked = try Set(database.clusterObjectStates().filter {
+            if $0.conflicted { return true }
+            return try $0.selected(in: records) == nil
+        }.map(\.object)).union(database.clusterAlbumConflicts().flatMap(\.objects))
+        let recovery = Task.detached {
+            var catalog = catalog
+            guard var organization = catalog.organization else { return catalog }
+            for index in catalog.entries.indices {
+                try Task.checkCancellation()
+                var entry = catalog.entries[index]
+                guard !blocked.contains(entry.sha256),
+                      let record = organization.tracks.first(where: { $0.id == organization.canonicalTrack(entry.track.id) }),
+                      record.imported.tagValues == nil, store.hasFile(entry),
+                      (try? LocalMusicStore.digest(file: store.fileURL(entry))) == entry.sha256,
+                      let tags = try? AudioTags.readFile(store.fileURL(entry)),
+                      (try? LocalMusicStore.digest(file: store.fileURL(entry))) == entry.sha256 else { continue }
+                entry.importedAlbum = ImportedAlbumMetadata.read(tags)
+                func number(_ key: String) -> Int? {
+                    (tags[key] as? [String])?.first?.split(separator: "/").first.flatMap { Int($0) }
+                }
+                entry.track.discNumber = entry.track.discNumber ?? number("DISCNUMBER")
+                entry.track.track = entry.track.track ?? number("TRACKNUMBER")
+                organization.importEntries([entry])
+                if let image = (tags["artwork"] as? Data).flatMap(ArtworkImage.normalize) {
+                    try organization.captureArtwork(image, track: organization.canonicalTrack(entry.track.id), source: "embedded", context: entry.sha256)
+                }
+                catalog.entries[index] = entry
+            }
+            try organization.validate()
+            catalog.organization = organization
+            return catalog
+        }
+        return try await withTaskCancellationHandler {
+            try await recovery.value
+        } onCancel: {
+            recovery.cancel()
+        }
+    }
+
     static func prepare(_ files: [URL], organization: AlbumOrganization, sourceID: String) async throws -> (entries: [LocalEntry], organization: AlbumOrganization) {
         var entries: [LocalEntry] = []
         var folders: [String: String] = [:]

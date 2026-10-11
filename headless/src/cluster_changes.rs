@@ -1,3 +1,5 @@
+pub const MAX_CHANGE: usize = 16 * 1024 * 1024;
+
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "kind", rename_all = "kebab-case", deny_unknown_fields)]
 pub enum Action {
@@ -89,7 +91,7 @@ impl crate::cluster_changes::Change {
         }
         let bytes = self.signing_bytes()?;
         anyhow::ensure!(
-            bytes.len() <= crate::model::MAX_METADATA,
+            bytes.len() <= crate::cluster_changes::MAX_CHANGE,
             "change exceeds metadata limit"
         );
         let signature: [u8; 64] = hex::decode(&self.signature)?
