@@ -91,7 +91,7 @@ When no reachable member or retained metadata supplies sufficient evidence, reta
 
 ## Implementation follow-up
 
-No product-policy questions remain open from this interview. Implementation requires a scoped plan covering catalog migration, retained import context, image assets and provenance, causal updates and conflict resolution, Music permission handling, native image selection, and integration with the cluster work. Preserve the distinction between implemented single-peer behavior and planned cluster behavior.
+No product-policy questions remain open from this interview. The [revision implementation plan](compilation-revision-implementation-plan.md) covers catalog migration, retained import context, image assets and provenance, causal updates and conflict resolution, Music permission handling, native image selection, and integration with the cluster work. Preserve the distinction between implemented single-peer behavior and planned cluster behavior.
 
 Specify deterministic candidate selection within one image source, recognized folder image names/formats, payload bounds, protocol compatibility, and migration rollback during implementation planning. These details must preserve the agreed priorities and user choices. Verify the scenarios above through real catalogs and transfers, plus Music access allowed/denied/unavailable and production sandbox builds. The successful fixture probes do not establish TestFlight or App Store behavior.
 
