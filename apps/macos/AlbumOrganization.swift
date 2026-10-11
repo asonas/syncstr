@@ -21,7 +21,7 @@ struct ImportedAlbumMetadata: Codable, Equatable {
             ? normalized.first.map { ReleaseIdentifier(source: "musicbrainz-release", value: $0) } : nil
         return ImportedAlbumMetadata(title: values("ALBUM").first, artist: values("ARTIST").first,
             albumArtist: values("ALBUMARTIST").first, compilationValues: values("COMPILATION"), release: release,
-            tagValues: Dictionary(uniqueKeysWithValues: ["TITLE", "ARTIST", "ALBUM", "ALBUMARTIST", "COMPILATION", "MUSICBRAINZ_ALBUMID"]
+            tagValues: Dictionary(uniqueKeysWithValues: ["TITLE", "ARTIST", "ALBUM", "ALBUMARTIST", "COMPILATION", "MUSICBRAINZ_ALBUMID", "DISCNUMBER", "TRACKNUMBER"]
                 .filter { tags[$0] != nil }.map { ($0, values($0)) }))
     }
 
@@ -51,6 +51,9 @@ struct OrganizationTrack: Codable, Equatable {
     var importedAlbumID: String
     var title: String? = nil
     var folderEvidence: String? = nil
+    var importContext: AlbumImportContext? = nil
+    var discNumber: Int? = nil
+    var trackNumber: Int? = nil
 }
 
 struct OrganizationChoice: Codable, Equatable, Identifiable {
@@ -68,6 +71,8 @@ struct AlbumOrganization: Codable, Equatable {
     var choices: [OrganizationChoice] = []
     var preferred: [String: String] = [:]
     var trackAliases: [String: String]? = nil
+    // Derived links can be withdrawn when retained evidence changes. Listener choices are separate.
+    var automaticAliases: [String: String]? = nil
 
     func canonicalTrack(_ id: String) -> String {
         var cursor = id
@@ -82,8 +87,8 @@ struct AlbumOrganization: Codable, Equatable {
             .values.map { $0.sorted { $0.id < $1.id } }
             .filter { group in
                 let records = tracks.filter { group.map(\.id).contains(canonical($0.importedAlbumID)) }
-                let folders = records.compactMap(\.folderEvidence)
-                return folders.count == records.count && Set(folders.map { URL(fileURLWithPath: "/" + $0).deletingLastPathComponent().path }).count == 1
+                let contexts = records.compactMap(\.importContext)
+                return contexts.count == records.count && Set(contexts.map { [$0.sourceID, $0.parent] }).count == 1
             }
             .filter { choice(subject: $0.map(\.id).joined(separator: ","), kind: "proposal") == nil }
             .sorted { $0[0].title < $1[0].title }
@@ -99,7 +104,12 @@ struct AlbumOrganization: Codable, Equatable {
         guard Set(classifications).count <= 1 else { throw LocalMusicError.invalidData }
         if !confirmed {
             let explicitMemberships = members.compactMap { choice(subject: $0.id, kind: "membership")?.value }.map(canonical)
-            guard Set(explicitMemberships).count <= 1 else { throw LocalMusicError.invalidData }
+            guard explicitMemberships.isEmpty,
+                  Set(albums.filter { ids.contains(canonical($0.id)) }.flatMap(\.releases)).count <= 1,
+                  !choices.contains(where: { revision in
+                      revision.kind == "proposal" && revision.value != nil && heads(subject: revision.subject, kind: "proposal").contains(revision)
+                          && Set(revision.subject.split(separator: ",").map { canonical(String($0)) }).intersection(ids).count > 1
+                  }) else { throw LocalMusicError.invalidData }
         }
         if confirmed {
             for member in members { set(subject: member.id, kind: "membership", value: survivor) }
@@ -126,7 +136,7 @@ struct AlbumOrganization: Codable, Equatable {
     func canonical(_ id: String) -> String {
         var id = id
         var visited = Set<String>()
-        while let next = aliases[id], visited.insert(id).inserted { id = next }
+        while let next = aliases[id] ?? automaticAliases?[id], visited.insert(id).inserted { id = next }
         return id
     }
 
@@ -150,6 +160,17 @@ struct AlbumOrganization: Codable, Equatable {
     }
 
     mutating func set(subject: String, kind: String, value: String?) {
+        if kind == "classification", !(automaticAliases ?? [:]).isEmpty {
+            let target = canonical(subject)
+            let members = albums.filter { canonical($0.id) == target }.map(\.id)
+            let derived = automaticAliases
+            automaticAliases = nil
+            let subjects = Set(members.map(canonical)).sorted()
+            for member in subjects { set(subject: member, kind: kind, value: value) }
+            automaticAliases = derived
+            repairMembership()
+            return
+        }
         let subject = kind == "membership" ? canonicalTrack(subject) : kind == "classification" ? canonical(subject) : subject
         if kind == "membership", value == nil,
            let record = tracks.first(where: { $0.id == subject }),
@@ -172,22 +193,26 @@ struct AlbumOrganization: Codable, Equatable {
         return canonical(choice(subject: id, kind: "membership")?.value ?? record.importedAlbumID)
     }
 
-    mutating func importEntries(_ entries: [LocalEntry], folders: [String: String] = [:]) {
+    mutating func importEntries(_ entries: [LocalEntry], folders: [String: String] = [:], sourceID: String? = nil) {
+        let established = Set(albums.map { canonical($0.id) })
         var provisional: [String: String] = [:]
         for record in tracks where record.imported.release == nil {
             let credit = record.imported.albumArtist.flatMap { $0.lowercased() == "various artists" ? nil : $0 } ?? record.imported.artist ?? ""
             let title = record.imported.title ?? albums.first { $0.id == record.importedAlbumID }?.title ?? ""
-            provisional[[record.folderEvidence ?? "", title, credit].joined(separator: "\u{1f}")] = record.importedAlbumID
+            provisional[[record.importContext?.sourceID ?? "", record.importContext?.folder ?? record.folderEvidence ?? "", title, credit].joined(separator: "\u{1f}")] = record.importedAlbumID
         }
         for entry in entries {
             let imported = entry.importedAlbum ?? ImportedAlbumMetadata(title: entry.track.album,
                 artist: entry.track.artist, albumArtist: nil, compilationValues: [], release: nil)
             if let index = tracks.firstIndex(where: { $0.id == canonicalTrack(entry.track.id) }) {
-                tracks[index].imported = imported
+                if entry.importedAlbum != nil { tracks[index].imported = imported }
                 tracks[index].sha256 = entry.sha256
                 tracks[index].title = entry.track.title
-                if let release = imported.release {
-                    tracks[index].importedAlbumID = releaseAlbum(release, title: imported.title ?? entry.track.album ?? "")
+                tracks[index].discNumber = entry.track.discNumber
+                tracks[index].trackNumber = entry.track.track
+                if tracks[index].importContext == nil, let sourceID, let folder = folders[entry.track.id] {
+                    tracks[index].importContext = AlbumImportContext(sourceID: sourceID, folder: folder)
+                    tracks[index].folderEvidence = folder
                 }
                 continue
             }
@@ -196,7 +221,7 @@ struct AlbumOrganization: Codable, Equatable {
                 albumID = releaseAlbum(release, title: imported.title ?? entry.track.album ?? "")
             } else {
                 let credit = imported.albumArtist.flatMap { $0.lowercased() == "various artists" ? nil : $0 } ?? imported.artist ?? ""
-                let group = entry.track.albumId ?? [folders[entry.track.id] ?? "", imported.title ?? entry.track.album ?? "", credit].joined(separator: "\u{1f}")
+                let group = entry.track.albumId ?? [sourceID ?? "", folders[entry.track.id] ?? "", imported.title ?? entry.track.album ?? "", credit].joined(separator: "\u{1f}")
                 if let existing = provisional[group] { albumID = existing }
                 else {
                     albumID = UUID().uuidString
@@ -207,16 +232,19 @@ struct AlbumOrganization: Codable, Equatable {
             }
             tracks.append(OrganizationTrack(id: entry.track.id, sha256: entry.sha256,
                 imported: imported, importedAlbumID: albumID, title: entry.track.title,
-                folderEvidence: folders[entry.track.id]))
+                folderEvidence: folders[entry.track.id],
+                importContext: sourceID.flatMap { source in folders[entry.track.id].map { AlbumImportContext(sourceID: source, folder: $0) } },
+                discNumber: entry.track.discNumber, trackNumber: entry.track.track))
         }
         for index in albums.indices {
             let titles = tracks.filter { $0.importedAlbumID == albums[index].id }.compactMap(\.imported.title)
             if let title = titles.first, !title.isEmpty, titles.allSatisfy({ $0 == title }) { albums[index].title = title }
         }
+        repairMembership(established: established)
     }
 
     private mutating func releaseAlbum(_ release: ReleaseIdentifier, title: String) -> String {
-        if let album = albums.first(where: { $0.releases.contains(release) }) { return canonical(album.id) }
+        if let album = albums.first(where: { $0.releases.contains(release) }) { return album.id }
         let album = OrganizationAlbum(id: UUID().uuidString, title: title, releases: [release])
         albums.append(album)
         return album.id
@@ -224,6 +252,8 @@ struct AlbumOrganization: Codable, Equatable {
 
     mutating func merge(_ incoming: AlbumOrganization) throws {
         try incoming.validate()
+        let established = Set(albums.map { canonical($0.id) })
+        if automaticAliases == nil { automaticAliases = incoming.automaticAliases }
         for album in incoming.albums {
             if let index = albums.firstIndex(where: { $0.id == album.id }) {
                 albums[index].releases = Array(Set(albums[index].releases + album.releases)).sorted { ($0.source, $0.value) < ($1.source, $1.value) }
@@ -236,6 +266,9 @@ struct AlbumOrganization: Codable, Equatable {
                 tracks[index].sha256 = record.sha256
                 tracks[index].title = record.title
                 tracks[index].folderEvidence = record.folderEvidence
+                tracks[index].importContext = tracks[index].importContext ?? record.importContext
+                tracks[index].discNumber = record.discNumber
+                tracks[index].trackNumber = record.trackNumber
             }
             else {
                 let matches = tracks.filter { $0.sha256 == record.sha256 && canonicalTrack($0.id) == $0.id }
@@ -273,6 +306,8 @@ struct AlbumOrganization: Codable, Equatable {
         }
         try validate()
         reconcileReleases()
+        repairMembership(established: established)
+        try validate()
     }
 
     func validate() throws {
@@ -291,16 +326,17 @@ struct AlbumOrganization: Codable, Equatable {
             guard trackIDs.contains(cursor) else { throw LocalMusicError.invalidData }
         }
         let byID = Dictionary(uniqueKeysWithValues: choices.map { ($0.id, $0) })
-        for (former, _) in aliases {
+        for former in Set(aliases.keys).union(automaticAliases?.keys.map { $0 } ?? []) {
             var cursor = former
             var visited = Set<String>()
-            while let next = aliases[cursor] {
+            while let next = aliases[cursor] ?? automaticAliases?[cursor] {
                 guard visited.insert(cursor).inserted else { throw LocalMusicError.invalidData }
                 cursor = next
             }
             guard albumIDs.contains(cursor) else { throw LocalMusicError.invalidData }
         }
         guard tracks.allSatisfy({ albumIDs.contains(canonical($0.importedAlbumID)) }) else { throw LocalMusicError.invalidData }
+        guard tracks.allSatisfy({ $0.importContext?.isValid ?? true }) else { throw LocalMusicError.invalidData }
         var remaining: [String: Int] = [:]
         var children: [String: [String]] = [:]
         for revision in choices {

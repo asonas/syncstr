@@ -7,6 +7,113 @@ import AudioTags
 #endif
 
 final class AlbumOrganizationTests: XCTestCase {
+    func testSharedMembershipCasesAndReorderedEvidence() throws {
+        struct Fixture: Decodable { var name: String; var organization: AlbumOrganization; var groups: [[String]] }
+        let file = try XCTUnwrap(Bundle(for: Self.self).url(forResource: "compilation-membership", withExtension: "json"))
+        for fixture in try JSONDecoder().decode([Fixture].self, from: Data(contentsOf: file)) {
+            for reversed in [false, true] {
+                var organization = fixture.organization
+                if reversed { organization.tracks.reverse(); organization.albums.reverse() }
+                organization.repairMembership()
+                try organization.validate()
+                let groups = Dictionary(grouping: organization.tracks, by: { organization.albumID(for: $0.id)! }).values.map { $0.map(\.id).sorted() }
+                XCTAssertEqual(Set(groups), Set(fixture.groups.map { $0.sorted() }), fixture.name)
+                XCTAssertEqual(organization.choices, fixture.organization.choices, fixture.name)
+                let repaired = organization
+                organization.repairMembership()
+                XCTAssertEqual(organization, repaired, fixture.name)
+            }
+        }
+    }
+
+    func testLaterDiscKeepsIdentityAndLateContradictionWithdrawsOnlyAutomaticLinks() throws {
+        var one = entry("one", artist: "A", compilation: ["1"])
+        one.track.discNumber = 1
+        var catalog = LocalCatalog(id: "source", name: "Collection", entries: [one])
+        catalog.organize(folders: ["one": "Collection/Disc 1"])
+        let original = catalog.organization?.albumID(for: "one")
+        var two = entry("two", artist: "B")
+        two.track.discNumber = 2
+        catalog.entries.append(two)
+        catalog.organize(folders: ["one": "Collection/Disc 1", "two": "Collection/Disc 2"])
+        XCTAssertEqual(catalog.organization?.albumID(for: "two"), original)
+        XCTAssertTrue(catalog.organization?.aliases.isEmpty == true)
+        let merged = catalog.organization
+        catalog.entries = []
+        catalog.organize()
+        XCTAssertEqual(catalog.organization, merged, "Unavailable audio retains its evidence")
+        two.importedAlbum?.compilationValues = ["0"]
+        catalog.entries = [two]
+        catalog.organize(folders: ["two": "Moved"])
+        XCTAssertNotEqual(catalog.organization?.albumID(for: "two"), original)
+        XCTAssertEqual(catalog.organization?.tracks.first { $0.id == "two" }?.importContext?.folder, "Collection/Disc 2")
+        XCTAssertTrue(catalog.organization?.choices.isEmpty == true)
+        try catalog.organization?.validate()
+    }
+
+    func testClassificationHistorySurvivesAutomaticMergeAndReassessment() throws {
+        var catalog = LocalCatalog(id: "source", name: "Collection", entries: [entry("one", artist: "A", compilation: ["1"]), entry("two", artist: "B")])
+        catalog.organize(folders: ["one": "Collection", "two": "Collection"])
+        let album = try XCTUnwrap(catalog.organization?.albumID(for: "one"))
+        catalog.organization?.set(subject: album, kind: "classification", value: "true")
+        catalog.organization?.set(subject: album, kind: "classification", value: nil)
+        catalog.entries[1].importedAlbum?.compilationValues = ["0"]
+        catalog.organize()
+        XCTAssertNotEqual(catalog.organization?.albumID(for: "one"), catalog.organization?.albumID(for: "two"))
+        try catalog.organization?.validate()
+        let reopened = try JSONDecoder().decode(AlbumOrganization.self, from: JSONEncoder().encode(catalog.organization!))
+        try reopened.validate()
+        XCTAssertEqual(reopened.choices, catalog.organization?.choices)
+    }
+
+    func testLaterDiscFromPeerKeepsEstablishedAlbumID() throws {
+        struct Fixture: Decodable { var name: String; var organization: AlbumOrganization }
+        let file = try XCTUnwrap(Bundle(for: Self.self).url(forResource: "compilation-membership", withExtension: "json"))
+        let cases = try JSONDecoder().decode([Fixture].self, from: Data(contentsOf: file))
+        let incoming = try XCTUnwrap(cases.first { $0.name == "sibling discs" }?.organization)
+        var local = incoming
+        local.albums.removeFirst()
+        local.tracks.removeFirst()
+        try local.merge(incoming)
+        XCTAssertEqual(local.albumID(for: "track-01"), "album-02")
+        XCTAssertEqual(local.albumID(for: "track-02"), "album-02")
+        let merged = local
+        try local.merge(incoming)
+        XCTAssertEqual(local, merged)
+    }
+
+    func testRepairPersistsAcrossDatabaseReopenWithoutInventingCacheContext() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let entries = [entry("one", artist: "A", compilation: ["1"]), entry("two", artist: "B")]
+        let catalog = LocalCatalog(id: "source", name: "Collection", entries: entries)
+        let url = root.appendingPathComponent("catalog.sqlite")
+        try CatalogDatabase(url).save(catalog)
+        let unavailable = try XCTUnwrap(CatalogDatabase(url).snapshot()?.catalog.organization)
+        XCTAssertNotEqual(unavailable.albumID(for: "one"), unavailable.albumID(for: "two"))
+        try CatalogDatabase(url).save(catalog, sourceRoot: root.appendingPathComponent("source"), sourcePaths: ["one": "Collection/one.mp3", "two": "Collection/two.mp3"])
+        let repaired = try XCTUnwrap(CatalogDatabase(url).snapshot()?.catalog.organization)
+        XCTAssertEqual(repaired.albumID(for: "one"), repaired.albumID(for: "two"))
+        XCTAssertEqual(try CatalogDatabase(url).snapshot()?.catalog.organization, repaired)
+    }
+
+    func testLocalCompilationRepairsExistingSplitWithoutCreatingManualChoices() throws {
+        let entries = [entry("one", artist: "A", compilation: ["1"]), entry("two", artist: "B")]
+        var legacy = AlbumOrganization()
+        legacy.importEntries(entries)
+        let former = legacy.albums.map(\.id)
+        var catalog = LocalCatalog(id: "import-a", name: "Music", entries: entries, organization: legacy)
+        catalog.organize(folders: ["one": "Collection", "two": "Collection"])
+        let organized = try XCTUnwrap(catalog.organization)
+        XCTAssertEqual(organized.albumID(for: "one"), organized.albumID(for: "two"))
+        XCTAssertTrue(organized.choices.isEmpty)
+        XCTAssertEqual(Set(former.map(organized.canonical)).count, 1)
+        XCTAssertNil(organized.tracks.first { $0.id == "two" }?.imported.compilation)
+        catalog.organize(folders: ["one": "Collection", "two": "Collection"])
+        XCTAssertEqual(catalog.organization, organized)
+        try organized.validate()
+    }
     func testOrganizationWireFixturePreservesNativeNamesAndClearRevision() throws {
         let fixture = try XCTUnwrap(Bundle(for: Self.self).url(forResource: "album-organization", withExtension: "json"))
         let data = try Data(contentsOf: fixture)

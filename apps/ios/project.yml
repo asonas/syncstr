@@ -32,6 +32,7 @@ targets:
       - path: ../macos/Library.swift
       - path: ../macos/PlaybackCommands.swift
       - path: ../macos/AlbumOrganization.swift
+      - path: ../macos/AlbumMembership.swift
       - path: ../macos/Track.swift
       - path: ../macos/CredentialStore.swift
       - path: ../macos/Licenses
@@ -81,6 +82,7 @@ targets:
       - path: ../macos/Library.swift
       - path: ../macos/PlaybackCommands.swift
       - path: ../macos/AlbumOrganization.swift
+      - path: ../macos/AlbumMembership.swift
       - path: ../macos/Track.swift
       - path: ../macos/CredentialStore.swift
     dependencies:
@@ -116,6 +118,8 @@ targets:
       - path: Tests
       - path: ../macos/Tests/AlbumOrganizationTests.swift
       - path: ../macos/Tests/CatalogMigrationTests.swift
+      - path: ../../headless/fixtures/compilation-membership.json
+        buildPhase: resources
       - path: ../../headless/fixtures/album-organization.json
         buildPhase: resources
       - path: ../../headless/fixtures/local-entry.json
@@ -130,6 +134,8 @@ targets:
     platform: macOS
     sources:
       - path: ../macos/Tests
+      - path: ../../headless/fixtures/compilation-membership.json
+        buildPhase: resources
       - path: ../../headless/fixtures/album-organization.json
         buildPhase: resources
       - path: ../../headless/fixtures/local-entry.json
@@ -139,6 +145,7 @@ targets:
       - path: ../macos/LocalTransfer.swift
       - path: ../macos/PeerTransfer.swift
       - path: ../macos/AlbumOrganization.swift
+      - path: ../macos/AlbumMembership.swift
       - path: ../macos/Track.swift
       - path: ../macos/CredentialStore.swift
     dependencies:
@@ -158,6 +165,7 @@ targets:
       - path: ../macos/LocalTransfer.swift
       - path: ../macos/PeerTransfer.swift
       - path: ../macos/AlbumOrganization.swift
+      - path: ../macos/AlbumMembership.swift
       - path: ../macos/Track.swift
       - path: ../macos/CredentialStore.swift
     dependencies:

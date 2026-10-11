@@ -6,6 +6,40 @@ import XCTest
 #endif
 
 final class CatalogMigrationTests: XCTestCase {
+    func testSchemaTwoRepairIsTransactionalAndRepeatable() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = LocalMusicStore(root: root)
+        let entries = ["one", "two"].map { id in
+            LocalEntry(track: Track(id: id, title: id, artist: id, album: "Collection", suffix: "mp3", size: 3),
+                sha256: String(repeating: id == "one" ? "a" : "b", count: 64), artwork: nil,
+                importedAlbum: ImportedAlbumMetadata(title: "Collection", artist: id, compilationValues: ["1"]))
+        }
+        try store.save(LocalCatalog(id: "source", name: "Collection", entries: entries))
+        let original = try XCTUnwrap(store.load()?.organization)
+        XCTAssertEqual(original.albums.count, 2)
+        var connection: OpaquePointer?
+        XCTAssertEqual(sqlite3_open(root.appendingPathComponent("catalog.sqlite").path, &connection), SQLITE_OK)
+        defer { sqlite3_close(connection) }
+        XCTAssertEqual(sqlite3_exec(connection, "UPDATE catalog SET source_root = 'unavailable-source'; UPDATE entries SET source_path = 'Collection/' || id || '.mp3'; PRAGMA user_version = 2; CREATE TRIGGER reject_repair BEFORE UPDATE ON organization BEGIN SELECT RAISE(ABORT, 'fixture failure'); END; CREATE TRIGGER reject_insert BEFORE INSERT ON organization BEGIN SELECT RAISE(ABORT, 'fixture failure'); END;", nil, nil, nil), SQLITE_OK)
+        XCTAssertThrowsError(try store.load())
+        var statement: OpaquePointer?
+        XCTAssertEqual(sqlite3_prepare_v2(connection, "PRAGMA user_version", -1, &statement, nil), SQLITE_OK)
+        XCTAssertEqual(sqlite3_step(statement), SQLITE_ROW)
+        XCTAssertEqual(sqlite3_column_int(statement, 0), 2)
+        sqlite3_finalize(statement)
+        XCTAssertEqual(sqlite3_prepare_v2(connection, "SELECT payload FROM organization", -1, &statement, nil), SQLITE_OK)
+        XCTAssertEqual(sqlite3_step(statement), SQLITE_ROW)
+        let payload = String(cString: sqlite3_column_text(statement, 0))
+        sqlite3_finalize(statement)
+        XCTAssertEqual(try JSONDecoder().decode(AlbumOrganization.self, from: Data(payload.utf8)), original)
+        XCTAssertEqual(sqlite3_exec(connection, "DROP TRIGGER reject_repair; DROP TRIGGER reject_insert;", nil, nil, nil), SQLITE_OK)
+        let repaired = try XCTUnwrap(store.load()?.organization)
+        XCTAssertEqual(repaired.albumID(for: "one"), repaired.albumID(for: "two"))
+        XCTAssertEqual(repaired.tracks.map(\.id), original.tracks.map(\.id))
+        XCTAssertEqual(try store.load()?.organization, repaired)
+    }
+
     func testHeadlessEntryJSONContractRoundTripsInNativeModel() throws {
         let fixture = try XCTUnwrap(Bundle(for: Self.self).url(forResource: "local-entry", withExtension: "json"))
         let data = try Data(contentsOf: fixture)

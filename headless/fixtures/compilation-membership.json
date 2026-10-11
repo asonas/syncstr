@@ -1,0 +1,1482 @@
+[
+  {
+    "name": "twenty artists",
+    "organization": {
+      "albums": [
+        {
+          "id": "album-01",
+          "title": "Collection",
+          "releases": []
+        },
+        {
+          "id": "album-02",
+          "title": "Collection",
+          "releases": []
+        },
+        {
+          "id": "album-03",
+          "title": "Collection",
+          "releases": []
+        },
+        {
+          "id": "album-04",
+          "title": "Collection",
+          "releases": []
+        },
+        {
+          "id": "album-05",
+          "title": "Collection",
+          "releases": []
+        },
+        {
+          "id": "album-06",
+          "title": "Collection",
+          "releases": []
+        },
+        {
+          "id": "album-07",
+          "title": "Collection",
+          "releases": []
+        },
+        {
+          "id": "album-08",
+          "title": "Collection",
+          "releases": []
+        },
+        {
+          "id": "album-09",
+          "title": "Collection",
+          "releases": []
+        },
+        {
+          "id": "album-10",
+          "title": "Collection",
+          "releases": []
+        },
+        {
+          "id": "album-11",
+          "title": "Collection",
+          "releases": []
+        },
+        {
+          "id": "album-12",
+          "title": "Collection",
+          "releases": []
+        },
+        {
+          "id": "album-13",
+          "title": "Collection",
+          "releases": []
+        },
+        {
+          "id": "album-14",
+          "title": "Collection",
+          "releases": []
+        },
+        {
+          "id": "album-15",
+          "title": "Collection",
+          "releases": []
+        },
+        {
+          "id": "album-16",
+          "title": "Collection",
+          "releases": []
+        },
+        {
+          "id": "album-17",
+          "title": "Collection",
+          "releases": []
+        },
+        {
+          "id": "album-18",
+          "title": "Collection",
+          "releases": []
+        },
+        {
+          "id": "album-19",
+          "title": "Collection",
+          "releases": []
+        },
+        {
+          "id": "album-20",
+          "title": "Collection",
+          "releases": []
+        }
+      ],
+      "tracks": [
+        {
+          "id": "track-01",
+          "sha256": "0000000000000000000000000000000000000000000000000000000000000001",
+          "imported": {
+            "title": "Collection",
+            "artist": "Artist 1",
+            "compilationValues": [
+              "1"
+            ]
+          },
+          "importedAlbumID": "album-01",
+          "importContext": {
+            "sourceID": "source-a",
+            "folder": "Collection"
+          }
+        },
+        {
+          "id": "track-02",
+          "sha256": "0000000000000000000000000000000000000000000000000000000000000002",
+          "imported": {
+            "title": "Collection",
+            "artist": "Artist 2",
+            "compilationValues": [
+              "1"
+            ]
+          },
+          "importedAlbumID": "album-02",
+          "importContext": {
+            "sourceID": "source-a",
+            "folder": "Collection"
+          }
+        },
+        {
+          "id": "track-03",
+          "sha256": "0000000000000000000000000000000000000000000000000000000000000003",
+          "imported": {
+            "title": "Collection",
+            "artist": "Artist 3",
+            "compilationValues": [
+              "1"
+            ]
+          },
+          "importedAlbumID": "album-03",
+          "importContext": {
+            "sourceID": "source-a",
+            "folder": "Collection"
+          }
+        },
+        {
+          "id": "track-04",
+          "sha256": "0000000000000000000000000000000000000000000000000000000000000004",
+          "imported": {
+            "title": "Collection",
+            "artist": "Artist 4",
+            "compilationValues": [
+              "1"
+            ]
+          },
+          "importedAlbumID": "album-04",
+          "importContext": {
+            "sourceID": "source-a",
+            "folder": "Collection"
+          }
+        },
+        {
+          "id": "track-05",
+          "sha256": "0000000000000000000000000000000000000000000000000000000000000005",
+          "imported": {
+            "title": "Collection",
+            "artist": "Artist 5",
+            "compilationValues": [
+              "1"
+            ]
+          },
+          "importedAlbumID": "album-05",
+          "importContext": {
+            "sourceID": "source-a",
+            "folder": "Collection"
+          }
+        },
+        {
+          "id": "track-06",
+          "sha256": "0000000000000000000000000000000000000000000000000000000000000006",
+          "imported": {
+            "title": "Collection",
+            "artist": "Artist 6",
+            "compilationValues": [
+              "1"
+            ]
+          },
+          "importedAlbumID": "album-06",
+          "importContext": {
+            "sourceID": "source-a",
+            "folder": "Collection"
+          }
+        },
+        {
+          "id": "track-07",
+          "sha256": "0000000000000000000000000000000000000000000000000000000000000007",
+          "imported": {
+            "title": "Collection",
+            "artist": "Artist 7",
+            "compilationValues": [
+              "1"
+            ]
+          },
+          "importedAlbumID": "album-07",
+          "importContext": {
+            "sourceID": "source-a",
+            "folder": "Collection"
+          }
+        },
+        {
+          "id": "track-08",
+          "sha256": "0000000000000000000000000000000000000000000000000000000000000008",
+          "imported": {
+            "title": "Collection",
+            "artist": "Artist 8",
+            "compilationValues": [
+              "1"
+            ]
+          },
+          "importedAlbumID": "album-08",
+          "importContext": {
+            "sourceID": "source-a",
+            "folder": "Collection"
+          }
+        },
+        {
+          "id": "track-09",
+          "sha256": "0000000000000000000000000000000000000000000000000000000000000009",
+          "imported": {
+            "title": "Collection",
+            "artist": "Artist 9",
+            "compilationValues": [
+              "1"
+            ]
+          },
+          "importedAlbumID": "album-09",
+          "importContext": {
+            "sourceID": "source-a",
+            "folder": "Collection"
+          }
+        },
+        {
+          "id": "track-10",
+          "sha256": "000000000000000000000000000000000000000000000000000000000000000a",
+          "imported": {
+            "title": "Collection",
+            "artist": "Artist 10",
+            "compilationValues": [
+              "1"
+            ]
+          },
+          "importedAlbumID": "album-10",
+          "importContext": {
+            "sourceID": "source-a",
+            "folder": "Collection"
+          }
+        },
+        {
+          "id": "track-11",
+          "sha256": "000000000000000000000000000000000000000000000000000000000000000b",
+          "imported": {
+            "title": "Collection",
+            "artist": "Artist 11",
+            "compilationValues": [
+              "1"
+            ]
+          },
+          "importedAlbumID": "album-11",
+          "importContext": {
+            "sourceID": "source-a",
+            "folder": "Collection"
+          }
+        },
+        {
+          "id": "track-12",
+          "sha256": "000000000000000000000000000000000000000000000000000000000000000c",
+          "imported": {
+            "title": "Collection",
+            "artist": "Artist 12",
+            "compilationValues": [
+              "1"
+            ]
+          },
+          "importedAlbumID": "album-12",
+          "importContext": {
+            "sourceID": "source-a",
+            "folder": "Collection"
+          }
+        },
+        {
+          "id": "track-13",
+          "sha256": "000000000000000000000000000000000000000000000000000000000000000d",
+          "imported": {
+            "title": "Collection",
+            "artist": "Artist 13",
+            "compilationValues": [
+              "1"
+            ]
+          },
+          "importedAlbumID": "album-13",
+          "importContext": {
+            "sourceID": "source-a",
+            "folder": "Collection"
+          }
+        },
+        {
+          "id": "track-14",
+          "sha256": "000000000000000000000000000000000000000000000000000000000000000e",
+          "imported": {
+            "title": "Collection",
+            "artist": "Artist 14",
+            "compilationValues": [
+              "1"
+            ]
+          },
+          "importedAlbumID": "album-14",
+          "importContext": {
+            "sourceID": "source-a",
+            "folder": "Collection"
+          }
+        },
+        {
+          "id": "track-15",
+          "sha256": "000000000000000000000000000000000000000000000000000000000000000f",
+          "imported": {
+            "title": "Collection",
+            "artist": "Artist 15",
+            "compilationValues": [
+              "1"
+            ]
+          },
+          "importedAlbumID": "album-15",
+          "importContext": {
+            "sourceID": "source-a",
+            "folder": "Collection"
+          }
+        },
+        {
+          "id": "track-16",
+          "sha256": "0000000000000000000000000000000000000000000000000000000000000010",
+          "imported": {
+            "title": "Collection",
+            "artist": "Artist 16",
+            "compilationValues": [
+              "1"
+            ]
+          },
+          "importedAlbumID": "album-16",
+          "importContext": {
+            "sourceID": "source-a",
+            "folder": "Collection"
+          }
+        },
+        {
+          "id": "track-17",
+          "sha256": "0000000000000000000000000000000000000000000000000000000000000011",
+          "imported": {
+            "title": "Collection",
+            "artist": "Artist 17",
+            "compilationValues": [
+              "1"
+            ]
+          },
+          "importedAlbumID": "album-17",
+          "importContext": {
+            "sourceID": "source-a",
+            "folder": "Collection"
+          }
+        },
+        {
+          "id": "track-18",
+          "sha256": "0000000000000000000000000000000000000000000000000000000000000012",
+          "imported": {
+            "title": "Collection",
+            "artist": "Artist 18",
+            "compilationValues": [
+              "1"
+            ]
+          },
+          "importedAlbumID": "album-18",
+          "importContext": {
+            "sourceID": "source-a",
+            "folder": "Collection"
+          }
+        },
+        {
+          "id": "track-19",
+          "sha256": "0000000000000000000000000000000000000000000000000000000000000013",
+          "imported": {
+            "title": "Collection",
+            "artist": "Artist 19",
+            "compilationValues": [
+              "1"
+            ]
+          },
+          "importedAlbumID": "album-19",
+          "importContext": {
+            "sourceID": "source-a",
+            "folder": "Collection"
+          }
+        },
+        {
+          "id": "track-20",
+          "sha256": "0000000000000000000000000000000000000000000000000000000000000014",
+          "imported": {
+            "title": "Collection",
+            "artist": "Artist 20",
+            "compilationValues": [
+              "1"
+            ]
+          },
+          "importedAlbumID": "album-20",
+          "importContext": {
+            "sourceID": "source-a",
+            "folder": "Collection"
+          }
+        }
+      ],
+      "aliases": {},
+      "choices": [],
+      "preferred": {}
+    },
+    "groups": [
+      [
+        "track-01",
+        "track-02",
+        "track-03",
+        "track-04",
+        "track-05",
+        "track-06",
+        "track-07",
+        "track-08",
+        "track-09",
+        "track-10",
+        "track-11",
+        "track-12",
+        "track-13",
+        "track-14",
+        "track-15",
+        "track-16",
+        "track-17",
+        "track-18",
+        "track-19",
+        "track-20"
+      ]
+    ]
+  },
+  {
+    "name": "positive and absent",
+    "organization": {
+      "albums": [
+        {
+          "id": "album-01",
+          "title": "Collection",
+          "releases": []
+        },
+        {
+          "id": "album-02",
+          "title": "Collection",
+          "releases": []
+        }
+      ],
+      "tracks": [
+        {
+          "id": "track-01",
+          "sha256": "0000000000000000000000000000000000000000000000000000000000000001",
+          "imported": {
+            "title": "Collection",
+            "artist": "Artist 1",
+            "compilationValues": [
+              "true"
+            ]
+          },
+          "importedAlbumID": "album-01",
+          "importContext": {
+            "sourceID": "source-a",
+            "folder": "Collection"
+          }
+        },
+        {
+          "id": "track-02",
+          "sha256": "0000000000000000000000000000000000000000000000000000000000000002",
+          "imported": {
+            "title": "Collection",
+            "artist": "Artist 2",
+            "compilationValues": []
+          },
+          "importedAlbumID": "album-02",
+          "importContext": {
+            "sourceID": "source-a",
+            "folder": "Collection"
+          }
+        }
+      ],
+      "aliases": {},
+      "choices": [],
+      "preferred": {}
+    },
+    "groups": [
+      [
+        "track-01",
+        "track-02"
+      ]
+    ]
+  },
+  {
+    "name": "negative",
+    "organization": {
+      "albums": [
+        {
+          "id": "album-01",
+          "title": "Collection",
+          "releases": []
+        },
+        {
+          "id": "album-02",
+          "title": "Collection",
+          "releases": []
+        }
+      ],
+      "tracks": [
+        {
+          "id": "track-01",
+          "sha256": "0000000000000000000000000000000000000000000000000000000000000001",
+          "imported": {
+            "title": "Collection",
+            "artist": "Artist 1",
+            "compilationValues": [
+              "1"
+            ]
+          },
+          "importedAlbumID": "album-01",
+          "importContext": {
+            "sourceID": "source-a",
+            "folder": "Collection"
+          }
+        },
+        {
+          "id": "track-02",
+          "sha256": "0000000000000000000000000000000000000000000000000000000000000002",
+          "imported": {
+            "title": "Collection",
+            "artist": "Artist 2",
+            "compilationValues": [
+              "0"
+            ]
+          },
+          "importedAlbumID": "album-02",
+          "importContext": {
+            "sourceID": "source-a",
+            "folder": "Collection"
+          }
+        }
+      ],
+      "aliases": {},
+      "choices": [],
+      "preferred": {}
+    },
+    "groups": [
+      [
+        "track-01"
+      ],
+      [
+        "track-02"
+      ]
+    ]
+  },
+  {
+    "name": "unknown",
+    "organization": {
+      "albums": [
+        {
+          "id": "album-01",
+          "title": "Collection",
+          "releases": []
+        },
+        {
+          "id": "album-02",
+          "title": "Collection",
+          "releases": []
+        }
+      ],
+      "tracks": [
+        {
+          "id": "track-01",
+          "sha256": "0000000000000000000000000000000000000000000000000000000000000001",
+          "imported": {
+            "title": "Collection",
+            "artist": "Artist 1",
+            "compilationValues": [
+              "1"
+            ]
+          },
+          "importedAlbumID": "album-01",
+          "importContext": {
+            "sourceID": "source-a",
+            "folder": "Collection"
+          }
+        },
+        {
+          "id": "track-02",
+          "sha256": "0000000000000000000000000000000000000000000000000000000000000002",
+          "imported": {
+            "title": "Collection",
+            "artist": "Artist 2",
+            "compilationValues": [
+              "maybe"
+            ]
+          },
+          "importedAlbumID": "album-02",
+          "importContext": {
+            "sourceID": "source-a",
+            "folder": "Collection"
+          }
+        }
+      ],
+      "aliases": {},
+      "choices": [],
+      "preferred": {}
+    },
+    "groups": [
+      [
+        "track-01"
+      ],
+      [
+        "track-02"
+      ]
+    ]
+  },
+  {
+    "name": "mixed",
+    "organization": {
+      "albums": [
+        {
+          "id": "album-01",
+          "title": "Collection",
+          "releases": []
+        },
+        {
+          "id": "album-02",
+          "title": "Collection",
+          "releases": []
+        }
+      ],
+      "tracks": [
+        {
+          "id": "track-01",
+          "sha256": "0000000000000000000000000000000000000000000000000000000000000001",
+          "imported": {
+            "title": "Collection",
+            "artist": "Artist 1",
+            "compilationValues": [
+              "1"
+            ]
+          },
+          "importedAlbumID": "album-01",
+          "importContext": {
+            "sourceID": "source-a",
+            "folder": "Collection"
+          }
+        },
+        {
+          "id": "track-02",
+          "sha256": "0000000000000000000000000000000000000000000000000000000000000002",
+          "imported": {
+            "title": "Collection",
+            "artist": "Artist 2",
+            "compilationValues": [
+              "1",
+              "0"
+            ]
+          },
+          "importedAlbumID": "album-02",
+          "importContext": {
+            "sourceID": "source-a",
+            "folder": "Collection"
+          }
+        }
+      ],
+      "aliases": {},
+      "choices": [],
+      "preferred": {}
+    },
+    "groups": [
+      [
+        "track-01"
+      ],
+      [
+        "track-02"
+      ]
+    ]
+  },
+  {
+    "name": "partly unknown",
+    "organization": {
+      "albums": [
+        {
+          "id": "album-01",
+          "title": "Collection",
+          "releases": []
+        },
+        {
+          "id": "album-02",
+          "title": "Collection",
+          "releases": []
+        }
+      ],
+      "tracks": [
+        {
+          "id": "track-01",
+          "sha256": "0000000000000000000000000000000000000000000000000000000000000001",
+          "imported": {
+            "title": "Collection",
+            "artist": "Artist 1",
+            "compilationValues": [
+              "1"
+            ]
+          },
+          "importedAlbumID": "album-01",
+          "importContext": {
+            "sourceID": "source-a",
+            "folder": "Collection"
+          }
+        },
+        {
+          "id": "track-02",
+          "sha256": "0000000000000000000000000000000000000000000000000000000000000002",
+          "imported": {
+            "title": "Collection",
+            "artist": "Artist 2",
+            "compilationValues": [
+              "1",
+              "maybe"
+            ]
+          },
+          "importedAlbumID": "album-02",
+          "importContext": {
+            "sourceID": "source-a",
+            "folder": "Collection"
+          }
+        }
+      ],
+      "aliases": {},
+      "choices": [],
+      "preferred": {}
+    },
+    "groups": [
+      [
+        "track-01"
+      ],
+      [
+        "track-02"
+      ]
+    ]
+  },
+  {
+    "name": "different releases",
+    "organization": {
+      "albums": [
+        {
+          "id": "album-01",
+          "title": "Collection",
+          "releases": []
+        },
+        {
+          "id": "album-02",
+          "title": "Collection",
+          "releases": []
+        }
+      ],
+      "tracks": [
+        {
+          "id": "track-01",
+          "sha256": "0000000000000000000000000000000000000000000000000000000000000001",
+          "imported": {
+            "title": "Collection",
+            "artist": "Artist 1",
+            "compilationValues": [
+              "1"
+            ],
+            "release": {
+              "source": "fixture",
+              "value": "one"
+            }
+          },
+          "importedAlbumID": "album-01",
+          "importContext": {
+            "sourceID": "source-a",
+            "folder": "Collection"
+          }
+        },
+        {
+          "id": "track-02",
+          "sha256": "0000000000000000000000000000000000000000000000000000000000000002",
+          "imported": {
+            "title": "Collection",
+            "artist": "Artist 2",
+            "compilationValues": [
+              "1"
+            ],
+            "release": {
+              "source": "fixture",
+              "value": "two"
+            }
+          },
+          "importedAlbumID": "album-02",
+          "importContext": {
+            "sourceID": "source-a",
+            "folder": "Collection"
+          }
+        }
+      ],
+      "aliases": {},
+      "choices": [],
+      "preferred": {}
+    },
+    "groups": [
+      [
+        "track-01"
+      ],
+      [
+        "track-02"
+      ]
+    ]
+  },
+  {
+    "name": "unrelated sources",
+    "organization": {
+      "albums": [
+        {
+          "id": "album-01",
+          "title": "Collection",
+          "releases": []
+        },
+        {
+          "id": "album-02",
+          "title": "Collection",
+          "releases": []
+        }
+      ],
+      "tracks": [
+        {
+          "id": "track-01",
+          "sha256": "0000000000000000000000000000000000000000000000000000000000000001",
+          "imported": {
+            "title": "Collection",
+            "artist": "Artist 1",
+            "compilationValues": [
+              "1"
+            ]
+          },
+          "importedAlbumID": "album-01",
+          "importContext": {
+            "sourceID": "source-a",
+            "folder": "Collection"
+          }
+        },
+        {
+          "id": "track-02",
+          "sha256": "0000000000000000000000000000000000000000000000000000000000000002",
+          "imported": {
+            "title": "Collection",
+            "artist": "Artist 2",
+            "compilationValues": [
+              "1"
+            ]
+          },
+          "importedAlbumID": "album-02",
+          "importContext": {
+            "sourceID": "source-b",
+            "folder": "Collection"
+          }
+        }
+      ],
+      "aliases": {},
+      "choices": [],
+      "preferred": {}
+    },
+    "groups": [
+      [
+        "track-01"
+      ],
+      [
+        "track-02"
+      ]
+    ]
+  },
+  {
+    "name": "explicit separation",
+    "organization": {
+      "albums": [
+        {
+          "id": "album-01",
+          "title": "Collection",
+          "releases": []
+        },
+        {
+          "id": "album-02",
+          "title": "Collection",
+          "releases": []
+        }
+      ],
+      "tracks": [
+        {
+          "id": "track-01",
+          "sha256": "0000000000000000000000000000000000000000000000000000000000000001",
+          "imported": {
+            "title": "Collection",
+            "artist": "Artist 1",
+            "compilationValues": [
+              "1"
+            ]
+          },
+          "importedAlbumID": "album-01",
+          "importContext": {
+            "sourceID": "source-a",
+            "folder": "Collection"
+          }
+        },
+        {
+          "id": "track-02",
+          "sha256": "0000000000000000000000000000000000000000000000000000000000000002",
+          "imported": {
+            "title": "Collection",
+            "artist": "Artist 2",
+            "compilationValues": [
+              "1"
+            ]
+          },
+          "importedAlbumID": "album-02",
+          "importContext": {
+            "sourceID": "source-a",
+            "folder": "Collection"
+          }
+        }
+      ],
+      "aliases": {},
+      "choices": [
+        {
+          "id": "separate",
+          "subject": "album-01,album-02",
+          "kind": "proposal",
+          "value": "separate",
+          "parents": []
+        }
+      ],
+      "preferred": {}
+    },
+    "groups": [
+      [
+        "track-01"
+      ],
+      [
+        "track-02"
+      ]
+    ]
+  },
+  {
+    "name": "manual membership",
+    "organization": {
+      "albums": [
+        {
+          "id": "album-01",
+          "title": "Collection",
+          "releases": []
+        },
+        {
+          "id": "album-02",
+          "title": "Collection",
+          "releases": []
+        }
+      ],
+      "tracks": [
+        {
+          "id": "track-01",
+          "sha256": "0000000000000000000000000000000000000000000000000000000000000001",
+          "imported": {
+            "title": "Collection",
+            "artist": "Artist 1",
+            "compilationValues": [
+              "1"
+            ]
+          },
+          "importedAlbumID": "album-01",
+          "importContext": {
+            "sourceID": "source-a",
+            "folder": "Collection"
+          }
+        },
+        {
+          "id": "track-02",
+          "sha256": "0000000000000000000000000000000000000000000000000000000000000002",
+          "imported": {
+            "title": "Collection",
+            "artist": "Artist 2",
+            "compilationValues": [
+              "1"
+            ]
+          },
+          "importedAlbumID": "album-02",
+          "importContext": {
+            "sourceID": "source-a",
+            "folder": "Collection"
+          }
+        }
+      ],
+      "aliases": {},
+      "choices": [
+        {
+          "id": "manual",
+          "subject": "track-02",
+          "kind": "membership",
+          "value": "album-02",
+          "parents": []
+        }
+      ],
+      "preferred": {}
+    },
+    "groups": [
+      [
+        "track-01"
+      ],
+      [
+        "track-02"
+      ]
+    ]
+  },
+  {
+    "name": "classification conflict",
+    "organization": {
+      "albums": [
+        {
+          "id": "album-01",
+          "title": "Collection",
+          "releases": []
+        },
+        {
+          "id": "album-02",
+          "title": "Collection",
+          "releases": []
+        }
+      ],
+      "tracks": [
+        {
+          "id": "track-01",
+          "sha256": "0000000000000000000000000000000000000000000000000000000000000001",
+          "imported": {
+            "title": "Collection",
+            "artist": "Artist 1",
+            "compilationValues": [
+              "1"
+            ]
+          },
+          "importedAlbumID": "album-01",
+          "importContext": {
+            "sourceID": "source-a",
+            "folder": "Collection"
+          }
+        },
+        {
+          "id": "track-02",
+          "sha256": "0000000000000000000000000000000000000000000000000000000000000002",
+          "imported": {
+            "title": "Collection",
+            "artist": "Artist 2",
+            "compilationValues": [
+              "1"
+            ]
+          },
+          "importedAlbumID": "album-02",
+          "importContext": {
+            "sourceID": "source-a",
+            "folder": "Collection"
+          }
+        }
+      ],
+      "aliases": {},
+      "choices": [
+        {
+          "id": "class-a",
+          "subject": "album-01",
+          "kind": "classification",
+          "value": "true",
+          "parents": []
+        },
+        {
+          "id": "class-b",
+          "subject": "album-02",
+          "kind": "classification",
+          "value": "false",
+          "parents": []
+        }
+      ],
+      "preferred": {}
+    },
+    "groups": [
+      [
+        "track-01"
+      ],
+      [
+        "track-02"
+      ]
+    ]
+  },
+  {
+    "name": "sibling discs",
+    "organization": {
+      "albums": [
+        {
+          "id": "album-01",
+          "title": "Collection",
+          "releases": []
+        },
+        {
+          "id": "album-02",
+          "title": "Collection",
+          "releases": []
+        }
+      ],
+      "tracks": [
+        {
+          "id": "track-01",
+          "sha256": "0000000000000000000000000000000000000000000000000000000000000001",
+          "imported": {
+            "title": "Collection",
+            "artist": "Artist 1",
+            "compilationValues": [
+              "1"
+            ]
+          },
+          "importedAlbumID": "album-01",
+          "importContext": {
+            "sourceID": "source-a",
+            "folder": "Collection/Disc 1"
+          },
+          "discNumber": 1
+        },
+        {
+          "id": "track-02",
+          "sha256": "0000000000000000000000000000000000000000000000000000000000000002",
+          "imported": {
+            "title": "Collection",
+            "artist": "Artist 2",
+            "compilationValues": []
+          },
+          "importedAlbumID": "album-02",
+          "importContext": {
+            "sourceID": "source-a",
+            "folder": "Collection/Disc 2"
+          },
+          "discNumber": 2
+        }
+      ],
+      "aliases": {},
+      "choices": [],
+      "preferred": {}
+    },
+    "groups": [
+      [
+        "track-01",
+        "track-02"
+      ]
+    ]
+  },
+  {
+    "name": "shared concrete credit",
+    "organization": {
+      "albums": [
+        {
+          "id": "album-01",
+          "title": "Collection",
+          "releases": []
+        },
+        {
+          "id": "album-02",
+          "title": "Collection",
+          "releases": []
+        }
+      ],
+      "tracks": [
+        {
+          "id": "track-01",
+          "sha256": "0000000000000000000000000000000000000000000000000000000000000001",
+          "imported": {
+            "title": "Collection",
+            "artist": "Artist 1",
+            "compilationValues": [],
+            "albumArtist": "Ensemble"
+          },
+          "importedAlbumID": "album-01",
+          "importContext": {
+            "sourceID": "source-a",
+            "folder": "Collection/Disc 1"
+          },
+          "discNumber": 1
+        },
+        {
+          "id": "track-02",
+          "sha256": "0000000000000000000000000000000000000000000000000000000000000002",
+          "imported": {
+            "title": "Collection",
+            "artist": "Artist 2",
+            "compilationValues": [],
+            "albumArtist": "Ensemble"
+          },
+          "importedAlbumID": "album-02",
+          "importContext": {
+            "sourceID": "source-a",
+            "folder": "Collection/Disc 2"
+          },
+          "discNumber": 2
+        }
+      ],
+      "aliases": {},
+      "choices": [],
+      "preferred": {}
+    },
+    "groups": [
+      [
+        "track-01",
+        "track-02"
+      ]
+    ]
+  },
+  {
+    "name": "overlapping discs",
+    "organization": {
+      "albums": [
+        {
+          "id": "album-01",
+          "title": "Collection",
+          "releases": []
+        },
+        {
+          "id": "album-02",
+          "title": "Collection",
+          "releases": []
+        }
+      ],
+      "tracks": [
+        {
+          "id": "track-01",
+          "sha256": "0000000000000000000000000000000000000000000000000000000000000001",
+          "imported": {
+            "title": "Collection",
+            "artist": "Artist 1",
+            "compilationValues": [
+              "1"
+            ]
+          },
+          "importedAlbumID": "album-01",
+          "importContext": {
+            "sourceID": "source-a",
+            "folder": "Collection/Disc 1"
+          },
+          "discNumber": 1
+        },
+        {
+          "id": "track-02",
+          "sha256": "0000000000000000000000000000000000000000000000000000000000000002",
+          "imported": {
+            "title": "Collection",
+            "artist": "Artist 2",
+            "compilationValues": [
+              "1"
+            ]
+          },
+          "importedAlbumID": "album-02",
+          "importContext": {
+            "sourceID": "source-a",
+            "folder": "Collection/Disc 2"
+          },
+          "discNumber": 1
+        }
+      ],
+      "aliases": {},
+      "choices": [],
+      "preferred": {}
+    },
+    "groups": [
+      [
+        "track-01"
+      ],
+      [
+        "track-02"
+      ]
+    ]
+  },
+  {
+    "name": "missing disc number",
+    "organization": {
+      "albums": [
+        {
+          "id": "album-01",
+          "title": "Collection",
+          "releases": []
+        },
+        {
+          "id": "album-02",
+          "title": "Collection",
+          "releases": []
+        }
+      ],
+      "tracks": [
+        {
+          "id": "track-01",
+          "sha256": "0000000000000000000000000000000000000000000000000000000000000001",
+          "imported": {
+            "title": "Collection",
+            "artist": "Artist 1",
+            "compilationValues": [
+              "1"
+            ]
+          },
+          "importedAlbumID": "album-01",
+          "importContext": {
+            "sourceID": "source-a",
+            "folder": "Collection/Disc 1"
+          },
+          "discNumber": 1
+        },
+        {
+          "id": "track-02",
+          "sha256": "0000000000000000000000000000000000000000000000000000000000000002",
+          "imported": {
+            "title": "Collection",
+            "artist": "Artist 2",
+            "compilationValues": [
+              "1"
+            ]
+          },
+          "importedAlbumID": "album-02",
+          "importContext": {
+            "sourceID": "source-a",
+            "folder": "Collection/Disc 2"
+          }
+        }
+      ],
+      "aliases": {},
+      "choices": [],
+      "preferred": {}
+    },
+    "groups": [
+      [
+        "track-01"
+      ],
+      [
+        "track-02"
+      ]
+    ]
+  },
+  {
+    "name": "different parents",
+    "organization": {
+      "albums": [
+        {
+          "id": "album-01",
+          "title": "Collection",
+          "releases": []
+        },
+        {
+          "id": "album-02",
+          "title": "Collection",
+          "releases": []
+        }
+      ],
+      "tracks": [
+        {
+          "id": "track-01",
+          "sha256": "0000000000000000000000000000000000000000000000000000000000000001",
+          "imported": {
+            "title": "Collection",
+            "artist": "Artist 1",
+            "compilationValues": [
+              "1"
+            ]
+          },
+          "importedAlbumID": "album-01",
+          "importContext": {
+            "sourceID": "source-a",
+            "folder": "One/Disc 1"
+          },
+          "discNumber": 1
+        },
+        {
+          "id": "track-02",
+          "sha256": "0000000000000000000000000000000000000000000000000000000000000002",
+          "imported": {
+            "title": "Collection",
+            "artist": "Artist 2",
+            "compilationValues": [
+              "1"
+            ]
+          },
+          "importedAlbumID": "album-02",
+          "importContext": {
+            "sourceID": "source-a",
+            "folder": "Two/Disc 2"
+          },
+          "discNumber": 2
+        }
+      ],
+      "aliases": {},
+      "choices": [],
+      "preferred": {}
+    },
+    "groups": [
+      [
+        "track-01"
+      ],
+      [
+        "track-02"
+      ]
+    ]
+  },
+  {
+    "name": "no source context",
+    "organization": {
+      "albums": [
+        {
+          "id": "album-01",
+          "title": "Collection",
+          "releases": []
+        },
+        {
+          "id": "album-02",
+          "title": "Collection",
+          "releases": []
+        }
+      ],
+      "tracks": [
+        {
+          "id": "track-01",
+          "sha256": "0000000000000000000000000000000000000000000000000000000000000001",
+          "imported": {
+            "title": "Collection",
+            "artist": "Artist 1",
+            "compilationValues": [
+              "1"
+            ]
+          },
+          "importedAlbumID": "album-01",
+          "folderEvidence": "managed-cache"
+        },
+        {
+          "id": "track-02",
+          "sha256": "0000000000000000000000000000000000000000000000000000000000000002",
+          "imported": {
+            "title": "Collection",
+            "artist": "Artist 2",
+            "compilationValues": [
+              "1"
+            ]
+          },
+          "importedAlbumID": "album-02",
+          "folderEvidence": "managed-cache"
+        }
+      ],
+      "aliases": {},
+      "choices": [],
+      "preferred": {}
+    },
+    "groups": [
+      [
+        "track-01"
+      ],
+      [
+        "track-02"
+      ]
+    ]
+  }
+]

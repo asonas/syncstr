@@ -3,6 +3,101 @@ fn fixture() -> syncstr_headless::organization::Organization {
 }
 
 #[test]
+fn shared_membership_cases_and_reordered_evidence() {
+    #[derive(serde::Deserialize)]
+    struct Fixture {
+        name: String,
+        organization: syncstr_headless::organization::Organization,
+        groups: Vec<Vec<String>>,
+    }
+    let cases: Vec<Fixture> =
+        serde_json::from_str(include_str!("../fixtures/compilation-membership.json")).unwrap();
+    for case in cases {
+        for reversed in [false, true] {
+            let mut organization = case.organization.clone();
+            if reversed {
+                organization.tracks.reverse();
+                organization.albums.reverse();
+            }
+            organization.repair_membership().unwrap();
+            organization.validate().unwrap();
+            let mut groups = std::collections::BTreeMap::<_, Vec<_>>::new();
+            for track in &organization.tracks {
+                groups
+                    .entry(organization.canonical(&track.imported_album_id).unwrap())
+                    .or_default()
+                    .push(track.id.clone());
+            }
+            let actual: std::collections::BTreeSet<_> = groups
+                .into_values()
+                .map(|mut v| {
+                    v.sort();
+                    v
+                })
+                .collect();
+            let expected: std::collections::BTreeSet<_> = case
+                .groups
+                .iter()
+                .cloned()
+                .map(|mut v| {
+                    v.sort();
+                    v
+                })
+                .collect();
+            assert_eq!(actual, expected, "{}", case.name);
+            assert_eq!(organization.choices, case.organization.choices);
+            let repaired = organization.clone();
+            organization.repair_membership().unwrap();
+            assert_eq!(organization, repaired, "{}", case.name);
+        }
+    }
+}
+
+#[tokio::test]
+async fn later_disc_merge_keeps_identity_and_repair_survives_restart_and_failure() {
+    let cases: serde_json::Value =
+        serde_json::from_str(include_str!("../fixtures/compilation-membership.json")).unwrap();
+    let case = cases
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["name"] == "sibling discs")
+        .unwrap();
+    let incoming: syncstr_headless::organization::Organization =
+        serde_json::from_value(case["organization"].clone()).unwrap();
+    let mut local = incoming.clone();
+    local.albums.remove(0);
+    local.tracks.remove(0);
+    local.merge(&incoming).unwrap();
+    assert_eq!(local.canonical("album-01").unwrap(), "album-02");
+    assert!(local.choices.is_empty());
+    let root = tempfile::tempdir().unwrap();
+    let store = syncstr_headless::store::Store::open(root.path()).unwrap();
+    store.merge_organization(local.clone()).await.unwrap();
+    drop(store);
+    let reopened = syncstr_headless::store::Store::open(root.path()).unwrap();
+    assert_eq!(reopened.catalog().await.unwrap().organization, local);
+    let connection = rusqlite::Connection::open(root.path().join("node.sqlite")).unwrap();
+    connection.execute_batch("CREATE TRIGGER reject_repair BEFORE UPDATE ON organization BEGIN SELECT RAISE(ABORT, 'fixture failure'); END;").unwrap();
+    let mut contradictory = incoming;
+    contradictory.tracks[1].imported.compilation_values = vec!["0".into()];
+    assert!(
+        reopened
+            .merge_organization(contradictory.clone())
+            .await
+            .is_err()
+    );
+    assert_eq!(reopened.catalog().await.unwrap().organization, local);
+    connection
+        .execute_batch("DROP TRIGGER reject_repair;")
+        .unwrap();
+    reopened.merge_organization(contradictory).await.unwrap();
+    let repaired = reopened.catalog().await.unwrap().organization;
+    assert_eq!(repaired.canonical("album-01").unwrap(), "album-01");
+    assert_eq!(repaired.canonical("album-02").unwrap(), "album-02");
+}
+
+#[test]
 fn long_serial_choice_history_remains_valid() {
     let mut organization = crate::fixture();
     let mut parent = "revision-b".to_owned();

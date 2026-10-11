@@ -8,6 +8,44 @@ import XCTest
 
 @MainActor
 final class LocalTransferTests: XCTestCase {
+    func testCompilationUpgradeRereadsOriginalTagsAndRetainsContextAfterMove() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let source = root.appendingPathComponent("source")
+        let album = source.appendingPathComponent("Collection")
+        try FileManager.default.createDirectory(at: album, withIntermediateDirectories: true)
+        let fixture = URL(fileURLWithPath: #filePath).deletingLastPathComponent().appendingPathComponent("Fixtures/untagged.m4a")
+        var originals: [URL: Data] = [:]
+        for number in 1...20 {
+            let url = album.appendingPathComponent("Track \(number).m4a")
+            try FileManager.default.copyItem(at: fixture, to: url)
+            try AudioTags.writeFile(url, fields: ["TITLE": "Track \(number)", "ARTIST": "Artist \(number)", "ALBUM": "Collection", "COMPILATION": "1", "TRACKNUMBER": "\(number)"], artwork: nil, mimeType: nil, changeArtwork: false)
+            originals[url] = try Data(contentsOf: url)
+        }
+        let initial = try await LocalFolder.scan(source, id: "source-a")
+        XCTAssertEqual(Set(initial.catalog.entries.compactMap { initial.catalog.organization?.albumID(for: $0.track.id) }).count, 1)
+        var legacy = initial
+        legacy.catalog.organization = nil
+        for index in legacy.catalog.entries.indices { legacy.catalog.entries[index].importedAlbum = nil }
+        legacy.catalog.organize()
+        XCTAssertEqual(legacy.catalog.organization?.albums.count, 20)
+        let store = LocalMusicStore(root: root.appendingPathComponent("catalog"))
+        try store.save(legacy)
+        let repaired = try await LocalFolder.scan(source, id: "source-a", previous: store.snapshot())
+        XCTAssertEqual(Set(repaired.catalog.entries.map { $0.track.id }), Set(initial.catalog.entries.map { $0.track.id }))
+        XCTAssertEqual(Set(repaired.catalog.entries.compactMap { repaired.catalog.organization?.albumID(for: $0.track.id) }).count, 1)
+        XCTAssertTrue(repaired.catalog.organization?.choices.isEmpty == true)
+        try store.save(repaired)
+        let moved = source.appendingPathComponent("Moved")
+        try FileManager.default.moveItem(at: album, to: moved)
+        let rescanned = try await LocalFolder.scan(source, id: "source-a", previous: store.snapshot())
+        XCTAssertEqual(rescanned.catalog.organization, repaired.catalog.organization)
+        for (url, bytes) in originals { XCTAssertEqual(try Data(contentsOf: moved.appendingPathComponent(url.lastPathComponent)), bytes) }
+        let prepared = try await UploadedMusic.prepare(Array(rescanned.files.values), organization: AlbumOrganization(), sourceID: "uploader")
+        XCTAssertEqual(Set(prepared.organization.tracks.compactMap { prepared.organization.albumID(for: $0.id) }).count, 1)
+        XCTAssertTrue(prepared.organization.tracks.allSatisfy { !($0.importContext?.folder.contains(root.path) ?? true) })
+    }
+
     func testExistingPairingRecordSurvivesAccountModelRemoval() async throws {
         let service = "syncstr-pairing-update-test-" + UUID().uuidString
         let store = CredentialStore(service: service)
@@ -68,6 +106,7 @@ final class LocalTransferTests: XCTestCase {
         let reduced = try await LocalFolder.scan(source, id: "fixture-library", previous: store.snapshot())
         try store.save(reduced)
         XCTAssertFalse(reduced.catalog.entries.contains { $0.track.id == entry.track.id })
+        XCTAssertNil(reduced.files[entry.track.id])
         XCTAssertEqual(reduced.catalog.organization?.albumID(for: entry.track.id), album)
         try FileManager.default.moveItem(at: absent, to: source.appendingPathComponent("Returned.wav"))
         let returned = try await LocalFolder.scan(source, id: "fixture-library", previous: store.snapshot())

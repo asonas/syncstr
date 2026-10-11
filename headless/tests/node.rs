@@ -139,7 +139,7 @@ async fn two_clients_add_retry_restart_and_download_original_bytes() {
         let response = node
             .http()
             .get(format!(
-                "{}/v2/tracks/{}/audio",
+                "{}/v3/tracks/{}/audio",
                 node.endpoint, one.track.id
             ))
             .bearer_auth(node.token())
@@ -152,7 +152,7 @@ async fn two_clients_add_retry_restart_and_download_original_bytes() {
     }
     let missing = node
         .http()
-        .get(format!("{}/v2/tracks/not-found/audio", node.endpoint))
+        .get(format!("{}/v3/tracks/not-found/audio", node.endpoint))
         .bearer_auth(node.token())
         .send()
         .await
@@ -230,7 +230,7 @@ async fn corrupt_partial_oversized_and_unauthorized_uploads_stay_private() {
         }
         let mut request = node
             .http()
-            .post(format!("{}/v2/tracks", node.endpoint))
+            .post(format!("{}/v3/tracks", node.endpoint))
             .header(
                 "content-type",
                 "multipart/form-data; boundary=test-boundary",
@@ -263,7 +263,7 @@ async fn corrupt_partial_oversized_and_unauthorized_uploads_stay_private() {
     let raw = crate::multipart(&crate::entry(&original), &original);
     let response = node
         .http()
-        .post(format!("{}/v2/tracks", node.endpoint))
+        .post(format!("{}/v3/tracks", node.endpoint))
         .bearer_auth(node.token())
         .header(
             "content-type",

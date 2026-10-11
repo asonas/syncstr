@@ -43,6 +43,12 @@ pub struct Track {
         skip_serializing_if = "Option::is_none"
     )]
     pub folder_evidence: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub import_context: Option<crate::membership::ImportContext>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub disc_number: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub track_number: Option<i64>,
 }
 
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -68,10 +74,16 @@ pub struct Organization {
         skip_serializing_if = "Option::is_none"
     )]
     pub track_aliases: Option<std::collections::BTreeMap<String, String>>,
+    #[serde(
+        default,
+        rename = "automaticAliases",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub automatic_aliases: Option<std::collections::BTreeMap<String, String>>,
 }
 
 impl crate::organization::Organization {
-    fn canonical_track(&self, id: &str) -> String {
+    pub(crate) fn canonical_track(&self, id: &str) -> String {
         let mut cursor = id.to_owned();
         let mut seen = std::collections::BTreeSet::new();
         while let Some(next) = self.track_aliases.as_ref().and_then(|a| a.get(&cursor)) {
@@ -83,7 +95,7 @@ impl crate::organization::Organization {
         cursor
     }
 
-    fn subject(&self, choice: &crate::organization::Choice) -> String {
+    pub(crate) fn subject(&self, choice: &crate::organization::Choice) -> String {
         match choice.kind.as_str() {
             "membership" => self.canonical_track(&choice.subject),
             "classification" => self
@@ -97,7 +109,11 @@ impl crate::organization::Organization {
     pub fn canonical<'a>(&'a self, id: &'a str) -> anyhow::Result<&'a str> {
         let mut cursor = id;
         let mut seen = std::collections::BTreeSet::new();
-        while let Some(next) = self.aliases.get(cursor) {
+        while let Some(next) = self
+            .aliases
+            .get(cursor)
+            .or_else(|| self.automatic_aliases.as_ref().and_then(|a| a.get(cursor)))
+        {
             anyhow::ensure!(seen.insert(cursor), "album alias cycle");
             cursor = next;
         }
@@ -123,13 +139,21 @@ impl crate::organization::Organization {
                 && choices.len() == self.choices.len(),
             "duplicate organization ID"
         );
-        for alias in self.aliases.keys() {
+        for alias in self
+            .aliases
+            .keys()
+            .chain(self.automatic_aliases.iter().flat_map(|a| a.keys()))
+        {
             anyhow::ensure!(
                 albums.contains(self.canonical(alias)?),
                 "unknown album alias target"
             );
         }
         for track in &self.tracks {
+            anyhow::ensure!(
+                track.import_context.as_ref().is_none_or(|c| c.is_valid()),
+                "invalid import context"
+            );
             anyhow::ensure!(
                 albums.contains(self.canonical(&track.imported_album_id)?),
                 "unknown imported album"
@@ -224,6 +248,14 @@ impl crate::organization::Organization {
 
     pub fn merge(&mut self, incoming: &Self) -> anyhow::Result<()> {
         incoming.validate()?;
+        let established = self
+            .albums
+            .iter()
+            .map(|a| self.canonical(&a.id).map(str::to_owned))
+            .collect::<anyhow::Result<_>>()?;
+        if self.automatic_aliases.is_none() {
+            self.automatic_aliases = incoming.automatic_aliases.clone();
+        }
         for album in &incoming.albums {
             if let Some(existing) = self.albums.iter_mut().find(|a| a.id == album.id) {
                 for release in &album.releases {
@@ -237,7 +269,12 @@ impl crate::organization::Organization {
         }
         for track in &incoming.tracks {
             if let Some(existing) = self.tracks.iter_mut().find(|t| t.id == track.id) {
+                let context = existing
+                    .import_context
+                    .clone()
+                    .or_else(|| track.import_context.clone());
                 *existing = track.clone();
+                existing.import_context = context;
             } else {
                 let matches: Vec<_> = self
                     .tracks
@@ -315,6 +352,7 @@ impl crate::organization::Organization {
             }
         }
         self.reconcile_releases()?;
+        self.repair_membership_with_established(established)?;
         self.validate()
     }
 
@@ -367,8 +405,12 @@ impl crate::organization::Organization {
             });
         let id = self.canonical_track(&entry.track.id);
         if let Some(track) = self.tracks.iter_mut().find(|t| t.id == id) {
-            track.imported = imported;
+            if entry.imported_album.is_some() {
+                track.imported = imported;
+            }
             track.sha256 = entry.sha256.clone();
+            track.disc_number = entry.track.disc_number;
+            track.track_number = entry.track.track;
             return;
         }
         let album = self
@@ -402,6 +444,9 @@ impl crate::organization::Organization {
             imported_album_id: album,
             title: Some(entry.track.title.clone()),
             folder_evidence: None,
+            import_context: None,
+            disc_number: entry.track.disc_number,
+            track_number: entry.track.track,
         });
     }
 
@@ -450,7 +495,28 @@ impl crate::organization::Organization {
                 })
                 .filter_map(|c| c.value.clone())
                 .collect();
-            if classifications.len() > 1 || memberships.len() > 1 {
+            let editions: std::collections::BTreeSet<_> = self
+                .albums
+                .iter()
+                .filter(|a| ids.contains(self.canonical(&a.id).unwrap_or(&a.id)))
+                .flat_map(|a| &a.releases)
+                .collect();
+            let separated = active.iter().any(|c| {
+                c.kind == "proposal"
+                    && c.value.is_some()
+                    && c.subject
+                        .split(',')
+                        .filter_map(|id| self.canonical(id).ok())
+                        .filter(|id| ids.contains(*id))
+                        .collect::<std::collections::BTreeSet<_>>()
+                        .len()
+                        > 1
+            });
+            if classifications.len() > 1
+                || !memberships.is_empty()
+                || editions.len() > 1
+                || separated
+            {
                 continue;
             }
             for id in ids.iter().skip(1) {

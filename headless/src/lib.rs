@@ -1,6 +1,7 @@
 pub mod api;
 pub mod client;
 pub mod identity;
+pub mod membership;
 pub mod model;
 pub mod organization;
 #[cfg(feature = "p2p")]

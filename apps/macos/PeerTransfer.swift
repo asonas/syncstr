@@ -210,7 +210,7 @@ final class PeerMusicConnection: MusicChannel {
         guard count > 0, count <= 2 * 1024 * 1024 else { throw LocalMusicError.invalidData }
         let body = try await stream.recv().readExact(size: UInt32(count))
         let message = try JSONDecoder().decode(MusicMessage.self, from: body)
-        guard message.version == 2 else { throw LocalMusicError.incompatiblePeer }
+        guard message.version == 3 else { throw LocalMusicError.incompatiblePeer }
         return message
     }
 }

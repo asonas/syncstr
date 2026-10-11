@@ -13,6 +13,31 @@ struct LocalEntry: Codable, Equatable {
 }
 
 enum UploadedMusic {
+    static func prepare(_ files: [URL], organization: AlbumOrganization, sourceID: String) async throws -> (entries: [LocalEntry], organization: AlbumOrganization) {
+        var entries: [LocalEntry] = []
+        var folders: [String: String] = [:]
+        for original in files {
+            let scoped = original.startAccessingSecurityScopedResource()
+            defer { if scoped { original.stopAccessingSecurityScopedResource() } }
+            var entry = try await entry(file: original, original: original)
+            let matches = organization.tracks.filter { $0.sha256 == entry.sha256 && organization.canonicalTrack($0.id) == $0.id }
+            if matches.count == 1 {
+                entry.track.id = matches[0].id
+                if entry.track.coverArt != nil { entry.track.coverArt = entry.track.id }
+            }
+            guard LocalMusicStore.valid(entry) else { throw LocalMusicError.invalidData }
+            let directory = original.standardizedFileURL.deletingLastPathComponent()
+            // Opaque, source-scoped components retain sibling relationships without sharing paths.
+            func component(_ url: URL) -> String { LocalMusicStore.digest(Data((sourceID + url.path).utf8)) }
+            folders[entry.track.id] = component(directory.deletingLastPathComponent()) + "/" + component(directory)
+            entries.append(entry)
+        }
+        var updated = organization
+        updated.importEntries(entries, folders: folders, sourceID: sourceID)
+        try updated.validate()
+        return (entries, updated)
+    }
+
     static func entry(file: URL, original: URL) async throws -> LocalEntry {
         let asset = AVURLAsset(url: file)
         let duration = try await asset.load(.duration).seconds
@@ -56,7 +81,7 @@ struct LocalCatalog: Codable {
 
     mutating func organize(folders: [String: String] = [:]) {
         var organization = organization ?? AlbumOrganization()
-        organization.importEntries(entries, folders: folders)
+        organization.importEntries(entries, folders: folders, sourceID: id)
         self.organization = organization
     }
 }
@@ -285,7 +310,7 @@ struct LocalFolder {
         for entry in entries {
             let path = String(files[entry.track.id]!.path.dropFirst(root.path.count + 1))
             if let existing = oldPaths[path], oldEntries[existing]?.sha256 == entry.sha256 { retained[entry.track.id] = existing }
-            else if old?.sourceRoot == nil, oldEntries[entry.track.id] != nil {
+            else if old?.sourceRoot == nil, oldEntries[entry.track.id]?.sha256 == entry.sha256 {
                 // The first SQLite scan preserves IDs derived from legacy relative paths.
                 retained[entry.track.id] = entry.track.id
             }

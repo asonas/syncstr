@@ -42,14 +42,14 @@ impl crate::store::Store {
         connection.busy_timeout(std::time::Duration::from_secs(5))?;
         let version: i64 = connection.query_row("PRAGMA user_version", [], |row| row.get(0))?;
         anyhow::ensure!(
-            version == 0 || version == 1 || version == 2,
+            (0..=3).contains(&version),
             "unsupported catalog schema {version}"
         );
         let transaction = connection.transaction()?;
         transaction.execute_batch("CREATE TABLE IF NOT EXISTS library (singleton INTEGER PRIMARY KEY CHECK(singleton = 1), id TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS tracks (id TEXT PRIMARY KEY, sha256 TEXT NOT NULL, suffix TEXT NOT NULL, payload BLOB NOT NULL, UNIQUE(sha256, suffix));
             CREATE TABLE IF NOT EXISTS organization (singleton INTEGER PRIMARY KEY CHECK(singleton = 1), payload BLOB NOT NULL);
-            PRAGMA user_version = 2;")?;
+            PRAGMA user_version = 3;")?;
         let stored: Option<Vec<u8>> = {
             use rusqlite::OptionalExtension as _;
             transaction
@@ -60,7 +60,17 @@ impl crate::store::Store {
                 )
                 .optional()?
         };
-        if stored.is_none() {
+        if let Some(payload) = stored.as_ref() {
+            let mut organization: crate::organization::Organization =
+                serde_json::from_slice(payload)?;
+            organization.validate()?;
+            organization.repair_membership()?;
+            organization.validate()?;
+            transaction.execute(
+                "UPDATE organization SET payload = ? WHERE singleton = 1",
+                [serde_json::to_vec(&organization)?],
+            )?;
+        } else {
             let mut organization = crate::organization::Organization::default();
             let mut statement = transaction.prepare("SELECT payload FROM tracks ORDER BY id")?;
             let rows = statement.query_map([], |row| row.get::<_, Vec<u8>>(0))?;

@@ -4,7 +4,7 @@ import Security
 import SwiftUI
 
 struct MusicMessage: Codable {
-    var version = 2
+    var version = 3
     var kind: String
     var name: String? = nil
     var library: String? = nil
@@ -135,7 +135,7 @@ final class MusicConnection {
         let count = header.reduce(0) { ($0 << 8) | Int($1) }
         guard count > 0, count <= 2 * 1024 * 1024 else { throw LocalMusicError.invalidData }
         let message = try JSONDecoder().decode(MusicMessage.self, from: await read(count))
-        guard message.version == 2 else { throw LocalMusicError.incompatiblePeer }
+        guard message.version == 3 else { throw LocalMusicError.incompatiblePeer }
         if message.kind == "denied" { throw LocalMusicError.unauthorized }
         if message.kind == "changed" { throw LocalMusicError.changedFile }
         return message
@@ -339,13 +339,16 @@ final class LocalTransfer: ObservableObject {
         operation = Task {
             defer { if generation == attempt { busy = false } }
             do {
-                for url in files {
+                let sourceID = UserDefaults.standard.string(forKey: "musicImportSourceID") ?? UUID().uuidString
+                UserDefaults.standard.set(sourceID, forKey: "musicImportSourceID")
+                let prepared = try await UploadedMusic.prepare(files, organization: try store.load()?.organization ?? AlbumOrganization(), sourceID: sourceID)
+                for (url, entry) in zip(files, prepared.entries) {
                     let scoped = url.startAccessingSecurityScopedResource()
                     defer { if scoped { url.stopAccessingSecurityScopedResource() } }
                     let temporary = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
                         .appendingPathExtension(url.pathExtension)
                     defer { try? FileManager.default.removeItem(at: temporary) }
-                    var entry = try await Task.detached {
+                    try await Task.detached {
                         let source = try url.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey])
                         guard source.isRegularFile == true, let sourceSize = source.fileSize, sourceSize > 0,
                               UInt64(sourceSize) <= 20 * 1024 * 1024 * 1024,
@@ -353,19 +356,13 @@ final class LocalTransfer: ObservableObject {
                             throw LocalMusicError.invalidData
                         }
                         try FileManager.default.copyItem(at: url, to: temporary)
-                        return try await UploadedMusic.entry(file: temporary, original: url)
+                        guard try LocalMusicStore.digest(file: temporary) == entry.sha256 else { throw LocalMusicError.changedFile }
                     }.value
-                    let previous = try store.load()
-                    if let known = previous?.entries.first(where: { $0.sha256 == entry.sha256 }) {
-                        entry.track.id = known.track.id
-                        if entry.track.coverArt != nil { entry.track.coverArt = known.track.id }
-                        entry.track.albumId = previous?.organization?.albumID(for: known.track.id)
-                    }
                     guard LocalMusicStore.valid(entry) else { throw LocalMusicError.invalidData }
                     try Task.checkCancellation()
                     guard generation == attempt else { return }
                     status = "「\(entry.track.title)」を送信中…"
-                    try await client.sendOrganized(MusicMessage(kind: "put", entry: entry), organization: previous?.organization)
+                    try await client.sendOrganized(MusicMessage(kind: "put", entry: entry), organization: prepared.organization)
                     guard try await client.receive().kind == "accept" else { throw LocalMusicError.invalidData }
                     let handle = try FileHandle(forReadingFrom: temporary)
                     defer { try? handle.close() }

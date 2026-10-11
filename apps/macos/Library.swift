@@ -211,12 +211,13 @@ final class Library: ObservableObject {
         let selectedMembers = albums.first { $0.id == selectedAlbum }?.tracks.map(\.id) ?? []
         try organization.validate()
         catalog.organization = organization
+        catalog.organize()
         try localStore.save(catalog)
         localCatalog = catalog
         tracks = organizedTracks(catalog)
-        if let selectedAlbum { self.selectedAlbum = organization.canonical(selectedAlbum) }
+        if let selectedAlbum { self.selectedAlbum = catalog.organization?.canonical(selectedAlbum) }
         if let selectedAlbum, !albums.contains(where: { $0.id == selectedAlbum }) {
-            let moved = Set(selectedMembers.compactMap { organization.albumID(for: $0) })
+            let moved = Set(selectedMembers.compactMap { catalog.organization?.albumID(for: $0) })
             self.selectedAlbum = moved.count == 1 ? moved.first : nil
         }
 #if os(macOS)
@@ -333,9 +334,7 @@ final class Library: ObservableObject {
             if releaseScopeOnFailure { url.stopAccessingSecurityScopedResource() }
             if localCatalog == nil, let saved = try? localStore.load() {
                 localCatalog = saved
-                tracks = organizedTracks(saved).filter { track in
-                    saved.entries.first { $0.track.id == track.id }.map(localStore.hasFile) ?? false
-                }
+                tracks = organizedTracks(saved)
                 connected = true
                 restoringSession = false
                 refreshLocalFiles()

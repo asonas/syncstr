@@ -21,14 +21,15 @@ final class CatalogDatabase {
         sqlite3_busy_timeout(connection, 5000)
         do {
             let version = try rows("PRAGMA user_version").first?.first ?? nil
-            guard version == "0" || version == "1" || version == "2" else { throw LocalMusicError.invalidData }
+            guard ["0", "1", "2", "3"].contains(version) else { throw LocalMusicError.invalidData }
             try transaction {
                 try execute("CREATE TABLE IF NOT EXISTS catalog (singleton INTEGER PRIMARY KEY CHECK(singleton = 1), id TEXT NOT NULL, name TEXT NOT NULL, source_root TEXT)")
                 try execute("CREATE TABLE IF NOT EXISTS entries (id TEXT PRIMARY KEY, position INTEGER NOT NULL, sha256 TEXT NOT NULL, payload TEXT NOT NULL, source_path TEXT)")
                 try execute("CREATE INDEX IF NOT EXISTS entries_content ON entries(sha256)")
                 try execute("CREATE TABLE IF NOT EXISTS received_files (relative_path TEXT PRIMARY KEY, sha256 TEXT NOT NULL)")
                 try execute("CREATE TABLE IF NOT EXISTS organization (singleton INTEGER PRIMARY KEY CHECK(singleton = 1), payload TEXT NOT NULL)")
-                try execute("PRAGMA user_version = 2")
+                _ = try readSnapshot()
+                try execute("PRAGMA user_version = 3")
             }
         } catch {
             sqlite3_close(connection)
@@ -118,9 +119,11 @@ final class CatalogDatabase {
             catalog.organization = try JSONDecoder().decode(AlbumOrganization.self, from: Data(payload.utf8))
             try catalog.organization?.validate()
         }
-        catalog.organize(folders: paths.mapValues { ($0 as NSString).deletingLastPathComponent })
-        if try rows("SELECT singleton FROM organization WHERE singleton = 1").isEmpty {
-            try execute("INSERT INTO organization VALUES (1, ?)",
+        let previous = catalog.organization
+        catalog.organize(folders: header[2] == nil ? [:] : paths.mapValues { ($0 as NSString).deletingLastPathComponent })
+        try catalog.organization?.validate()
+        if previous != catalog.organization {
+            try execute("INSERT OR REPLACE INTO organization VALUES (1, ?)",
                 [String(decoding: try JSONEncoder().encode(catalog.organization!), as: UTF8.self)])
         }
         return CatalogSnapshot(catalog: catalog,
@@ -138,7 +141,7 @@ final class CatalogDatabase {
             let paths = sourcePaths ?? (sameLibrary ? previous?.sourcePaths ?? [:] : [:])
             var organized = catalog
             if organized.organization == nil, sameLibrary { organized.organization = previous?.catalog.organization }
-            organized.organize()
+            organized.organize(folders: root == nil ? [:] : paths.mapValues { ($0 as NSString).deletingLastPathComponent })
             try organized.organization?.validate()
             let organization = String(decoding: try JSONEncoder().encode(organized.organization!), as: UTF8.self)
             try execute("INSERT OR REPLACE INTO organization VALUES (1, ?)", [organization])

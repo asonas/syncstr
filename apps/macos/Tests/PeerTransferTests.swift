@@ -148,7 +148,7 @@ final class PeerTransferTests: XCTestCase {
         let source = URL(fileURLWithPath: #filePath).deletingLastPathComponent().appendingPathComponent("Fixtures/untagged.mp3")
         try FileManager.default.copyItem(at: source, to: fixture)
         try AudioTags.writeFile(fixture, fields: ["TITLE": "Tagged title", "ARTIST": "Tagged artist", "ALBUM": "Tagged album",
-            "TRACKNUMBER": "3/12", "DISCNUMBER": "2/3"], artwork: nil, mimeType: nil, changeArtwork: false)
+            "TRACKNUMBER": "3/12", "DISCNUMBER": "2/3", "COMPILATION": "1"], artwork: nil, mimeType: nil, changeArtwork: false)
         let payload = try Data(contentsOf: fixture)
         for _ in 0..<2 {
             transfer.uploadPeer(files: [fixture])
@@ -184,6 +184,17 @@ final class PeerTransferTests: XCTestCase {
         let reopened = LocalMusicStore(root: files.root)
         XCTAssertTrue(reopened.hasFile(entry))
         XCTAssertEqual(try reopened.load()?.entries.count, 1)
+        let albumID = try XCTUnwrap(reopened.load()?.organization?.albumID(for: entry.track.id))
+        let companion = root.appendingPathComponent("companion.mp3")
+        try FileManager.default.copyItem(at: source, to: companion)
+        try AudioTags.writeFile(companion, fields: ["TITLE": "Another artist", "ARTIST": "Second artist", "ALBUM": "Tagged album", "COMPILATION": "1"], artwork: nil, mimeType: nil, changeArtwork: false)
+        transfer.uploadPeer(files: [companion])
+        try await wait { !transfer.busy }
+        XCTAssertEqual(transfer.completed, 1, transfer.status ?? "")
+        let compilation = try XCTUnwrap(reopened.load())
+        XCTAssertEqual(compilation.entries.count, 2)
+        XCTAssertEqual(Set(compilation.entries.compactMap { compilation.organization?.albumID(for: $0.track.id) }), [albumID])
+        XCTAssertTrue(compilation.organization?.choices.isEmpty == true)
         _ = try run(["peer-pair", "--state", peer.path, "--peer", transfer.peerID, "--revoke"])
         transfer.cancel()
         await transfer.reconnectPeer()

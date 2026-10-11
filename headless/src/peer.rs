@@ -33,7 +33,7 @@ fn version() -> u8 {
 impl crate::peer::Message {
     pub fn new(kind: &str) -> Self {
         Self {
-            version: 2,
+            version: 3,
             kind: kind.to_owned(),
             ..Self::default()
         }
@@ -73,8 +73,8 @@ pub async fn receive(
     .await??;
     let message: crate::peer::Message = serde_json::from_slice(&body)?;
     anyhow::ensure!(
-        message.version == 2,
-        "update Syncstr: organization protocol version 2 required"
+        message.version == 3,
+        "update Syncstr: organization protocol version 3 required"
     );
     Ok(message)
 }
