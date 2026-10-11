@@ -1,6 +1,6 @@
 # Cluster connectivity and replication plan
 
-Status: proposed technical plan. Product requirements are agreed in [the cluster model](cluster-model-design.md) and [ADR 0002](adr/0002-local-first-connectivity-with-user-operated-remote-access.md). This document does not authorize deployment or claim that its prototypes have passed.
+Status: implementation in progress; M0 experiments complete and M1 next. Product requirements are agreed in [the cluster model](cluster-model-design.md) and [ADR 0002](adr/0002-local-first-connectivity-with-user-operated-remote-access.md). This document does not authorize production deployment. Verification claims are limited to the milestone records below.
 
 Research baseline: repository commit `0b8b387`, with upstream documentation checked on 2026-10-10. Concrete dependency versions and platform support must be verified in the implementation spikes below.
 
@@ -88,7 +88,7 @@ Membership approval by one host must be verifiable by another. Define signed hos
 
 ### M0: Verify connectivity choices
 
-Local experiment results and outstanding gates are tracked in [M0 connectivity experiments](cluster-connectivity-m0.md).
+Completed on 2026-10-11. Measured results, selected integrations, and later platform/deployment limits are tracked in [M0 connectivity experiments](cluster-connectivity-m0.md).
 
 Create isolated, disposable experiments before changing production behavior:
 
@@ -133,6 +133,6 @@ Reuse the tested wire contract and fixtures for Android and Windows, with platfo
 
 Reuse the existing transfer/restart/revocation and integrity tests in [peer.rs](../headless/tests/peer.rs), store retry/rollback tests in [node.rs](../headless/tests/node.rs), and causal choice tests in [organization.rs](../headless/tests/organization.rs). Extend the native client integration in [PeerTransferTests.swift](../apps/macos/Tests/PeerTransferTests.swift) and migration coverage in [CatalogMigrationTests.swift](../apps/macos/Tests/CatalogMigrationTests.swift), preserving cross-language fixtures in [contracts.rs](../headless/tests/contracts.rs). Existing one-to-one tests do not constitute two-host replication coverage.
 
-Planning checks are source inspection, upstream documentation comparison, and document consistency only. No new relay deployment, network experiment, schema migration, or application test is claimed by this document.
+The original planning baseline used source inspection, upstream documentation comparison, and document consistency checks. Subsequent M0 experiments are recorded in [the measured results](cluster-connectivity-m0.md). They do not establish schema migration or production application acceptance.
 
 Before the corresponding implementation milestone, specify membership conflict handling, causal-record format, conflict resolution propagation, partial-batch prompt behavior, host promotion/demotion, and relay configuration rotation. These refine accepted behavior rather than automatically authorizing new product scope. Application file/copy deletion and membership revocation must remain distinct.

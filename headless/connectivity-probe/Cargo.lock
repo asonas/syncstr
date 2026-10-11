@@ -3194,6 +3194,7 @@ dependencies = [
  "iroh-relay",
  "mdns-sd",
  "rcgen",
+ "reqwest",
  "rustls",
  "serde",
  "serde_json",
