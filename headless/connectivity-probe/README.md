@@ -18,11 +18,11 @@ The script creates two temporary device identities, explicitly pairs their publi
 To exercise relay behavior with disposable identities and synthetic data:
 
 ```sh
-python3 scripts/check_modes.py target/debug/syncstr-connectivity-probe --mode auto
-python3 scripts/check_modes.py target/debug/syncstr-connectivity-probe --mode relay-only
+python3 scripts/check_modes.py target/debug/syncstr-connectivity-probe --mode auto --relay-url https://relay.example.com
+python3 scripts/check_modes.py target/debug/syncstr-connectivity-probe --mode relay-only --relay-url https://relay.example.com
 ```
 
-`auto` uses iroh's default public relay servers to establish connectivity and attempts direct UDP paths. `relay-only` disables direct IP transports for a deterministic relay-path check. These servers receive endpoint IDs and connection metadata, and forward encrypted application traffic. Neither mode uses Cloudflare. The minimal endpoint preset avoids public DNS address publication and lookup; an address file is exchanged explicitly.
+`auto` requires an explicit user-operated relay and attempts direct UDP paths. `relay-only` requires that same configuration and disables direct IP transports for a deterministic relay-path check. Both fail without `--relay-url`; neither falls back to public default relays. The minimal endpoint preset avoids public DNS address publication and lookup, and the Rust probe disables automatic router port mapping. Relays receive endpoint IDs and connection metadata and forward encrypted application traffic. Remote probes use the approved ID plus relay URL without importing the listener's address file. Supply an accessible test relay whose access policy admits the disposable test devices; the script does not configure that service.
 
 ## Two devices
 
@@ -57,6 +57,8 @@ target/debug/syncstr-connectivity-probe --state .probe-state probe \
 
 Use `auto` on both devices when checking different networks. A report with a selected `direct` path verifies the observation at the beginning and end of the probe. It does not prove every packet used that path during an automatic migration. Only relay-disabled tests rule out relay traffic entirely. If direct establishment is required, add `--require-direct`; a timeout is a failure, not evidence of direct connectivity.
 
+For relay bootstrap, pass `--relay-url https://relay.example.com` to both commands. The probe can omit `--address` when given a relay URL. An address file containing a different relay is rejected. `paths_connected` captures the path immediately after connection; `paths_before` and `paths_after` surround the payload transfer, after any `--require-direct` wait.
+
 For revocation:
 
 ```sh
@@ -75,8 +77,24 @@ cargo clippy --locked --all-targets -- -D warnings
 cargo fmt --all -- --check
 ```
 
-Three tests exercise real QUIC and CLI processes: persistent private identity and pairing; mutually approved direct communication with unpaired/revoked peers rejected; and CLI initialization, probing, revocation, and SIGTERM shutdown. All automated tests disable relays and external address lookup.
+The default suite exercises persistent identity, pairing/revocation, CLI lifecycle, explicit relay configuration, local relay transfer, and direct-path establishment through relay bootstrap. Its relay binds only to loopback and admits only the two disposable endpoint IDs. It uses pinned `iroh-relay` 1.3.0 over loopback HTTP, not a public relay or a production TLS deployment.
+
+### Apple interoperability experiments
+
+The standalone Swift probe pins the same IrohLib 1.1.0 release as the apps. It does not launch Syncstr, use its Keychain, or touch its library. On an Apple Silicon Mac with Swift 6 or later:
+
+```sh
+mise exec -- swift build --package-path apple
+env SYNCSTR_APPLE_PROBE="$PWD/apple/.build/debug/AppleConnectivityProbe" \
+  mise exec -- cargo test --locked --test relay apple_client -- --ignored --nocapture
+env SYNCSTR_APPLE_PROBE="$PWD/apple/.build/debug/AppleConnectivityProbe" \
+  mise exec -- cargo test --locked --test lan -- --ignored --nocapture
+```
+
+These explicit tests fail if the executable is missing; ordinary `cargo test` reports them as ignored. The LAN test requires an IPv4 LAN interface and multicast permission. It advertises a disposable `_syncstr-probe._udp.local.` DNS-SD service using pinned `mdns-sd` 0.21.5. Its SRV/A records supply the UDP destination; TXT carries `version=1` and the full public `id`. Apple's Bonjour resolves it, checks the expected ID and version, then connects using that cryptographic identity. Discovery alone does not authorize the device. This experimental service is independent of the existing product's Bonjour protocol.
+
+The Rust listener disables IP transports for the Swift relay test, so the payload must traverse the loopback relay. The LAN test disables relays on both sides. Each transfers 64 KiB of synthetic bytes and checks the SHA-256 response. Neither test changes firewall rules. Read [M0 observations](../../docs/cluster-connectivity-m0.md) before interpreting these results as external-network or offline-LAN proof.
 
 Manual checks on 2026-10-07 verified a Mac-to-Linux-NAS direct probe with relays disabled, an `auto` probe, and a forced relay probe using fresh experimental identities. The NAS check used a temporary host-network container, removed afterward. These checks do not establish connectivity through independent NATs, a mobile carrier, or a physical iPhone/Android client. No production service configuration or credentials were changed.
 
-Cloudflare login, user-to-device key registration, QR enrollment, rendezvous, a self-hosted relay, native bindings, file transfer, resumable downloads, and background operation are not implemented here. Before product integration, verify independent network paths and native platform lifecycle behavior. Keep account authentication separate from peer cryptographic identity.
+Cluster enrollment, production relay deployment, music replication, resumable downloads, and background operation are not implemented here. Before product integration, verify independent network paths and native platform lifecycle behavior. Keep account authentication separate from peer cryptographic identity.

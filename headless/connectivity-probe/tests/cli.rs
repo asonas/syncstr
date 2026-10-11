@@ -23,6 +23,41 @@ fn output(mut command: std::process::Command) -> anyhow::Result<String> {
 }
 
 #[test]
+fn relay_configuration_is_explicit_and_address_files_cannot_override_it() -> anyhow::Result<()> {
+    let root = tempfile::tempdir()?;
+    let mut init = crate::command(root.path());
+    init.arg("init");
+    crate::output(init)?;
+    let peer = iroh::SecretKey::generate().public();
+    let address = root.path().join("address.json");
+    std::fs::write(
+        &address,
+        serde_json::to_vec(&syncstr_connectivity_probe::Address {
+            version: 1,
+            endpoint: iroh::EndpointAddr::new(peer)
+                .with_relay_url("https://unconfigured.invalid".parse()?),
+        })?,
+    )?;
+    let mut probe = crate::command(root.path());
+    probe
+        .args(["probe", "--peer", &peer.to_string(), "--address"])
+        .arg(&address);
+    let result = probe.output()?;
+    assert!(!result.status.success());
+    assert!(String::from_utf8_lossy(&result.stderr).contains("unconfigured relay"));
+    for mode in ["auto", "relay-only"] {
+        let mut listen = crate::command(root.path());
+        listen
+            .args(["listen", "--mode", mode, "--address-out"])
+            .arg(root.path().join("out.json"));
+        let result = listen.output()?;
+        assert!(!result.status.success());
+        assert!(String::from_utf8_lossy(&result.stderr).contains("--relay-url is required"));
+    }
+    Ok(())
+}
+
+#[test]
 fn real_cli_pairs_probes_rejects_revocation_and_exits_on_sigterm() -> anyhow::Result<()> {
     let root = tempfile::tempdir()?;
     let server = root.path().join("server");

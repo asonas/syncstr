@@ -8,7 +8,11 @@ import time
 parser = argparse.ArgumentParser(description='Run a disposable two-device connectivity probe')
 parser.add_argument('binary', type=pathlib.Path)
 parser.add_argument('--mode', choices=['direct', 'auto', 'relay-only'], default='direct')
+parser.add_argument('--relay-url', help='Explicit user-operated relay for auto/relay-only')
 args = parser.parse_args()
+if (args.mode == 'direct') == bool(args.relay_url):
+    parser.error('Use --relay-url with auto/relay-only, and omit it with direct')
+relay_arguments = ['--relay-url', args.relay_url] if args.relay_url else []
 binary = str(args.binary.resolve())
 
 with tempfile.TemporaryDirectory(prefix='syncstr-probe-') as directory:
@@ -28,7 +32,7 @@ with tempfile.TemporaryDirectory(prefix='syncstr-probe-') as directory:
     address = root / 'address.json'
     with (root / 'listener.log').open('w+') as log:
         listener = subprocess.Popen([binary, '--state', str(server), 'listen', '--mode', args.mode,
-                                     '--address-out', str(address)], stdout=log, stderr=log)
+                                     '--address-out', str(address), *relay_arguments], stdout=log, stderr=log)
         try:
             deadline = time.monotonic() + 25
             while not address.exists():
@@ -36,8 +40,9 @@ with tempfile.TemporaryDirectory(prefix='syncstr-probe-') as directory:
                     log.seek(0)
                     raise RuntimeError('Listener failed: ' + log.read())
                 time.sleep(0.05)
+            routing = ['--address', address] if args.mode == 'direct' else relay_arguments
             report = json.loads(run(client, 'probe', '--mode', args.mode,
-                                    '--peer', server_id, '--address', address))
+                                    '--peer', server_id, *routing))
             selected = [path['kind'] for path in report['paths_after'] if path['selected']]
             if args.mode == 'direct':
                 assert selected == ['direct'], report

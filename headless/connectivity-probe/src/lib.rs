@@ -77,8 +77,17 @@ impl crate::Identity {
     pub async fn endpoint(
         &self,
         mode: crate::Mode,
+        relay: Option<iroh::RelayUrl>,
     ) -> anyhow::Result<(iroh::Endpoint, std::fs::File)> {
         use std::os::unix::fs::OpenOptionsExt as _;
+        let relay_mode = match (mode, relay) {
+            (crate::Mode::Direct, None) => iroh::RelayMode::Disabled,
+            (crate::Mode::Direct, Some(_)) => {
+                anyhow::bail!("direct mode conflicts with --relay-url")
+            }
+            (_, Some(url)) => iroh::RelayMode::Custom(iroh::RelayMap::from_iter([url])),
+            (_, None) => anyhow::bail!("--relay-url is required for auto and relay-only modes"),
+        };
         let lock = std::fs::OpenOptions::new()
             .create(true)
             .truncate(false)
@@ -90,11 +99,8 @@ impl crate::Identity {
         let builder = iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
             .secret_key(self.key.clone())
             .alpns(vec![crate::ALPN.to_vec()])
-            .relay_mode(if mode != crate::Mode::Direct {
-                iroh::RelayMode::Default
-            } else {
-                iroh::RelayMode::Disabled
-            });
+            .portmapper_config(iroh::endpoint::PortmapperConfig::Disabled)
+            .relay_mode(relay_mode);
         let endpoint = if mode == crate::Mode::RelayOnly {
             builder.clear_ip_transports()
         } else {
@@ -202,6 +208,7 @@ pub struct Report {
     pub peer_id: String,
     pub bytes: usize,
     pub sha256: String,
+    pub paths_connected: Vec<crate::Path>,
     pub paths_before: Vec<crate::Path>,
     pub paths_after: Vec<crate::Path>,
     pub elapsed_ms: u128,
@@ -219,6 +226,7 @@ pub async fn probe(
         "peer not paired locally"
     );
     let connection = endpoint.connect(address.endpoint, crate::ALPN).await?;
+    let connected = crate::paths(&connection);
     if require_direct {
         tokio::time::timeout(std::time::Duration::from_secs(15), async {
             while !crate::paths(&connection)
@@ -247,6 +255,7 @@ pub async fn probe(
         peer_id: connection.remote_id().to_string(),
         bytes: payload.len(),
         sha256: hex::encode(digest),
+        paths_connected: connected,
         paths_before: before,
         paths_after: crate::paths(&connection),
         elapsed_ms: started.elapsed().as_millis(),

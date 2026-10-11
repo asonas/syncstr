@@ -43,11 +43,11 @@ async fn direct_quic_checks_both_device_keys_and_rejects_unpaired_peers() -> any
     client.pair(server.id())?;
     stranger.pair(server.id())?;
     let (acceptor, _server_lock) = server
-        .endpoint(syncstr_connectivity_probe::Mode::Direct)
+        .endpoint(syncstr_connectivity_probe::Mode::Direct, None)
         .await?;
     assert!(
         server
-            .endpoint(syncstr_connectivity_probe::Mode::Direct)
+            .endpoint(syncstr_connectivity_probe::Mode::Direct, None)
             .await
             .is_err()
     );
@@ -63,7 +63,7 @@ async fn direct_quic_checks_both_device_keys_and_rejects_unpaired_peers() -> any
         anyhow::Ok(())
     });
     let (initiator, _client_lock) = client
-        .endpoint(syncstr_connectivity_probe::Mode::Direct)
+        .endpoint(syncstr_connectivity_probe::Mode::Direct, None)
         .await?;
     let report = tokio::time::timeout(
         std::time::Duration::from_secs(10),
@@ -91,7 +91,7 @@ async fn direct_quic_checks_both_device_keys_and_rejects_unpaired_peers() -> any
     );
     assert!(report.paths_after.iter().all(|p| p.kind != "relay"));
     let (untrusted, _stranger_lock) = stranger
-        .endpoint(syncstr_connectivity_probe::Mode::Direct)
+        .endpoint(syncstr_connectivity_probe::Mode::Direct, None)
         .await?;
     let rejected = tokio::time::timeout(
         std::time::Duration::from_secs(10),

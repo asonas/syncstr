@@ -88,6 +88,8 @@ Membership approval by one host must be verifiable by another. Define signed hos
 
 ### M0: Verify connectivity choices
 
+Local experiment results and outstanding gates are tracked in [M0 connectivity experiments](cluster-connectivity-m0.md).
+
 Create isolated, disposable experiments before changing production behavior:
 
 1. Rust headless and Apple client use the same custom relay with no public default lookup or relay. Test endpoint ID plus relay URL with no directory and no stored direct IP.
