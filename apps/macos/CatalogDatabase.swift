@@ -181,9 +181,9 @@ extension CatalogDatabase {
     }
 
     private func indexClusterCatalog(_ catalog: LocalCatalog, memberID: String?) throws {
-        guard !catalog.id.isEmpty, memberID.map(ClusterIdentity.validMember) ?? true else { throw LocalMusicError.invalidData }
+        guard !catalog.id.isEmpty, memberID.map(ClusterIdentity.isLowercaseHex256) ?? true else { throw LocalMusicError.invalidData }
         for entry in catalog.entries {
-            guard ClusterIdentity.validMember(entry.sha256), !entry.track.id.isEmpty,
+            guard ClusterIdentity.isLowercaseHex256(entry.sha256), !entry.track.id.isEmpty,
                   let size = entry.track.size, size > 0, size <= 20 * 1024 * 1024 * 1024 else { throw LocalMusicError.invalidData }
             try execute("INSERT OR IGNORE INTO cluster_objects VALUES (?, ?)", [entry.sha256, String(size)])
             guard try rows("SELECT bytes FROM cluster_objects WHERE sha256 = ?", [entry.sha256]).first?.first == String(size) else { throw LocalMusicError.invalidData }
@@ -197,7 +197,7 @@ extension CatalogDatabase {
     }
 
     func createCluster(memberID: String) throws -> ClusterIdentity {
-        guard ClusterIdentity.validMember(memberID) else { throw LocalMusicError.invalidData }
+        guard ClusterIdentity.isLowercaseHex256(memberID) else { throw LocalMusicError.invalidData }
         return try transaction {
             try execute("INSERT OR IGNORE INTO cluster_identity VALUES (1, ?, ?)", [UUID().uuidString.lowercased(), memberID])
             guard let row = try rows("SELECT id, member_id FROM cluster_identity WHERE singleton = 1").first,
@@ -207,7 +207,7 @@ extension CatalogDatabase {
     }
 
     func rememberClusterPeer(_ peer: ClusterKnownPeer) throws {
-        guard ClusterIdentity.validMember(peer.id), peer.name.utf8.count <= 2048,
+        guard ClusterIdentity.isLowercaseHex256(peer.id), peer.name.utf8.count <= 2048,
               peer.address.map({ $0.utf8.count <= 16384 }) ?? true else { throw LocalMusicError.invalidData }
         if let address = peer.address {
             guard let value = try JSONSerialization.jsonObject(with: Data(address.utf8)) as? [String: Any],
@@ -261,7 +261,7 @@ extension CatalogDatabase {
 
     func enqueueClusterJob(_ job: ClusterTransferJob) throws {
         guard UUID(uuidString: job.id) != nil, job.state == .queued, job.source != job.destination,
-              ClusterIdentity.validMember(job.source), ClusterIdentity.validMember(job.destination) else { throw LocalMusicError.invalidData }
+              ClusterIdentity.isLowercaseHex256(job.source), ClusterIdentity.isLowercaseHex256(job.destination) else { throw LocalMusicError.invalidData }
         try transaction {
             guard try rows("SELECT EXISTS(SELECT 1 FROM cluster_objects WHERE sha256 = ?)", [job.sha256]).first?.first == "1" else { throw LocalMusicError.invalidData }
             try execute("INSERT OR IGNORE INTO cluster_jobs VALUES (?, ?, ?, ?, 'queued')", [job.id, job.sha256, job.source, job.destination])

@@ -4,7 +4,7 @@ struct ClusterIdentity: Codable, Equatable {
     let id: String
     let memberID: String
     enum CodingKeys: String, CodingKey { case id, memberID = "member_id" }
-    static func validMember(_ value: String) -> Bool {
+    static func isLowercaseHex256(_ value: String) -> Bool {
         value.utf8.count == 64 && value.utf8.allSatisfy { (48...57).contains($0) || (97...102).contains($0) }
     }
 }
@@ -41,7 +41,7 @@ struct ClusterPendingChange: Codable, Equatable {
     let operation: String
 
     func validate() throws {
-        guard UUID(uuidString: id) != nil, ClusterIdentity.validMember(author),
+        guard UUID(uuidString: id) != nil, ClusterIdentity.isLowercaseHex256(author),
               parents.count <= 64, Set(parents).count == parents.count,
               !parents.contains(id), parents.allSatisfy({ UUID(uuidString: $0) != nil }),
               operation.utf8.count <= 1024 * 1024,
