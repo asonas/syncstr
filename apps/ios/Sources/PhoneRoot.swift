@@ -40,6 +40,12 @@ struct PhoneRoot: View {
             if phase == .background, library.transfer.peerConnected { library.transfer.cancel() }
         }
         .sheet(isPresented: $library.showingOrganization) { OrganizationView(library: library) }
+        .alert("この端末のコピーを削除しますか？", isPresented: Binding(get: { library.localCopyToRemove != nil }, set: { if !$0 { library.localCopyToRemove = nil } }), presenting: library.localCopyToRemove) { track in
+            Button("キャンセル", role: .cancel) {}
+            Button("コピーを削除", role: .destructive) { library.removeLocalCopy(track) }
+        } message: { track in
+            Text("「\(track.title)」のSyncstr内のコピーを削除します。保存先の音源と元のファイルは残ります。")
+        }
         .sheet(isPresented: $showingPlayer) {
             PhoneNowPlaying(library: library)
                 .presentationDragIndicator(.visible)
@@ -300,7 +306,12 @@ struct PhoneRoot: View {
                 .disabled(library.transfer.busy)
             }
         }
-        .contextMenu { Button("アルバムの整理") { library.showingOrganization = true } }
+        .contextMenu {
+            Button("アルバムの整理") { library.showingOrganization = true }
+            if library.transfer.clusterRegistration != nil && library.hasManagedCopy(track) {
+                Button("この端末のコピーを削除", role: .destructive) { library.localCopyToRemove = track }.disabled(library.transfer.busy)
+            }
+        }
     }
 
     private var miniPlayer: some View {

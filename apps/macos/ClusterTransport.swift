@@ -18,6 +18,26 @@ final class ClusterNetwork {
         discovery.stop()
     }
 
+    func recoverDownloadedFile(_ entry: LocalEntry) throws {
+        let database = try store.database()
+        guard let registration = try database.clusterRegistration() else { return }
+        let member = try registration.membership.verify(registration.localGrant).member
+        let jobs = try database.clusterJobs().filter { $0.sha256 == entry.sha256 && $0.destination == member && $0.state == .queued }
+        guard !jobs.isEmpty else { return }
+        let file = try FileHandle(forWritingTo: store.fileURL(entry))
+        defer { try? file.close() }
+        try file.synchronize()
+        let descriptor = Darwin.open(store.root.path, O_RDONLY)
+        guard descriptor >= 0 else { throw LocalMusicError.invalidData }
+        defer { Darwin.close(descriptor) }
+        guard fsync(descriptor) == 0 else { throw LocalMusicError.invalidData }
+        for job in jobs {
+            try database.beginClusterJob(job.id)
+            do { try database.finishClusterDownload(job.id, entry: entry, file: store.fileURL(entry)) }
+            catch { try database.retryClusterJob(job.id); throw error }
+        }
+    }
+
     private func addresses(database: CatalogDatabase) async throws -> [IrohLib.EndpointAddr] {
         guard let registration = try database.clusterRegistration() else { throw LocalMusicError.unauthorized }
         let own = try registration.membership.verify(registration.localGrant).member
@@ -100,15 +120,19 @@ final class ClusterNetwork {
         return host
     }
 
-    func upload(entry: LocalEntry, organization: AlbumOrganization, parents: [String], host: String, file: URL, progress: @escaping (Double) -> Void) async throws {
-        let database = try store.database()
-        let address = try await discovery.find(host)
-        let current = try await ClusterSession.connect(address: address, secrets: secrets, database: database)
-        session = current
-        defer { current.close(); session = nil }
-        try await current.upload(entry: entry, organization: organization, parents: parents, file: file, progress: progress)
-        try await current.reconcile(database: database)
-        try store.save(database.clusterCatalog())
+    func upload(entry: LocalEntry, organization: AlbumOrganization, parents: [String], restore: Bool = false, host: String, file: URL, progress: @escaping (Double) -> Void) async throws {
+        do {
+            let database = try store.database()
+            let address = try await discovery.find(host)
+            let current = try await ClusterSession.connect(address: address, secrets: secrets, database: database)
+            session = current
+            defer { current.close(); session = nil }
+            try await current.upload(entry: entry, organization: organization, parents: parents, restore: restore, file: file, progress: progress)
+            try await current.reconcile(database: database)
+            try store.save(database.clusterCatalog())
+        } catch is IrohLib.IrohError {
+            throw LocalMusicError.clusterUnavailable
+        }
     }
 
     func resolve(object: String, selected: String, parents: [String]) async throws -> LocalCatalog {
@@ -118,6 +142,25 @@ final class ClusterNetwork {
         session = current
         defer { current.close(); session = nil }
         try await current.resolve(object: object, selected: selected, parents: parents)
+        try await current.reconcile(database: database)
+        let catalog = try database.clusterCatalog()
+        try store.save(catalog)
+        return catalog
+    }
+
+    func resolveAlbum(_ conflict: ClusterAlbumConflict, title: String) async throws -> LocalCatalog {
+        let database = try store.database()
+        let states = try database.clusterObjectStates()
+        var heads: [String: String] = [:]
+        for object in conflict.objects {
+            guard let state = states.first(where: { $0.object == object }), state.heads.count == 1 else { throw LocalMusicError.clusterNeedsAttention }
+            heads[object] = state.heads[0].id
+        }
+        guard let address = try await addresses(database: database).first else { throw LocalMusicError.clusterUnavailable }
+        let current = try await ClusterSession.connect(address: address, secrets: secrets, database: database)
+        session = current
+        defer { current.close(); session = nil }
+        try await current.resolveAlbum(album: conflict.id, title: title, heads: heads)
         try await current.reconcile(database: database)
         let catalog = try database.clusterCatalog()
         try store.save(catalog)
@@ -138,6 +181,10 @@ final class ClusterSession {
         var organization: AlbumOrganization? = nil
         var parents: [String]? = nil
         var selected: String? = nil
+        var restore: Bool? = nil
+        var album: String? = nil
+        var title: String? = nil
+        var heads: [String: String]? = nil
     }
     private struct Response: Decodable {
         struct Signature: Decodable { let id: String; let signature: String }
@@ -242,7 +289,7 @@ final class ClusterSession {
         }
     }
 
-    func upload(entry: LocalEntry, organization: AlbumOrganization, parents: [String], file: URL, progress: @escaping (Double) -> Void) async throws {
+    func upload(entry: LocalEntry, organization: AlbumOrganization, parents: [String], restore: Bool = false, file: URL, progress: @escaping (Double) -> Void) async throws {
         guard LocalMusicStore.valid(entry), let size = entry.track.size,
               try LocalMusicStore.digest(file: file) == entry.sha256 else { throw LocalMusicError.changedFile }
         let timeout = Task {
@@ -251,7 +298,7 @@ final class ClusterSession {
         }
         defer { timeout.cancel() }
         let stream = try await connection.openBi()
-        try await send(Request(operation: "upload", entry: entry, organization: organization, parents: parents), stream: stream)
+        try await send(Request(operation: "upload", entry: entry, organization: organization, parents: parents, restore: restore), stream: stream)
         let input = try FileHandle(forReadingFrom: file)
         defer { try? input.close() }
         var sent: UInt64 = 0
@@ -275,6 +322,14 @@ final class ClusterSession {
         try await stream.send().finish()
         let response = try await receive(Response.self, stream: stream)
         guard response.status == "resolved", response.object == object else { throw LocalMusicError.invalidData }
+    }
+
+    func resolveAlbum(album: String, title: String, heads: [String: String]) async throws {
+        let stream = try await connection.openBi()
+        try await send(Request(operation: "album-title", album: album, title: title, heads: heads), stream: stream)
+        try await stream.send().finish()
+        let response = try await receive(Response.self, stream: stream)
+        guard response.status == "resolved", response.object == album else { throw LocalMusicError.invalidData }
     }
 
     func download(_ entry: LocalEntry, store: LocalMusicStore, database: CatalogDatabase, progress: @escaping (Double) -> Void) async throws {
@@ -317,7 +372,7 @@ final class ClusterSession {
         try file.close()
         try Task.checkCancellation()
         let selected = try database.clusterDownloadEntry(object: entry.sha256, peer: peer)
-        try await Task.detached { try store.importFile(temporary, entry: selected) }.value
+        try await Task.detached { try store.importFile(temporary, entry: selected, recordReceipt: false) }.value
         let descriptor = Darwin.open(store.root.path, O_RDONLY)
         guard descriptor >= 0 else { throw LocalMusicError.invalidData }
         defer { Darwin.close(descriptor) }

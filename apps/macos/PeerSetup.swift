@@ -8,6 +8,8 @@ import VisionKit
 struct ClusterImportResults: View {
     @ObservedObject var transfer: LocalTransfer
     @Environment(\.dismiss) private var dismiss
+    @State private var restoration: (batch: String, item: String)?
+    @State private var confirmingRestore = false
 
     var body: some View {
         NavigationStack {
@@ -26,9 +28,14 @@ struct ClusterImportResults: View {
                                 } else {
                                     Text(item.error ?? "追加を待っています").foregroundStyle(.secondary)
                                 }
+                                if item.state == .awaitingRestore {
+                                    Button("削除された音源を再追加…") {
+                                        restoration = (batch.id, item.id); confirmingRestore = true
+                                    }.disabled(transfer.busy)
+                                }
                             }
                         }
-                        if batch.items.contains(where: { $0.state != .stored && $0.entry != nil }) {
+                        if batch.items.contains(where: { ($0.state == .queued || $0.state == .failed) && $0.entry != nil }) {
                             Button("追加できなかった音源を再試行") { transfer.retryClusterBatch(batch.id) }.disabled(transfer.busy)
                         }
                         if !batch.awaitingDecision.isEmpty {
@@ -43,6 +50,14 @@ struct ClusterImportResults: View {
             }
             .navigationTitle("音源の追加結果")
             .toolbar { Button("閉じる") { dismiss() } }
+            .alert("削除された音源を再追加しますか？", isPresented: $confirmingRestore) {
+                Button("キャンセル", role: .cancel) {}
+                Button("ライブラリに再追加") {
+                    if let restoration { transfer.confirmClusterRestore(batchID: restoration.batch, itemID: restoration.item) }
+                }
+            } message: {
+                Text("ライブラリで共有する音源として復元します。別の変更と競合した場合は、改めて内容を選べます。")
+            }
         }
 #if os(macOS)
         .frame(minWidth: 480, idealWidth: 560, minHeight: 360, idealHeight: 500)
@@ -55,13 +70,25 @@ struct ClusterConflictsView: View {
     @State private var conflict: ClusterObjectState?
     @State private var selected: String?
     @State private var confirming = false
+    @State private var albumConflict: ClusterAlbumConflict?
+    @State private var albumTitle: String?
+    @State private var confirmingAlbum = false
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            if !transfer.clusterConflicts.isEmpty {
+        VStack(alignment: .leading, spacing: 16) {
+            if !transfer.clusterConflicts.isEmpty || !transfer.clusterAlbumConflicts.isEmpty {
                 Text("変更が競合しています").font(.headline)
                 Text("自動では内容を選びません。確認して優先する内容を選んでください。")
                     .foregroundStyle(.secondary)
+            }
+            ForEach(transfer.clusterAlbumConflicts) { album in
+                Text("アルバム名の競合（\(album.objects.count)曲）").font(.headline)
+                ForEach(album.titles, id: \.self) { title in
+                    Button("「\(title)」を優先") {
+                        albumConflict = album; albumTitle = title; confirmingAlbum = true
+                    }.disabled(transfer.busy)
+                }
+                Divider()
             }
             ForEach(transfer.clusterConflicts, id: \.object) { state in
                 VStack(alignment: .leading, spacing: 8) {
@@ -91,6 +118,14 @@ struct ClusterConflictsView: View {
             }
         } message: {
             Text("保存先に解消結果を送信します。他の変更履歴は保持します。")
+        }
+        .alert("選んだアルバム名を優先しますか？", isPresented: $confirmingAlbum) {
+            Button("キャンセル", role: .cancel) {}
+            Button("このアルバム名を優先") {
+                if let albumConflict, let albumTitle { transfer.resolveClusterAlbum(albumConflict, title: albumTitle) }
+            }
+        } message: {
+            Text("競合している曲に同じアルバム名を適用します。確認後に別の変更が届いた場合は、再度確認できます。")
         }
     }
 
@@ -137,6 +172,14 @@ struct PeerSetupView: View {
                     Button("音源の追加結果") { showingResults = true }
                 }
                 ClusterConflictsView(transfer: transfer)
+                if !transfer.disputedMembers.isEmpty {
+                    Text("端末の権限が競合しています").font(.headline)
+                    Text("次の端末は、相互に矛盾する失効情報があるため接続を許可していません。保存先の管理者に確認してください。")
+                        .foregroundStyle(.secondary)
+                    ForEach(transfer.disputedMembers, id: \.self) { member in
+                        Text(member).font(.system(.caption, design: .monospaced)).textSelection(.enabled)
+                    }
+                }
                 Toggle("モバイル通信でも自動転送する", isOn: Binding(get: { transfer.automaticCellular }, set: { transfer.setAutomaticCellular($0) }))
                 Text("オフの場合も、曲を選んで保存する操作はモバイル通信で利用できます。")
                     .font(.caption).foregroundStyle(.secondary)
@@ -260,7 +303,7 @@ struct PeerSetupView: View {
             if grant != nil { address = ""; confirmedAddress = "" }
         }
         .onChange(of: transfer.busy) { _, busy in
-            if !busy && transfer.clusterBatches.contains(where: { !$0.awaitingDecision.isEmpty }) { showingResults = true }
+            if !busy && transfer.clusterBatches.contains(where: { !$0.awaitingDecision.isEmpty || $0.items.contains(where: { $0.state == .awaitingRestore }) }) { showingResults = true }
         }
         .sheet(isPresented: $showingResults) { ClusterImportResults(transfer: transfer) }
         .fileImporter(isPresented: $importing, allowedContentTypes: [.audio], allowsMultipleSelection: true) { result in

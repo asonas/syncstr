@@ -73,8 +73,9 @@ struct Hello {
 enum Request {
     Changes { after: i64 },
     Audio { object: String },
-    Upload { entry: Box<crate::model::Entry>, organization: Box<crate::organization::Organization>, parents: Vec<String> },
+    Upload { entry: Box<crate::model::Entry>, organization: Box<crate::organization::Organization>, parents: Vec<String>, #[serde(default)] restore: bool },
     Resolve { object: String, selected: String, parents: Vec<String> },
+    AlbumTitle { album: String, title: String, heads: std::collections::BTreeMap<String, String> },
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -142,6 +143,10 @@ pub(crate) async fn serve_connection(
         let request: crate::cluster_sync::Request =
             crate::cluster_net::receive(&mut input, crate::model::MAX_METADATA).await?;
         match request {
+            crate::cluster_sync::Request::AlbumTitle { album, title, heads } => {
+                store.resolve_cluster_album_title(identity, &album, &title, heads).await?;
+                crate::cluster_net::send(&mut output, &crate::cluster_sync::Response::Resolved { object: album }).await?;
+            }
             crate::cluster_sync::Request::Resolve { object, selected, parents } => {
                 let records = store.cluster_active_changes().await?;
                 let heads = crate::cluster_changes::object_heads(&records, &object);
@@ -163,7 +168,7 @@ pub(crate) async fn serve_connection(
                 }
                 crate::cluster_net::send(&mut output, &crate::cluster_sync::Response::Resolved { object }).await?;
             }
-            crate::cluster_sync::Request::Upload { entry, organization, parents } => {
+            crate::cluster_sync::Request::Upload { entry, organization, parents, restore } => {
                 use tokio::io::AsyncWriteExt as _;
                 entry.validate()?;
                 organization.validate()?;
@@ -184,7 +189,7 @@ pub(crate) async fn serve_connection(
                 drop(file);
                 crate::cluster_sync::authorized(store, &peer, false).await?;
                 let object = entry.sha256.clone();
-                let response = match store.receive_cluster_import(identity, *entry, *organization, parents, temporary).await {
+                let response = match store.receive_cluster_import(identity, *entry, *organization, parents, restore, temporary).await {
                     Ok(()) => crate::cluster_sync::Response::Stored { object },
                     Err(error) => {
                         eprintln!("Cluster import requires attention: {error}");

@@ -215,7 +215,7 @@ struct LocalMusicStore {
         return size.uint64Value == entry.track.size
     }
 
-    func importFile(_ temporary: URL, entry: LocalEntry) throws {
+    func importFile(_ temporary: URL, entry: LocalEntry, recordReceipt: Bool = true) throws {
         guard Self.valid(entry),
               (try FileManager.default.attributesOfItem(atPath: temporary.path)[.size] as? NSNumber)?.uint64Value == entry.track.size,
               try Self.digest(file: temporary) == entry.sha256 else { throw LocalMusicError.invalidData }
@@ -228,7 +228,7 @@ struct LocalMusicStore {
         } else {
             try FileManager.default.moveItem(at: temporary, to: destination)
         }
-        try database().recordReceived(entry)
+        if recordReceipt { try database().recordReceived(entry) }
     }
 
 #if os(macOS)

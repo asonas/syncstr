@@ -99,6 +99,12 @@ struct LibraryView: View {
         }
         .toolbarBackground(.hidden, for: .windowToolbar)
         .task { await library.restoreLibrary() }
+        .alert("この端末のコピーを削除しますか？", isPresented: Binding(get: { library.localCopyToRemove != nil }, set: { if !$0 { library.localCopyToRemove = nil } }), presenting: library.localCopyToRemove) { track in
+            Button("キャンセル", role: .cancel) {}
+            Button("コピーを削除", role: .destructive) { library.removeLocalCopy(track) }
+        } message: { track in
+            Text("「\(track.title)」のSyncstr内のコピーを削除します。保存先の音源と元のファイルは残ります。")
+        }
         .sheet(isPresented: $library.showingOrganization) { OrganizationView(library: library) }
         .sheet(isPresented: $showingPairing) {
             MacPairingView(transfer: library.transfer) { Task { await library.startPairing() } }
@@ -110,7 +116,7 @@ struct LibraryView: View {
         }
         .sheet(isPresented: $showingClusterResults) { ClusterImportResults(transfer: library.transfer) }
         .onChange(of: library.transfer.busy) { _, busy in
-            if !busy && !showingPeerSetup && library.transfer.clusterBatches.contains(where: { !$0.awaitingDecision.isEmpty }) { showingClusterResults = true }
+            if !busy && !showingPeerSetup && library.transfer.clusterBatches.contains(where: { !$0.awaitingDecision.isEmpty || $0.items.contains(where: { $0.state == .awaitingRestore }) }) { showingClusterResults = true }
         }
         .fileImporter(isPresented: $importingAudio, allowedContentTypes: [.audio], allowsMultipleSelection: true) { result in
             switch result {
@@ -409,6 +415,9 @@ struct LibraryView: View {
                 Button("再生") { library.play(track, in: tracks) }
                 if library.transfer.peerConnected || library.transfer.clusterRegistration != nil {
                     Button("曲を保存") { library.transfer.copy([track]) }.disabled(library.transfer.busy)
+                }
+                if library.transfer.clusterRegistration != nil && library.hasManagedCopy(track) {
+                    Button("この端末のコピーを削除", role: .destructive) { library.localCopyToRemove = track }.disabled(library.transfer.busy)
                 }
                 Button("アルバムを表示") { library.selectedAlbum = track.albumKey; library.search = ""; library.showingNowPlaying = false }
                 Button("アーティストを表示") { self.showArtist(track.artist ?? "アーティスト不明") }

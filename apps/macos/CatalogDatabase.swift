@@ -167,6 +167,7 @@ extension CatalogDatabase {
             guard let state = states.first(where: { $0.object == entry.sha256 }),
                   let selected = try state.selected(in: records)?.action.entry,
                   selected.track.size == entry.track.size else { throw LocalMusicError.invalidData }
+            try recordReceived(entry)
             try execute("UPDATE cluster_jobs SET state = 'complete' WHERE id = ? AND sha256 = ? AND destination = ? AND state = 'running'", [jobID, entry.sha256, member])
             guard sqlite3_changes(connection) == 1 else { throw LocalMusicError.invalidData }
         }
@@ -183,6 +184,16 @@ extension CatalogDatabase {
         }
     }
 
+    func clusterAlbumConflicts() throws -> [ClusterAlbumConflict] {
+        try transaction {
+            guard let registration = try clusterRegistration() else { return [] }
+            let records = try clusterChanges()
+            let states = try ClusterObjectState.project(records, membership: registration.membership)
+            let selected = try states.filter { !$0.conflicted }.compactMap { try $0.selected(in: records) }
+            return try ClusterAlbumConflict.project(selected, organization: readSnapshot()?.catalog.organization ?? AlbumOrganization())
+        }
+    }
+
     func clusterCatalog() throws -> LocalCatalog {
         try transaction {
             guard let registration = try clusterRegistration() else { throw LocalMusicError.unauthorized }
@@ -191,17 +202,19 @@ extension CatalogDatabase {
             let records = try clusterChanges()
             let states = try ClusterObjectState.project(records, membership: registration.membership)
             let known = Set(records.map(\.object))
-            let conflicts = Set(states.filter(\.conflicted).map(\.object))
+            let selected = try states.filter { !$0.conflicted }.compactMap { try $0.selected(in: records) }
+            let albumConflicts = try ClusterAlbumConflict.project(selected, organization: previous?.organization ?? AlbumOrganization())
+            let blocked = Set(albumConflicts.flatMap(\.objects))
+            let conflicts = Set(states.filter(\.conflicted).map(\.object)).union(blocked)
             var entries = (previous?.entries ?? []).filter { !known.contains($0.sha256) || conflicts.contains($0.sha256) }
             var organization = previous?.organization ?? AlbumOrganization()
             var titles: [String: String] = [:]
-            for state in states where !state.conflicted {
+            for state in states where !state.conflicted && !blocked.contains(state.object) {
                 guard let record = try state.selected(in: records), var entry = record.action.entry,
                       let incoming = record.action.organization else { continue }
                 try organization.merge(incoming)
                 for album in incoming.albums {
                     let id = organization.canonical(album.id)
-                    if let title = titles[id], title != album.title { throw LocalMusicError.invalidData }
                     titles[id] = album.title
                 }
                 let saved = try rows("SELECT id FROM cluster_track_ids WHERE object = ?", [state.object]).first?.first ?? nil
@@ -388,6 +401,11 @@ final class CatalogDatabase {
 
     func recordReceived(_ entry: LocalEntry) throws {
         try execute("INSERT OR REPLACE INTO received_files VALUES (?, ?)",
+            [entry.sha256 + "." + (entry.track.suffix ?? "audio"), entry.sha256])
+    }
+
+    func forgetReceived(_ entry: LocalEntry) throws {
+        try execute("DELETE FROM received_files WHERE relative_path = ? AND sha256 = ?",
             [entry.sha256 + "." + (entry.track.suffix ?? "audio"), entry.sha256])
     }
 

@@ -92,7 +92,7 @@ struct ClusterCapabilities: Codable, Equatable {
 
 struct ClusterImportBatch: Codable, Identifiable {
     struct Item: Codable, Identifiable {
-        enum State: String, Codable { case queued, stored, failed }
+        enum State: String, Codable { case queued, stored, failed, awaitingRestore }
         enum LocalCopy: String, Codable { case pending, keep, remove }
         let id: String
         let name: String
@@ -103,6 +103,7 @@ struct ClusterImportBatch: Codable, Identifiable {
         var createdCopy: Bool
         var localCopy: LocalCopy
         var error: String?
+        var restore: Bool?
     }
     let id: String
     let host: String

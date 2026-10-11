@@ -112,6 +112,27 @@ final class ClusterTransferTests: XCTestCase {
         XCTAssertFalse(store.hasFile(entry))
         XCTAssertEqual(try LocalMusicStore.digest(file: source), entry.sha256)
         XCTAssertTrue(FileManager.default.fileExists(atPath: invalid.path))
+        let pendingCopy = root.appendingPathComponent("pending.mp3")
+        try FileManager.default.copyItem(at: source, to: pendingCopy)
+        try store.importFile(pendingCopy, entry: entry)
+        var queued = try XCTUnwrap(batch.items.first)
+        queued.state = .queued
+        queued.createdCopy = false
+        queued.localCopy = .keep
+        let resumedIDs = [UUID().uuidString, UUID().uuidString]
+        for id in resumedIDs {
+            try restored.saveClusterBatch(ClusterImportBatch(id: id, host: batch.host, items: [queued]))
+        }
+        transfer.connectCluster()
+        for _ in 0..<600 {
+            if !transfer.busy { break }
+            try await Task.sleep(for: .milliseconds(50))
+        }
+        XCTAssertFalse(transfer.busy, transfer.status ?? "")
+        let resumed = try CatalogDatabase(databaseURL).clusterBatches().filter { resumedIDs.contains($0.id) }
+        XCTAssertEqual(resumed.count, 2)
+        XCTAssertTrue(resumed.allSatisfy { $0.items.allSatisfy { $0.state == .stored } }, transfer.status ?? "")
+        try FileManager.default.removeItem(at: store.fileURL(entry))
         let replica = secondData.appendingPathComponent("objects").appendingPathComponent(entry.sha256 + ".mp3")
         for _ in 0..<120 {
             if FileManager.default.fileExists(atPath: replica.path) { break }
@@ -127,6 +148,7 @@ final class ClusterTransferTests: XCTestCase {
         second.terminate(); second.waitUntilExit()
         XCTAssertEqual(try LocalMusicStore.digest(file: store.fileURL(entry)), entry.sha256)
         XCTAssertEqual(try store.load()?.entries.count, 1)
+        XCTAssertEqual(try LocalMusicStore.digest(file: source), entry.sha256)
         try await secrets.remove()
     }
 }

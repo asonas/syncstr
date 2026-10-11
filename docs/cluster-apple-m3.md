@@ -58,6 +58,12 @@ local-copy decisions. Failed items and original import sources are not removed.
 Automatic queued audio pauses on cellular unless enabled; explicit downloads use
 a separate path. Backgrounding iOS cancels transfers and retains durable state.
 
+Deleting a managed local copy does not publish a cluster deletion. Re-importing
+an observed deleted object waits for explicit restoration confirmation. Album
+title conflicts retain affected catalog rows while unrelated objects continue
+updating; the user can select an observed title. Disputed membership remains
+denied and is displayed separately from metadata conflicts.
+
 ## Verification record and outstanding gates
 
 - Rust-generated grants, revocations, disputed membership, exact signed change
@@ -69,6 +75,9 @@ a separate path. Backgrounding iOS cancels transfers and retains durable state.
 - A batch containing valid and invalid audio preserves its partial results after
   reopening SQLite. Its local-copy removal removes only the verified successful
   managed copy; both import sources remain intact.
+- Focused tests verify receipt/job transaction rollback, independent catalog
+  updates during album title conflicts, explicit restoration with concurrent
+  deletion, and resuming every queued batch after reopening the registration.
 - The pre-integration macOS suite passed 50 tests, with two opt-in environment
   tests skipped. iOS simulator compilation passed. These results must be rerun
   as appropriate after incorporating concurrent changes on main.

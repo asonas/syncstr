@@ -66,18 +66,84 @@ fn selected(
 }
 
 impl crate::store::Store {
+    pub async fn resolve_cluster_album_title(
+        &self,
+        identity: &crate::peer::Identity,
+        album: &str,
+        title: &str,
+        observed: std::collections::BTreeMap<String, String>,
+    ) -> anyhow::Result<()> {
+        anyhow::ensure!(!observed.is_empty() && observed.len() <= 1024, "invalid album resolution size");
+        let records = self.cluster_active_changes().await?;
+        let mut organization = self.catalog().await?.organization;
+        let mut selected = Vec::new();
+        for object in observed.keys() {
+            let change = crate::cluster_replica::selected(&records, object)?
+                .ok_or_else(|| anyhow::anyhow!("album object was deleted"))?;
+            let metadata = match &change.action {
+                crate::cluster_changes::Action::Import { organization, .. }
+                | crate::cluster_changes::Action::Edit { organization, .. }
+                | crate::cluster_changes::Action::Restore { organization, .. } => organization,
+                _ => unreachable!(),
+            };
+            organization.merge(metadata)?;
+            selected.push(change);
+        }
+        let album = organization.canonical(album)?.to_owned();
+        let mut alternatives = std::collections::BTreeSet::new();
+        let mut updates = Vec::new();
+        for change in selected {
+            let heads = crate::cluster_changes::object_heads(&records, &change.object);
+            anyhow::ensure!(heads.len() == 1 && observed.get(&change.object) == Some(&heads[0].id), "album changed; refresh before resolving");
+            let (entry, mut metadata) = match change.action {
+                crate::cluster_changes::Action::Import { entry, organization }
+                | crate::cluster_changes::Action::Edit { entry, organization }
+                | crate::cluster_changes::Action::Restore { entry, organization } => (entry, organization),
+                _ => unreachable!(),
+            };
+            let mut affected = false;
+            for item in &mut metadata.albums {
+                if organization.canonical(&item.id)? == album {
+                    alternatives.insert(item.title.clone());
+                    item.title = title.to_owned();
+                    affected = true;
+                }
+            }
+            anyhow::ensure!(affected, "object does not belong to this album");
+            updates.push((change.object, entry, metadata, vec![heads[0].id.clone()]));
+        }
+        anyhow::ensure!(alternatives.contains(title), "select an observed album title");
+        for (object, entry, organization, parents) in updates {
+            self.publish_observed_cluster_change(identity, object, crate::cluster_changes::Action::Edit { entry, organization }, parents).await?;
+        }
+        Ok(())
+    }
+
     pub async fn receive_cluster_import(
         &self,
         identity: &crate::peer::Identity,
         entry: crate::model::Entry,
         organization: crate::organization::Organization,
         parents: Vec<String>,
+        restore: bool,
         temporary: tempfile::NamedTempFile,
     ) -> anyhow::Result<()> {
         crate::cluster_replica::verify_file(temporary.path().to_owned(), entry.clone()).await?;
         let organization = organization.for_object(&entry.sha256)?;
         let records = self.cluster_active_changes().await?;
-        anyhow::ensure!(parents.len() <= 64 && parents.iter().all(|id| records.iter().any(|record| record.id == *id && record.object == entry.sha256 && !matches!(record.action, crate::cluster_changes::Action::Delete))), "invalid import history; restoration requires confirmation");
+        anyhow::ensure!(parents.len() <= 64, "too many import parents");
+        let mut observed_deletion = false;
+        for id in &parents {
+            let mut parent = records.iter().find(|record| record.id == *id && record.object == entry.sha256)
+                .ok_or_else(|| anyhow::anyhow!("unknown import history"))?;
+            for _ in 0..records.len() {
+                let crate::cluster_changes::Action::Resolve { selected } = &parent.action else { break; };
+                parent = records.iter().find(|record| record.id == *selected && record.object == entry.sha256)
+                    .ok_or_else(|| anyhow::anyhow!("unknown resolution history"))?;
+            }
+            observed_deletion |= matches!(parent.action, crate::cluster_changes::Action::Delete);
+        }
+        anyhow::ensure!(restore == observed_deletion, "restoration requires explicit confirmation and observed deletion");
         if let Ok(Some(selected)) = self.cluster_selected_change(&entry.sha256).await
             && let crate::cluster_changes::Action::Import { entry: previous, organization: metadata }
                 | crate::cluster_changes::Action::Edit { entry: previous, organization: metadata }
@@ -85,13 +151,15 @@ impl crate::store::Store {
                 let mut comparable = entry.clone();
                 comparable.track.id = previous.track.id.clone();
                 comparable.track.cover_art = previous.track.cover_art.clone();
-                if comparable == **previous && organization.choices == metadata.choices {
+                if comparable == **previous && organization == **metadata {
                     return self.commit_cluster_replica(identity, selected, temporary, None).await;
                 }
         }
         let known = records.iter().any(|record| record.object == entry.sha256);
         anyhow::ensure!(!known || !parents.is_empty(), "refresh before editing an existing object");
-        let action = if known {
+        let action = if restore {
+            crate::cluster_changes::Action::Restore { entry: Box::new(entry.clone()), organization: Box::new(organization) }
+        } else if known {
             crate::cluster_changes::Action::Edit { entry: Box::new(entry.clone()), organization: Box::new(organization) }
         } else {
             crate::cluster_changes::Action::Import { entry: Box::new(entry.clone()), organization: Box::new(organization) }

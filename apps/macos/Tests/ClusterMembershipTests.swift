@@ -1,5 +1,7 @@
 import Foundation
 import XCTest
+import CryptoKit
+import SQLite3
 #if os(iOS)
 @testable import Syncstr
 #endif
@@ -31,6 +33,90 @@ final class ClusterMembershipTests: XCTestCase {
     private func fixture() throws -> Fixture {
         let url = try XCTUnwrap(Bundle(for: Self.self).url(forResource: "cluster-signed", withExtension: "json"))
         return try JSONDecoder().decode(Fixture.self, from: Data(contentsOf: url))
+    }
+
+    func testAlbumTitleConflictPreservesAffectedRowsWhileOtherObjectsAdvance() throws {
+        let fixture = try fixture()
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let database = try CatalogDatabase(root.appendingPathComponent("catalog.sqlite"))
+        let grant = try fixture.membership.authorize(fixture.client)
+        try database.enrollCluster(invitation: ClusterInvitation(version: 1, cluster: grant.cluster, host: grant.issuer,
+            secret: String(repeating: "a", count: 64), expires: 1600), grantID: grant.id,
+            membership: fixture.membership, ownID: fixture.client, name: "Library")
+        let original = ClusterSignedChange(id: fixture.change.id, signature: fixture.change.signature, payload: fixture.signingPayload)
+        let record = try original.decode(membership: fixture.membership)
+        try database.receiveClusterPage(peer: fixture.host, sequence: 1, signed: original)
+        XCTAssertNoThrow(try database.save(database.clusterCatalog()), "Initial signed catalog")
+        let key = try Curve25519.Signing.PrivateKey(rawRepresentation: Data(repeating: 7, count: 32))
+        func signed(_ entry: LocalEntry, _ organization: AlbumOrganization, previous: String) throws -> ClusterSignedChange {
+            let action = ClusterChange.Action(kind: .import, entry: entry, organization: organization, selected: nil)
+            let fields: [Any] = [1, record.cluster, record.author, record.grant, [previous], entry.sha256, [String](),
+                try JSONSerialization.jsonObject(with: JSONEncoder().encode(action))]
+            let payload = "syncstr-cluster-change-v1\n" + String(decoding: try JSONSerialization.data(withJSONObject: fields), as: UTF8.self)
+            let data = Data(payload.utf8)
+            return ClusterSignedChange(id: SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined(),
+                signature: try key.signature(for: data).map { String(format: "%02x", $0) }.joined(), payload: payload)
+        }
+        var competing = try XCTUnwrap(record.action.entry)
+        competing.sha256 = String(repeating: "b", count: 64)
+        competing.track.id = "second-track"
+        competing.track.coverArt = competing.track.id
+        var organization = try XCTUnwrap(record.action.organization)
+        organization.tracks[0].sha256 = competing.sha256
+        organization.tracks[0].id = competing.track.id
+        organization.albums[0].title = "Alternative title"
+        let second = try signed(competing, organization, previous: original.id)
+        XCTAssertNoThrow(try database.receiveClusterPage(peer: fixture.host, sequence: 2, signed: second), "Competing album title")
+        var independent = competing
+        independent.sha256 = String(repeating: "c", count: 64)
+        independent.track.id = "third-track"
+        independent.track.coverArt = independent.track.id
+        organization.albums[0].id = "independent-album"
+        organization.tracks[0].importedAlbumID = "independent-album"
+        organization.tracks[0].id = independent.track.id
+        organization.tracks[0].sha256 = independent.sha256
+        let third = try signed(independent, organization, previous: second.id)
+        XCTAssertNoThrow(try database.receiveClusterPage(peer: fixture.host, sequence: 3, signed: third), "Independent album")
+        XCTAssertEqual(Set(try database.clusterCatalog().entries.map(\.sha256)), Set([record.object, independent.sha256]))
+        XCTAssertEqual(try database.clusterAlbumConflicts().first?.titles, ["Alternative title", "Fixture Album"])
+        XCTAssertEqual(try database.clusterChanges().count, 3)
+    }
+
+    func testReceiptAndDownloadCompletionCommitTogether() throws {
+        let fixture = try fixture()
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let url = root.appendingPathComponent("catalog.sqlite")
+        let database = try CatalogDatabase(url)
+        let grant = try fixture.membership.authorize(fixture.client)
+        try database.enrollCluster(invitation: ClusterInvitation(version: 1, cluster: grant.cluster, host: grant.issuer,
+            secret: String(repeating: "a", count: 64), expires: 1600), grantID: grant.id,
+            membership: fixture.membership, ownID: fixture.client, name: "Library")
+        let signed = ClusterSignedChange(id: fixture.change.id, signature: fixture.change.signature, payload: fixture.signingPayload)
+        try database.receiveClusterPage(peer: fixture.host, sequence: 1, signed: signed)
+        let entry = try XCTUnwrap(signed.decode(membership: fixture.membership).action.entry)
+        let file = root.appendingPathComponent("verified.audio")
+        try Data("abc".utf8).write(to: file)
+        let job = ClusterTransferJob(id: UUID().uuidString, sha256: entry.sha256, source: fixture.host, destination: fixture.client, state: .queued)
+        try database.enqueueClusterJob(job)
+        try database.beginClusterJob(job.id)
+        XCTAssertThrowsError(try database.finishClusterDownload(UUID().uuidString, entry: entry, file: file))
+        var sql: OpaquePointer?
+        XCTAssertEqual(sqlite3_open(url.path, &sql), SQLITE_OK)
+        defer { sqlite3_close(sql) }
+        var statement: OpaquePointer?
+        XCTAssertEqual(sqlite3_prepare_v2(sql, "SELECT COUNT(*) FROM received_files", -1, &statement, nil), SQLITE_OK)
+        defer { sqlite3_finalize(statement) }
+        XCTAssertEqual(sqlite3_step(statement), SQLITE_ROW)
+        XCTAssertEqual(sqlite3_column_int(statement, 0), 0)
+        sqlite3_reset(statement)
+        try database.finishClusterDownload(job.id, entry: entry, file: file)
+        XCTAssertEqual(try CatalogDatabase(url).clusterJobs().first?.state, .complete)
+        XCTAssertEqual(sqlite3_step(statement), SQLITE_ROW)
+        XCTAssertEqual(sqlite3_column_int(statement, 0), 1)
     }
 
     func testRustGrantsAuthorizeActualMembersAndPreserveRoles() throws {

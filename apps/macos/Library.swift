@@ -54,6 +54,7 @@ final class Library: ObservableObject {
     @Published var sidebarVisible = true
     @Published var showingNowPlaying = false
     @Published var showingOrganization = false
+    @Published var localCopyToRemove: Track?
     @Published private(set) var artworkURLs: [String: URL] = [:]
     let localStore: LocalMusicStore
     let transfer: LocalTransfer
@@ -529,6 +530,20 @@ final class Library: ObservableObject {
         navigate(.albums)
         message = nil
         refreshing = false
+    }
+
+    func hasManagedCopy(_ track: Track) -> Bool {
+        localCatalog?.entries.first(where: { $0.track.id == track.id }).map(localStore.hasFile) ?? false
+    }
+
+    func removeLocalCopy(_ track: Track) {
+        do {
+            guard let entry = localCatalog?.entries.first(where: { $0.track.id == track.id }) else { throw LocalMusicError.invalidData }
+            try transfer.removeClusterCopy(entry)
+            if current?.id == track.id { stop() }
+            refreshLocalFiles()
+        } catch { message = error.localizedDescription }
+        localCopyToRemove = nil
     }
 
 #if os(iOS)

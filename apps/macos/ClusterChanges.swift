@@ -119,3 +119,28 @@ struct ClusterObjectState {
         }
     }
 }
+
+struct ClusterAlbumConflict: Identifiable {
+    let id: String
+    let titles: [String]
+    let objects: [String]
+
+    static func project(_ records: [ClusterChange], organization: AlbumOrganization) throws -> [Self] {
+        var merged = organization
+        for record in records {
+            if let incoming = record.action.organization { try merged.merge(incoming) }
+        }
+        var names: [String: Set<String>] = [:]
+        var objects: [String: Set<String>] = [:]
+        for record in records {
+            for album in record.action.organization?.albums ?? [] {
+                let id = merged.canonical(album.id)
+                names[id, default: []].insert(album.title)
+                objects[id, default: []].insert(record.object)
+            }
+        }
+        return names.filter { $0.value.count > 1 }.map { id, titles in
+            Self(id: id, titles: titles.sorted(), objects: objects[id, default: []].sorted())
+        }.sorted { $0.id < $1.id }
+    }
+}
