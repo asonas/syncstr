@@ -79,6 +79,8 @@ cargo fmt --all -- --check
 
 The default suite exercises persistent identity, pairing/revocation, CLI lifecycle, explicit relay configuration, local relay transfer, and direct-path establishment through relay bootstrap. Its relay binds only to loopback and admits only the two disposable endpoint IDs. It uses pinned `iroh-relay` 1.3.0 over loopback HTTP, not a public relay or a production TLS deployment.
 
+`tests/relay_tls.rs` additionally verifies HTTPS/WebSocket admission, rejection of unknown keys and untrusted certificates, and hash-checked transfer after a relay restart with the same endpoints. The fixture generates an ephemeral certificate and explicitly trusts only that certificate; it does not disable TLS verification or install certificates into the OS. Endpoint IP transports and port mapping are disabled. The relay restarts at the same URL, and the second transfer opens a new QUIC connection. Run it independently with `mise exec -- cargo test --locked --test relay_tls`. A successful handshake and transfer do not validate reverse-proxy configuration, a deployment health endpoint, or uninterrupted in-flight transfers.
+
 ### Apple interoperability experiments
 
 The standalone Swift probe pins the same IrohLib 1.1.0 release as the apps. It does not launch Syncstr, use its Keychain, or touch its library. On an Apple Silicon Mac with Swift 6 or later:

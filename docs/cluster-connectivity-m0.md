@@ -14,10 +14,12 @@ Measured on an Apple Silicon Mac on 2026-10-11 with Rust 1.99 and Swift 6.4:
 | Rust automatic mode, same bootstrap, no stored IPs | Selected relay path on connection, then selected direct path before and after the verified payload | Not independent NATs or evidence of every transition under packet loss. |
 | IrohLib 1.1.0 Swift initiator to Rust listener through custom relay | 64 KiB transfer and SHA-256 match; selected relay path | macOS executable, not physical iPhone. Listener IP transports were disabled. |
 | Rust DNS-SD advertisement to Apple Bonjour, both endpoints relay-disabled | Service resolved and verified payload used a direct path | Same machine on a live IPv4 LAN; WAN was not disabled. Reverse discovery and network changes are untested. |
+| Rust relay client over HTTPS/WebSocket | Allowed key connected; unknown key was explicitly denied; a different certificate trust anchor failed certificate validation | Loopback fixture with an ephemeral self-signed certificate explicitly trusted by the test; no public certificate authority or reverse proxy. |
+| Existing Rust endpoints across TLS relay shutdown and restart | Connection failed while the relay was stopped; the same endpoints and IDs transferred and hash-checked 64 KiB before and after restart | A new QUIC connection was opened for the second transfer. This does not prove continuity of an in-flight stream or process-level service supervision. |
 
-Each relay fixture listens only on loopback and restricts admission to its two disposable public keys. It uses HTTP locally; TLS termination, certificates, proxy handling, operational restart, health, and production admission configuration have not been validated. Do not deploy this fixture as a public service.
+All relay fixtures listen only on loopback and restrict admission to explicit disposable public keys. The original interoperability fixtures use HTTP. The Rust TLS fixture uses real HTTPS/WebSocket connections with certificate validation enabled and an explicit test trust anchor. Proxy handling, public certificate issuance, operational health checks, process supervision, and production admission configuration remain unvalidated. Do not deploy these fixtures as public services.
 
-Verification: all eight probe integration tests passed with `--include-ignored`, including the Swift relay and Bonjour cases. Swift package build, Rust Clippy with warnings denied, and formatting checks passed. This is the isolated probe suite, not the production application's test suite.
+Initial verification: all eight probe integration tests passed with `--include-ignored`, including the Swift relay and Bonjour cases. Swift package build, Rust Clippy with warnings denied, and formatting checks passed. After the TLS extension, all eight Rust tests passed, with the two unchanged native Apple experiments explicitly ignored; Clippy and formatting also passed. This is the isolated probe suite, not the production application's test suite.
 
 ## Integration implications
 
@@ -29,7 +31,7 @@ The checked IrohLib 1.1.0 surface exposes `RelayMode.customFromUrls`, `presetMin
 
 1. Block and restore direct UDP in an isolated test network; measure fallback and upgrade on an established connection.
 2. Disable WAN access in that test environment; verify cross-device LAN discovery and transfer. Audit actual network traffic, including the Swift binding's router discovery behavior.
-3. Validate pinned relay deployment with HTTPS, WebSocket/proxy behavior, restart, health, and rejection of unauthorized endpoints. Keep the template private until its access controls are validated.
+3. Extend the local TLS, WebSocket, admission-rejection, and server-restart checks to a pinned deployment: verify public certificates, reverse-proxy behavior, process restart, and health checks. Keep the template private until its deployed access controls are validated.
 4. Exercise the native iPhone client on cellular without relying on the existing manual home-router permission rule, in an explicitly authorized setup.
 
 The local results do not close these gates or establish Android/Windows behavior. M1 data-model migration and production connectivity changes are not included in this experiment.
