@@ -3390,6 +3390,7 @@ dependencies = [
  "futures-util",
  "hex",
  "hyper-util",
+ "if-addrs",
  "iroh",
  "jpeg-decoder",
  "mdns-sd",

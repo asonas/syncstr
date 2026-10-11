@@ -348,11 +348,13 @@ struct PhoneRoot: View {
 
     private var settings: some View {
         Form {
-            Section { PhonePairingView(transfer: library.transfer) }
+            if library.transfer.clusterRegistration == nil {
+                Section { PhonePairingView(transfer: library.transfer) }
+            }
             Section { PeerSetupView(transfer: library.transfer) }
             Section {
                 LabeledContent("曲数", value: "\(library.tracks.count)")
-                if library.connected {
+                if library.connected && library.transfer.clusterRegistration == nil {
                     Button("別のMacを選ぶ") { library.closeLibrary() }
                 } else if library.hasSavedLocalLibrary {
                     Button("保存した音楽を開く") { Task { await library.openSavedLocalLibrary() } }

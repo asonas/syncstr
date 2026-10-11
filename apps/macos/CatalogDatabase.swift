@@ -418,10 +418,11 @@ final class CatalogDatabase {
                 _ = try registration.membership.verify(registration.localGrant)
                 let records = try clusterChanges()
                 let pending = try clusterMetadataEdits()
-                for state in try ClusterObjectState.project(records, membership: registration.membership) where !state.conflicted {
-                    guard let entry = try state.selected(in: records)?.action.entry else { continue }
+                for state in try ClusterObjectState.project(records, membership: registration.membership) {
                     let metadata = try organization.forClusterObject(state.object)
                     guard try metadata != previous?.catalog.organization?.forClusterObject(state.object) else { continue }
+                    guard !state.conflicted else { throw LocalMusicError.clusterNeedsAttention }
+                    guard let entry = try state.selected(in: records)?.action.entry else { continue }
                     let parents = pending.first(where: { $0.entry.sha256 == state.object })?.parents ?? state.heads.map(\.id)
                     try saveClusterMetadataEdit(ClusterMetadataEdit(id: UUID().uuidString, entry: entry, organization: metadata, parents: parents))
                 }

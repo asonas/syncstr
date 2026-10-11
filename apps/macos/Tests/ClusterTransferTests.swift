@@ -1,5 +1,6 @@
 import Foundation
 import XCTest
+import SQLite3
 
 @MainActor
 final class ClusterTransferTests: XCTestCase {
@@ -134,6 +135,14 @@ final class ClusterTransferTests: XCTestCase {
         for id in resumedIDs {
             try restored.saveClusterBatch(ClusterImportBatch(id: id, host: batch.host, items: [queued]))
         }
+        let rejectedEdit = ClusterMetadataEdit(id: UUID().uuidString, entry: entry,
+            organization: try XCTUnwrap(store.load()?.organization).forClusterObject(entry.sha256),
+            parents: [String(repeating: "f", count: 64)])
+        var sql: OpaquePointer?
+        XCTAssertEqual(sqlite3_open(databaseURL.path, &sql), SQLITE_OK)
+        let payload = String(decoding: try JSONEncoder().encode(rejectedEdit), as: UTF8.self).replacingOccurrences(of: "'", with: "''")
+        XCTAssertEqual(sqlite3_exec(sql, "INSERT INTO cluster_metadata_queue VALUES ('\(entry.sha256)', '\(payload)')", nil, nil, nil), SQLITE_OK)
+        sqlite3_close(sql)
         transfer.connectCluster()
         for _ in 0..<600 {
             if !transfer.busy { break }
@@ -143,6 +152,9 @@ final class ClusterTransferTests: XCTestCase {
         let resumed = try CatalogDatabase(databaseURL).clusterBatches().filter { resumedIDs.contains($0.id) }
         XCTAssertEqual(resumed.count, 2)
         XCTAssertTrue(resumed.allSatisfy { $0.items.allSatisfy { $0.state == .stored } }, transfer.status ?? "")
+        XCTAssertTrue(transfer.connected, transfer.status ?? "")
+        XCTAssertEqual(try restored.clusterMetadataEdits().map(\.id), [rejectedEdit.id])
+        transfer.cancel()
         try FileManager.default.removeItem(at: store.fileURL(entry))
         let replica = secondData.appendingPathComponent("objects").appendingPathComponent(entry.sha256 + ".mp3")
         for _ in 0..<120 {

@@ -169,6 +169,7 @@ final class Library: ObservableObject {
         if FileManager.default.fileExists(atPath: localStore.root.appendingPathComponent("active").path) {
             await openSavedLocalLibrary()
         }
+        if transfer.clusterRegistration != nil && !transfer.busy { transfer.connectCluster() }
     }
 
     func reload() {

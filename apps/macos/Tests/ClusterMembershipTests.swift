@@ -150,6 +150,24 @@ final class ClusterMembershipTests: XCTestCase {
         XCTAssertEqual(later.organization.choice(subject: album, kind: "classification")?.value, "false")
         try database.finishClusterMetadataEdit(later, revision: String(repeating: "e", count: 64))
         XCTAssertTrue(try CatalogDatabase(url).clusterMetadataEdits().isEmpty)
+        let original = try signed.decode(membership: fixture.membership)
+        let competing = try XCTUnwrap(original.action.entry)
+        var conflictingOrganization = try XCTUnwrap(original.action.organization)
+        conflictingOrganization.albums[0].title = "Concurrent alternative"
+        let action = ClusterChange.Action(kind: .import, entry: competing, organization: conflictingOrganization, selected: nil)
+        let fields: [Any] = [1, original.cluster, original.author, original.grant, [original.id], original.object, [String](),
+            try JSONSerialization.jsonObject(with: JSONEncoder().encode(action))]
+        let payload = "syncstr-cluster-change-v1\n" + String(decoding: try JSONSerialization.data(withJSONObject: fields), as: UTF8.self)
+        let bytes = Data(payload.utf8)
+        let key = try Curve25519.Signing.PrivateKey(rawRepresentation: Data(repeating: 7, count: 32))
+        let conflict = ClusterSignedChange(id: SHA256.hash(data: bytes).map { String(format: "%02x", $0) }.joined(),
+            signature: try key.signature(for: bytes).map { String(format: "%02x", $0) }.joined(), payload: payload)
+        try database.receiveClusterPage(peer: fixture.host, sequence: 2, signed: conflict)
+        XCTAssertTrue(try XCTUnwrap(database.clusterObjectStates().first).conflicted)
+        catalog.organization?.set(subject: album, kind: "classification", value: "true")
+        XCTAssertThrowsError(try database.save(catalog, clusterEdits: true))
+        XCTAssertEqual(try database.snapshot()?.catalog.organization?.choice(subject: album, kind: "classification")?.value, "false")
+        XCTAssertTrue(try database.clusterMetadataEdits().isEmpty)
     }
 
     func testRustGrantsAuthorizeActualMembersAndPreserveRoles() throws {

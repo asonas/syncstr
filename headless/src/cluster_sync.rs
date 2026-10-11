@@ -147,8 +147,14 @@ pub(crate) async fn serve_connection(
         match request {
             crate::cluster_sync::Request::Metadata { entry, organization, parents } => {
                 let object = entry.sha256.clone();
-                let revision = store.receive_cluster_metadata(identity, *entry, *organization, parents).await?;
-                crate::cluster_net::send(&mut output, &crate::cluster_sync::Response::Edited { object, revision }).await?;
+                let response = match store.receive_cluster_metadata(identity, *entry, *organization, parents).await {
+                    Ok(revision) => crate::cluster_sync::Response::Edited { object, revision },
+                    Err(error) => {
+                        eprintln!("Cluster metadata requires attention: {error:#}");
+                        crate::cluster_sync::Response::NeedsAttention { object }
+                    }
+                };
+                crate::cluster_net::send(&mut output, &response).await?;
             }
             crate::cluster_sync::Request::AlbumTitle { album, title, heads } => {
                 store.resolve_cluster_album_title(identity, &album, &title, heads).await?;

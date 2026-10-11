@@ -370,6 +370,7 @@ final class ClusterSession {
         try await send(Request(operation: "metadata", entry: edit.entry, organization: edit.organization, parents: edit.parents), stream: stream)
         try await stream.send().finish()
         let response = try await receive(Response.self, stream: stream)
+        if response.status == "needs-attention" { throw LocalMusicError.clusterNeedsAttention }
         guard response.status == "edited", response.object == edit.entry.sha256,
               let revision = response.revision, ClusterIdentity.isLowercaseHex256(revision) else { throw LocalMusicError.invalidData }
         return revision

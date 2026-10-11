@@ -78,7 +78,7 @@ pub async fn serve(
                 let store = store.clone();
                 tasks.spawn(async move {
                     let _permit = permit;
-                    let _ = tokio::time::timeout(std::time::Duration::from_secs(300), async {
+                    let result = tokio::time::timeout(std::time::Duration::from_secs(300), async {
                         let connection = incoming.await?;
                         if connection.alpn() == crate::cluster_sync::ALPN {
                             return crate::cluster_sync::serve_connection(&identity, &store, connection).await;
@@ -98,6 +98,11 @@ pub async fn serve(
                         output.stopped().await?;
                         anyhow::Ok(())
                     }).await;
+                    match result {
+                        Ok(Err(error)) => eprintln!("Cluster connection failed: {error:#}"),
+                        Err(_) => eprintln!("Cluster connection timed out"),
+                        Ok(Ok(())) => {}
+                    }
                 });
             }
             _ = tasks.join_next(), if !tasks.is_empty() => {}

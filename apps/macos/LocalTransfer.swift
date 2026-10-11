@@ -351,7 +351,6 @@ final class LocalTransfer: ObservableObject {
                     try await clusterNetwork.enroll(ClusterInvitation.parse(invitation), name: name)
                     clusterRegistration = try store.database().clusterRegistration()
                 }
-                try await clusterNetwork.syncMetadata()
                 let catalog = try await clusterNetwork.refresh()
                 try Task.checkCancellation()
                 guard generation == attempt else { return }
@@ -365,6 +364,12 @@ final class LocalTransfer: ObservableObject {
                     try Task.checkCancellation()
                     try await sendClusterBatch(batch, database: database, attempt: attempt)
                 }
+                do { try await clusterNetwork.syncMetadata() }
+                catch {
+                    try Task.checkCancellation()
+                    status = "ライブラリを更新しました。整理情報の変更は送信待ちです。\(error.localizedDescription)"
+                }
+                try updateClusterState(database)
             } catch {
                 if generation == attempt {
                     try? updateClusterState(store.database())

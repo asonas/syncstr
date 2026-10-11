@@ -534,7 +534,25 @@ impl crate::peer::Identity {
             .relay_mode(iroh::RelayMode::Disabled)
             .portmapper_config(iroh::endpoint::PortmapperConfig::Disabled);
         if listen.is_empty() {
-            builder = builder.clear_ip_transports().bind_addr("0.0.0.0:0".parse::<std::net::SocketAddr>()?)?;
+            let mut addresses: Vec<_> = if_addrs::get_if_addrs()?.into_iter()
+                .filter(|interface| interface.is_oper_up())
+                .filter_map(|interface| match interface.ip() {
+                    std::net::IpAddr::V4(ip) if ip.is_private() || ip.is_link_local() => Some(ip),
+                    _ => None,
+                }).collect();
+            addresses.sort();
+            addresses.dedup();
+            // A concrete bind keeps QUIC replies on the advertised interface on multihomed Macs.
+            let preferred = std::net::UdpSocket::bind("0.0.0.0:0").and_then(|socket| {
+                socket.connect("192.0.2.1:9")?;
+                socket.local_addr()
+            }).ok().and_then(|address| match address.ip() {
+                std::net::IpAddr::V4(ip) if addresses.contains(&ip) => Some(ip),
+                _ => None,
+            });
+            let address = preferred.or_else(|| addresses.first().copied())
+                .ok_or_else(|| anyhow::anyhow!("no IPv4 LAN interface for cluster endpoint"))?;
+            builder = builder.clear_ip_transports().bind_addr(std::net::SocketAddr::from((address, 0)))?;
         } else {
             builder = builder.clear_ip_transports();
             for address in listen {

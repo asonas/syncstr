@@ -47,9 +47,14 @@ in the app's registration. Registration stores the pinned root and signed grants
 The cluster ALPN is `syncstr/cluster/2`. Pages include the exact signature preimage
 so Swift does not reconstruct floating-point JSON before verifying a signature.
 It does not downgrade to the earlier cluster ALPN or the legacy library protocol.
-LAN headless endpoints bind IPv4 by default to match DNS-SD discovery. A measured
-dual-stack failure showed Iroh also trying global IPv6 candidates, which the
-LAN-only ingress policy rejected. Remote dual-stack paths remain an M4 concern.
+LAN headless endpoints bind a concrete private or link-local IPv4 interface to
+match DNS-SD discovery. The default route's LAN address is preferred, with an
+active LAN interface used when no default route exists. This keeps the advertised
+address and QUIC reply source consistent on multihomed hosts. A measured wildcard
+bind failure changed the reply source between two interfaces and stalled the
+physical iPhone handshake. Restart the host after changing its LAN interface.
+Global IPv6 candidates are excluded by the LAN-only ingress policy; remote
+dual-stack paths remain an M4 concern.
 
 Client uploads carry the object history observed by the client. The host signs
 the resulting change; a concurrent deletion remains a competing head. A storage
@@ -83,12 +88,15 @@ denied and is displayed separately from metadata conflicts.
 - Focused tests verify receipt/job transaction rollback, independent catalog
   updates during album title conflicts, explicit restoration with concurrent
   deletion, and resuming every queued batch after reopening the registration.
-- The pre-integration macOS suite passed 50 tests, with two opt-in environment
-  tests skipped. iOS simulator compilation passed. These results must be rerun
-  as appropriate after incorporating concurrent changes on main.
+- The pre-integration macOS suite passed 63 tests, with two opt-in environment
+  tests skipped. After the recovery fixes, nine focused membership and real-host
+  tests passed. Rust full-suite tests, all-target Clippy, and the standalone real
+  AVPlayer playback/restoration check passed. Both Apple application builds pass.
 - The iOS simulator suite passed 47 tests. A separate development app was
   installed and launched on a physical iPhone, and invitation QR scanning was
-  confirmed. Enrollment and playback acceptance remain in progress.
+  confirmed. Enrollment, catalog download, verified audio storage, and audible
+  playback were confirmed with two live headless hosts. The user also confirmed
+  audible playback after restarting the app with Wi-Fi and cellular disabled.
 - Native screen verification, complete conflict-resolution interaction coverage,
   physical-device playback/interruption tests, and the final two-axis review
   are outstanding. M3 is not complete or merged.
