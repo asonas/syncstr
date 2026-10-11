@@ -91,14 +91,14 @@ identity and saved library. Do not put signing keys in the repository.
 The next UI iteration should make the existing flow understandable before
 expanding transport features. Confirm the screen design before changing it.
 
-| User task | Current presentation | Next UI decision |
+| User task | Current presentation | Remaining verification or boundary |
 |---|---|---|
-| Register a library | Paste JSON, confirm host ID | Clear onboarding, registration state and connection-management entry point |
-| Browse music | Flat text list and a button per track | Album/artist/track navigation and optional artwork handling |
-| Save music | Combined play/save button | Distinguish saved, available remotely, downloading and failed states |
-| Play saved music | Play/save and a global pause/resume button | Now-playing presentation, progress and return-to-library behavior |
-| Recover from failure | Status text, sometimes raw technical messages | Actionable offline/discovery/transfer messages and retry state |
-| Notice a conflict | Persistent warning with object IDs | Human-readable affected tracks and a clear resolution workflow |
+| Register a library | Connections screen, invitation entry and host-ID confirmation | Verify first-run and unavailable-host states on a device |
+| Browse music | Albums, artists and songs views backed by catalog metadata | Artwork is an explicit placeholder until the native contract supplies artwork |
+| Save music | Separate remote, saving, saved and failed/retry states | Verify slow and interrupted transfers on a device |
+| Play saved music | Mini-player and now-playing view with progress and seeking | Verify recreation, seeking and audible playback on a device |
+| Recover from failure | Actionable offline and transfer messages with retry | Verify screen-reader announcements and recovery timing |
+| Notice a conflict | Affected catalog title when identifiable, otherwise a shortened object reference | Resolution remains manual outside this Android contract; verify unrelated music stays usable |
 
 Search, QR scanning, Android remote access, background playback service,
 notification/lock-screen controls, upload and store distribution are not

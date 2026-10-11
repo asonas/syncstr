@@ -5,12 +5,14 @@
     <string name="library">Library</string>
     <string name="saved">Saved</string>
     <string name="now_playing">Now playing</string>
+    <string name="albums">Albums</string>
+    <string name="artists">Artists</string>
+    <string name="songs">Songs</string>
     <string name="identity_error">Your saved identity could not be opened.</string>
     <string name="empty_library_hint">Connect a library, then refresh to see your music.</string>
     <string name="library_updated">Library updated.</string>
     <string name="unknown_album">Unknown album</string>
     <string name="unknown_artist">Unknown artist</string>
-    <string name="album_subtitle">%1$s · %2$s</string>
     <plurals name="track_count"><item quantity="one">%d track</item><item quantity="other">%d tracks</item></plurals>
     <string name="no_saved_music">Music saved on this device will appear here.</string>
     <string name="no_music">No music is available yet.</string>
@@ -26,6 +28,9 @@
     <string name="saved_file_missing">The saved file is unavailable.</string>
     <string name="playback_failed">This track could not be played.</string>
     <string name="playback_position">Playback position</string>
+    <string name="playback_time">%1$s / %2$s</string>
+    <string name="artwork_unavailable">Artwork unavailable</string>
+    <string name="artwork_unavailable_description">No artwork is available for %1$s.</string>
     <string name="nothing_playing">Choose a saved track to start listening.</string>
     <string name="connections_explanation">Register a trusted Syncstr library on the same Wi-Fi network.</string>
     <string name="registered_libraries">Registered libraries</string>
@@ -44,6 +49,8 @@
     <string name="register_first">Register a library first.</string>
     <string name="library_offline">The library was not found. Connect to the same Wi-Fi network and try again.</string>
     <plurals name="conflict_count"><item quantity="one">%d track needs review</item><item quantity="other">%d tracks need review</item></plurals>
-    <string name="conflict_explanation">Conflicting library changes were kept. Other music remains available; review conflicts in Syncstr before choosing a version.</string>
+    <string name="conflict_explanation">Conflicting changes were kept and other music remains available. Resolve them in desktop Syncstr, then refresh conflicts here.</string>
+    <string name="conflict_item">Library item %1$s…</string>
+    <string name="refresh_conflicts">Refresh conflicts</string>
     <string name="operation_failed">The operation could not be completed.</string>
 </resources>
