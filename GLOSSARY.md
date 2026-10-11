@@ -42,6 +42,14 @@ An explicit listener choice that takes precedence over imported metadata until t
 **Playlist**:
 A listener's selection of tracks that retains each track's original album membership.
 
+**Album Artwork**:
+The image used to represent an album. It may come from a participating track, an album image file, a music library, or an explicit listener choice; it does not establish album membership.
+_Avoid_: Album identity
+
+**Embedded Artwork**:
+An image stored inside an audio file, independently of images associated with the same track by a music library.
+_Avoid_: Every image shown by a music player
+
 **Sync Conflict**:
 Competing changes within a cluster that cannot be reconciled without choosing which data or intention takes precedence. The listener resolves the conflict by choosing what to prioritize.
 

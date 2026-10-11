@@ -2,6 +2,8 @@
 
 Status: approved and implemented locally. See the [verification record](validation/compilation-albums.md) for completed checks and remaining limits.
 
+This specification describes the earlier implementation. The later [policy review](compilation-policy-review.md) supersedes its restrictive automatic-grouping rules and adds artwork acquisition and cluster alignment; those changes need a follow-up implementation and verification.
+
 This specification implements the [agreed retention policy](compilation-data-design.md). It covers local import, native catalog persistence, Mac-to-iPhone transfer, and the headless catalog and P2P transfer. Playlists, source-tag editing, deployment, and distribution are excluded.
 
 ## Data and persistence

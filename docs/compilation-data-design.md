@@ -1,6 +1,6 @@
 # Compilation album data
 
-Status: agreed data-retention policy, implemented locally through the [implementation specification](compilation-implementation-spec.md). This document records the policy; the [verification record](validation/compilation-albums.md) distinguishes verified behavior from remaining limits.
+Status: agreed data-retention policy. The earlier behavior is implemented through the [implementation specification](compilation-implementation-spec.md); the subsequent [compilation policy review](compilation-policy-review.md) revises automatic membership and adds artwork acquisition and cluster-wide handling. Those revisions are not yet implemented. The [verification record](validation/compilation-albums.md) covers the earlier implementation.
 
 See the [glossary](../GLOSSARY.md) for terminology.
 
@@ -15,7 +15,7 @@ See the [glossary](../GLOSSARY.md) for terminology.
 - Keep imported tag values separate from user overrides. A rescan updates imported values without discarding explicit user choices; overrides take precedence until removed. Removing an override restores tag-based interpretation. The implementation specification defines track matching and album membership changes.
 - Use a shared, concrete album artist credit when present. If the album artist is absent or is Various Artists, show actual participating track artists, such as Artist A, Artist B, and others, while retaining the imported tags. Track lists continue to show each track's own artist credit. This agrees the display policy, not a particular layout or truncation threshold.
 - Assign a Syncstr album ID even when no external release ID is available. The internal ID identifies the album independently of its title, artist tags, or folder location and accompanies the album on transfer. Independently importing the same release on two devices may initially produce different internal IDs; reconcile them using the policy below.
-- Use a shared external release ID as evidence for automatic grouping within the agreed edition boundary, subject to explicit user overrides. Without an external release ID, use folder and album-name similarities to propose compilation membership for user confirmation rather than silently combining albums. Persist confirmed membership so a rescan does not ask the same question again.
+- Use a shared external release ID as evidence for automatic grouping within the agreed edition boundary, subject to explicit user overrides. External IDs are optional: the [revised policy](compilation-policy-review.md) also permits automatic membership from bounded directory, album, compilation, and disc evidence. Ambiguous cases remain proposals requiring confirmation. Persist confirmed membership so a rescan does not ask the same question again.
 - Apply user corrections to compilation classification at album level while retaining each track's imported classification. With no override, an album with some tracks marked true and the rest untagged retains the distinction between positive evidence and incomplete metadata. Do not pretend that every track has an explicit true tag.
 - When transferring organization data, adopt a peer's explicit choice where there is no competing local choice. If explicit choices conflict about membership or classification, preserve the existing local organization and retain the incoming choice for user resolution. Arrival time alone must not choose a winner.
 - Reconcile independently created albums automatically when their external release identifiers match, including the identifier source, and there are no conflicting explicit user choices. Retain one album identity while keeping references through the former IDs resolvable. Without external release evidence, propose a merge for user confirmation; resolve conflicting explicit choices before merging.
@@ -68,7 +68,7 @@ The shared [organization model](../apps/macos/AlbumOrganization.swift) retains i
 | Standard and deluxe editions share an album title | Treat them as separate albums; title equality alone is insufficient |
 | Disc 1 and Disc 2 belong to one released edition | Keep one album membership spanning both discs |
 | The same release has different internal IDs after independent imports | Reconcile on matching external release evidence when explicit choices do not conflict; keep former ID references valid |
-| A compilation has no external release ID | Propose membership from available evidence and retain the user's confirmation |
+| A compilation has no external release ID | Apply the revised local-evidence rules; propose ambiguous membership and retain the user's confirmation |
 | Source tags change after a manual grouping | Refresh imported metadata while retaining the explicit grouping until the user removes it |
 | Peers send conflicting manual groupings | Keep the existing organization and retain the incoming choice for user resolution |
 | The source folder is temporarily unavailable | Retain organization data; reconnect only when track identity is established or the user explicitly reassociates it |
