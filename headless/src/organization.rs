@@ -83,6 +83,36 @@ pub struct Organization {
 }
 
 impl crate::organization::Organization {
+    #[cfg(feature = "p2p")]
+    pub fn for_object(&self, hash: &str) -> anyhow::Result<Self> {
+        self.validate()?;
+        let tracks: Vec<_> = self.tracks.iter().filter(|track| track.sha256 == hash).cloned().collect();
+        let track_ids: std::collections::BTreeSet<_> = tracks.iter().map(|track| track.id.as_str()).collect();
+        let mut albums = std::collections::BTreeSet::new();
+        for track in &tracks { albums.insert(self.canonical(&track.imported_album_id)?.to_owned()); }
+        for choice in &self.choices {
+            if choice.kind == "membership" && track_ids.contains(choice.subject.as_str()) && let Some(album) = &choice.value {
+                albums.insert(self.canonical(album)?.to_owned());
+            }
+        }
+        let choices: Vec<_> = self.choices.iter().filter(|choice| match choice.kind.as_str() {
+            "membership" => track_ids.contains(choice.subject.as_str()),
+            "classification" => albums.contains(&self.subject(choice)),
+            "proposal" => choice.subject.split(',').any(|album| self.canonical(album).is_ok_and(|id| albums.contains(id))),
+            _ => false,
+        }).cloned().collect();
+        let aliases = self.aliases.iter().filter(|(id, _)| self.canonical(id).is_ok_and(|id| albums.contains(id))).map(|(a,b)| (a.clone(),b.clone())).collect();
+        let automatic_aliases = self.automatic_aliases.as_ref().map(|aliases| aliases.iter().filter(|(id, _)| self.canonical(id).is_ok_and(|id| albums.contains(id))).map(|(a,b)| (a.clone(),b.clone())).collect());
+        let track_aliases = self.track_aliases.as_ref().map(|aliases| aliases.iter().filter(|(id, _)| track_ids.contains(self.canonical_track(id).as_str())).map(|(a,b)| (a.clone(),b.clone())).collect());
+        let subset = Self {
+            albums: self.albums.iter().filter(|album| albums.contains(&album.id)).cloned().collect(),
+            tracks, choices, aliases, automatic_aliases, track_aliases,
+            preferred: self.preferred.iter().filter(|(_, album)| self.canonical(album).is_ok_and(|id| albums.contains(id))).map(|(a,b)| (a.clone(),b.clone())).collect(),
+        };
+        subset.validate()?;
+        Ok(subset)
+    }
+
     pub(crate) fn canonical_track(&self, id: &str) -> String {
         let mut cursor = id.to_owned();
         let mut seen = std::collections::BTreeSet::new();

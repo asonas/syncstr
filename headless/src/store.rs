@@ -87,6 +87,12 @@ impl crate::store::Store {
             [uuid::Uuid::new_v4().to_string()],
         )?;
         crate::cluster::migrate(&transaction)?;
+        #[cfg(feature = "p2p")]
+        crate::enrollment::migrate(&transaction)?;
+        #[cfg(feature = "p2p")]
+        crate::cluster_changes::migrate(&transaction)?;
+        #[cfg(feature = "p2p")]
+        crate::cluster_replica::migrate(&transaction)?;
         transaction.commit()?;
         // The exclusive directory lock excludes uploads while abandoned staging files are removed.
         for file in std::fs::read_dir(root.join("staging"))? {

@@ -6,6 +6,11 @@ This milestone includes the node API and a command-line client. Native macOS/iPh
 
 ## Local development
 
+The separate opt-in cluster commands require `cargo build --locked --features
+p2p`. They add one-use enrollment, mDNS discovery, and verified LAN replication
+between library hosts. See [M2 setup and protocol](../docs/cluster-lan-sync-m2.md).
+The HTTPS-token commands below remain a separate legacy access path.
+
 Rust 1.99 or later is required. From this directory:
 
 ```sh

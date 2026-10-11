@@ -438,6 +438,33 @@ impl crate::peer::Identity {
         }
         Ok((endpoint, lock))
     }
+
+    pub async fn cluster_endpoint(
+        &self,
+        listen: &[std::net::SocketAddr],
+    ) -> anyhow::Result<(iroh::Endpoint, std::fs::File)> {
+        use std::os::unix::fs::OpenOptionsExt as _;
+        let lock = std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .read(true)
+            .write(true)
+            .mode(0o600)
+            .open(self.root.join("device.lock"))?;
+        fs2::FileExt::try_lock_exclusive(&lock)?;
+        let mut builder = iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
+            .secret_key(self.key.clone())
+            .alpns(vec![crate::cluster_net::ENROLLMENT_ALPN.to_vec(), crate::cluster_sync::ALPN.to_vec()])
+            .relay_mode(iroh::RelayMode::Disabled)
+            .portmapper_config(iroh::endpoint::PortmapperConfig::Disabled);
+        if !listen.is_empty() {
+            builder = builder.clear_ip_transports();
+            for address in listen {
+                builder = builder.bind_addr(*address)?;
+            }
+        }
+        Ok((builder.bind().await?, lock))
+    }
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]

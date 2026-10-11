@@ -79,6 +79,84 @@ enum Command {
         #[arg(long)]
         peer_state: std::path::PathBuf,
     },
+    #[cfg(feature = "p2p")]
+    ClusterInvite {
+        #[arg(long, default_value = "data")]
+        data: std::path::PathBuf,
+        #[arg(long)]
+        peer_state: std::path::PathBuf,
+        #[arg(long)]
+        library_host: bool,
+        #[arg(long, default_value = "600")]
+        expires: u64,
+        #[arg(long)]
+        output: std::path::PathBuf,
+    },
+    #[cfg(feature = "p2p")]
+    ClusterServe {
+        #[arg(long, default_value = "data")]
+        data: std::path::PathBuf,
+        #[arg(long)]
+        peer_state: std::path::PathBuf,
+    },
+    #[cfg(feature = "p2p")]
+    ClusterImport {
+        #[arg(long, default_value = "data")]
+        data: std::path::PathBuf,
+        #[arg(long)]
+        peer_state: std::path::PathBuf,
+        #[arg(long)]
+        entry: std::path::PathBuf,
+        #[arg(long)]
+        organization: Option<std::path::PathBuf>,
+        #[arg(long)]
+        file: std::path::PathBuf,
+        #[arg(long)]
+        restore: bool,
+    },
+    #[cfg(feature = "p2p")]
+    ClusterDelete {
+        #[arg(long, default_value = "data")]
+        data: std::path::PathBuf,
+        #[arg(long)]
+        peer_state: std::path::PathBuf,
+        #[arg(long)]
+        object: String,
+    },
+    #[cfg(feature = "p2p")]
+    ClusterResolve {
+        #[arg(long, default_value = "data")]
+        data: std::path::PathBuf,
+        #[arg(long)]
+        peer_state: std::path::PathBuf,
+        #[arg(long)]
+        object: String,
+        #[arg(long)]
+        selected: String,
+    },
+    #[cfg(feature = "p2p")]
+    ClusterStatus {
+        #[arg(long, default_value = "data")]
+        data: std::path::PathBuf,
+    },
+    #[cfg(feature = "p2p")]
+    ClusterJoin {
+        #[arg(long, default_value = "data")]
+        data: std::path::PathBuf,
+        #[arg(long)]
+        peer_state: std::path::PathBuf,
+        #[arg(long)]
+        invitation: std::path::PathBuf,
+    },
+    #[cfg(feature = "p2p")]
+    ClusterRevoke {
+        #[arg(long, default_value = "data")]
+        data: std::path::PathBuf,
+        #[arg(long)]
+        peer_state: std::path::PathBuf,
+        #[arg(long)]
+        member: String,
+    },
     ClusterInfo {
         #[arg(long, default_value = "data")]
         data: std::path::PathBuf,
@@ -315,6 +393,138 @@ async fn run(cli: crate::Cli) -> anyhow::Result<()> {
             println!(
                 "{}",
                 serde_json::to_string(&store.create_cluster(identity.id().to_string()).await?)?
+            );
+        }
+        #[cfg(feature = "p2p")]
+        crate::Command::ClusterInvite {
+            data,
+            peer_state,
+            library_host,
+            expires,
+            output,
+        } => {
+            use std::io::Write as _;
+            use std::os::unix::fs::OpenOptionsExt as _;
+            let identity = syncstr_headless::peer::Identity::open(&peer_state)?;
+            let store = syncstr_headless::store::Store::open(&data)?;
+            let invite = store
+                .create_cluster_invitation(
+                    &identity,
+                    library_host,
+                    syncstr_headless::rendezvous::now()? / 1000,
+                    expires,
+                )
+                .await?;
+            let mut file = std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .mode(0o600)
+                .open(&output)?;
+            file.write_all(&serde_json::to_vec(&invite)?)?;
+            file.sync_all()?;
+            std::fs::File::open(
+                output
+                    .parent()
+                    .filter(|parent| !parent.as_os_str().is_empty())
+                    .unwrap_or(std::path::Path::new(".")),
+            )?
+            .sync_all()?;
+            println!("Invitation written to {}", output.display());
+        }
+        #[cfg(feature = "p2p")]
+        crate::Command::ClusterServe { data, peer_state } => {
+            let identity =
+                std::sync::Arc::new(syncstr_headless::peer::Identity::open(&peer_state)?);
+            let store = syncstr_headless::store::Store::open(&data)?;
+            let (endpoint, _lock) = identity.cluster_endpoint(&[]).await?;
+            let discovery = syncstr_headless::cluster_discovery::Discovery::start(&endpoint)?;
+            println!("Cluster LAN endpoint {}", identity.id());
+            let task = tokio::spawn(syncstr_headless::cluster_net::serve(
+                identity.clone(),
+                endpoint.clone(),
+                store.clone(),
+            ));
+            let mut replication = tokio::spawn(syncstr_headless::cluster_sync::run_lan(identity, endpoint.clone(), store, discovery));
+            let mut terminate =
+                tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
+            tokio::select! { _ = tokio::signal::ctrl_c() => {}, _ = terminate.recv() => {}, result = &mut replication => { result??; } }
+            replication.abort();
+            endpoint.close().await;
+            task.await?;
+        }
+        #[cfg(feature = "p2p")]
+        crate::Command::ClusterImport { data, peer_state, entry, organization, file, restore } => {
+            let identity = syncstr_headless::peer::Identity::open(&peer_state)?;
+            let store = syncstr_headless::store::Store::open(&data)?;
+            let entry = serde_json::from_slice(&std::fs::read(entry)?)?;
+            let organization = organization.map(std::fs::read).transpose()?.map(|bytes| serde_json::from_slice(&bytes)).transpose()?;
+            store.import_cluster_file(&identity, entry, organization, &file, restore).await?;
+            println!("Audio verified and stored");
+        }
+        #[cfg(feature = "p2p")]
+        crate::Command::ClusterDelete { data, peer_state, object } => {
+            let identity = syncstr_headless::peer::Identity::open(&peer_state)?;
+            let store = syncstr_headless::store::Store::open(&data)?;
+            let record = store.publish_cluster_change(&identity, object, syncstr_headless::cluster_changes::Action::Delete).await?;
+            println!("{}", serde_json::to_string_pretty(&record)?);
+        }
+        #[cfg(feature = "p2p")]
+        crate::Command::ClusterResolve { data, peer_state, object, selected } => {
+            let identity = syncstr_headless::peer::Identity::open(&peer_state)?;
+            let store = syncstr_headless::store::Store::open(&data)?;
+            let record = store.publish_cluster_change(&identity, object, syncstr_headless::cluster_changes::Action::Resolve { selected }).await?;
+            println!("{}", serde_json::to_string_pretty(&record)?);
+        }
+        #[cfg(feature = "p2p")]
+        crate::Command::ClusterStatus { data } => {
+            let store = syncstr_headless::store::Store::open(&data)?;
+            println!("{}", serde_json::to_string_pretty(&serde_json::json!({ "objects": store.cluster_object_states().await?, "receipts": store.cluster_receipts().await?, "jobs": store.cluster_jobs().await?, "membershipConflicts": store.cluster_membership_proof().await?.membership_conflicts()? }))?);
+        }
+        #[cfg(feature = "p2p")]
+        crate::Command::ClusterJoin {
+            data,
+            peer_state,
+            invitation,
+        } => {
+            use std::io::Read as _;
+            let mut bytes = Vec::new();
+            std::fs::File::open(invitation)?
+                .take(16385)
+                .read_to_end(&mut bytes)?;
+            anyhow::ensure!(bytes.len() <= 16384, "invitation too large");
+            let invite: syncstr_headless::enrollment::Invitation = serde_json::from_slice(&bytes)?;
+            let identity = syncstr_headless::peer::Identity::open(&peer_state)?;
+            let store = syncstr_headless::store::Store::open(&data)?;
+            let (endpoint, _lock) = identity.cluster_endpoint(&[]).await?;
+            let discovery = syncstr_headless::cluster_discovery::Discovery::start(&endpoint)?;
+            let result = tokio::time::timeout(std::time::Duration::from_secs(30), async {
+                loop {
+                    let address = discovery.next().await?;
+                    if address.id.to_string() != invite.host {
+                        continue;
+                    }
+                    break syncstr_headless::cluster_net::enroll(
+                        &identity, &endpoint, address, &invite, &store,
+                    )
+                    .await;
+                }
+            })
+            .await;
+            endpoint.close().await;
+            result??;
+            println!("Joined cluster {}", invite.cluster);
+        }
+        #[cfg(feature = "p2p")]
+        crate::Command::ClusterRevoke {
+            data,
+            peer_state,
+            member,
+        } => {
+            let identity = syncstr_headless::peer::Identity::open(&peer_state)?;
+            let store = syncstr_headless::store::Store::open(&data)?;
+            println!(
+                "{}",
+                serde_json::to_string(&store.revoke_cluster_member(&identity, member).await?)?
             );
         }
         crate::Command::ClusterInfo { data } => {
