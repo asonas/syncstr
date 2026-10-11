@@ -1,4 +1,8 @@
 import SwiftUI
+import UniformTypeIdentifiers
+#if os(iOS)
+import PhotosUI
+#endif
 
 struct OrganizationView: View {
     @ObservedObject var library: Library
@@ -9,6 +13,14 @@ struct OrganizationView: View {
     @State private var selectedTracks = Set<String>()
     @State private var reassociating: String?
     @State private var replacement = ""
+
+    @State private var imageAlbum: String?
+    @State private var choosingImage = false
+#if os(iOS)
+    @State private var photo: PhotosPickerItem?
+    @State private var photoAlbum: String?
+    @State private var choosingPhoto = false
+#endif
 
     var body: some View {
         NavigationStack {
@@ -44,6 +56,7 @@ struct OrganizationView: View {
                 }
                 ForEach(draft.albums.filter { draft.canonical($0.id) == $0.id }) { album in
                     Section(album.title.isEmpty ? "アルバム名不明" : album.title) {
+                        artworkControls(album.id)
                         Text(draft.classificationEvidence(album.id)).foregroundStyle(.secondary)
                         Picker("分類", selection: Binding(get: {
                             draft.choice(subject: album.id, kind: "classification")?.value ?? "imported"
@@ -84,7 +97,7 @@ struct OrganizationView: View {
                 ToolbarItem(placement: .cancellationAction) { Button("キャンセル") { dismiss() } }
                 ToolbarItem(placement: .confirmationAction) {
                     Button("保存") {
-                        do { try library.saveOrganization(draft); dismiss() }
+                        do { try library.saveOrganization(draft); library.transfer.syncOrganization(); dismiss() }
                         catch { self.error = error.localizedDescription }
                     }
                 }
@@ -113,10 +126,73 @@ struct OrganizationView: View {
                 }
             }
         }
+        .fileImporter(isPresented: $choosingImage, allowedContentTypes: [.image]) { result in
+            let url: URL
+            do { url = try result.get() }
+            catch {
+                if (error as NSError).code != NSUserCancelledError { self.error = error.localizedDescription }
+                return
+            }
+            guard let album = imageAlbum else { return }
+            let scoped = url.startAccessingSecurityScopedResource()
+            defer { if scoped { url.stopAccessingSecurityScopedResource() } }
+            guard let data = ArtworkAcquisition.fileImage(url) else { error = "画像を読み込めません。別の画像を選んでください。"; return }
+            selectImage(data, album: album)
+        }
+#if os(iOS)
+        .photosPicker(isPresented: $choosingPhoto, selection: $photo, matching: .images)
+        .onChange(of: photo) { _, item in
+            guard let item, let album = photoAlbum else { return }
+            Task {
+                do {
+                    guard let data = try await item.loadTransferable(type: Data.self) else { throw LocalMusicError.invalidData }
+                    selectImage(data, album: album)
+                } catch { self.error = "写真を読み込めません。別の画像を選んでください。" }
+                photo = nil
+            }
+        }
+#endif
         .onAppear { draft = library.localCatalog?.organization ?? AlbumOrganization() }
 #if os(macOS)
         .frame(minWidth: 480, idealWidth: 640, minHeight: 440, idealHeight: 640)
 #endif
+    }
+
+    @ViewBuilder private func artworkControls(_ album: String) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            if let asset = draft.coverAsset(for: album) { imagePreview(asset).accessibilityLabel("アルバムアートワーク") }
+            Button("画像をファイルから選ぶ") { imageAlbum = album; choosingImage = true }
+#if os(iOS)
+            Button("写真から選ぶ") { photoAlbum = album; choosingPhoto = true }
+#endif
+            Button("自動で選ぶ画像に戻す") { draft.set(subject: album, kind: "artwork", value: nil) }
+                .disabled(draft.choice(subject: album, kind: "artwork")?.value == nil && !draft.hasArtworkConflict(album))
+            if draft.hasArtworkConflict(album) {
+                Text("画像の選択が競合しています。採用する画像を選んでください。")
+                let assets = Set(draft.artworkCandidates(for: album).map(\.asset) + draft.heads(subject: album, kind: "artwork").compactMap(\.value)).sorted()
+                ForEach(assets, id: \.self) { asset in
+                    Button { draft.set(subject: album, kind: "artwork", value: asset) } label: {
+                        HStack { imagePreview(asset); Text("この画像を使う") }
+                    }.buttonStyle(.borderless)
+                }
+            }
+        }
+        .buttonStyle(.borderless)
+    }
+
+    @ViewBuilder private func imagePreview(_ asset: String) -> some View {
+        if let data = draft.artwork?.assets[asset] {
+#if os(macOS)
+            if let image = NSImage(data: data) { Image(nsImage: image).resizable().scaledToFit().frame(width: 96, height: 96) }
+#else
+            if let image = UIImage(data: data) { Image(uiImage: image).resizable().scaledToFit().frame(width: 96, height: 96) }
+#endif
+        }
+    }
+
+    private func selectImage(_ data: Data, album: String) {
+        do { try draft.chooseArtwork(data, album: album); error = nil }
+        catch { self.error = "画像を読み込めません。別の画像を選んでください。" }
     }
 
     private func available(_ id: String) -> Bool { library.tracks.contains { draft.canonicalTrack($0.id) == id } }

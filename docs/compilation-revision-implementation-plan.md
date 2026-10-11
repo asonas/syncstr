@@ -2,7 +2,7 @@
 
 Status: proposed implementation plan for the [agreed revised policy](compilation-policy-review.md), recorded in `fa65cfb`. No application behavior is changed by this plan. Cluster prerequisites and delivery gates refer to the [cluster implementation plan](cluster-implementation-plan.md); passing a single-peer test does not establish cluster support.
 
-Implementation progress: stage A is implemented; see [membership repair verification](validation/compilation-membership-repair.md) for its contract and checks. Stages B and C remain planned.
+Implementation progress: stage A is implemented; see [membership repair verification](validation/compilation-membership-repair.md) for its contract and checks. Stage B is implemented locally; see [artwork verification](validation/compilation-artwork.md) for checks and remaining visual/distribution limits. Stage C remains planned.
 
 ## Outcome and scope
 

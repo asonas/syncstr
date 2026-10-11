@@ -1,5 +1,6 @@
 import AVFoundation
 import Foundation
+import ImageIO
 import AudioTags
 import SQLite3
 
@@ -141,6 +142,23 @@ struct LibraryCheck {
         try require(library.playing && library.current?.id == playingID && library.queue.map(\.id) == activeQueue)
         try require(mediaPlayers.count == playerCount)
         print("PASS: album organization changes preserve active playback and queue")
+        let imageContext = CGContext(data: nil, width: 16, height: 16, bitsPerComponent: 8, bytesPerRow: 64, space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue)!
+        imageContext.setFillColor(red: 0.1, green: 0.2, blue: 0.8, alpha: 1)
+        imageContext.fill(CGRect(x: 0, y: 0, width: 16, height: 16))
+        let imageData = NSMutableData()
+        let destination = CGImageDestinationCreateWithData(imageData, "public.jpeg" as CFString, 1, nil)!
+        CGImageDestinationAddImage(destination, imageContext.makeImage()!, nil)
+        try require(CGImageDestinationFinalize(destination))
+        var imageDraft = organization
+        try imageDraft.chooseArtwork(imageData as Data, album: library.albums[0].id)
+        try require(library.localCatalog?.organization == organization)
+        try library.saveOrganization(imageDraft)
+        try require(library.playing && library.current?.id == playingID && library.queue.map(\.id) == activeQueue && mediaPlayers.count == playerCount)
+        try require(library.albums[0].coverArt != nil)
+        imageDraft.set(subject: library.albums[0].id, kind: "artwork", value: nil)
+        try library.saveOrganization(imageDraft)
+        try require(library.playing && library.current?.id == playingID && library.queue.map(\.id) == activeQueue && mediaPlayers.count == playerCount)
+        print("PASS: image draft, save and clear preserve active player and queue")
         let beforeRepair = try localFiles.load()!
         var repair = beforeRepair
         let former = library.albums[1].id

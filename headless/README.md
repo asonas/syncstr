@@ -74,7 +74,7 @@ The node deduplicates exact byte content with the same suffix. A retry from any 
 
 ## Storage and recovery
 
-- `node.sqlite` stores the node library UUID and track entries. Its schema version is 2, including organization records independent of audio entries.
+- `node.sqlite` stores the node library UUID and track entries. Its schema version is 4, including organization records and verified artwork assets independent of audio entries.
 - `objects/<sha256>.<suffix>` stores original bytes. Only committed catalog entries are accessible through the API.
 - `staging/upload-*` holds incomplete uploads, removed on failure or at the next exclusive startup.
 - `node.lock` prevents a second process from opening the same data directory. The OS releases the lock when the process exits; the lock file can remain.
@@ -104,4 +104,4 @@ The service uses Axum/Tokio for HTTP and asynchronous I/O, rustls for TLS, and r
 
 The Docker build runs [collect_licenses.py](scripts/collect_licenses.py), collecting packaged license and notice files for the target platform's dependency graph, plus available Rust toolchain notices. Its generated inventory records package names, versions, and declared licenses. Syncstr's own release license remains undecided.
 
-The former `/v1` and `/v2` APIs return HTTP 426 and request a client update. Version 3 retains source-scoped import evidence and reassessable automatic membership in addition to imported metadata, former references, and explicit organization revisions. Catalog schema 3 prevents older writers from dropping these fields. Update both the node and native clients together; existing deployments are not updated by a local build. See [compilation membership verification](../docs/validation/compilation-membership-repair.md).
+The current API is `/v4`; `/v1`, `/v2`, and `/v3` return HTTP 426 and request a client update. Native protocol version 4 adds verified image frames separate from organization metadata and audio. Catalog schema 4 retains image assets, provenance and causal choices alongside the source-scoped membership evidence. Update both the node and native clients together; existing deployments are not updated by a local build. See [artwork verification](../docs/validation/compilation-artwork.md) for bounds and remaining limits.
