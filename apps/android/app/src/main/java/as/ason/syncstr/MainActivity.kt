@@ -33,6 +33,7 @@ class MainActivity : Activity() {
     }
 
     private enum class Screen { LIBRARY, SAVED, PLAYER, CONNECTIONS }
+    private enum class BrowseMode { ALBUMS, ARTISTS, SONGS }
     private enum class SaveState { REMOTE, DOWNLOADING, SAVED, FAILED }
 
     private lateinit var key: ByteArray
@@ -48,14 +49,26 @@ class MainActivity : Activity() {
     private var catalog = JSONArray()
     private var conflicts = JSONArray()
     private var screen = Screen.LIBRARY
+    private var browseMode = BrowseMode.ALBUMS
     private var player: MediaPlayer? = null
     private var playingEntry: JSONObject? = null
     private var prepared = false
     private var focus: AudioFocusRequest? = null
     private var busy = false
+    private var playerSeek: SeekBar? = null
+    private var playerTime: TextView? = null
+    private var playerButton: Button? = null
+    private var restoreId: String? = null
+    private var restorePosition = 0
+    private var restorePlaying = false
 
     override fun onCreate(state: Bundle?) {
         super.onCreate(state)
+        screen = state?.getString("screen")?.let { runCatching { Screen.valueOf(it) }.getOrNull() } ?: Screen.LIBRARY
+        browseMode = state?.getString("browse")?.let { runCatching { BrowseMode.valueOf(it) }.getOrNull() } ?: BrowseMode.ALBUMS
+        restoreId = state?.getString("playing")
+        restorePosition = state?.getInt("position") ?: 0
+        restorePlaying = state?.getBoolean("wasPlaying") ?: false
         window.statusBarColor = GRAPHITE
         window.navigationBarColor = CARBON
         buildChrome()
@@ -65,7 +78,17 @@ class MainActivity : Activity() {
         }
         discovery = LanDiscovery(this) { id, socket -> if (socket == null) addresses.remove(id) else addresses[id] = socket }
         discovery.start()
-        task { loadCatalog(); onUi { if (catalog.length() == 0) showStatus(getString(R.string.empty_library_hint)); render() } }
+        task {
+            loadCatalog()
+            val restored = restoreId?.let { id -> (0 until catalog.length()).map { catalog.getJSONObject(it) }.firstOrNull { it.getString("sha256") == id } }
+            val restoredPath = restored?.let { entry ->
+                org.json.JSONTokener(call("local-file", JSONObject().put("object", entry.getString("sha256")))).nextValue() as? String
+            }
+            onUi {
+                if (catalog.length() == 0) showStatus(getString(R.string.empty_library_hint))
+                if (restored != null && restoredPath != null) startPlayback(restoredPath, restored, restorePosition, restorePlaying) else render()
+            }
+        }
     }
 
     private fun buildChrome() {
@@ -124,6 +147,7 @@ class MainActivity : Activity() {
         setBackgroundColor(Color.TRANSPARENT)
         contentDescription = text
         setOnClickListener { navigate(target) }
+        controls.add(this)
     }
 
     private fun navigate(target: Screen) { screen = target; render() }
@@ -154,14 +178,15 @@ class MainActivity : Activity() {
 
     private fun render() {
         body.removeAllViews()
-        controls.clear()
+        miniPlayer.removeAllViews()
+        controls.removeAll { it.parent == null }
         when (screen) {
             Screen.LIBRARY -> renderLibrary(false)
             Screen.SAVED -> renderLibrary(true)
             Screen.PLAYER -> renderPlayer()
             Screen.CONNECTIONS -> renderConnections()
         }
-        renderMiniPlayer()
+        renderMiniPlayer(false)
         controls.forEach { it.isEnabled = !busy }
     }
 
@@ -175,20 +200,43 @@ class MainActivity : Activity() {
             list.addView(emptyState(getString(if (savedOnly) R.string.no_saved_music else R.string.no_music)))
             return
         }
-        val albums = entries.groupBy { it.getJSONObject("track").optString("album").ifBlank { getString(R.string.unknown_album) } }
-            .toSortedMap(String.CASE_INSENSITIVE_ORDER)
-        for ((album, tracks) in albums) {
-            val artist = tracks.firstNotNullOfOrNull { it.getJSONObject("track").optString("artist").takeIf(String::isNotBlank) }
-                ?: getString(R.string.unknown_artist)
+        list.addView(LinearLayout(this).apply {
+            addView(modeButton(getString(R.string.albums), BrowseMode.ALBUMS), LinearLayout.LayoutParams(0, dp(48), 1f))
+            addView(modeButton(getString(R.string.artists), BrowseMode.ARTISTS), LinearLayout.LayoutParams(0, dp(48), 1f))
+            addView(modeButton(getString(R.string.songs), BrowseMode.SONGS), LinearLayout.LayoutParams(0, dp(48), 1f))
+        })
+        when (browseMode) {
+            BrowseMode.ALBUMS -> renderGroups(list, entries, true)
+            BrowseMode.ARTISTS -> renderGroups(list, entries, false)
+            BrowseMode.SONGS -> entries.sortedBy { it.getJSONObject("track").getString("title").lowercase() }.forEach { list.addView(trackRow(it)) }
+        }
+    }
+
+    private fun modeButton(text: String, mode: BrowseMode) = Button(this).apply {
+        this.text = text
+        setTextColor(WHITE)
+        setBackgroundColor(if (browseMode == mode) BLUE else Color.TRANSPARENT)
+        setOnClickListener { browseMode = mode; render() }
+        controls.add(this)
+    }
+
+    private fun renderGroups(list: LinearLayout, entries: List<JSONObject>, albums: Boolean) {
+        val groups = entries.groupBy { if (albums) albumName(it) else artistName(it) }.toSortedMap(String.CASE_INSENSITIVE_ORDER)
+        for ((name, tracks) in groups) {
             list.addView(LinearLayout(this).apply {
                 orientation = LinearLayout.VERTICAL
                 setPadding(0, dp(24), 0, dp(8))
-                addView(label(album, 21f, WHITE, true))
-                addView(label(getString(R.string.album_subtitle, artist, resources.getQuantityString(R.plurals.track_count, tracks.size, tracks.size)), 14f, FOG))
+                addView(label(name, 21f, WHITE, true))
+                val detail = if (albums) artistName(tracks.first()) else resources.getQuantityString(R.plurals.track_count, tracks.size, tracks.size)
+                addView(label(detail, 14f, FOG))
             })
-            tracks.sortedBy { it.getJSONObject("track").optInt("track", Int.MAX_VALUE) }.forEach { list.addView(trackRow(it)) }
+            tracks.sortedWith(compareBy({ it.getJSONObject("track").optInt("disc_number", 1) },
+                { it.getJSONObject("track").optInt("track", Int.MAX_VALUE) })).forEach { list.addView(trackRow(it)) }
         }
     }
+
+    private fun albumName(entry: JSONObject) = entry.getJSONObject("track").optString("album").ifBlank { getString(R.string.unknown_album) }
+    private fun artistName(entry: JSONObject) = entry.getJSONObject("track").optString("artist").ifBlank { getString(R.string.unknown_artist) }
 
     private fun trackRow(entry: JSONObject) = LinearLayout(this).apply {
         val track = entry.getJSONObject("track")
@@ -235,13 +283,18 @@ class MainActivity : Activity() {
         onUi { startPlayback(path, entry) }
     }
 
-    private fun startPlayback(path: String, entry: JSONObject) {
+    private fun startPlayback(path: String, entry: JSONObject, initialPosition: Int = 0, autoplay: Boolean = true) {
         player?.release(); prepared = false; playingEntry = entry; renderMiniPlayer()
         player = MediaPlayer().apply {
             setAudioAttributes(AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_MEDIA).setContentType(AudioAttributes.CONTENT_TYPE_MUSIC).build())
             setDataSource(path)
-            setOnPreparedListener { prepared = true; if (hasWindowFocus() && requestAudioFocus()) it.start(); render(); scheduleProgress() }
-            setOnCompletionListener { render() }
+            setOnPreparedListener {
+                prepared = true
+                if (initialPosition > 0) it.seekTo(initialPosition)
+                if (autoplay && hasWindowFocus() && requestAudioFocus()) it.start()
+                render(); scheduleProgress()
+            }
+            setOnCompletionListener { updatePlaybackControls() }
             setOnErrorListener { _, _, _ -> prepared = false; showStatus(getString(R.string.playback_failed), true); true }
             prepareAsync()
         }
@@ -251,11 +304,11 @@ class MainActivity : Activity() {
         if (!prepared) return
         val active = player ?: return
         if (active.isPlaying) active.pause() else if (requestAudioFocus()) active.start()
-        render(); scheduleProgress()
+        updatePlaybackControls(); renderMiniPlayer(); scheduleProgress()
     }
 
-    private fun renderMiniPlayer() {
-        miniPlayer.removeAllViews()
+    private fun renderMiniPlayer(clear: Boolean = true) {
+        if (clear) miniPlayer.removeAllViews()
         val entry = playingEntry ?: run { miniPlayer.visibility = View.GONE; return }
         miniPlayer.visibility = View.VISIBLE
         val track = entry.getJSONObject("track")
@@ -273,12 +326,13 @@ class MainActivity : Activity() {
         body.addView(LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL; gravity = Gravity.CENTER_HORIZONTAL; setPadding(dp(32), dp(32), dp(32), dp(24))
             addView(TextView(this@MainActivity).apply {
-                text = track.optString("album").ifBlank { getString(R.string.unknown_album) }
-                textSize = 20f; setTextColor(FOG); gravity = Gravity.CENTER; setBackgroundColor(IRON)
+                text = getString(R.string.artwork_unavailable)
+                contentDescription = getString(R.string.artwork_unavailable_description, albumName(entry))
+                textSize = 18f; setTextColor(FOG); gravity = Gravity.CENTER; setBackgroundColor(IRON)
             }, LinearLayout.LayoutParams(-1, 0, 1f).apply { bottomMargin = dp(20) })
             addView(label(track.getString("title"), 22f, WHITE, true).apply { gravity = Gravity.CENTER })
             addView(label(track.optString("artist").ifBlank { getString(R.string.unknown_artist) }, 18f, FOG).apply { gravity = Gravity.CENTER })
-            addView(SeekBar(this@MainActivity).apply {
+            playerSeek = SeekBar(this@MainActivity).apply {
                 max = if (prepared) player?.duration ?: 0 else 0; progress = if (prepared) player?.currentPosition ?: 0 else 0
                 contentDescription = getString(R.string.playback_position)
                 setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
@@ -286,14 +340,39 @@ class MainActivity : Activity() {
                     override fun onStartTrackingTouch(bar: SeekBar?) = Unit
                     override fun onStopTrackingTouch(bar: SeekBar?) = Unit
                 })
-            }, LinearLayout.LayoutParams(-1, dp(48)).apply { topMargin = dp(20) })
-            addView(primary(getString(if (player?.isPlaying == true) R.string.pause else R.string.play)) { togglePlayback() }, LinearLayout.LayoutParams(-1, dp(56)))
+            }
+            addView(playerSeek, LinearLayout.LayoutParams(-1, dp(48)).apply { topMargin = dp(20) })
+            playerTime = label(formatTime(player?.currentPosition ?: 0, player?.duration ?: 0), 13f, FOG).apply { gravity = Gravity.CENTER }
+            addView(playerTime)
+            playerButton = primary(getString(if (player?.isPlaying == true) R.string.pause else R.string.play)) { togglePlayback() }
+            addView(playerButton, LinearLayout.LayoutParams(-1, dp(56)))
         })
     }
 
     private fun scheduleProgress() {
-        handler.removeCallbacksAndMessages(null)
-        if (prepared && player?.isPlaying == true) handler.postDelayed({ if (screen == Screen.PLAYER) render(); scheduleProgress() }, 1000)
+        handler.removeCallbacks(progressUpdate)
+        if (prepared && player?.isPlaying == true) handler.postDelayed(progressUpdate, 1000)
+    }
+
+    private val progressUpdate = object : Runnable {
+        override fun run() {
+            updatePlaybackControls()
+            if (prepared && player?.isPlaying == true) handler.postDelayed(this, 1000)
+        }
+    }
+
+    private fun updatePlaybackControls() {
+        val active = player ?: return
+        if (prepared) {
+            playerSeek?.max = active.duration
+            playerSeek?.progress = active.currentPosition
+            playerTime?.text = formatTime(active.currentPosition, active.duration)
+        }
+        playerButton?.text = getString(if (active.isPlaying) R.string.pause else R.string.play)
+    }
+
+    private fun formatTime(position: Int, duration: Int): String {
+        return getString(R.string.playback_time, UiFormatting.clock(position), UiFormatting.clock(duration))
     }
 
     private fun renderConnections() {
@@ -355,6 +434,14 @@ class MainActivity : Activity() {
         orientation = LinearLayout.VERTICAL; setPadding(dp(16), dp(16), dp(16), dp(16)); setBackgroundColor(CARBON)
         addView(label(resources.getQuantityString(R.plurals.conflict_count, conflicts.length(), conflicts.length()), 16f, WHITE, true))
         addView(label(getString(R.string.conflict_explanation), 14f, FOG).apply { setPadding(0, dp(4), 0, 0) })
+        val titles = (0 until conflicts.length()).take(5).map { index ->
+            val id = conflicts.getString(index)
+            (0 until catalog.length()).map { catalog.getJSONObject(it) }
+                .firstOrNull { it.getString("sha256") == id }?.getJSONObject("track")?.getString("title")
+                ?: getString(R.string.conflict_item, UiFormatting.conflictReference(id))
+        }
+        addView(label(titles.joinToString("\n"), 14f, WHITE).apply { setPadding(0, dp(8), 0, dp(8)) })
+        addView(action(getString(R.string.refresh_conflicts)) { refreshLibrary() })
     }
 
     private fun emptyState(message: String) = LinearLayout(this).apply {
@@ -392,7 +479,22 @@ class MainActivity : Activity() {
 
     private fun onUi(action: () -> Unit) = runOnUiThread { if (!isDestroyed) action() }
     private fun dp(value: Int) = (value * resources.displayMetrics.density).toInt()
-    override fun onStop() { if (prepared && player?.isPlaying == true) player?.pause(); super.onStop() }
+    override fun onSaveInstanceState(outState: Bundle) {
+        outState.putString("screen", screen.name)
+        outState.putString("browse", browseMode.name)
+        outState.putString("playing", playingEntry?.getString("sha256"))
+        outState.putInt("position", if (prepared) player?.currentPosition ?: 0 else 0)
+        outState.putBoolean("wasPlaying", prepared && player?.isPlaying == true)
+        super.onSaveInstanceState(outState)
+    }
+
+    override fun onStart() { super.onStart(); if (::body.isInitialized && ::key.isInitialized) render() }
+    override fun onStop() {
+        if (prepared && player?.isPlaying == true) player?.pause()
+        updatePlaybackControls()
+        renderMiniPlayer()
+        super.onStop()
+    }
     override fun onDestroy() {
         handler.removeCallbacksAndMessages(null); if (::discovery.isInitialized) discovery.stop(); player?.release()
         focus?.let { getSystemService(AudioManager::class.java).abandonAudioFocusRequest(it) }; super.onDestroy()
