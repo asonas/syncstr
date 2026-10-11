@@ -99,7 +99,7 @@ impl crate::organization::Organization {
         }
         let choices: Vec<_> = self.choices.iter().filter(|choice| match choice.kind.as_str() {
             "membership" => track_ids.contains(choice.subject.as_str()),
-            "classification" => albums.contains(&self.subject(choice)),
+            "classification" | "artwork" => albums.contains(&self.subject(choice)),
             "proposal" => choice.subject.split(',').any(|album| self.canonical(album).is_ok_and(|id| albums.contains(id))),
             _ => false,
         }).cloned().collect();
@@ -107,7 +107,19 @@ impl crate::organization::Organization {
         let automatic_aliases = self.automatic_aliases.as_ref().map(|aliases| aliases.iter().filter(|(id, _)| self.canonical(id).is_ok_and(|id| albums.contains(id))).map(|(a,b)| (a.clone(),b.clone())).collect());
         let track_aliases = self.track_aliases.as_ref().map(|aliases| aliases.iter().filter(|(id, _)| track_ids.contains(self.canonical_track(id).as_str())).map(|(a,b)| (a.clone(),b.clone())).collect());
         let preferred = self.preferred.iter().filter(|(_, id)| choices.iter().any(|choice| &choice.id == *id)).map(|(a,b)| (a.clone(),b.clone())).collect();
+        let artwork = self.artwork.as_ref().map(|artwork| {
+            let candidates: Vec<_> = artwork.candidates.iter()
+                .filter(|candidate| track_ids.contains(candidate.track.as_str())).cloned().collect();
+            let assets: std::collections::BTreeSet<_> = candidates.iter().map(|candidate| &candidate.asset)
+                .chain(choices.iter().filter(|choice| choice.kind == "artwork").filter_map(|choice| choice.value.as_ref())).collect();
+            crate::artwork::Artwork {
+                assets: artwork.assets.iter().filter(|(id, _)| assets.contains(id)).map(|(id, bytes)| (id.clone(), bytes.clone())).collect(),
+                preferred: artwork.preferred.iter().filter(|(_, asset)| assets.contains(asset)).map(|(key, asset)| (key.clone(), asset.clone())).collect(),
+                candidates,
+            }
+        });
         let subset = Self {
+            artwork,
             albums: self.albums.iter().filter(|album| albums.contains(&album.id)).cloned().collect(),
             tracks, choices, aliases, automatic_aliases, track_aliases,
             preferred,

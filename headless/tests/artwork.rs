@@ -8,6 +8,28 @@ fn fixture() -> (syncstr_headless::organization::Organization, String, String) {
     )
 }
 
+#[cfg(feature = "p2p")]
+#[test]
+fn object_subset_keeps_cover_choices_and_excludes_unrelated_images() {
+    let (mut organization, blue, red) = crate::fixture();
+    organization.choices.push(syncstr_headless::organization::Choice {
+        id: "manual-cover".into(), subject: "album-a".into(), kind: "artwork".into(),
+        value: Some(red.clone()), parents: vec![],
+    });
+    let subset = organization.for_object(&"a".repeat(64)).unwrap();
+    assert_eq!(subset.choices, organization.choices);
+    let artwork = subset.artwork.unwrap();
+    assert!(artwork.assets.contains_key(&blue));
+    assert!(artwork.assets.contains_key(&red));
+    assert_eq!(artwork.candidates.len(), 1);
+    let unrelated = organization.for_object(&"b".repeat(64)).unwrap();
+    assert!(unrelated.choices.is_empty());
+    let artwork = unrelated.artwork.unwrap();
+    assert!(artwork.assets.is_empty());
+    assert!(artwork.candidates.is_empty());
+    assert!(artwork.preferred.is_empty());
+}
+
 #[tokio::test]
 async fn images_and_choice_history_survive_without_audio_and_invalid_delivery_rolls_back() {
     let (mut organization, blue, red) = crate::fixture();
