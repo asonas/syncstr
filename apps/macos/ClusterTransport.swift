@@ -154,11 +154,15 @@ final class ClusterNetwork {
                 session = current
                 defer { current.close(); session = nil }
                 for edit in try database.clusterMetadataEdits() {
-                    let revision = try await current.editMetadata(edit)
-                    try database.finishClusterMetadataEdit(edit, revision: revision)
+                    do {
+                        let revision = try await current.editMetadata(edit)
+                        try database.finishClusterMetadataEdit(edit, revision: revision)
+                    } catch LocalMusicError.clusterNeedsAttention {
+                        failure = LocalMusicError.clusterNeedsAttention
+                    }
                 }
                 try await current.reconcile(database: database)
-                return
+                if try database.clusterMetadataEdits().isEmpty { return }
             } catch {
                 try Task.checkCancellation()
                 failure = error

@@ -1,7 +1,7 @@
 # M3 Apple cluster integration
 
-Status: implementation in progress, based on the integrated M2 LAN protocol.
-Do not merge this milestone before the acceptance gate below is verified.
+Status: Apple integration checkpoint approved for main and TestFlight validation.
+The complete acceptance gate remains open until the manual checks below pass.
 
 ## Implementation order
 
@@ -97,6 +97,12 @@ denied and is displayed separately from metadata conflicts.
   confirmed. Enrollment, catalog download, verified audio storage, and audible
   playback were confirmed with two live headless hosts. The user also confirmed
   audible playback after restarting the app with Wi-Fi and cellular disabled.
+- The user confirmed enrollment, verified audio storage, and audible playback
+  in the separate macOS development app using the same two-host cluster.
+- A real-host regression test verifies that a rejected metadata edit stays
+  pending while an unrelated edit is acknowledged and reflected in the catalog.
 - Native screen verification, complete conflict-resolution interaction coverage,
-  physical-device playback/interruption tests, and the final two-axis review
-  are outstanding. M3 is not complete or merged.
+  physical-device source failover, import batch prompts, and transfer interruption
+  checks remain outstanding. Carry these checks into TestFlight validation;
+  actual external-network downloads belong to M4. Main integration is approved
+  at this checkpoint without declaring the full M3 acceptance gate complete.

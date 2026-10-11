@@ -124,7 +124,9 @@ Gate: import on either host reaches the other; duplicate delivery is idempotent;
 
 Replace single-peer/single-catalog assumptions with one cluster library and multiple source locations. Automatically select reachable replicas, retain the offline catalog, and keep local-copy removal distinct from cluster deletion. Add enrollment UI, saved registration restoration, batch keep/remove prompts, cellular policy, and conflict selection. Treat source failure as unavailable, not as catalog deletion.
 
-Gate: two headless hosts plus macOS/iPhone complete import, replication, source failover, download, restart, and offline playback. Verify import batch prompts and partial failure handling, explicit cellular downloads, and conflicting edit/deletion resolution. iOS background execution is tested within OS limits; do not promise continuous background serving.
+Gate: two headless hosts plus macOS/iPhone complete import, replication, source failover, download, restart, and offline playback. Verify import batch prompts and partial failure handling, network switching and cellular transfer policy, and conflicting edit/deletion resolution. iOS background execution is tested within OS limits; do not promise continuous background serving. Actual downloads over cellular are verified in M4.
+
+The Apple integration is approved for main integration before all manual acceptance checks are complete. The remaining checks are tracked in [M3 Apple integration](cluster-apple-m3.md) and carried into TestFlight validation. This integration checkpoint does not mark the full M3 acceptance gate complete.
 
 ### M4: Optional remote deployment package
 

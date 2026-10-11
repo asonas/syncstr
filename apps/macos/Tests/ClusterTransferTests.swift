@@ -178,6 +178,18 @@ final class ClusterTransferTests: XCTestCase {
         let recipient = try await network.upload(entry: additional, organization: XCTUnwrap(additionalCatalog.organization), parents: [],
             host: invitation.host, file: additionalFile) { _ in }
         XCTAssertNotEqual(recipient, invitation.host)
+        var laterCatalog = try XCTUnwrap(store.load())
+        let additionalAlbum = try XCTUnwrap(laterCatalog.organization?.albumID(for: additional.track.id))
+        laterCatalog.organization?.set(subject: additionalAlbum, kind: "classification", value: "true")
+        try store.save(laterCatalog, clusterEdits: true)
+        XCTAssertEqual(try restored.clusterMetadataEdits().count, 2)
+        do {
+            try await network.syncMetadata()
+            XCTFail("The rejected edit must remain pending")
+        } catch LocalMusicError.clusterNeedsAttention {}
+        XCTAssertEqual(try restored.clusterMetadataEdits().map(\.id), [rejectedEdit.id], "An unrelated edit must be acknowledged despite the first rejection")
+        let reconciled = try await network.refresh()
+        XCTAssertEqual(reconciled.organization?.choice(subject: additionalAlbum, kind: "classification")?.value, "true")
         second.terminate(); second.waitUntilExit()
         XCTAssertEqual(try LocalMusicStore.digest(file: store.fileURL(entry)), entry.sha256)
         XCTAssertEqual(try store.load()?.entries.count, 2)
