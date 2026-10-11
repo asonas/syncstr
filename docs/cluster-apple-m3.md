@@ -33,8 +33,9 @@ and deletion resolution, and cellular policy. Simulator builds and tests alone
 do not satisfy physical-device verification or audible playback.
 
 Remote relay configuration and the no-manual-router-rule cellular connectivity
-test remain M4. Physical-device validation will use TestFlight. Production NAS
-deployment and router changes are separate from this milestone.
+test remain M4. Physical-device validation uses a USB development build with a
+separate application identifier. Production NAS deployment and router changes
+are separate from this milestone.
 
 ## Implemented development path
 
@@ -57,6 +58,10 @@ Each client import batch retains metadata, target host, per-item outcome, and
 local-copy decisions. Failed items and original import sources are not removed.
 Automatic queued audio pauses on cellular unless enabled; explicit downloads use
 a separate path. Backgrounding iOS cancels transfers and retains durable state.
+Organization edits are queued in the same transaction as the local catalog and
+sent with their observed object parents. Acknowledgements preserve any newer
+local edit. Uploads can select another authorized host after a source fails;
+the batch records the host that actually acknowledged each item.
 
 Deleting a managed local copy does not publish a cluster deletion. Re-importing
 an observed deleted object waits for explicit restoration confirmation. Album
@@ -81,6 +86,9 @@ denied and is displayed separately from metadata conflicts.
 - The pre-integration macOS suite passed 50 tests, with two opt-in environment
   tests skipped. iOS simulator compilation passed. These results must be rerun
   as appropriate after incorporating concurrent changes on main.
+- The iOS simulator suite passed 47 tests. A separate development app was
+  installed and launched on a physical iPhone, and invitation QR scanning was
+  confirmed. Enrollment and playback acceptance remain in progress.
 - Native screen verification, complete conflict-resolution interaction coverage,
-  iOS tests, TestFlight delivery, physical-device playback/interruption tests,
-  and the final two-axis review are outstanding. M3 is not complete or merged.
+  physical-device playback/interruption tests, and the final two-axis review
+  are outstanding. M3 is not complete or merged.

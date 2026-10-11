@@ -1,5 +1,48 @@
 import Foundation
 
+struct ClusterMetadataEdit: Codable {
+    let id: String
+    let entry: LocalEntry
+    let organization: AlbumOrganization
+    var parents: [String]
+}
+
+extension AlbumOrganization {
+    func forClusterObject(_ object: String) throws -> AlbumOrganization {
+        try validate()
+        let tracks = tracks.filter { $0.sha256 == object }
+        let trackIDs = Set(tracks.map(\.id))
+        var albumIDs = Set(tracks.map { canonical($0.importedAlbumID) })
+        for choice in choices where choice.kind == "membership" && trackIDs.contains(choice.subject) {
+            if let value = choice.value { albumIDs.insert(canonical(value)) }
+        }
+        let choices = choices.filter { choice in
+            switch choice.kind {
+            case "membership": return trackIDs.contains(choice.subject)
+            case "classification", "artwork": return albumIDs.contains(canonical(choice.subject))
+            case "proposal": return choice.subject.split(separator: ",").contains { albumIDs.contains(canonical(String($0))) }
+            default: return false
+            }
+        }
+        let choiceIDs = Set(choices.map(\.id))
+        var artwork = artwork
+        if var subset = artwork {
+            subset.candidates.removeAll { !trackIDs.contains($0.track) }
+            let assets = Set(subset.candidates.map(\.asset) + choices.filter { $0.kind == "artwork" }.compactMap(\.value))
+            subset.assets = subset.assets.filter { assets.contains($0.key) }
+            subset.preferred = subset.preferred.filter { assets.contains($0.value) }
+            artwork = subset
+        }
+        let result = AlbumOrganization(albums: albums.filter { albumIDs.contains($0.id) }, tracks: tracks,
+            aliases: aliases.filter { albumIDs.contains(canonical($0.key)) }, choices: choices,
+            preferred: preferred.filter { choiceIDs.contains($0.value) },
+            trackAliases: trackAliases?.filter { trackIDs.contains(canonicalTrack($0.key)) },
+            automaticAliases: automaticAliases?.filter { albumIDs.contains(canonical($0.key)) }, artwork: artwork)
+        try result.validate()
+        return result
+    }
+}
+
 struct ClusterChange: Codable {
     struct Action: Codable {
         enum Kind: String, Codable { case `import`, delete, restore, edit, resolve }

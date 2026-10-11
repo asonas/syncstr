@@ -15,6 +15,34 @@ extension CatalogDatabase {
         try execute("CREATE TABLE IF NOT EXISTS cluster_track_ids (object TEXT PRIMARY KEY, id TEXT NOT NULL UNIQUE)")
         try execute("CREATE TABLE IF NOT EXISTS cluster_import_batches (id TEXT PRIMARY KEY, payload TEXT NOT NULL)")
         try execute("CREATE TABLE IF NOT EXISTS cluster_transfer_settings (singleton INTEGER PRIMARY KEY CHECK(singleton = 1), cellular INTEGER NOT NULL CHECK(cellular IN (0, 1)))")
+        try execute("CREATE TABLE IF NOT EXISTS cluster_metadata_queue (object TEXT PRIMARY KEY, payload TEXT NOT NULL)")
+    }
+
+    func clusterMetadataEdits() throws -> [ClusterMetadataEdit] {
+        try rows("SELECT payload FROM cluster_metadata_queue ORDER BY rowid").map {
+            guard let payload = $0[0] else { throw LocalMusicError.invalidData }
+            return try JSONDecoder().decode(ClusterMetadataEdit.self, from: Data(payload.utf8))
+        }
+    }
+
+    private func saveClusterMetadataEdit(_ edit: ClusterMetadataEdit) throws {
+        let payload = try JSONEncoder().encode(edit)
+        guard payload.count <= 1024 * 1024 else { throw LocalMusicError.invalidData }
+        try execute("INSERT INTO cluster_metadata_queue VALUES (?, ?) ON CONFLICT(object) DO UPDATE SET payload = excluded.payload",
+            [edit.entry.sha256, String(decoding: payload, as: UTF8.self)])
+    }
+
+    func finishClusterMetadataEdit(_ edit: ClusterMetadataEdit, revision: String) throws {
+        guard ClusterIdentity.isLowercaseHex256(revision) else { throw LocalMusicError.invalidData }
+        try transaction {
+            guard var pending = try clusterMetadataEdits().first(where: { $0.entry.sha256 == edit.entry.sha256 }) else { return }
+            if pending.id == edit.id {
+                try execute("DELETE FROM cluster_metadata_queue WHERE object = ?", [edit.entry.sha256])
+            } else if pending.parents == edit.parents {
+                pending.parents = [revision]
+                try saveClusterMetadataEdit(pending)
+            }
+        }
     }
 
     func clusterRegistration() throws -> ClusterRegistration? {
@@ -374,7 +402,7 @@ final class CatalogDatabase {
     }
 
     func save(_ catalog: LocalCatalog, sourceRoot: URL? = nil, sourcePaths: [String: String]? = nil,
-              received: [LocalEntry] = []) throws {
+              received: [LocalEntry] = [], clusterEdits: Bool = false) throws {
         guard Set(catalog.entries.map { $0.track.id }).count == catalog.entries.count,
               catalog.entries.allSatisfy(LocalMusicStore.valid) else { throw LocalMusicError.invalidData }
         try transaction {
@@ -386,6 +414,18 @@ final class CatalogDatabase {
             if organized.organization == nil, sameLibrary { organized.organization = previous?.catalog.organization }
             organized.organize(folders: root == nil ? [:] : paths.mapValues { ($0 as NSString).deletingLastPathComponent })
             try organized.organization?.validate()
+            if clusterEdits, let registration = try clusterRegistration(), let organization = organized.organization {
+                _ = try registration.membership.verify(registration.localGrant)
+                let records = try clusterChanges()
+                let pending = try clusterMetadataEdits()
+                for state in try ClusterObjectState.project(records, membership: registration.membership) where !state.conflicted {
+                    guard let entry = try state.selected(in: records)?.action.entry else { continue }
+                    let metadata = try organization.forClusterObject(state.object)
+                    guard try metadata != previous?.catalog.organization?.forClusterObject(state.object) else { continue }
+                    let parents = pending.first(where: { $0.entry.sha256 == state.object })?.parents ?? state.heads.map(\.id)
+                    try saveClusterMetadataEdit(ClusterMetadataEdit(id: UUID().uuidString, entry: entry, organization: metadata, parents: parents))
+                }
+            }
             try writeOrganization(organized.organization!)
             try execute("DELETE FROM entries")
             try execute("INSERT OR REPLACE INTO catalog VALUES (1, ?, ?, ?)", [catalog.id, catalog.name, root?.path])

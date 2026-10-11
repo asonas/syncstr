@@ -191,6 +191,8 @@ final class LocalTransfer: ObservableObject {
     @Published private(set) var clusterChanges: [ClusterChange] = []
     @Published private(set) var disputedMembers: [String] = []
     @Published private(set) var clusterAlbumConflicts: [ClusterAlbumConflict] = []
+    private var pendingClusterMetadata = false
+    var clusterResultsPending = false
     @Published private(set) var automaticCellular = false
     private let clusterPath = NWPathMonitor()
     private var automaticAudioOperation = false
@@ -322,16 +324,17 @@ final class LocalTransfer: ObservableObject {
         clusterChanges = try database.clusterChanges()
         clusterConflicts = try database.clusterObjectStates().filter(\.conflicted)
         clusterAlbumConflicts = try database.clusterAlbumConflicts()
+        pendingClusterMetadata = try !database.clusterMetadataEdits().isEmpty
         disputedMembers = try clusterRegistration?.membership.revocationState().disputed.sorted() ?? []
     }
 
     private func scheduleClusterRetry() {
         clusterRetry?.cancel()
-        guard clusterRegistration != nil, clusterBatches.contains(where: { $0.items.contains(where: { $0.state == .queued }) }) else { return }
+        guard clusterRegistration != nil, pendingClusterMetadata || clusterBatches.contains(where: { $0.items.contains(where: { $0.state == .queued }) }) else { return }
         clusterRetry = Task { [weak self] in
             do { try await Task.sleep(for: .seconds(15)) } catch { return }
             guard let self else { return }
-            guard !self.busy, self.permitsAutomaticAudio else { self.scheduleClusterRetry(); return }
+            guard !self.busy, self.pendingClusterMetadata || self.permitsAutomaticAudio else { self.scheduleClusterRetry(); return }
             self.connectCluster()
         }
     }
@@ -348,6 +351,7 @@ final class LocalTransfer: ObservableObject {
                     try await clusterNetwork.enroll(ClusterInvitation.parse(invitation), name: name)
                     clusterRegistration = try store.database().clusterRegistration()
                 }
+                try await clusterNetwork.syncMetadata()
                 let catalog = try await clusterNetwork.refresh()
                 try Task.checkCancellation()
                 guard generation == attempt else { return }
@@ -434,10 +438,11 @@ final class LocalTransfer: ObservableObject {
                         try Task.checkCancellation()
                         organization.importEntries([entry], sourceID: peerID)
                         try organization.validate()
-                        item.entry = entry; item.organization = organization
+                        item.entry = entry; item.organization = try organization.forClusterObject(entry.sha256)
                         if let state = try database.clusterObjectStates().first(where: { $0.object == entry.sha256 }) {
                             item.parents = state.heads.map(\.id)
-                            if try !state.conflicted && !state.heads.isEmpty && state.selected(in: database.clusterChanges()) == nil {
+                            let records = try database.clusterChanges()
+                            if try state.heads.contains(where: { try ClusterObjectState(object: state.object, heads: [$0]).selected(in: records) == nil }) {
                                 item.state = .awaitingRestore
                                 item.error = "ライブラリから削除された音源です。再追加には確認が必要です。"
                             }
@@ -452,6 +457,7 @@ final class LocalTransfer: ObservableObject {
                     try database.saveClusterBatch(batch)
                     clusterBatches = try database.clusterBatches()
                 }
+                clusterResultsPending = true
                 if permitsAutomaticAudio { try await sendClusterBatch(batch, database: database, attempt: attempt) }
                 else { status = "音源をこの端末に保持しました。Wi-Fiに接続すると保存先へ追加します。" }
             } catch {
@@ -492,20 +498,23 @@ final class LocalTransfer: ObservableObject {
         defer { if generation == attempt { automaticAudioOperation = false } }
         var batch = original
         completed = batch.items.filter { $0.state == .stored }.count
+        let previouslyStored = completed
         total = batch.items.count
+        progress = Double(completed) / Double(max(1, total))
         for index in batch.items.indices where batch.items[index].state == .queued || batch.items[index].state == .failed {
             try Task.checkCancellation()
             guard permitsAutomaticAudio else { status = "自動転送を一時停止しました。音源は保持しています。"; return }
             guard let entry = batch.items[index].entry, let organization = batch.items[index].organization else { continue }
             status = "「\(batch.items[index].name)」を追加中…"
             do {
-                try await clusterNetwork.upload(entry: entry, organization: organization, parents: batch.items[index].parents,
+                let storedHost = try await clusterNetwork.upload(entry: entry, organization: organization, parents: batch.items[index].parents,
                     restore: batch.items[index].restore ?? false, host: batch.host, file: store.fileURL(entry)) { fraction in
                     self.progress = (Double(self.completed) + fraction) / Double(max(1, self.total))
                 }
                 try Task.checkCancellation()
                 guard generation == attempt else { return }
                 batch.items[index].state = .stored; batch.items[index].error = nil
+                batch.items[index].storedHost = storedHost
                 completed += 1
             } catch {
                 try Task.checkCancellation()
@@ -519,6 +528,7 @@ final class LocalTransfer: ObservableObject {
         if let catalog = try store.load() { try onCatalog?(catalog); self.catalog = catalog }
         try updateClusterState(database)
         onSaved?()
+        if completed > previouslyStored { clusterResultsPending = true }
         status = "\(total)曲中\(completed)曲を保存先に追加しました。"
     }
 
@@ -723,6 +733,14 @@ final class LocalTransfer: ObservableObject {
     }
 
     func syncOrganization() {
+        if clusterRegistration != nil {
+            do {
+                pendingClusterMetadata = try !store.database().clusterMetadataEdits().isEmpty
+                if !busy { connectCluster() }
+                else { scheduleClusterRetry() }
+            } catch { status = error.localizedDescription }
+            return
+        }
         guard let client, connected else { return }
         guard !busy else { pendingOrganization = true; return }
         busy = true

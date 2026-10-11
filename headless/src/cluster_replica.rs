@@ -66,6 +66,34 @@ fn selected(
 }
 
 impl crate::store::Store {
+    pub async fn receive_cluster_metadata(
+        &self,
+        identity: &crate::peer::Identity,
+        entry: crate::model::Entry,
+        organization: crate::organization::Organization,
+        parents: Vec<String>,
+    ) -> anyhow::Result<String> {
+        entry.validate()?;
+        let organization = organization.for_object(&entry.sha256)?;
+        let records = self.cluster_active_changes().await?;
+        anyhow::ensure!(!parents.is_empty() && parents.len() <= 64, "metadata needs observed object history");
+        for id in &parents {
+            let mut parent = records.iter().find(|record| record.id == *id && record.object == entry.sha256)
+                .ok_or_else(|| anyhow::anyhow!("unknown metadata parent"))?;
+            for _ in 0..records.len() {
+                let crate::cluster_changes::Action::Resolve { selected } = &parent.action else { break; };
+                parent = records.iter().find(|record| record.id == *selected)
+                    .ok_or_else(|| anyhow::anyhow!("unknown metadata history"))?;
+            }
+            anyhow::ensure!(!matches!(parent.action, crate::cluster_changes::Action::Delete), "metadata cannot restore a deletion");
+        }
+        let action = crate::cluster_changes::Action::Edit { entry: Box::new(entry.clone()), organization: Box::new(organization) };
+        if let Some(existing) = records.iter().find(|record| record.object == entry.sha256 && record.parents == parents && record.action == action) {
+            return Ok(existing.id.clone());
+        }
+        Ok(self.publish_observed_cluster_change(identity, entry.sha256, action, parents).await?.id)
+    }
+
     pub async fn resolve_cluster_album_title(
         &self,
         identity: &crate::peer::Identity,

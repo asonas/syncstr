@@ -91,7 +91,11 @@ final class Library: ObservableObject {
             do { try self?.saveOrganization(organization) }
             catch { self?.message = error.localizedDescription }
         }
-        transfer.onSaved = { [weak self] in self?.refreshLocalFiles() }
+        transfer.onSaved = { [weak self] in
+            guard let self else { return }
+            refreshLocalFiles()
+            if transfer.clusterRegistration != nil, let current, localFiles[current.id] == nil { stop() }
+        }
         transferChanges = transfer.objectWillChange.sink { [weak self] in self?.objectWillChange.send() }
     }
 
@@ -218,7 +222,7 @@ final class Library: ObservableObject {
         try organization.validate()
         catalog.organization = organization
         catalog.organize()
-        try localStore.save(catalog)
+        try localStore.save(catalog, clusterEdits: true)
         localCatalog = catalog
         tracks = organizedTracks(catalog)
         for asset in catalog.organization?.artwork?.assets.keys.map({ $0 }) ?? [] { artworkURLs[asset] = localStore.artworkURL(asset: asset) }

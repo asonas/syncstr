@@ -159,10 +159,11 @@ struct LocalMusicStore {
         return database
     }
 
-    func save(_ catalog: LocalCatalog) throws {
+    func save(_ catalog: LocalCatalog, clusterEdits: Bool = false) throws {
         let database = try database()
         try writeArtwork(catalog)
-        try database.save(catalog, received: catalog.entries.filter(hasFile))
+        let received = try database.clusterRegistration() == nil ? catalog.entries.filter(hasFile) : []
+        try database.save(catalog, received: received, clusterEdits: clusterEdits)
     }
 
     func rememberClusterPeer(_ peer: ClusterKnownPeer) throws {

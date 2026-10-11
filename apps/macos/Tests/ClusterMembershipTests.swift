@@ -98,12 +98,14 @@ final class ClusterMembershipTests: XCTestCase {
         let signed = ClusterSignedChange(id: fixture.change.id, signature: fixture.change.signature, payload: fixture.signingPayload)
         try database.receiveClusterPage(peer: fixture.host, sequence: 1, signed: signed)
         let entry = try XCTUnwrap(signed.decode(membership: fixture.membership).action.entry)
-        let file = root.appendingPathComponent("verified.audio")
+        let store = LocalMusicStore(root: root)
+        let file = store.fileURL(entry)
         try Data("abc".utf8).write(to: file)
         let job = ClusterTransferJob(id: UUID().uuidString, sha256: entry.sha256, source: fixture.host, destination: fixture.client, state: .queued)
         try database.enqueueClusterJob(job)
         try database.beginClusterJob(job.id)
         XCTAssertThrowsError(try database.finishClusterDownload(UUID().uuidString, entry: entry, file: file))
+        try store.save(database.clusterCatalog())
         var sql: OpaquePointer?
         XCTAssertEqual(sqlite3_open(url.path, &sql), SQLITE_OK)
         defer { sqlite3_close(sql) }
@@ -117,6 +119,37 @@ final class ClusterMembershipTests: XCTestCase {
         XCTAssertEqual(try CatalogDatabase(url).clusterJobs().first?.state, .complete)
         XCTAssertEqual(sqlite3_step(statement), SQLITE_ROW)
         XCTAssertEqual(sqlite3_column_int(statement, 0), 1)
+    }
+
+    func testQueuedOrganizationEditsSurviveRestartAndRetainLaterLocalChanges() throws {
+        let fixture = try fixture()
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let url = root.appendingPathComponent("catalog.sqlite")
+        let database = try CatalogDatabase(url)
+        let grant = try fixture.membership.authorize(fixture.client)
+        try database.enrollCluster(invitation: ClusterInvitation(version: 1, cluster: grant.cluster, host: grant.issuer,
+            secret: String(repeating: "a", count: 64), expires: 1600), grantID: grant.id,
+            membership: fixture.membership, ownID: fixture.client, name: "Library")
+        let signed = ClusterSignedChange(id: fixture.change.id, signature: fixture.change.signature, payload: fixture.signingPayload)
+        try database.receiveClusterPage(peer: fixture.host, sequence: 1, signed: signed)
+        var catalog = try database.clusterCatalog()
+        try database.save(catalog)
+        let album = try XCTUnwrap(catalog.organization?.albums.first?.id)
+        catalog.organization?.set(subject: album, kind: "classification", value: "true")
+        try database.save(catalog, clusterEdits: true)
+        let sent = try XCTUnwrap(CatalogDatabase(url).clusterMetadataEdits().first)
+        catalog.organization?.set(subject: album, kind: "classification", value: "false")
+        try database.save(catalog, clusterEdits: true)
+        let acknowledgement = String(repeating: "d", count: 64)
+        try database.finishClusterMetadataEdit(sent, revision: acknowledgement)
+        let later = try XCTUnwrap(CatalogDatabase(url).clusterMetadataEdits().first)
+        XCTAssertNotEqual(later.id, sent.id)
+        XCTAssertEqual(later.parents, [acknowledgement])
+        XCTAssertEqual(later.organization.choice(subject: album, kind: "classification")?.value, "false")
+        try database.finishClusterMetadataEdit(later, revision: String(repeating: "e", count: 64))
+        XCTAssertTrue(try CatalogDatabase(url).clusterMetadataEdits().isEmpty)
     }
 
     func testRustGrantsAuthorizeActualMembersAndPreserveRoles() throws {

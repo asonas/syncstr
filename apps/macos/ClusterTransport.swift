@@ -120,19 +120,51 @@ final class ClusterNetwork {
         return host
     }
 
-    func upload(entry: LocalEntry, organization: AlbumOrganization, parents: [String], restore: Bool = false, host: String, file: URL, progress: @escaping (Double) -> Void) async throws {
-        do {
-            let database = try store.database()
-            let address = try await discovery.find(host)
-            let current = try await ClusterSession.connect(address: address, secrets: secrets, database: database)
-            session = current
-            defer { current.close(); session = nil }
-            try await current.upload(entry: entry, organization: organization, parents: parents, restore: restore, file: file, progress: progress)
-            try await current.reconcile(database: database)
-            try store.save(database.clusterCatalog())
-        } catch is IrohLib.IrohError {
-            throw LocalMusicError.clusterUnavailable
+    func upload(entry: LocalEntry, organization: AlbumOrganization, parents: [String], restore: Bool = false, host: String, file: URL, progress: @escaping (Double) -> Void) async throws -> String {
+        let database = try store.database()
+        let candidates = try await addresses(database: database).sorted { ($0.id().description == host ? 0 : 1) < ($1.id().description == host ? 0 : 1) }
+        var failure: Error = LocalMusicError.clusterUnavailable
+        for address in candidates {
+            do {
+                let current = try await ClusterSession.connect(address: address, secrets: secrets, database: database)
+                session = current
+                defer { current.close(); session = nil }
+                try await current.upload(entry: entry, organization: organization, parents: parents, restore: restore, file: file, progress: progress)
+                try await current.reconcile(database: database)
+                try store.save(database.clusterCatalog())
+                return current.peer
+            } catch is IrohLib.IrohError {
+                failure = LocalMusicError.clusterUnavailable
+            } catch {
+                try Task.checkCancellation()
+                failure = error
+            }
         }
+        throw failure
+    }
+
+    func syncMetadata() async throws {
+        let database = try store.database()
+        let pending = try database.clusterMetadataEdits()
+        guard !pending.isEmpty else { return }
+        var failure: Error = LocalMusicError.clusterUnavailable
+        for address in try await addresses(database: database) {
+            do {
+                let current = try await ClusterSession.connect(address: address, secrets: secrets, database: database)
+                session = current
+                defer { current.close(); session = nil }
+                for edit in try database.clusterMetadataEdits() {
+                    let revision = try await current.editMetadata(edit)
+                    try database.finishClusterMetadataEdit(edit, revision: revision)
+                }
+                try await current.reconcile(database: database)
+                return
+            } catch {
+                try Task.checkCancellation()
+                failure = error
+            }
+        }
+        throw failure
     }
 
     func resolve(object: String, selected: String, parents: [String]) async throws -> LocalCatalog {
@@ -194,7 +226,8 @@ final class ClusterSession {
         let signingPayload: String?
         let entry: LocalEntry?
         let object: String?
-        enum CodingKeys: String, CodingKey { case status, next, change, entry, object; case signingPayload = "signing_payload" }
+        let revision: String?
+        enum CodingKeys: String, CodingKey { case status, next, change, entry, object, revision; case signingPayload = "signing_payload" }
     }
 
     private let endpoint: IrohLib.Endpoint
@@ -330,6 +363,16 @@ final class ClusterSession {
         try await stream.send().finish()
         let response = try await receive(Response.self, stream: stream)
         guard response.status == "resolved", response.object == album else { throw LocalMusicError.invalidData }
+    }
+
+    func editMetadata(_ edit: ClusterMetadataEdit) async throws -> String {
+        let stream = try await connection.openBi()
+        try await send(Request(operation: "metadata", entry: edit.entry, organization: edit.organization, parents: edit.parents), stream: stream)
+        try await stream.send().finish()
+        let response = try await receive(Response.self, stream: stream)
+        guard response.status == "edited", response.object == edit.entry.sha256,
+              let revision = response.revision, ClusterIdentity.isLowercaseHex256(revision) else { throw LocalMusicError.invalidData }
+        return revision
     }
 
     func download(_ entry: LocalEntry, store: LocalMusicStore, database: CatalogDatabase, progress: @escaping (Double) -> Void) async throws {

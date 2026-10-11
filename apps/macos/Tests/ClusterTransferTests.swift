@@ -90,6 +90,17 @@ final class ClusterTransferTests: XCTestCase {
         XCTAssertEqual(try restored.clusterChanges().count, 1)
         XCTAssertTrue(store.hasFile(entry))
         session.close()
+        var editedCatalog = try XCTUnwrap(store.load())
+        let album = try XCTUnwrap(editedCatalog.organization?.albumID(for: entry.track.id))
+        editedCatalog.organization?.set(subject: album, kind: "classification", value: "true")
+        try store.save(editedCatalog, clusterEdits: true)
+        XCTAssertEqual(try CatalogDatabase(databaseURL).clusterMetadataEdits().count, 1)
+        let metadataNetwork = ClusterNetwork(store: store, secrets: secrets)
+        try await metadataNetwork.syncMetadata()
+        let edited = try await metadataNetwork.refresh()
+        metadataNetwork.stop()
+        XCTAssertTrue(try CatalogDatabase(databaseURL).clusterMetadataEdits().isEmpty)
+        XCTAssertEqual(edited.organization?.choice(subject: album, kind: "classification")?.value, "true")
         try FileManager.default.removeItem(at: store.fileURL(entry))
         let invalid = root.appendingPathComponent("invalid.mp3")
         try Data("not audio".utf8).write(to: invalid)
@@ -145,9 +156,19 @@ final class ClusterTransferTests: XCTestCase {
         let catalog = try await network.refresh()
         XCTAssertEqual(catalog.entries.map(\.sha256), [entry.sha256])
         try await network.download(object: entry.sha256) { _ in }
+        let additionalFile = root.appendingPathComponent("another.mp3")
+        let additionalBytes = Data("additional audio fixture".utf8)
+        try additionalBytes.write(to: additionalFile)
+        let additional = LocalEntry(track: Track(id: "additional", title: "Additional", artist: "Fixture", suffix: "mp3", size: UInt64(additionalBytes.count)),
+            sha256: LocalMusicStore.digest(additionalBytes), artwork: nil)
+        var additionalCatalog = LocalCatalog(id: invitation.cluster, name: "Fixture", entries: [additional])
+        additionalCatalog.organize()
+        let recipient = try await network.upload(entry: additional, organization: XCTUnwrap(additionalCatalog.organization), parents: [],
+            host: invitation.host, file: additionalFile) { _ in }
+        XCTAssertNotEqual(recipient, invitation.host)
         second.terminate(); second.waitUntilExit()
         XCTAssertEqual(try LocalMusicStore.digest(file: store.fileURL(entry)), entry.sha256)
-        XCTAssertEqual(try store.load()?.entries.count, 1)
+        XCTAssertEqual(try store.load()?.entries.count, 2)
         XCTAssertEqual(try LocalMusicStore.digest(file: source), entry.sha256)
         try await secrets.remove()
     }

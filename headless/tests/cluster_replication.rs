@@ -70,7 +70,14 @@ async fn client_restore_requires_confirmation_and_keeps_concurrent_deletion() ->
     let mut organization = syncstr_headless::organization::Organization::default();
     organization.import(&entry);
     store.import_cluster_file(&identity, entry.clone(), Some(organization.clone()), &source, false).await?;
+    let imported = store.cluster_selected_change(&entry.sha256).await?.unwrap();
+    let mut edited = organization.clone();
+    edited.albums[0].title = "Edited without uploading audio".into();
+    let revision = store.receive_cluster_metadata(&identity, entry.clone(), edited.clone(), vec![imported.id.clone()]).await?;
+    assert_eq!(store.receive_cluster_metadata(&identity, entry.clone(), edited, vec![imported.id]).await?, revision);
+    assert_eq!(store.cluster_changes().await?.len(), 2);
     let removed = store.publish_cluster_change(&identity, entry.sha256.clone(), syncstr_headless::cluster_changes::Action::Delete).await?;
+    assert!(store.receive_cluster_metadata(&identity, entry.clone(), organization.clone(), vec![removed.id.clone()]).await.is_err());
     let stage = || -> anyhow::Result<tempfile::NamedTempFile> {
         let file = tempfile::NamedTempFile::new()?;
         std::fs::write(file.path(), bytes)?;

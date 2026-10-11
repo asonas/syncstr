@@ -16,7 +16,7 @@ struct ClusterImportResults: View {
             List {
                 ForEach(transfer.clusterBatches) { batch in
                     Section {
-                        Text("確認した保存先: \(batch.host)")
+                        Text("優先する保存先: \(batch.host)")
                             .font(.system(.caption, design: .monospaced)).textSelection(.enabled)
                         Text("他の保存先への複製は、それぞれの接続後に進みます。")
                             .font(.caption).foregroundStyle(.secondary)
@@ -25,6 +25,7 @@ struct ClusterImportResults: View {
                                 Text(item.name)
                                 if item.state == .stored {
                                     Text("保存先への追加を確認しました").foregroundStyle(.secondary)
+                                    Text(item.storedHost ?? batch.host).font(.system(.caption, design: .monospaced)).textSelection(.enabled)
                                 } else {
                                     Text(item.error ?? "追加を待っています").foregroundStyle(.secondary)
                                 }
@@ -303,7 +304,10 @@ struct PeerSetupView: View {
             if grant != nil { address = ""; confirmedAddress = "" }
         }
         .onChange(of: transfer.busy) { _, busy in
-            if !busy && transfer.clusterBatches.contains(where: { !$0.awaitingDecision.isEmpty || $0.items.contains(where: { $0.state == .awaitingRestore }) }) { showingResults = true }
+            if !busy && transfer.clusterResultsPending {
+                transfer.clusterResultsPending = false
+                showingResults = true
+            }
         }
         .sheet(isPresented: $showingResults) { ClusterImportResults(transfer: transfer) }
         .fileImporter(isPresented: $importing, allowedContentTypes: [.audio], allowsMultipleSelection: true) { result in

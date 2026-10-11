@@ -116,7 +116,10 @@ struct LibraryView: View {
         }
         .sheet(isPresented: $showingClusterResults) { ClusterImportResults(transfer: library.transfer) }
         .onChange(of: library.transfer.busy) { _, busy in
-            if !busy && !showingPeerSetup && library.transfer.clusterBatches.contains(where: { !$0.awaitingDecision.isEmpty || $0.items.contains(where: { $0.state == .awaitingRestore }) }) { showingClusterResults = true }
+            if !busy && !showingPeerSetup && library.transfer.clusterResultsPending {
+                library.transfer.clusterResultsPending = false
+                showingClusterResults = true
+            }
         }
         .fileImporter(isPresented: $importingAudio, allowedContentTypes: [.audio], allowsMultipleSelection: true) { result in
             switch result {

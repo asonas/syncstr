@@ -76,6 +76,7 @@ enum Request {
     Upload { entry: Box<crate::model::Entry>, organization: Box<crate::organization::Organization>, parents: Vec<String>, #[serde(default)] restore: bool },
     Resolve { object: String, selected: String, parents: Vec<String> },
     AlbumTitle { album: String, title: String, heads: std::collections::BTreeMap<String, String> },
+    Metadata { entry: Box<crate::model::Entry>, organization: Box<crate::organization::Organization>, parents: Vec<String> },
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -93,6 +94,7 @@ enum Response {
     Stored { object: String },
     NeedsAttention { object: String },
     Resolved { object: String },
+    Edited { object: String, revision: String },
 }
 
 async fn authorized(store: &crate::store::Store, member: &str, host: bool) -> anyhow::Result<()> {
@@ -143,6 +145,11 @@ pub(crate) async fn serve_connection(
         let request: crate::cluster_sync::Request =
             crate::cluster_net::receive(&mut input, crate::model::MAX_METADATA).await?;
         match request {
+            crate::cluster_sync::Request::Metadata { entry, organization, parents } => {
+                let object = entry.sha256.clone();
+                let revision = store.receive_cluster_metadata(identity, *entry, *organization, parents).await?;
+                crate::cluster_net::send(&mut output, &crate::cluster_sync::Response::Edited { object, revision }).await?;
+            }
             crate::cluster_sync::Request::AlbumTitle { album, title, heads } => {
                 store.resolve_cluster_album_title(identity, &album, &title, heads).await?;
                 crate::cluster_net::send(&mut output, &crate::cluster_sync::Response::Resolved { object: album }).await?;

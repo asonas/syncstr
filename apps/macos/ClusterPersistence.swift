@@ -104,6 +104,7 @@ struct ClusterImportBatch: Codable, Identifiable {
         var localCopy: LocalCopy
         var error: String?
         var restore: Bool?
+        var storedHost: String?
     }
     let id: String
     let host: String
