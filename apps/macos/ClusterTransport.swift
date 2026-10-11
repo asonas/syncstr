@@ -193,6 +193,7 @@ final class ClusterNetwork {
                     }
                 }
                 try await current.reconcile(database: database)
+                lastPath = current.selectedPath
                 if try database.clusterMetadataEdits().isEmpty { return }
             } catch {
                 try Task.checkCancellation()
@@ -210,6 +211,7 @@ final class ClusterNetwork {
         defer { current.close(); session = nil }
         try await current.resolve(object: object, selected: selected, parents: parents)
         try await current.reconcile(database: database)
+        lastPath = current.selectedPath
         let catalog = try database.clusterCatalog()
         try store.save(catalog)
         return catalog
@@ -229,6 +231,7 @@ final class ClusterNetwork {
         defer { current.close(); session = nil }
         try await current.resolveAlbum(album: conflict.id, title: title, heads: heads)
         try await current.reconcile(database: database)
+        lastPath = current.selectedPath
         let catalog = try database.clusterCatalog()
         try store.save(catalog)
         return catalog

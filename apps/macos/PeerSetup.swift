@@ -145,6 +145,7 @@ struct PeerSetupView: View {
     @State private var confirming = false
     @State private var confirmedAddress = ""
     @State private var confirmedID = ""
+    @State private var updatingRegistration = false
 #if os(iOS)
     @State private var scanning = false
     private enum Field: Hashable { case name, address }
@@ -156,7 +157,7 @@ struct PeerSetupView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            if let registration = transfer.clusterRegistration {
+            if let registration = transfer.clusterRegistration, !updatingRegistration {
                 Text(registration.name).font(.headline)
                 Text(registration.relay == nil
                     ? "登録済みのライブラリです。同じLANにある保存先を自動で探します。"
@@ -178,6 +179,11 @@ struct PeerSetupView: View {
                         .accessibilityLabel("保存先の端末ID \(host)")
                 }
                 Button("ライブラリを更新") { transfer.connectCluster() }.disabled(transfer.busy)
+                Button("接続設定を更新") {
+                    name = registration.name
+                    address = ""
+                    updatingRegistration = true
+                }.disabled(transfer.busy)
                 Button("音源ファイルを追加") { importing = true }.disabled(transfer.busy)
                 if !transfer.clusterBatches.isEmpty {
                     Button("音源の追加結果") { showingResults = true }
@@ -196,7 +202,9 @@ struct PeerSetupView: View {
                     .font(.caption).foregroundStyle(.secondary)
             } else {
             Text("P2Pで音楽を共有").font(.headline)
-            Text("ライブラリの招待を貼り付けて参加できます。従来の接続情報を使う場合は、この端末のIDを接続先で許可してください。")
+            Text(updatingRegistration
+                ? "同じライブラリの保存先から新しい招待を受け取り、貼り付けてください。登録済みのライブラリと保存した音源は保持されます。"
+                : "ライブラリの招待を貼り付けて参加できます。従来の接続情報を使う場合は、この端末のIDを接続先で許可してください。")
                 .foregroundStyle(.secondary)
             Text("この端末のID")
             Text(transfer.peerID).font(.system(.caption, design: .monospaced)).textSelection(.enabled)
@@ -248,8 +256,12 @@ struct PeerSetupView: View {
                 confirmedAddress = address
                 confirmedID = target
                 confirming = true
-            }.buttonStyle(.borderedProminent).disabled(transfer.busy || (parsedAddress == nil && invitation == nil))
-            if let savedName = transfer.peerName {
+            }.buttonStyle(.borderedProminent)
+                .disabled(transfer.busy || (updatingRegistration ? invitation == nil : (parsedAddress == nil && invitation == nil)))
+            if updatingRegistration {
+                Button("キャンセル") { updatingRegistration = false; address = "" }.disabled(transfer.busy)
+            }
+            if let savedName = transfer.peerName, !updatingRegistration {
                 Text("登録済み: \(savedName)")
                 Button("登録した接続先に再接続") { Task { await transfer.reconnectPeer() } }.disabled(transfer.busy)
                 Button("P2Pの接続先を削除", role: .destructive) {
@@ -259,7 +271,7 @@ struct PeerSetupView: View {
                     }
                 }
             }
-            if transfer.peerConnected {
+            if transfer.peerConnected && !updatingRegistration {
                 Button("音源ファイルを接続先に追加") { importing = true }.disabled(transfer.busy)
             }
             }
@@ -274,6 +286,7 @@ struct PeerSetupView: View {
             Button("登録して接続") {
                 if (try? ClusterInvitation.parse(confirmedAddress)) != nil {
                     transfer.connectCluster(invitation: confirmedAddress, name: name)
+                    updatingRegistration = false
                 } else {
                     transfer.connectPeer(addressText: confirmedAddress, expected: confirmedID, name: name)
                 }

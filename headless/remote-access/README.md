@@ -87,7 +87,11 @@ rollback; do not delete catalog or device identity directories.
 
 To rotate the URL, reconfigure each library host while stopped, create new
 single-use invitations, and enroll existing Apple devices again with the same
-issuing host and role while on the LAN. Keep the old relay reachable until all
+issuing host and role while on the LAN. On a registered Apple device, choose
+the connection-settings update action, then paste or scan that fresh invitation
+and confirm the host identity. The existing library registration and saved
+audio are retained; cancellation does not change the current setting.
+Keep the old relay reachable until all
 devices have received the new configuration. To disable remote access, issue
 fresh LAN-only invitations after:
 

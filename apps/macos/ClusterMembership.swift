@@ -40,8 +40,11 @@ struct ClusterInvitation: Codable {
               let host = url.host, !host.isEmpty,
               (url.user ?? "").isEmpty, url.password == nil, url.query == nil, url.fragment == nil,
               url.path.isEmpty || url.path == "/", url.port.map({ (1...65535).contains($0) }) ?? true else { throw LocalMusicError.invalidData }
-        let octets = host.split(separator: ".").compactMap { Int($0) }
-        let loopback = host == "::1" || host == "[::1]" || (octets.count == 4 && octets[0] == 127 && octets.allSatisfy { (0...255).contains($0) })
+        let labels = host.split(separator: ".", omittingEmptySubsequences: false)
+        let octets = labels.compactMap { Int($0) }
+        let loopback = host == "::1" || host == "[::1]" || (labels.count == 4 && octets.count == 4
+            && labels.allSatisfy { !$0.isEmpty && $0.utf8.allSatisfy { (48...57).contains($0) } }
+            && octets[0] == 127 && octets.allSatisfy { (0...255).contains($0) })
         guard url.scheme == "https" || (url.scheme == "http" && loopback) else { throw LocalMusicError.invalidData }
         url.path = "/"
         guard let normalized = url.url?.absoluteString else { throw LocalMusicError.invalidData }

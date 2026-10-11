@@ -111,9 +111,28 @@ final class ClusterMembershipTests: XCTestCase {
         let encoded = try JSONSerialization.jsonObject(with: JSONEncoder().encode(registration)) as? [String: Any]
         XCTAssertEqual(encoded?["relay"] as? String, "https://relay.example.net/")
         XCTAssertNil(encoded?["secret"])
-        for invalid in ["https://user:password@relay.example.net/", "http://relay.example.net/", "https://relay.example.net/?secret=value"] {
+        for invalid in ["https://user:password@relay.example.net/", "http://relay.example.net/", "https://relay.example.net/?secret=value",
+                        "http://127.0.0.1.relay.example/", "http://127.0.0.1.example.2/"] {
             payload["relay"] = invalid
             XCTAssertThrowsError(try parsed())
+        }
+    }
+
+    func testFreshInvitationRotatesAndDisablesRelayWithoutReplacingRegistration() throws {
+        let fixture = try fixture()
+        let grant = try fixture.membership.authorize(fixture.client)
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".sqlite")
+        defer { try? FileManager.default.removeItem(at: url) }
+        let database = try CatalogDatabase(url)
+        for relay in ["https://relay.example.net/", "https://replacement.example.net/", nil] {
+            let invitation = ClusterInvitation(version: 1, cluster: grant.cluster, host: grant.issuer,
+                secret: String(repeating: "a", count: 64), expires: 1600, relay: relay)
+            try database.enrollCluster(invitation: invitation, grantID: grant.id,
+                membership: fixture.membership, ownID: fixture.client, name: "Fixture")
+            let restored = try XCTUnwrap(CatalogDatabase(url).clusterRegistration())
+            XCTAssertEqual(restored.relay, relay)
+            XCTAssertEqual(restored.localGrant, grant.id)
+            XCTAssertEqual(restored.membership, fixture.membership)
         }
     }
     func testAutomaticAudioRequiresWifiOrExplicitCellularOptInAndSettingsPersist() throws {
