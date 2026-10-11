@@ -28,16 +28,26 @@ pub async fn run_lan(
         }
     }
     let mut peers = std::collections::BTreeMap::new();
+    let relay = store.cluster_relay().await?.map(|url| crate::cluster_remote::validate_url(&url)).transpose()?;
     let mut interval = tokio::time::interval(std::time::Duration::from_secs(3));
     interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     loop {
         tokio::select! {
             found = discovery.next() => {
-                let address = found?;
+                let mut address = found?;
+                if let Some(relay) = &relay { address = address.with_relay_url(relay.clone()); }
                 if address.id != identity.id() && (peers.len() < 256 || peers.contains_key(&address.id)) { peers.insert(address.id, address); }
             }
             _ = interval.tick() => {
                 let proof = store.cluster_membership_proof().await?;
+                if let Some(relay) = &relay {
+                    for grant in &proof.grants {
+                        if grant.host && proof.verify(&grant.id).is_ok() {
+                            let id: iroh::EndpointId = grant.member.parse()?;
+                            if id != identity.id() { peers.entry(id).or_insert_with(|| iroh::EndpointAddr::new(id).with_relay_url(relay.clone())); }
+                        }
+                    }
+                }
                 for (peer, address) in &peers {
                     if !proof.grants.iter().any(|grant| grant.member == peer.to_string() && grant.host && proof.verify(&grant.id).is_ok()) { continue; }
                     let result = async {
@@ -282,6 +292,13 @@ impl Drop for crate::cluster_sync::Session {
 }
 
 impl crate::cluster_sync::Session {
+    pub fn selected_path(&self) -> Option<&'static str> {
+        self.connection.paths().iter().find(|path| path.is_selected()).and_then(|path| match path.remote_addr() {
+            iroh::TransportAddr::Ip(_) => Some("direct"),
+            iroh::TransportAddr::Relay(_) => Some("relay"),
+            _ => None,
+        })
+    }
     pub async fn connect(
         endpoint: &iroh::Endpoint,
         address: iroh::EndpointAddr,

@@ -67,7 +67,8 @@ pub async fn serve(
         tokio::select! {
             incoming = endpoint.accept() => {
                 let Some(incoming) = incoming else { break; };
-                if !crate::cluster_net::local_address(incoming.remote_addr()) {
+                let local = crate::cluster_net::local_address(incoming.remote_addr());
+                if !local && endpoint.addr().relay_urls().next().is_none() {
                     eprintln!("Cluster connection refused: non-LAN source {:?}", incoming.remote_addr());
                     incoming.refuse(); continue;
                 }
@@ -85,6 +86,7 @@ pub async fn serve(
                             return crate::cluster_sync::serve_connection(&identity, &store, connection).await;
                         }
                         anyhow::ensure!(connection.alpn() == crate::cluster_net::ENROLLMENT_ALPN, "unsupported cluster protocol");
+                        anyhow::ensure!(local, "enrollment requires a LAN connection");
                         let (mut output, mut input) = connection.accept_bi().await?;
                         let request: crate::cluster_net::EnrollmentRequest = crate::cluster_net::receive(&mut input, 4096).await?;
                         let result = if request.version == 1 {
@@ -120,6 +122,7 @@ pub async fn enroll(
     invitation: &crate::enrollment::Invitation,
     store: &crate::store::Store,
 ) -> anyhow::Result<()> {
+    if let Some(relay) = &invitation.relay { crate::cluster_remote::validate_url(relay)?; }
     anyhow::ensure!(
         invitation.version == 1 && invitation.host == address.id.to_string(),
         "invitation host mismatch"
@@ -149,7 +152,8 @@ pub async fn enroll(
                     );
                     store
                         .join_cluster(identity, connection.remote_id(), grant, proof)
-                        .await
+                        .await?;
+                    store.set_cluster_relay(invitation.relay.clone()).await
                 }
                 crate::cluster_net::EnrollmentResponse::Rejected => {
                     anyhow::bail!("invitation expired, invalid, or already used")

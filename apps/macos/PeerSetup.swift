@@ -158,8 +158,18 @@ struct PeerSetupView: View {
         VStack(alignment: .leading, spacing: 16) {
             if let registration = transfer.clusterRegistration {
                 Text(registration.name).font(.headline)
-                Text("登録済みのライブラリです。同じLANにある保存先を自動で探します。")
+                Text(registration.relay == nil
+                    ? "登録済みのライブラリです。同じLANにある保存先を自動で探します。"
+                    : "外部からの接続が設定されています。同じLANでは直接接続を優先します。")
                     .foregroundStyle(.secondary)
+                if let relay = registration.relay {
+                    Text(relay).font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
+                        .accessibilityLabel("外部接続の中継先 \(relay)")
+                }
+                if let path = transfer.clusterLastPath {
+                    Text(path == "direct" ? "直近の通信: 直接接続" : "直近の通信: 中継経由")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
                 let hosts = Set(registration.membership.grants.filter {
                     $0.host && (try? registration.membership.verify($0.id)) != nil
                 }.map(\.member)).sorted()

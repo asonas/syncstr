@@ -1,0 +1,9 @@
+{
+	servers {
+		protocols h1 h2
+	}
+}
+
+{$RELAY_DOMAIN} {
+	reverse_proxy relay:8080
+}

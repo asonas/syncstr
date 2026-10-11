@@ -94,6 +94,28 @@ final class ClusterMembershipTests: XCTestCase {
         XCTAssertTrue(deleted.organization?.artwork?.assets.isEmpty ?? true)
     }
 
+    func testInvitationRelayPersistsWithoutSavingItsSecret() throws {
+        let fixture = try fixture()
+        let grant = try fixture.membership.authorize(fixture.client)
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".sqlite")
+        defer { try? FileManager.default.removeItem(at: url) }
+        var payload: [String: Any] = ["version": 1, "cluster": grant.cluster, "host": grant.issuer,
+            "secret": String(repeating: "a", count: 64), "expires": 1600, "relay": "https://relay.example.net/"]
+        func parsed() throws -> ClusterInvitation {
+            try ClusterInvitation.parse(String(decoding: JSONSerialization.data(withJSONObject: payload), as: UTF8.self))
+        }
+        let invitation = try parsed()
+        try CatalogDatabase(url).enrollCluster(invitation: invitation, grantID: grant.id,
+            membership: fixture.membership, ownID: fixture.client, name: "Fixture")
+        let registration = try XCTUnwrap(CatalogDatabase(url).clusterRegistration())
+        let encoded = try JSONSerialization.jsonObject(with: JSONEncoder().encode(registration)) as? [String: Any]
+        XCTAssertEqual(encoded?["relay"] as? String, "https://relay.example.net/")
+        XCTAssertNil(encoded?["secret"])
+        for invalid in ["https://user:password@relay.example.net/", "http://relay.example.net/", "https://relay.example.net/?secret=value"] {
+            payload["relay"] = invalid
+            XCTAssertThrowsError(try parsed())
+        }
+    }
     func testAutomaticAudioRequiresWifiOrExplicitCellularOptInAndSettingsPersist() throws {
         XCTAssertTrue(ClusterTransferPolicy.permitsAutomaticAudio(online: true, cellular: false, optedIn: false))
         XCTAssertFalse(ClusterTransferPolicy.permitsAutomaticAudio(online: true, cellular: true, optedIn: false))

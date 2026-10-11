@@ -1,5 +1,40 @@
 struct Server(std::process::Child);
 
+#[cfg(feature = "p2p")]
+#[test]
+fn relay_configuration_survives_restart_and_is_carried_by_invitations() {
+    let root = tempfile::tempdir().unwrap();
+    let state = root.path().join("identity");
+    let data = root.path().join("data");
+    let identity = syncstr_headless::peer::Identity::initialize(&state).unwrap();
+    let initialized = crate::command().args(["cluster-init", "--data"]).arg(&data)
+        .arg("--peer-state").arg(&state).output().unwrap();
+    assert!(initialized.status.success());
+    let configured = crate::command().args(["cluster-relay", "--data"]).arg(&data)
+        .args(["--url", "https://relay.example.net/"]).output().unwrap();
+    assert!(configured.status.success(), "{}", String::from_utf8_lossy(&configured.stderr));
+    for (index, invalid) in ["https://listener:password@relay.example.net/", "http://relay.example.net/", "https://relay.example.net/?secret=example"].iter().enumerate() {
+        let rejected = crate::command().args(["cluster-relay", "--data"]).arg(&data)
+            .args(["--url", invalid]).output().unwrap();
+        assert!(!rejected.status.success());
+        let invitation = root.path().join(format!("invite-{index}.json"));
+        let invited = crate::command().args(["cluster-invite", "--data"]).arg(&data)
+            .arg("--peer-state").arg(&state).arg("--output").arg(&invitation).output().unwrap();
+        assert!(invited.status.success());
+        let payload: serde_json::Value = serde_json::from_slice(&std::fs::read(invitation).unwrap()).unwrap();
+        assert_eq!(payload["relay"], "https://relay.example.net/");
+        assert_eq!(payload["host"], identity.to_string());
+    }
+    let disabled = crate::command().args(["cluster-relay", "--data"]).arg(&data)
+        .arg("--disable").output().unwrap();
+    assert!(disabled.status.success());
+    let invitation = root.path().join("lan.json");
+    assert!(crate::command().args(["cluster-invite", "--data"]).arg(&data)
+        .arg("--peer-state").arg(&state).arg("--output").arg(&invitation).status().unwrap().success());
+    let payload: serde_json::Value = serde_json::from_slice(&std::fs::read(invitation).unwrap()).unwrap();
+    assert!(payload.get("relay").is_none());
+}
+
 impl Drop for crate::Server {
     fn drop(&mut self) {
         let _ = self.0.kill();

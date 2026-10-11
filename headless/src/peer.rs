@@ -519,7 +519,19 @@ impl crate::peer::Identity {
         &self,
         listen: &[std::net::SocketAddr],
     ) -> anyhow::Result<(iroh::Endpoint, std::fs::File)> {
+        self.cluster_remote_endpoint(listen, None, false).await
+    }
+
+    pub async fn cluster_remote_endpoint(
+        &self,
+        listen: &[std::net::SocketAddr],
+        relay: Option<&str>,
+        relay_only: bool,
+    ) -> anyhow::Result<(iroh::Endpoint, std::fs::File)> {
         use std::os::unix::fs::OpenOptionsExt as _;
+        let relay = relay.map(crate::cluster_remote::validate_url).transpose()?;
+        let remote = relay.is_some();
+        anyhow::ensure!(!relay_only || (relay.is_some() && listen.is_empty()), "relay-only requires a configured relay and no listen address");
         let lock = std::fs::OpenOptions::new()
             .create(true)
             .truncate(false)
@@ -531,10 +543,16 @@ impl crate::peer::Identity {
         let mut builder = iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
             .secret_key(self.key.clone())
             .alpns(vec![crate::cluster_net::ENROLLMENT_ALPN.to_vec(), crate::cluster_sync::ALPN.to_vec()])
-            .relay_mode(iroh::RelayMode::Disabled)
+            .relay_mode(match relay {
+                Some(url) => iroh::RelayMode::Custom(iroh::RelayMap::from_iter([url])),
+                None => iroh::RelayMode::Disabled,
+            })
             .portmapper_config(iroh::endpoint::PortmapperConfig::Disabled);
-        if listen.is_empty() {
-            let mut addresses: Vec<_> = if_addrs::get_if_addrs()?.into_iter()
+        if relay_only {
+            builder = builder.clear_ip_transports();
+        } else if listen.is_empty() {
+            let interfaces = if_addrs::get_if_addrs()?;
+            let mut addresses: Vec<_> = interfaces.iter()
                 .filter(|interface| interface.is_oper_up())
                 .filter_map(|interface| match interface.ip() {
                     std::net::IpAddr::V4(ip) if ip.is_private() || ip.is_link_local() => Some(ip),
@@ -553,6 +571,16 @@ impl crate::peer::Identity {
             let address = preferred.or_else(|| addresses.first().copied())
                 .ok_or_else(|| anyhow::anyhow!("no IPv4 LAN interface for cluster endpoint"))?;
             builder = builder.clear_ip_transports().bind_addr(std::net::SocketAddr::from((address, 0)))?;
+            if remote && let Some(interface) = interfaces.iter().find(|interface| interface.ip() == std::net::IpAddr::V4(address)) {
+                let mut ipv6: Vec<_> = interfaces.iter().filter(|candidate| candidate.name == interface.name && candidate.is_oper_up())
+                    .filter_map(|candidate| match candidate.ip() {
+                        std::net::IpAddr::V6(ip) if !ip.is_loopback() && !ip.is_unspecified() && !ip.is_multicast()
+                            && !ip.is_unique_local() && !ip.is_unicast_link_local() => Some(ip),
+                        _ => None,
+                    }).collect();
+                ipv6.sort(); ipv6.dedup();
+                if let Some(ip) = ipv6.first() { builder = builder.bind_addr(std::net::SocketAddr::from((*ip, 0)))?; }
+            }
         } else {
             builder = builder.clear_ip_transports();
             for address in listen {

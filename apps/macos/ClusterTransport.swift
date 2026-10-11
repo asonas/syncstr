@@ -8,6 +8,7 @@ final class ClusterNetwork {
     private let store: LocalMusicStore
     private let secrets: CredentialStore
     private var session: ClusterSession?
+    private(set) var lastPath: String?
 
     init(store: LocalMusicStore, secrets: CredentialStore) {
         self.store = store; self.secrets = secrets
@@ -45,6 +46,21 @@ final class ClusterNetwork {
             $0.host && $0.member != own && (try? registration.membership.verify($0.id)) != nil
         }.map(\.member))
         discovery.start()
+        if let configured = registration.relay {
+            let relay = try ClusterInvitation.validatedRelay(configured)
+            for _ in 0..<4 {
+                try Task.checkCancellation()
+                if discovery.endpoints.keys.contains(where: hosts.contains) { break }
+                try await Task.sleep(for: .milliseconds(250))
+            }
+            return try hosts.sorted {
+                let left = discovery.endpoints[$0] != nil; let right = discovery.endpoints[$1] != nil
+                return left == right ? $0 < $1 : left
+            }.map { host in
+                IrohLib.EndpointAddr(id: try IrohLib.EndpointId.fromString(s: host), relayUrl: relay,
+                    addresses: discovery.endpoints[host]?.directAddresses() ?? [])
+            }
+        }
         for _ in 0..<60 {
             try Task.checkCancellation()
             let found = discovery.endpoints.filter { hosts.contains($0.key) }.sorted { $0.key < $1.key }.map(\.value)
@@ -82,6 +98,7 @@ final class ClusterNetwork {
                     try await current.recoverEvidence(object: object)
                 }
                 if !missing.isEmpty { try await current.reconcile(database: database) }
+                lastPath = current.selectedPath
                 successful = true
             } catch {
                 try Task.checkCancellation()
@@ -106,6 +123,7 @@ final class ClusterNetwork {
                 try await current.reconcile(database: database)
                 let entry = try database.clusterDownloadEntry(object: object, peer: current.peer)
                 try await current.download(entry, store: store, database: database, progress: progress)
+                lastPath = current.selectedPath
                 let catalog = try await UploadedMusic.recoverClusterEvidence(database.clusterCatalog(), store: store)
                 try store.save(catalog, clusterEdits: true)
                 return
@@ -142,6 +160,7 @@ final class ClusterNetwork {
                 session = current
                 defer { current.close(); session = nil }
                 try await current.upload(entry: entry, organization: organization, parents: parents, restore: restore, file: file, progress: progress)
+                lastPath = current.selectedPath
                 try await current.reconcile(database: database)
                 try store.save(database.clusterCatalog())
                 return current.peer
@@ -249,6 +268,10 @@ final class ClusterSession {
     private let endpoint: IrohLib.Endpoint
     private let connection: IrohLib.Connection
     let peer: String
+    var selectedPath: String? {
+        guard let path = connection.paths().first(where: \.isSelected) else { return nil }
+        return path.isIp ? "direct" : (path.isRelay ? "relay" : nil)
+    }
 
     private init(endpoint: IrohLib.Endpoint, connection: IrohLib.Connection, peer: String) {
         self.endpoint = endpoint; self.connection = connection; self.peer = peer
@@ -260,8 +283,10 @@ final class ClusterSession {
     }
 
     private static func open(address: IrohLib.EndpointAddr, alpn: String, secrets: CredentialStore) async throws -> ClusterSession {
+        let relay = try address.relayUrl().map(ClusterInvitation.validatedRelay)
         let endpoint = try await IrohLib.Endpoint.bind(options: IrohLib.EndpointOptions(
-            preset: IrohLib.presetMinimal(), secretKey: await PeerMusicConnection.identity(secrets: secrets), relayMode: .disabled()))
+            preset: IrohLib.presetMinimal(), secretKey: await PeerMusicConnection.identity(secrets: secrets),
+            relayMode: try relay.map { try IrohLib.RelayMode.customFromUrls(urls: [$0]) } ?? .disabled()))
         let timeout = Task {
             do { try await Task.sleep(for: .seconds(30)) } catch { return }
             try? await endpoint.close()
@@ -297,7 +322,7 @@ final class ClusterSession {
     }
 
     static func enroll(invitation: ClusterInvitation, address: IrohLib.EndpointAddr, secrets: CredentialStore, database: CatalogDatabase, name: String) async throws {
-        guard invitation.host == address.id().description else { throw LocalMusicError.unauthorized }
+        guard invitation.host == address.id().description, address.relayUrl() == nil else { throw LocalMusicError.unauthorized }
         let session = try await open(address: address, alpn: "syncstr/enrollment/1", secrets: secrets)
         defer { session.close() }
         let stream = try await session.connection.openBi()

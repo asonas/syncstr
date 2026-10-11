@@ -33,13 +33,28 @@ struct ClusterInvitation: Codable {
     let host: String
     let secret: String
     let expires: UInt64
+    var relay: String? = nil
+
+    static func validatedRelay(_ value: String) throws -> String {
+        guard value.utf8.count <= 2048, var url = URLComponents(string: value),
+              let host = url.host, !host.isEmpty,
+              (url.user ?? "").isEmpty, url.password == nil, url.query == nil, url.fragment == nil,
+              url.path.isEmpty || url.path == "/", url.port.map({ (1...65535).contains($0) }) ?? true else { throw LocalMusicError.invalidData }
+        let octets = host.split(separator: ".").compactMap { Int($0) }
+        let loopback = host == "::1" || host == "[::1]" || (octets.count == 4 && octets[0] == 127 && octets.allSatisfy { (0...255).contains($0) })
+        guard url.scheme == "https" || (url.scheme == "http" && loopback) else { throw LocalMusicError.invalidData }
+        url.path = "/"
+        guard let normalized = url.url?.absoluteString else { throw LocalMusicError.invalidData }
+        return normalized
+    }
 
     static func parse(_ text: String) throws -> Self {
         guard text.utf8.count <= 16384 else { throw LocalMusicError.invalidData }
-        let invitation = try JSONDecoder().decode(Self.self, from: Data(text.utf8))
+        var invitation = try JSONDecoder().decode(Self.self, from: Data(text.utf8))
         guard invitation.version == 1, UUID(uuidString: invitation.cluster) != nil,
               ClusterIdentity.isLowercaseHex256(invitation.host),
               ClusterIdentity.isLowercaseHex256(invitation.secret) else { throw LocalMusicError.invalidData }
+        invitation.relay = try invitation.relay.map(validatedRelay)
         return invitation
     }
 }
@@ -204,4 +219,5 @@ struct ClusterRegistration: Codable {
     let name: String
     let localGrant: String
     var membership: ClusterMembership
+    var relay: String? = nil
 }

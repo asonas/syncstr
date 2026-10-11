@@ -81,6 +81,7 @@ pub(crate) fn migrate(connection: &rusqlite::Connection) -> anyhow::Result<()> {
         |row| row.get(0),
     )?;
     anyhow::ensure!(version == 1, "unsupported cluster schema {version}");
+    connection.execute_batch("CREATE TABLE IF NOT EXISTS cluster_remote (singleton INTEGER PRIMARY KEY CHECK(singleton = 1), relay TEXT);")?;
     if inserted == 0 {
         connection.execute(
             "UPDATE cluster_jobs SET state = 'queued' WHERE state = 'running'",

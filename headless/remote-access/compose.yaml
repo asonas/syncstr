@@ -1,0 +1,38 @@
+services:
+  relay:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+      args:
+        SYNCSTR_FEATURES: p2p
+    command: ["relay-serve", "--listen", "0.0.0.0:8080", "--allowed-ids", "/config/allowed-ids.json"]
+    restart: unless-stopped
+    volumes:
+      - ./config:/config:ro
+    expose:
+      - "8080"
+    healthcheck:
+      test: ["CMD", "syncstr-headless", "relay-health", "--url", "http://127.0.0.1:8080/"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  proxy:
+    image: caddy:2.11.7
+    restart: unless-stopped
+    environment:
+      RELAY_DOMAIN: ${RELAY_DOMAIN:?Set RELAY_DOMAIN to your public relay hostname}
+    ports:
+      - "80:80/tcp"
+      - "443:443/tcp"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    depends_on:
+      relay:
+        condition: service_healthy
+
+volumes:
+  caddy-data:
+  caddy-config:

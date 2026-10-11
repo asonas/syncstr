@@ -130,6 +130,8 @@ The Apple integration is approved for main integration before all manual accepta
 
 ### M4: Optional remote deployment package
 
+Implementation and local verification are tracked in [M4 remote access](cluster-remote-m4.md). Physical cellular acceptance remains open.
+
 Publish a version-pinned user-operated relay template and instructions, including bootstrap URL export, host/client configuration, access control, health, and upgrade procedure. Provide directory setup only where demonstrated necessary or explicitly selected. A relay is configured once by the cluster administrator and distributed through enrollment.
 
 Gate: physical iPhone on cellular connects and downloads with no manual home-router permission rule in an authorized test setup; forced relay and direct paths are separately observed. Stop the external service and confirm LAN operation continues. Verify that no implicit Syncstr-operated or public Iroh service is contacted.

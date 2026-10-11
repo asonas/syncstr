@@ -100,6 +100,34 @@ enum Command {
         data: std::path::PathBuf,
         #[arg(long)]
         peer_state: std::path::PathBuf,
+        #[arg(long)]
+        relay_only: bool,
+    },
+    #[cfg(feature = "p2p")]
+    RelayServe {
+        #[arg(long, default_value = "127.0.0.1:8080")]
+        listen: std::net::SocketAddr,
+        #[arg(long)]
+        allowed_ids: std::path::PathBuf,
+    },
+    #[cfg(feature = "p2p")]
+    RelayHealth {
+        #[arg(long)]
+        url: String,
+    },
+    #[cfg(feature = "p2p")]
+    ClusterRelay {
+        #[arg(long, default_value = "data")]
+        data: std::path::PathBuf,
+        #[arg(long, required_unless_present = "disable", conflicts_with = "disable")]
+        url: Option<String>,
+        #[arg(long)]
+        disable: bool,
+    },
+    #[cfg(feature = "p2p")]
+    ClusterRelayIds {
+        #[arg(long, default_value = "data")]
+        data: std::path::PathBuf,
     },
     #[cfg(feature = "p2p")]
     ClusterImport {
@@ -442,11 +470,34 @@ async fn run(cli: crate::Cli) -> anyhow::Result<()> {
             }
         }
         #[cfg(feature = "p2p")]
-        crate::Command::ClusterServe { data, peer_state } => {
+        crate::Command::ClusterRelay { data, url, disable: _ } => {
+            let store = syncstr_headless::store::Store::open(&data)?;
+            store.set_cluster_relay(url).await?;
+            println!("{}", serde_json::to_string(&serde_json::json!({"relay": store.cluster_relay().await?}))?);
+        }
+        #[cfg(feature = "p2p")]
+        crate::Command::ClusterRelayIds { data } => {
+            let store = syncstr_headless::store::Store::open(&data)?;
+            let proof = store.cluster_membership_proof().await?;
+            let members: std::collections::BTreeSet<_> = proof.grants.iter()
+                .filter(|grant| proof.verify(&grant.id).is_ok()).map(|grant| &grant.member).collect();
+            println!("{}", serde_json::to_string(&members)?);
+        }
+        #[cfg(feature = "p2p")]
+        crate::Command::RelayServe { listen, allowed_ids } => {
+            syncstr_headless::relay::run(listen, allowed_ids).await?;
+        }
+        #[cfg(feature = "p2p")]
+        crate::Command::RelayHealth { url } => {
+            println!("{}", serde_json::to_string(&syncstr_headless::relay::health(&url).await?)?);
+        }
+        #[cfg(feature = "p2p")]
+        crate::Command::ClusterServe { data, peer_state, relay_only } => {
             let identity =
                 std::sync::Arc::new(syncstr_headless::peer::Identity::open(&peer_state)?);
             let store = syncstr_headless::store::Store::open(&data)?;
-            let (endpoint, _lock) = identity.cluster_endpoint(&[]).await?;
+            let relay = store.cluster_relay().await?;
+            let (endpoint, _lock) = identity.cluster_remote_endpoint(&[], relay.as_deref(), relay_only).await?;
             let discovery = syncstr_headless::cluster_discovery::Discovery::start(&endpoint)?;
             println!("Cluster LAN endpoint {}", identity.id());
             let task = tokio::spawn(syncstr_headless::cluster_net::serve(

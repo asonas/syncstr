@@ -8,6 +8,8 @@ pub struct Invitation {
     pub host: String,
     pub secret: String,
     pub expires: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub relay: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -631,6 +633,7 @@ impl crate::store::Store {
         let digest = hex::encode(sha2::Sha256::digest(secret.as_bytes()));
         let issuer = identity.id().to_string();
         let authority = self.local_cluster_grant(identity).await?.id;
+        let relay = self.cluster_relay().await?;
         self.run(move |connection, _| {
             let transaction = connection.transaction()?;
             let (cluster, member): (String, String) = transaction.query_row(
@@ -640,7 +643,7 @@ impl crate::store::Store {
             transaction.execute("INSERT INTO cluster_invitations (digest, cluster, issuer, created, expires, host, authority) VALUES (?, ?, ?, ?, ?, ?, ?)",
                 rusqlite::params![digest, cluster, issuer, now as i64, expires as i64, host, authority])?;
             transaction.commit()?;
-            Ok(crate::enrollment::Invitation { version: 1, cluster, host: issuer, secret, expires })
+            Ok(crate::enrollment::Invitation { version: 1, cluster, host: issuer, secret, expires, relay })
         }).await
     }
 

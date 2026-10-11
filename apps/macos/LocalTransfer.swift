@@ -186,6 +186,7 @@ final class LocalTransfer: ObservableObject {
     @Published var peerName: String?
     @Published var peerAddressText = ""
     @Published private(set) var clusterRegistration: ClusterRegistration?
+    @Published private(set) var clusterLastPath: String?
     @Published private(set) var clusterBatches: [ClusterImportBatch] = []
     @Published private(set) var clusterConflicts: [ClusterObjectState] = []
     @Published private(set) var clusterChanges: [ClusterChange] = []
@@ -319,6 +320,7 @@ final class LocalTransfer: ObservableObject {
     }
 
     private func updateClusterState(_ database: CatalogDatabase) throws {
+        clusterLastPath = clusterNetwork.lastPath
         clusterRegistration = try database.clusterRegistration()
         clusterBatches = try database.clusterBatches()
         clusterChanges = try database.clusterChanges()
@@ -1074,6 +1076,7 @@ final class LocalTransfer: ObservableObject {
                     try await clusterNetwork.download(object: entry.sha256) { fraction in
                         self.progress = (Double(self.completed) + fraction) / Double(max(1, self.total))
                     }
+                    clusterLastPath = clusterNetwork.lastPath
                     try Task.checkCancellation()
                     guard generation == attempt else { return }
                     completed += 1

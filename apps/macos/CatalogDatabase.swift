@@ -74,6 +74,7 @@ extension CatalogDatabase {
 
     func enrollCluster(invitation: ClusterInvitation, grantID: String, membership: ClusterMembership, ownID: String, name: String) throws {
         guard name.utf8.count <= 2048 else { throw LocalMusicError.invalidData }
+        let relay = try invitation.relay.map(ClusterInvitation.validatedRelay)
         let grant = try membership.verify(grantID)
         guard grant.cluster == invitation.cluster, grant.issuer == invitation.host,
               grant.member == ownID, grant.authority != nil else { throw LocalMusicError.unauthorized }
@@ -92,7 +93,7 @@ extension CatalogDatabase {
             try execute("INSERT OR IGNORE INTO cluster_identity VALUES (1, ?, ?)", [grant.cluster, ownID])
             guard let identity = try rows("SELECT id, member_id FROM cluster_identity WHERE singleton = 1").first,
                   identity == [grant.cluster, ownID] else { throw LocalMusicError.unauthorized }
-            let registration = ClusterRegistration(name: name, localGrant: grantID, membership: effective)
+            let registration = ClusterRegistration(name: name, localGrant: grantID, membership: effective, relay: relay)
             try execute("INSERT OR REPLACE INTO cluster_registration VALUES (1, ?)", [String(decoding: try JSONEncoder().encode(registration), as: UTF8.self)])
         }
     }

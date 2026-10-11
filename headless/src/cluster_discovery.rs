@@ -12,9 +12,9 @@ impl crate::cluster_discovery::Discovery {
             let address = endpoint.addr();
             let ip = address
                 .ip_addrs()
-                .find(|address| address.is_ipv4() && !address.ip().is_loopback())
-                .ok_or_else(|| anyhow::anyhow!("no IPv4 LAN interface for cluster discovery"))?;
+                .find(|address| address.is_ipv4() && !address.ip().is_loopback());
             let id = endpoint.id().to_string();
+            if let Some(ip) = ip {
             daemon.register(mdns_sd::ServiceInfo::new(
                 crate::cluster_discovery::SERVICE,
                 &id[..16],
@@ -23,6 +23,7 @@ impl crate::cluster_discovery::Discovery {
                 ip.port(),
                 &[("id", id.as_str()), ("version", "1")][..],
             )?)?;
+            }
             daemon
                 .browse(crate::cluster_discovery::SERVICE)
                 .map_err(Into::into)
