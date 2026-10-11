@@ -207,6 +207,53 @@ impl crate::store::Store {
             }
             let mut organization = crate::store::read_organization(&transaction)?;
             organization.merge(&incoming)?;
+            for album in &incoming.albums {
+                let canonical = organization.canonical(&album.id)?.to_owned();
+                let objects: std::collections::BTreeSet<_> = records
+                    .iter()
+                    .map(|record| record.object.as_str())
+                    .collect();
+                for other in objects {
+                    if other == object {
+                        continue;
+                    }
+                    'heads: for mut candidate in
+                        crate::cluster_changes::object_heads(&records, other)
+                    {
+                        while let crate::cluster_changes::Action::Resolve { selected } =
+                            &candidate.action
+                        {
+                            let Some(parent) = records.iter().find(|record| record.id == *selected)
+                            else {
+                                continue 'heads;
+                            };
+                            candidate = parent.clone();
+                        }
+                        let metadata = match &candidate.action {
+                            crate::cluster_changes::Action::Import { organization, .. }
+                            | crate::cluster_changes::Action::Restore { organization, .. }
+                            | crate::cluster_changes::Action::Edit { organization, .. } => {
+                                organization
+                            }
+                            _ => continue,
+                        };
+                        for other_album in &metadata.albums {
+                            anyhow::ensure!(
+                                organization.canonical(&other_album.id)? != canonical
+                                    || other_album.title == album.title,
+                                "album metadata conflict requires user resolution: {canonical}"
+                            );
+                        }
+                    }
+                }
+                if let Some(existing) = organization
+                    .albums
+                    .iter_mut()
+                    .find(|existing| existing.id == canonical)
+                {
+                    existing.title = album.title.clone();
+                }
+            }
             for previous in stored {
                 let mut projected = entry.clone();
                 projected.track.id = previous.track.id.clone();
@@ -343,6 +390,7 @@ impl crate::store::Store {
             .commit_organized(entry, temporary, true, Some(organization))
             .await?;
         let member = identity.id().to_string();
+        let object = saved.sha256.clone();
         self.run(move |connection, _| {
             let transaction = connection.transaction()?;
             let records = crate::cluster_changes::projected_records(&transaction)?;
@@ -354,7 +402,8 @@ impl crate::store::Store {
             }
             transaction.commit()?;
             Ok(())
-        }).await
+        }).await?;
+        self.project_cluster_metadata(object).await
     }
 
     pub async fn cluster_receipts(&self) -> anyhow::Result<Vec<String>> {

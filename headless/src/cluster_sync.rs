@@ -45,7 +45,10 @@ pub async fn run_lan(
                         session.reconcile(&store).await?;
                         for state in store.cluster_object_states().await? {
                             if state.conflicted() || store.cluster_selected_change(&state.object).await?.is_none() { continue; }
-                            store.project_cluster_metadata(state.object.clone()).await?;
+                            if let Err(error) = store.project_cluster_metadata(state.object.clone()).await {
+                                eprintln!("Cluster metadata requires attention: {error}");
+                                continue;
+                            }
                             if !store.has_cluster_replica(&state.object).await?
                                 && let Err(error) = session.download(&identity, &store, &state.object).await { eprintln!("Cluster replica unavailable: {error}"); }
                         }

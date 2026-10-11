@@ -1,5 +1,60 @@
 #![cfg(feature = "p2p")]
 
+#[tokio::test]
+async fn incompatible_album_titles_remain_in_history_until_consistent_edits() -> anyhow::Result<()>
+{
+    let root = tempfile::tempdir()?;
+    let state = root.path().join("identity");
+    syncstr_headless::peer::Identity::initialize(&state)?;
+    let identity = syncstr_headless::peer::Identity::open(&state)?;
+    let store = syncstr_headless::store::Store::open(&root.path().join("data"))?;
+    store.create_cluster(identity.id().to_string()).await?;
+    let a = crate::fixture(b"first audio");
+    let b = crate::fixture(b"second audio");
+    let first = root.path().join("first.mp3");
+    let second = root.path().join("second.mp3");
+    std::fs::write(&first, b"first audio")?;
+    std::fs::write(&second, b"second audio")?;
+    let mut original = syncstr_headless::organization::Organization::default();
+    original.import(&a);
+    let mut competing = syncstr_headless::organization::Organization::default();
+    competing.import(&b);
+    competing.albums[0].id = original.albums[0].id.clone();
+    competing.tracks[0].imported_album_id = original.albums[0].id.clone();
+    competing.albums[0].title = "Alternative title".into();
+    store
+        .import_cluster_file(&identity, a.clone(), Some(original.clone()), &first, false)
+        .await?;
+    let error = store
+        .import_cluster_file(
+            &identity,
+            b.clone(),
+            Some(competing.clone()),
+            &second,
+            false,
+        )
+        .await
+        .unwrap_err();
+    assert!(error.to_string().contains("album metadata conflict"));
+    assert_eq!(store.cluster_changes().await?.len(), 2);
+    assert_eq!(
+        store.catalog().await?.organization.albums[0].title,
+        original.albums[0].title
+    );
+    original.albums[0].title = "Alternative title".into();
+    store
+        .import_cluster_file(&identity, a, Some(original), &first, false)
+        .await?;
+    store.project_cluster_metadata(b.sha256).await?;
+    assert_eq!(
+        store.catalog().await?.organization.albums[0].title,
+        "Alternative title"
+    );
+    assert_eq!(store.cluster_changes().await?.len(), 3);
+    assert_eq!(std::fs::read(first)?, b"first audio");
+    Ok(())
+}
+
 fn fixture(bytes: &[u8]) -> syncstr_headless::model::Entry {
     use sha2::Digest as _;
     let mut entry: syncstr_headless::model::Entry =
@@ -120,9 +175,28 @@ async fn two_hosts_replicate_verified_audio_and_a_client_uses_the_surviving_host
         .import_cluster_file(a, corrected, None, &source, false)
         .await?;
     assert_eq!(a_store.cluster_changes().await?.len(), 2);
+    let mut renamed = organization.clone();
+    renamed.albums[0].title = "Corrected album title".into();
+    let updated_entry = a_store.catalog().await?.entries[0].clone();
+    a_store
+        .import_cluster_file(a, updated_entry, Some(renamed.clone()), &source, false)
+        .await?;
+    session.reconcile(b_store).await?;
+    b_store
+        .project_cluster_metadata(entry.sha256.clone())
+        .await?;
+    assert_eq!(
+        a_store.catalog().await?.organization.albums[0].title,
+        "Corrected album title"
+    );
+    assert_eq!(
+        b_store.catalog().await?.organization.albums[0].title,
+        "Corrected album title"
+    );
     drop(session);
     let second_bytes = b"different complete audio";
-    let second = crate::fixture(second_bytes);
+    let mut second = crate::fixture(second_bytes);
+    second.track.album_id = Some(uuid::Uuid::new_v4().to_string());
     let source2 = root.path().join("second.mp3");
     std::fs::write(&source2, second_bytes)?;
     b_store

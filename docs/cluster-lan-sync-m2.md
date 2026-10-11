@@ -155,6 +155,11 @@ Re-importing identical bytes with changed metadata creates a causal edit; unchan
 input remains idempotent. Metadata projection does not require another audio copy.
 Receiving a later revocation also re-evaluates previously accepted history for
 projection; the original signed records remain available for diagnosis.
+Album titles are projected from selected metadata as well. If different objects
+claim incompatible titles for the same album, projection reports a conflict and
+keeps the signed alternatives. Editing the affected objects to a consistent title
+resolves it. A verified file receipt describes durable bytes; it does not imply
+that every metadata conflict has been resolved.
 
 `cluster-status --data host-a/data` shows object heads, jobs, local receipts, and
 membership conflicts. `cluster-delete --data host-a/data --peer-state
