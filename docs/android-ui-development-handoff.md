@@ -1,14 +1,17 @@
-# Android UI development on Windows
+# Android UI development handoff
 
 Status: the initial LAN playback client is implemented and physically verified.
 The first user-facing Android interface and reproducible Windows build are
 implemented. The refreshed interface still requires physical-device visual,
 accessibility and playback verification.
 
+The remote Linux build and local physical-device loop are documented in the
+[remote development plan](android-remote-development-plan.md).
+
 ## Start here
 
-- [Android build guide](../apps/android/README.md): current toolchain and macOS
-  build commands.
+- [Android build guide](../apps/android/README.md): current toolchain, Linux/macOS and Windows
+  build commands, stable development signing and device installation.
 - [M5 acceptance record](cluster-android-m5.md): implemented behavior and actual
   device verification.
 - [Windows application handoff](cluster-windows-m5.md): building a Windows
@@ -29,7 +32,8 @@ accessibility and playback verification.
 | Device check | [PlaybackCheck.kt](../apps/android/app/src/androidTest/java/as/ason/syncstr/PlaybackCheck.kt) | Real host enrollment/transfer and MediaPlayer checks; separate process for local restoration/playback |
 
 There is no Compose implementation or external UI dependency in this baseline.
-The package is `as.ason.syncstr`, application ID is `as.ason.syncstr.android`,
+The package is `as.ason.syncstr`, base application ID is `as.ason.syncstr.android`,
+and the debug application ID is `as.ason.syncstr.android.dev`,
 and the native library is `libsyncstr_android.so`. The app targets Android 9+
 and currently packages only `arm64-v8a`. UI edits must preserve identity,
 membership and saved audio across APK updates.
@@ -48,7 +52,7 @@ Studio can open `apps/android`; select the matching SDK and Gradle JDK. The
 checked-in Gradle wrapper pins Gradle 8.13 and checks the distribution checksum.
 
 Use [build-native.ps1](../apps/android/build-native.ps1) on native Windows;
-[build-native.sh](../apps/android/build-native.sh) uses the macOS NDK toolchain.
+[build-native.sh](../apps/android/build-native.sh) selects the macOS or x86_64 Linux NDK toolchain.
 For a native Windows PowerShell build:
 
 1. Install the Android SDK/NDK and Rust toolchain, and add the
@@ -76,7 +80,8 @@ emulator needs a separately built and packaged native library. Keep Windows and
 WSL SDK/toolchain paths separate. WSL SSH is useful for repository work but does
 not establish native Windows toolchain or attached-device access.
 
-Android debug signing keys may differ between machines. If `adb install -r`
+Provision the stable development key from the [build guide](../apps/android/README.md)
+on each authorized build machine. If `adb install -r`
 reports a signature mismatch, preserve the existing app and its data: use an
 appropriately transferred development signing key or a separate development
 application ID. Uninstalling to bypass the mismatch deletes the app's cluster

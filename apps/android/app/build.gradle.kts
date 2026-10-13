@@ -12,6 +12,24 @@ android {
         testInstrumentationRunner = "as.ason.syncstr.PlaybackCheck"
         ndk { abiFilters += "arm64-v8a" }
     }
+    signingConfigs {
+        create("development") {
+            val keyPath = providers.environmentVariable("SYNCSTR_ANDROID_DEV_KEYSTORE")
+                .getOrElse(System.getProperty("user.home") + "/.local/share/syncstr/android-dev/development.keystore")
+            storeFile = file(keyPath)
+            storePassword = "android"
+            keyAlias = "androiddebugkey"
+            keyPassword = "android"
+        }
+    }
+    buildTypes {
+        getByName("debug") {
+            applicationIdSuffix = ".dev"
+            versionNameSuffix = "-dev"
+            resValue("string", "app_name", "Syncstr Dev")
+            signingConfig = signingConfigs.getByName("development")
+        }
+    }
     compileOptions { sourceCompatibility = JavaVersion.VERSION_17; targetCompatibility = JavaVersion.VERSION_17 }
     kotlinOptions { jvmTarget = "17" }
 }

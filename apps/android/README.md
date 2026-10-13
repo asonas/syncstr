@@ -1,24 +1,42 @@
 # Syncstr for Android
 
-The first Android client joins a cluster on the LAN, discovers headless library
-hosts with Android NSD, downloads selected originals, and plays saved audio
-offline. Its Kotlin interface calls the existing Rust membership, SQLite and
-verified transfer implementation through JNI. Device secrets are encrypted with
-an Android Keystore AES key; backup is disabled.
+The Android client joins a cluster on the LAN, discovers headless library hosts
+with Android NSD, downloads selected originals, and plays saved audio offline.
+Its Kotlin interface calls Rust membership, SQLite and verified transfer through
+JNI. Device secrets are encrypted with an Android Keystore AES key; backup is
+disabled.
 
 ## Build
 
-The current development build targets Android 9 or newer on ARM64. Use Java 21,
-Gradle 8.13, Rust 1.99, Android SDK 36, Build Tools 36.0.0 and NDK 28.2.13676358.
-Use `build-native.sh` for the macOS NDK toolchain or `build-native.ps1` on Windows.
+The development build targets Android 9+ on ARM64. The native script supports
+macOS (Apple Silicon and Intel) and x86_64 Linux. Linux builds have been verified
+on a remote host. Native Windows has a separate verified PowerShell build;
+WSL execution remains unverified.
+
+Use Java 21, Gradle 8.13, Rust 1.99, Android SDK 36, Build Tools 36.0.0 and NDK
+28.2.13676358. The checked-in Gradle wrapper pins Gradle 8.13 and verifies
+its distribution checksum. Install the SDK packages
+`platform-tools`, `platforms;android-36`, `build-tools;36.0.0` and
+`ndk;28.2.13676358`, then provision the development key below.
 
 ```sh
-mise install java@temurin-21.0.12+101.0.LTS gradle@8.13
+mise install java@temurin-21.0.12+101.0.LTS gradle@8.13 android-sdk@23.0
 mise exec -- rustup target add aarch64-linux-android
-export ANDROID_HOME="/path/to/android-sdk"
-sh apps/android/build-native.sh
-mise exec gradle@8.13 java@temurin-21.0.12+101.0.LTS -- gradle -p apps/android assembleDebug
+mise exec android-sdk@23.0 -- sh apps/android/build-development.sh
 ```
+
+For an SDK installed outside mise, set `ANDROID_HOME` and run
+`sh apps/android/build-development.sh`. This builds the native library, both APKs,
+and runs Android Lint, using four Cargo jobs and two Gradle workers. Set
+`CARGO_BUILD_JOBS` to change native concurrency. A missing development key fails
+before compilation. APKs are under `apps/android/app/build/outputs/apk/`:
+
+- `debug/app-debug.apk`: `as.ason.syncstr.android.dev`, label **Syncstr Dev**.
+- `androidTest/debug/app-debug-androidTest.apk`: development instrumentation.
+
+The base application ID remains `as.ason.syncstr.android`. Debug builds have
+their own data and enrollment, and can coexist with that everyday app. An
+x86_64 emulator requires a separately built and packaged native library.
 
 ### Windows PowerShell
 
@@ -49,29 +67,88 @@ library until Rust or the JNI contract changes.
 The checked-in Gradle wrapper pins Gradle 8.13 and verifies the distribution
 checksum. Set `JAVA_HOME` to the JDK 21 installation before invoking it.
 
-The expected debug artifacts are:
+On Windows, provision the same development keystore described below. Set
+`SYNCSTR_ANDROID_DEV_KEYSTORE` to its absolute Windows path.
 
-- `app/build/outputs/apk/debug/app-debug.apk`
-- `app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk`
+## Stable development signing
 
-Before replacing an existing installation, confirm that the APK is signed with
-the same development key. Do not uninstall to work around a signature mismatch:
-uninstalling removes the enrolled device identity and saved music.
+The debug variant uses a dedicated keystore at
+`$HOME/.local/share/syncstr/android-dev/development.keystore`, or the absolute
+path in `SYNCSTR_ANDROID_DEV_KEYSTORE`. Provision the same key on authorized
+build machines. Do not regenerate it when moving a checkout or changing hosts.
+The alias is `androiddebugkey` and the development-only store/key passwords are
+`android`; filesystem access and a protected backup safeguard this key. It is
+not a store-release signing configuration.
 
-Install `app/build/outputs/apk/debug/app-debug.apk` with `adb install -r`.
-Keep the phone and the library host on the same LAN. Open **Connections**, paste
-a playback-device invitation into **Register connection**, verify the displayed
-host ID, and register. The host address is discovered locally; no IP address
-needs entering. Use **Refresh**, then browse albums in **Library**. **Save** stores
-a verified original on the device; saved tracks expose a separate **Play**
-action and appear under **Saved**. The mini-player opens the full now-playing
-screen. Saved audio remains available after restart without a network connection.
+For first-time setup only, after checking that no existing development identity
+needs to be recovered:
 
-Remote relay configuration and Android distribution are subsequent slices. A build
-does not establish Android playback acceptance; see the
-[M5 checks](../../docs/cluster-android-m5.md).
+```sh
+umask 077
+mkdir -p "$HOME/.local/share/syncstr/android-dev"
+mise exec java@temurin-21.0.12+101.0.LTS -- keytool -genkeypair \
+  -keystore "$HOME/.local/share/syncstr/android-dev/development.keystore" \
+  -storetype PKCS12 -storepass android -keypass android \
+  -alias androiddebugkey -keyalg RSA -keysize 2048 -validity 10000 \
+  -dname "CN=Syncstr Development,O=Syncstr,C=JP"
+```
 
-For continued UI development on a Windows workstation, see the
-[development handoff](../../docs/android-ui-development-handoff.md), including
-device-update precautions. The [repair record](../../docs/validation/windows-android-review-repairs.md)
-documents album presentation, repeated playback, and Activity recreation checks.
+Keep the key out of Git, restrict its file to mode 0600, and establish a protected
+backup before relying on retained app data. Record the expected certificate
+SHA-256 and backup location privately. A signature mismatch requires restoring
+the correct key; never uninstall to bypass it.
+
+## Remote build and local device loop
+
+Use one authoritative remote worktree and hand source changes between machines
+through Git. The [remote plan](../../docs/android-remote-development-plan.md)
+records ownership and acceptance; the repository skill
+[`syncstr-android-dev`](../../.agents/skills/syncstr-android-dev/SKILL.md) guides
+an iteration. General Herdr operations belong to the installed Herdr skill.
+
+1. On the build host, run the build command above. Save the base revision and
+   dirty-source patch, APK SHA-256, application ID, version, ABI and signing
+   certificate alongside the artifact in private storage. Inspect identity with
+   the SDK's `build-tools/36.0.0/aapt dump badging` and
+   `apksigner verify --print-certs` (Java 21).
+2. Retrieve the identified APK over SSH. Compare its local SHA-256 with the
+   remote result before installing. Inspect its application ID and certificate
+   against the configured development identity. Preserve these checks when
+   automating retrieval; do not trust a filename alone.
+3. Select the physical device explicitly. In the example below, replace the
+   fictional serial and artifact path. Use `mise exec android-sdk@23.0 -- adb`
+   if ADB is selected through mise. Check `adb devices -l` for authorization;
+   an absent configured device leaves installation pending.
+
+```sh
+device_serial="example-device-serial"
+adb -s "$device_serial" install -r /path/to/app-debug.apk
+adb -s "$device_serial" shell am start -W \
+  -n as.ason.syncstr.android.dev/as.ason.syncstr.MainActivity
+adb -s "$device_serial" exec-out screencap -p > launch.png
+app_pid=$(adb -s "$device_serial" shell pidof as.ason.syncstr.android.dev)
+test -n "$app_pid" && adb -s "$device_serial" logcat -d --pid="$app_pid" > launch.log
+```
+
+Capture the screen after it settles and inspect the image, process logs and
+launch result. Keep raw evidence private. The command sequence is not a claim
+that the screen or playback succeeded.
+
+Use a disposable cluster on the same LAN. Open **Connections**, paste a fresh
+playback-device invitation into **Register connection**, verify the host ID, and
+register. Use **Refresh**, then browse albums in **Library**. **Save** stores a
+verified original; saved tracks expose **Play** and appear under **Saved**.
+The mini-player opens the now-playing screen. Ordinary APK updates use
+`install -r` and preserve enrollment and saved audio.
+
+The existing `PlaybackCheck` instrumentation accepts `phase=online`, an object
+SHA-256 and a base64 invitation; the `offline` phase restores and plays saved
+audio without network operations. Install its APK with `adb install -r -t` and
+invoke `as.ason.syncstr.android.dev.test/as.ason.syncstr.PlaybackCheck`.
+Success requires `INSTRUMENTATION_CODE: -1`; ADB's exit status alone is
+insufficient. Keep invitations out of logs. Verify physical audio and a restart
+with device radios disabled separately. See the
+[device flows](../../docs/android-ui-development-handoff.md#verification-during-ui-development).
+
+Google Play internal testing and Android relay access remain separate work. A build does not establish playback acceptance; see the
+[M5 record](../../docs/cluster-android-m5.md).
