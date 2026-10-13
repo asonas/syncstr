@@ -34,6 +34,7 @@
     <string name="nothing_playing">Choose a saved track to start listening.</string>
     <string name="connections_explanation">Register a trusted Syncstr library on the same Wi-Fi network.</string>
     <string name="registered_libraries">Registered libraries</string>
+    <string name="loading_libraries">Loading registered libraries…</string>
     <plurals name="library_count"><item quantity="one">%d library</item><item quantity="other">%d libraries</item></plurals>
     <string name="register_connection">Register connection</string>
     <string name="invitation_hint">Paste invitation JSON</string>

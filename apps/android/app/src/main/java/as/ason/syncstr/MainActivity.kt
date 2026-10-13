@@ -35,6 +35,8 @@ class MainActivity : Activity() {
     private enum class Screen { LIBRARY, SAVED, PLAYER, CONNECTIONS }
     private enum class BrowseMode { ALBUMS, ARTISTS, SONGS }
     private enum class SaveState { REMOTE, DOWNLOADING, SAVED, FAILED }
+    private data class LibrarySnapshot(val entries: JSONArray, val conflicts: JSONArray,
+        val saved: Map<String, SaveState>, val hosts: Int?, val hostError: String?)
 
     private lateinit var key: ByteArray
     private lateinit var root: LinearLayout
@@ -58,6 +60,9 @@ class MainActivity : Activity() {
     private var playerSeek: SeekBar? = null
     private var playerTime: TextView? = null
     private var playerButton: Button? = null
+    private var miniButton: Button? = null
+    private var hostCount: Int? = null
+    private var hostFailure: String? = null
     private var restoreId: String? = null
     private var restorePosition = 0
     private var restorePlaying = false
@@ -79,14 +84,15 @@ class MainActivity : Activity() {
         discovery = LanDiscovery(this) { id, socket -> if (socket == null) addresses.remove(id) else addresses[id] = socket }
         discovery.start()
         task {
-            loadCatalog()
-            val restored = restoreId?.let { id -> (0 until catalog.length()).map { catalog.getJSONObject(it) }.firstOrNull { it.getString("sha256") == id } }
+            val snapshot = loadCatalog()
+            val restored = restoreId?.let { id -> (0 until snapshot.entries.length()).map { snapshot.entries.getJSONObject(it) }.firstOrNull { it.getString("sha256") == id } }
             val restoredPath = restored?.let { entry ->
                 org.json.JSONTokener(call("local-file", JSONObject().put("object", entry.getString("sha256")))).nextValue() as? String
             }
-            onUi {
+            return@task {
+                applyCatalog(snapshot)
                 if (catalog.length() == 0) showStatus(getString(R.string.empty_library_hint))
-                if (restored != null && restoredPath != null) startPlayback(restoredPath, restored, restorePosition, restorePlaying) else render()
+                if (restored != null && restoredPath != null) startPlayback(restoredPath, restored, restorePosition, restorePlaying)
             }
         }
     }
@@ -153,15 +159,30 @@ class MainActivity : Activity() {
     private fun navigate(target: Screen) { screen = target; render() }
     private fun call(operation: String, args: JSONObject = JSONObject()) = Native.run(filesDir.resolve("library").path, key, operation, args.toString())
 
-    private fun loadCatalog() {
+    private fun loadCatalog(): LibrarySnapshot {
         val library = JSONObject(call("catalog"))
-        catalog = library.getJSONArray("entries")
-        conflicts = library.getJSONArray("conflicts")
-        for (index in 0 until catalog.length()) {
-            val id = catalog.getJSONObject(index).getString("sha256")
-            val local = org.json.JSONTokener(call("local-file", JSONObject().put("object", id))).nextValue()
-            saveStates[id] = if (local is String) SaveState.SAVED else SaveState.REMOTE
+        val entries = library.getJSONArray("entries")
+        var hosts: Int? = null
+        var hostError: String? = null
+        try {
+            hosts = JSONArray(call("hosts")).length()
+        } catch (error: Exception) {
+            hostError = error.message ?: getString(R.string.operation_failed)
         }
+        val saved = mutableMapOf<String, SaveState>()
+        for (index in 0 until entries.length()) {
+            val id = entries.getJSONObject(index).getString("sha256")
+            val local = org.json.JSONTokener(call("local-file", JSONObject().put("object", id))).nextValue()
+            saved[id] = if (local is String) SaveState.SAVED else SaveState.REMOTE
+        }
+        return LibrarySnapshot(entries, library.getJSONArray("conflicts"), saved, hosts, hostError)
+    }
+
+    private fun applyCatalog(snapshot: LibrarySnapshot) {
+        catalog = snapshot.entries
+        conflicts = snapshot.conflicts
+        saveStates.clear(); saveStates.putAll(snapshot.saved)
+        hostCount = snapshot.hosts; hostFailure = snapshot.hostError
     }
 
     private fun refreshLibrary() = task {
@@ -172,8 +193,8 @@ class MainActivity : Activity() {
             call("refresh", sources.getJSONObject(index)); success = true
         } catch (error: Exception) { failure = error }
         if (!success) throw requireNotNull(failure)
-        loadCatalog()
-        onUi { showStatus(getString(R.string.library_updated)); render() }
+        val snapshot = loadCatalog()
+        return@task { applyCatalog(snapshot); showStatus(getString(R.string.library_updated)) }
     }
 
     private fun render() {
@@ -188,6 +209,8 @@ class MainActivity : Activity() {
         }
         renderMiniPlayer(false)
         controls.forEach { it.isEnabled = !busy }
+        miniButton?.isEnabled = prepared && !busy
+        playerButton?.isEnabled = prepared && !busy
     }
 
     private fun renderLibrary(savedOnly: Boolean) {
@@ -265,39 +288,70 @@ class MainActivity : Activity() {
     })
 
     private fun saveTrack(entry: JSONObject) {
+        if (busy) return
         val id = entry.getString("sha256")
         saveStates[id] = SaveState.DOWNLOADING
         render()
-        task {
-            try {
-                call("download", JSONObject().put("object", id).put("addresses", availableHosts()))
+        task(onError = { saveStates[id] = SaveState.FAILED }) {
+            call("download", JSONObject().put("object", id).put("addresses", availableHosts()))
+            return@task {
                 saveStates[id] = SaveState.SAVED
-                onUi { showStatus(getString(R.string.saved_track, entry.getJSONObject("track").getString("title"))); render() }
-            } catch (error: Exception) { saveStates[id] = SaveState.FAILED; throw error }
+                showStatus(getString(R.string.saved_track, entry.getJSONObject("track").getString("title")))
+            }
         }
     }
 
     private fun playSaved(entry: JSONObject) = task {
         val value = org.json.JSONTokener(call("local-file", JSONObject().put("object", entry.getString("sha256")))).nextValue()
         val path = value as? String ?: error(getString(R.string.saved_file_missing))
-        onUi { startPlayback(path, entry) }
+        return@task { startPlayback(path, entry) }
     }
 
     private fun startPlayback(path: String, entry: JSONObject, initialPosition: Int = 0, autoplay: Boolean = true) {
-        player?.release(); prepared = false; playingEntry = entry; renderMiniPlayer()
-        player = MediaPlayer().apply {
+        handler.removeCallbacks(progressUpdate)
+        val previous = player
+        player = null
+        prepared = false
+        previous?.release()
+        playingEntry = entry
+        val replacement = MediaPlayer()
+        player = replacement
+        try {
+            replacement.apply {
             setAudioAttributes(AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_MEDIA).setContentType(AudioAttributes.CONTENT_TYPE_MUSIC).build())
             setDataSource(path)
             setOnPreparedListener {
+                if (player !== it) return@setOnPreparedListener
                 prepared = true
                 if (initialPosition > 0) it.seekTo(initialPosition)
                 if (autoplay && hasWindowFocus() && requestAudioFocus()) it.start()
                 render(); scheduleProgress()
             }
-            setOnCompletionListener { updatePlaybackControls() }
-            setOnErrorListener { _, _, _ -> prepared = false; showStatus(getString(R.string.playback_failed), true); true }
+            setOnCompletionListener { if (player === it) { render(); scheduleProgress() } }
+            setOnErrorListener { failed, _, _ ->
+                if (player === failed) playbackFailed(failed)
+                true
+            }
             prepareAsync()
+            }
+        } catch (_: java.io.IOException) {
+            playbackFailed(replacement)
+        } catch (_: IllegalArgumentException) {
+            playbackFailed(replacement)
+        } catch (_: IllegalStateException) {
+            playbackFailed(replacement)
         }
+        render()
+    }
+
+    private fun playbackFailed(failed: MediaPlayer) {
+        if (player !== failed) return
+        player = null
+        prepared = false
+        handler.removeCallbacks(progressUpdate)
+        failed.release()
+        showStatus(getString(R.string.playback_failed), true)
+        render()
     }
 
     private fun togglePlayback() {
@@ -317,7 +371,8 @@ class MainActivity : Activity() {
             addView(label(track.getString("title"), 15f, WHITE, true).apply { maxLines = 1 })
             addView(label(track.optString("artist").ifBlank { getString(R.string.unknown_artist) }, 13f, FOG).apply { maxLines = 1 })
         }, LinearLayout.LayoutParams(0, -2, 1f))
-        miniPlayer.addView(primary(getString(if (player?.isPlaying == true) R.string.pause else R.string.play)) { togglePlayback() })
+        miniButton = primary(getString(if (prepared && player?.isPlaying == true) R.string.pause else R.string.play)) { togglePlayback() }.apply { isEnabled = prepared && !busy }
+        miniPlayer.addView(miniButton)
     }
 
     private fun renderPlayer() {
@@ -342,9 +397,9 @@ class MainActivity : Activity() {
                 })
             }
             addView(playerSeek, LinearLayout.LayoutParams(-1, dp(48)).apply { topMargin = dp(20) })
-            playerTime = label(formatTime(player?.currentPosition ?: 0, player?.duration ?: 0), 13f, FOG).apply { gravity = Gravity.CENTER }
+            playerTime = label(formatTime(if (prepared) player?.currentPosition ?: 0 else 0, if (prepared) player?.duration ?: 0 else 0), 13f, FOG).apply { gravity = Gravity.CENTER }
             addView(playerTime)
-            playerButton = primary(getString(if (player?.isPlaying == true) R.string.pause else R.string.play)) { togglePlayback() }
+            playerButton = primary(getString(if (prepared && player?.isPlaying == true) R.string.pause else R.string.play)) { togglePlayback() }.apply { isEnabled = prepared && !busy }
             addView(playerButton, LinearLayout.LayoutParams(-1, dp(56)))
         })
     }
@@ -368,7 +423,7 @@ class MainActivity : Activity() {
             playerSeek?.progress = active.currentPosition
             playerTime?.text = formatTime(active.currentPosition, active.duration)
         }
-        playerButton?.text = getString(if (active.isPlaying) R.string.pause else R.string.play)
+        playerButton?.text = getString(if (prepared && active.isPlaying) R.string.pause else R.string.play)
     }
 
     private fun formatTime(position: Int, duration: Int): String {
@@ -381,13 +436,13 @@ class MainActivity : Activity() {
         container.addView(label(getString(R.string.connections), 24f, WHITE, true))
         container.addView(label(getString(R.string.connections_explanation), 15f, FOG).apply { setPadding(0, dp(8), 0, dp(20)) })
         container.addView(label(getString(R.string.registered_libraries), 14f, FOG, true))
-        task {
-            val count = JSONArray(call("hosts")).length()
-            onUi { if (screen == Screen.CONNECTIONS) {
-                container.addView(label(resources.getQuantityString(R.plurals.library_count, count, count), 18f, WHITE).apply { setPadding(0, dp(8), 0, dp(20)) })
-                container.addView(primary(getString(R.string.register_connection)) { invitationDialog() }, LinearLayout.LayoutParams(-1, dp(56)))
-            } }
-        }
+        val detail = hostCount?.let { resources.getQuantityString(R.plurals.library_count, it, it) }
+            ?: hostFailure ?: getString(R.string.loading_libraries)
+        container.addView(label(detail, 18f, FOG).apply { setPadding(0, dp(8), 0, dp(20)) })
+        container.addView(primary(getString(R.string.register_connection)) { invitationDialog() }, LinearLayout.LayoutParams(-1, dp(56)))
+        if (hostFailure != null) container.addView(action(getString(R.string.retry)) {
+            task { val snapshot = loadCatalog(); return@task { applyCatalog(snapshot) } }
+        })
     }
 
     private fun invitationDialog() {
@@ -409,8 +464,8 @@ class MainActivity : Activity() {
         val socket = onMainAddress(host)
         call("enroll", JSONObject().put("invitation", invitation).put("socket", socket))
         call("refresh", JSONObject().put("host", host).put("socket", socket))
-        loadCatalog()
-        onUi { showStatus(getString(R.string.connection_registered)); navigate(Screen.LIBRARY) }
+        val snapshot = loadCatalog()
+        return@task { applyCatalog(snapshot); showStatus(getString(R.string.connection_registered)); screen = Screen.LIBRARY }
     }
 
     private fun availableHosts(): JSONArray {
@@ -460,12 +515,14 @@ class MainActivity : Activity() {
     private fun primary(value: String, callback: () -> Unit) = action(value, callback).apply { setBackgroundColor(BLUE) }
     private fun showStatus(message: String, error: Boolean = false) { status.text = message; status.setTextColor(if (error) 0xffff8a80.toInt() else WHITE); status.visibility = View.VISIBLE }
 
-    private fun task(action: () -> Unit) {
+    private fun task(onError: (Exception) -> Unit = {}, action: () -> (() -> Unit)) {
         if (busy) return
         busy = true; controls.forEach { it.isEnabled = false }
         worker.execute {
-            try { action() } catch (error: Exception) { onUi { showStatus(error.cause?.message ?: error.message ?: getString(R.string.operation_failed), true); render() } }
-            finally { onUi { busy = false; controls.forEach { it.isEnabled = true } } }
+            val completion = try { action() } catch (error: Exception) {
+                { onError(error); showStatus(error.cause?.message ?: error.message ?: getString(R.string.operation_failed), true) }
+            }
+            onUi { busy = false; completion(); render() }
         }
     }
 
@@ -473,7 +530,9 @@ class MainActivity : Activity() {
         val audio = getSystemService(AudioManager::class.java)
         if (focus == null) focus = AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN)
             .setAudioAttributes(AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_MEDIA).build())
-            .setOnAudioFocusChangeListener { change -> if (change != AudioManager.AUDIOFOCUS_GAIN && prepared && player?.isPlaying == true) { player?.pause(); onUi { render() } } }.build()
+            .setOnAudioFocusChangeListener { change -> onUi {
+                if (change != AudioManager.AUDIOFOCUS_GAIN && prepared && player?.isPlaying == true) { player?.pause(); render() }
+            } }.build()
         return audio.requestAudioFocus(requireNotNull(focus)) == AudioManager.AUDIOFOCUS_REQUEST_GRANTED
     }
 
@@ -496,7 +555,8 @@ class MainActivity : Activity() {
         super.onStop()
     }
     override fun onDestroy() {
-        handler.removeCallbacksAndMessages(null); if (::discovery.isInitialized) discovery.stop(); player?.release()
+        handler.removeCallbacksAndMessages(null); if (::discovery.isInitialized) discovery.stop()
+        val previous = player; player = null; prepared = false; previous?.release()
         focus?.let { getSystemService(AudioManager::class.java).abandonAudioFocusRequest(it) }; super.onDestroy()
     }
 }

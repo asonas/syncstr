@@ -21,6 +21,12 @@ class PlaybackCheck : Instrumentation() {
         var discovery: LanDiscovery? = null
         var player: MediaPlayer? = null
         try {
+            if (arguments.getString("phase") == "ui") {
+                checkActivityPlayback()
+                results.putString("result", "ui: repeated saved playback and Connections recreation passed")
+                finish(-1, results)
+                return
+            }
             val key = DeviceKey(targetContext).load()
             val root = targetContext.filesDir.resolve("library").path
             fun call(operation: String, args: JSONObject = JSONObject()) = Native.run(root, key, operation, args.toString())
@@ -71,5 +77,47 @@ class PlaybackCheck : Instrumentation() {
         } finally {
             runOnMainSync { discovery?.stop(); player?.release() }
         }
+    }
+
+    private fun checkActivityPlayback() {
+        var activity = startActivitySync(android.content.Intent(targetContext, MainActivity::class.java)
+            .addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK))
+        fun buttons(view: android.view.View): List<android.widget.Button> = when (view) {
+            is android.widget.Button -> listOf(view)
+            is android.view.ViewGroup -> (0 until view.childCount).flatMap { buttons(view.getChildAt(it)) }
+            else -> emptyList()
+        }
+        fun waitForButton(text: String, click: Boolean = false) {
+            val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(15)
+            while (System.nanoTime() < deadline) {
+                var found = false
+                runOnMainSync {
+                    buttons(activity.window.decorView).firstOrNull { it.text.toString() == text && it.isEnabled }?.let {
+                        found = true
+                        if (click) check(it.performClick())
+                    }
+                }
+                if (found) return
+                Thread.sleep(100)
+            }
+            error("Activity control did not become ready: $text")
+        }
+        try {
+            waitForButton(targetContext.getString(R.string.saved), true)
+            repeat(2) {
+                waitForButton(targetContext.getString(R.string.play), true)
+                waitForButton(targetContext.getString(R.string.pause))
+            }
+            waitForButton(targetContext.getString(R.string.pause), true)
+            waitForButton(targetContext.getString(R.string.connections), true)
+            waitForButton(targetContext.getString(R.string.register_connection))
+            val monitor = addMonitor(MainActivity::class.java.name, null, false)
+            try {
+                runOnMainSync { activity.recreate() }
+                activity = waitForMonitorWithTimeout(monitor, 15000) ?: error("Activity recreation timed out")
+                waitForButton(targetContext.getString(R.string.register_connection), true)
+                check(!activity.isFinishing)
+            } finally { removeMonitor(monitor) }
+        } finally { runOnMainSync { activity.finish() } }
     }
 }
