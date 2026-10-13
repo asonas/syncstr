@@ -32,6 +32,7 @@ struct Ui {
     entries: Vec<syncstr_headless::model::Entry>,
     paused: bool,
     busy: bool,
+    worker: Option<OperationWorker>,
 }
 
 // HWND values are only read and used by the creating UI thread. The mutex is
@@ -118,10 +119,6 @@ fn invitation_host(invitation: &str) -> anyhow::Result<String> {
         .ok_or_else(|| anyhow::anyhow!("Invitation does not identify a valid host"))
 }
 
-fn runtime() -> anyhow::Result<tokio::runtime::Runtime> {
-    Ok(tokio::runtime::Runtime::new()?)
-}
-
 fn client() -> anyhow::Result<syncstr_headless::cluster_client::PlaybackClient> {
     let root = data_root()?;
     let secret = device_secret(&root)?;
@@ -202,8 +199,109 @@ unsafe fn set_busy(value: bool) -> bool {
     true
 }
 
-fn discover() -> anyhow::Result<Vec<iroh::EndpointAddr>> {
-    runtime()?.block_on(async {
+const WM_WORK_COMPLETE: u32 = WM_APP + 1;
+
+enum Work {
+    Restore,
+    Discover,
+    Register {
+        invitation: String,
+        socket: std::net::SocketAddr,
+    },
+    Refresh(Vec<iroh::EndpointAddr>),
+    Save {
+        object: String,
+        sources: Vec<iroh::EndpointAddr>,
+    },
+    Play(String),
+}
+
+enum Completed {
+    Library(Box<syncstr_headless::cluster_client::Library>),
+    Discovered(Vec<iroh::EndpointAddr>),
+    Message(String),
+    Play(std::path::PathBuf),
+}
+
+#[derive(Default)]
+struct Delivery {
+    closed: bool,
+    results: Vec<std::result::Result<Completed, String>>,
+    abort: Option<tokio::task::AbortHandle>,
+}
+
+struct OperationWorker {
+    requests: std::sync::mpsc::Sender<Work>,
+    delivery: std::sync::Arc<std::sync::Mutex<Delivery>>,
+}
+
+impl OperationWorker {
+    fn start(window: HWND) -> Self {
+        let (requests, receiver) = std::sync::mpsc::channel();
+        let delivery = std::sync::Arc::new(std::sync::Mutex::new(Delivery::default()));
+        let shared = delivery.clone();
+        let window = window.0 as usize;
+        std::thread::spawn(move || {
+            let runtime = tokio::runtime::Runtime::new();
+            while let Ok(work) = receiver.recv() {
+                if shared.lock().unwrap().closed {
+                    break;
+                }
+                let result = match &runtime {
+                    Ok(runtime) => {
+                        let task = runtime.spawn(execute(work));
+                        {
+                            let mut delivery = shared.lock().unwrap();
+                            if delivery.closed {
+                                task.abort();
+                            }
+                            delivery.abort = Some(task.abort_handle());
+                        }
+                        runtime
+                            .block_on(task)
+                            .map_err(|error| error.to_string())
+                            .and_then(|result| result.map_err(|error| error.to_string()))
+                    }
+                    Err(error) => Err(error.to_string()),
+                };
+                let mut delivery = shared.lock().unwrap();
+                delivery.abort = None;
+                if delivery.closed {
+                    break;
+                }
+                delivery.results.push(result);
+                // Closing takes this same lock before destroying the notification target.
+                if unsafe {
+                    PostMessageW(
+                        Some(HWND(window as *mut _)),
+                        WM_WORK_COMPLETE,
+                        WPARAM(0),
+                        LPARAM(0),
+                    )
+                }
+                .is_err()
+                {
+                    delivery.closed = true;
+                    delivery.results.clear();
+                    break;
+                }
+            }
+        });
+        Self { requests, delivery }
+    }
+
+    fn stop(&self) {
+        let mut delivery = self.delivery.lock().unwrap();
+        delivery.closed = true;
+        delivery.results.clear();
+        if let Some(task) = &delivery.abort {
+            task.abort();
+        }
+    }
+}
+
+async fn execute(work: Work) -> anyhow::Result<Completed> {
+    if matches!(work, Work::Discover) {
         let discovery = syncstr_headless::cluster_discovery::Discovery::browse()?;
         let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(3);
         let mut found = std::collections::BTreeMap::new();
@@ -220,15 +318,118 @@ fn discover() -> anyhow::Result<Vec<iroh::EndpointAddr>> {
                 Err(_) => break,
             }
         }
-        Ok(found.into_values().collect())
-    })
+        return Ok(Completed::Discovered(found.into_values().collect()));
+    }
+    let client = client()?;
+    match work {
+        Work::Restore => Ok(Completed::Library(Box::new(client.catalog().await?))),
+        Work::Register { invitation, socket } => {
+            client.enroll(&invitation, socket).await?;
+            Ok(Completed::Message(
+                "Connection registered. Refresh the library to browse music.".into(),
+            ))
+        }
+        Work::Refresh(addresses) => {
+            let trusted = client.hosts().await?;
+            let address = addresses
+                .into_iter()
+                .find(|address| trusted.contains(&address.id.to_string()))
+                .ok_or_else(|| anyhow::anyhow!("No trusted library host is currently available"))?;
+            Ok(Completed::Library(Box::new(client.refresh(address).await?)))
+        }
+        Work::Save { object, sources } => {
+            let trusted = client.hosts().await?;
+            let sources = sources
+                .into_iter()
+                .filter(|address| trusted.contains(&address.id.to_string()))
+                .collect();
+            client.download_from(sources, &object).await?;
+            Ok(Completed::Message(
+                "Saved and verified. This track is available offline.".into(),
+            ))
+        }
+        Work::Play(object) => Ok(Completed::Play(
+            client.local_file(&object).await?.ok_or_else(|| {
+                anyhow::anyhow!("This track is not saved. Save it before playing.")
+            })?,
+        )),
+        Work::Discover => unreachable!(),
+    }
 }
 
-unsafe fn perform(id: i32) -> anyhow::Result<()> {
+unsafe fn capture_work(id: i32) -> anyhow::Result<Work> {
+    let ui = UI.get().unwrap().lock().unwrap();
     match id {
-        ID_DISCOVER => {
-            status("Discovering library hosts on the LAN…");
-            let hosts = discover()?;
+        ID_DISCOVER => Ok(Work::Discover),
+        ID_REGISTER => {
+            let invitation = get_text(ui.invite);
+            let expected = invitation_host(&invitation)?;
+            let index = selected(ui.hosts)
+                .ok_or_else(|| anyhow::anyhow!("Select the expected discovered host"))?;
+            let address = ui
+                .discovered
+                .get(index)
+                .ok_or_else(|| anyhow::anyhow!("Discovered host is no longer available"))?;
+            anyhow::ensure!(
+                address.id.to_string() == expected,
+                "The selected host does not match the invitation"
+            );
+            let socket = *address
+                .ip_addrs()
+                .next()
+                .ok_or_else(|| anyhow::anyhow!("The selected host has no LAN address"))?;
+            Ok(Work::Register { invitation, socket })
+        }
+        ID_REFRESH => {
+            anyhow::ensure!(!ui.discovered.is_empty(), "Discover a library host first");
+            Ok(Work::Refresh(ui.discovered.clone()))
+        }
+        ID_SAVE | ID_PLAY => {
+            let index = selected(ui.tracks).ok_or_else(|| anyhow::anyhow!("Select a track"))?;
+            let object = ui
+                .entries
+                .get(index)
+                .ok_or_else(|| anyhow::anyhow!("Track selection is stale"))?
+                .sha256
+                .clone();
+            Ok(if id == ID_PLAY {
+                Work::Play(object)
+            } else {
+                Work::Save {
+                    object,
+                    sources: ui.discovered.clone(),
+                }
+            })
+        }
+        _ => anyhow::bail!("Unsupported action"),
+    }
+}
+
+unsafe fn dispatch(work: Work) -> anyhow::Result<()> {
+    if !set_busy(true) {
+        return Ok(());
+    }
+    status(match &work {
+        Work::Restore => "Restoring saved library…",
+        Work::Discover => "Discovering library hosts on the LAN…",
+        Work::Register { .. } => "Registering this Windows device…",
+        Work::Refresh(_) => "Refreshing the library without downloading originals…",
+        Work::Save { .. } => "Saving and verifying the selected original…",
+        Work::Play(_) => "Checking saved audio…",
+    });
+    let ui = UI.get().unwrap().lock().unwrap();
+    ui.worker
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("Operation worker is unavailable"))?
+        .requests
+        .send(work)
+        .map_err(|_| anyhow::anyhow!("Operation worker stopped"))
+}
+
+unsafe fn apply_completed(completed: Completed) -> anyhow::Result<()> {
+    match completed {
+        Completed::Library(library) => show_library(*library),
+        Completed::Discovered(hosts) => {
             let mut ui = UI.get().unwrap().lock().unwrap();
             list_clear(ui.hosts);
             for host in &hosts {
@@ -244,85 +445,8 @@ unsafe fn perform(id: i32) -> anyhow::Result<()> {
                 },
             );
         }
-        ID_REGISTER => {
-            let (invite, address) = {
-                let ui = UI.get().unwrap().lock().unwrap();
-                let invite = get_text(ui.invite);
-                let expected = invitation_host(&invite)?;
-                let selected = selected(ui.hosts)
-                    .ok_or_else(|| anyhow::anyhow!("Select the expected discovered host"))?;
-                let address = ui
-                    .discovered
-                    .get(selected)
-                    .cloned()
-                    .ok_or_else(|| anyhow::anyhow!("Discovered host is no longer available"))?;
-                anyhow::ensure!(
-                    address.id.to_string() == expected,
-                    "The selected host does not match the invitation"
-                );
-                let socket = *address
-                    .ip_addrs()
-                    .next()
-                    .ok_or_else(|| anyhow::anyhow!("The selected host has no LAN address"))?;
-                (invite, socket)
-            };
-            status("Registering this Windows device…");
-            runtime()?.block_on(client()?.enroll(&invite, address))?;
-            status("Connection registered. Refresh the library to browse music.");
-        }
-        ID_REFRESH => {
-            let addresses = { UI.get().unwrap().lock().unwrap().discovered.clone() };
-            anyhow::ensure!(!addresses.is_empty(), "Discover a library host first");
-            status("Refreshing the library without downloading originals…");
-            let client = client()?;
-            let trusted = runtime()?.block_on(client.hosts())?;
-            let address = addresses
-                .into_iter()
-                .find(|a| trusted.contains(&a.id.to_string()))
-                .ok_or_else(|| anyhow::anyhow!("No trusted library host is currently available"))?;
-            let library = runtime()?.block_on(client.refresh(address))?;
-            show_library(library);
-        }
-        ID_SAVE => {
-            let (object, sources) = {
-                let ui = UI.get().unwrap().lock().unwrap();
-                let index =
-                    selected(ui.tracks).ok_or_else(|| anyhow::anyhow!("Select a track to save"))?;
-                (
-                    ui.entries
-                        .get(index)
-                        .ok_or_else(|| anyhow::anyhow!("Track selection is stale"))?
-                        .sha256
-                        .clone(),
-                    ui.discovered.clone(),
-                )
-            };
-            let client = client()?;
-            let trusted = runtime()?.block_on(client.hosts())?;
-            let sources = sources
-                .into_iter()
-                .filter(|a| trusted.contains(&a.id.to_string()))
-                .collect();
-            status("Saving and verifying the selected original…");
-            runtime()?.block_on(client.download_from(sources, &object))?;
-            status("Saved and verified. This track is available offline.");
-        }
-        ID_PLAY => {
-            let object = {
-                let ui = UI.get().unwrap().lock().unwrap();
-                let index = selected(ui.tracks)
-                    .ok_or_else(|| anyhow::anyhow!("Select a saved track to play"))?;
-                ui.entries
-                    .get(index)
-                    .ok_or_else(|| anyhow::anyhow!("Track selection is stale"))?
-                    .sha256
-                    .clone()
-            };
-            let path = runtime()?
-                .block_on(client()?.local_file(&object))?
-                .ok_or_else(|| {
-                    anyhow::anyhow!("This track is not saved. Save it before playing.")
-                })?;
+        Completed::Message(message) => status(&message),
+        Completed::Play(path) => {
             let _ = mciSendStringW(w!("close syncstr_audio"), None, None);
             let command = wide(&format!("open \"{}\" alias syncstr_audio", path.display()));
             anyhow::ensure!(
@@ -336,29 +460,30 @@ unsafe fn perform(id: i32) -> anyhow::Result<()> {
             UI.get().unwrap().lock().unwrap().paused = false;
             status("Playing saved audio locally.");
         }
-        ID_PAUSE => {
-            let mut ui = UI.get().unwrap().lock().unwrap();
-            let command = if ui.paused {
-                w!("resume syncstr_audio")
-            } else {
-                w!("pause syncstr_audio")
-            };
-            anyhow::ensure!(
-                mciSendStringW(command, None, None) == 0,
-                "No active playback session"
-            );
-            ui.paused = !ui.paused;
-            set_text(
-                ui.status,
-                if ui.paused {
-                    "Playback paused."
-                } else {
-                    "Playback resumed."
-                },
-            );
-        }
-        _ => {}
     }
+    Ok(())
+}
+
+unsafe fn pause_playback() -> anyhow::Result<()> {
+    let mut ui = UI.get().unwrap().lock().unwrap();
+    let command = if ui.paused {
+        w!("resume syncstr_audio")
+    } else {
+        w!("pause syncstr_audio")
+    };
+    anyhow::ensure!(
+        mciSendStringW(command, None, None) == 0,
+        "No active playback session"
+    );
+    ui.paused = !ui.paused;
+    set_text(
+        ui.status,
+        if ui.paused {
+            "Playback paused."
+        } else {
+            "Playback resumed."
+        },
+    );
     Ok(())
 }
 
@@ -498,7 +623,7 @@ unsafe extern "system" fn wndproc(
                 32,
                 ID_PLAY,
             );
-            let pause_button = create(
+            let _pause_button = create(
                 w!("BUTTON"),
                 "Pause / Resume",
                 WINDOW_STYLE(BS_PUSHBUTTON as u32),
@@ -523,34 +648,57 @@ unsafe extern "system" fn wndproc(
                 hosts,
                 tracks,
                 status: status_hwnd,
+                worker: Some(OperationWorker::start(hwnd)),
                 action_buttons: vec![
                     discover_button,
                     register_button,
                     refresh_button,
                     save_button,
                     play_button,
-                    pause_button,
                 ],
                 ..Default::default()
             }));
-            if data_root().is_ok_and(|root| root.join("node.sqlite").exists()) {
-                match client().and_then(|client| runtime()?.block_on(client.catalog())) {
-                    Ok(library) => show_library(library),
-                    Err(error) => status(&format!("Saved library could not be restored: {error}")),
-                }
+            if let Err(error) = dispatch(Work::Restore) {
+                set_busy(false);
+                status(&format!("Saved library could not be restored: {error}"));
             }
             LRESULT(0)
         }
         WM_COMMAND => {
             let id = (wparam.0 & 0xffff) as i32;
-            if matches!(
+            let result = if id == ID_PAUSE {
+                pause_playback()
+            } else if matches!(
                 id,
-                ID_DISCOVER | ID_REGISTER | ID_REFRESH | ID_SAVE | ID_PLAY | ID_PAUSE
-            ) && set_busy(true)
+                ID_DISCOVER | ID_REGISTER | ID_REFRESH | ID_SAVE | ID_PLAY
+            ) && !UI.get().unwrap().lock().unwrap().busy
             {
-                let result = perform(id);
+                capture_work(id).and_then(|work| dispatch(work))
+            } else {
+                Ok(())
+            };
+            if let Err(error) = result {
+                if id != ID_PAUSE {
+                    set_busy(false);
+                }
+                status(&format!(
+                    "Action failed: {error}. You can retry this action."
+                ));
+            }
+            LRESULT(0)
+        }
+        WM_WORK_COMPLETE => {
+            let results = {
+                let ui = UI.get().unwrap().lock().unwrap();
+                let worker = ui.worker.as_ref().unwrap();
+                std::mem::take(&mut worker.delivery.lock().unwrap().results)
+            };
+            for result in results {
                 set_busy(false);
-                if let Err(error) = result {
+                if let Err(error) = result
+                    .map_err(anyhow::Error::msg)
+                    .and_then(|completed| apply_completed(completed))
+                {
                     status(&format!(
                         "Action failed: {error}. You can retry this action."
                     ));
@@ -558,7 +706,19 @@ unsafe extern "system" fn wndproc(
             }
             LRESULT(0)
         }
+        WM_CLOSE => {
+            let ui = UI.get().unwrap().lock().unwrap();
+            if let Some(worker) = &ui.worker {
+                worker.stop();
+            }
+            drop(ui);
+            let _ = DestroyWindow(hwnd);
+            LRESULT(0)
+        }
         WM_DESTROY => {
+            if let Some(worker) = &mut UI.get().unwrap().lock().unwrap().worker.take() {
+                worker.stop();
+            }
             let _ = mciSendStringW(w!("close syncstr_audio"), None, None);
             PostQuitMessage(0);
             LRESULT(0)

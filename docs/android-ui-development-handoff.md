@@ -45,37 +45,33 @@ unrelated tracks can be updated; a missing artist has a fallback label.
 The verified versions are JDK 21, Gradle 8.13, AGP 8.13.2, Kotlin 2.2.21,
 Android SDK 36, Build Tools 36.0.0, NDK 28.2.13676358 and Rust 1.99. Android
 Studio can open `apps/android`; select the matching SDK and Gradle JDK. The
-repository currently does not contain a Gradle wrapper, so use the pinned
-Gradle installation or add a verified wrapper as a separate build change.
+checked-in Gradle wrapper pins Gradle 8.13 and checks the distribution checksum.
 
-The first Windows task is adapting [build-native.sh](../apps/android/build-native.sh).
-It hard-codes the macOS NDK `darwin-x86_64` toolchain and cannot run unchanged
-on Windows or WSL. For a native Windows PowerShell build:
+Use [build-native.ps1](../apps/android/build-native.ps1) on native Windows;
+[build-native.sh](../apps/android/build-native.sh) uses the macOS NDK toolchain.
+For a native Windows PowerShell build:
 
 1. Install the Android SDK/NDK and Rust toolchain, and add the
    `aarch64-linux-android` Rust target. Record the resolved compiler versions.
-2. Locate the installed NDK's Windows LLVM toolchain. Set the target-specific
-   C compiler, archiver and Cargo linker to its Android API 28 ARM64 tools;
-   account for Windows executable/command-wrapper suffixes. Do not use the
-   Windows host compiler to link the Android `.so`.
-3. Build `apps/android/native/Cargo.toml` with `--locked --target
-   aarch64-linux-android`, copy the resulting `.so` to
-   `apps/android/app/src/main/jniLibs/arm64-v8a/`, and strip debug information
-   with the same NDK. Verify this process before documenting it as a working
-   PowerShell command or script.
+2. Set `ANDROID_HOME` to the native Windows SDK and `JAVA_HOME` to JDK 21.
+3. Run `./apps/android/build-native.ps1`. It selects the pinned Windows NDK,
+   builds the locked ARM64 Rust graph, copies the `.so` into `jniLibs`, and strips
+   debug information with that NDK.
 4. Assemble the Kotlin APK and run Android Lint. Kotlin-only iterations can
    reuse that `.so` until Rust or the JNI contract changes.
 
 From the repository root, after native-library preparation:
 
 ```powershell
-gradle -p apps/android assembleDebug assembleDebugAndroidTest lintDebug
+./apps/android/gradlew.bat -p apps/android testDebugUnitTest assembleDebug assembleDebugAndroidTest lintDebug
 adb devices
 adb install -r apps/android/app/build/outputs/apk/debug/app-debug.apk
 adb install -r apps/android/app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk
 ```
 
-These Windows steps have not yet been executed. Use an ARM64 device; an x86_64
+The Windows build steps passed in the implementation record. UI acceptance of
+the repair revision is still pending; see the [repair verification](validation/windows-android-review-repairs.md).
+Use an ARM64 device; an x86_64
 emulator needs a separately built and packaged native library. Keep Windows and
 WSL SDK/toolchain paths separate. WSL SSH is useful for repository work but does
 not establish native Windows toolchain or attached-device access.

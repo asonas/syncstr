@@ -2,11 +2,12 @@
 
 Repair playback lifecycle, UI responsiveness, and catalog presentation before integrating the Windows/Android branch into main. Keep the existing native clients and cluster protocol; these fixes do not require a UI framework migration or a new storage schema.
 
-Status: proposed implementation plan, not an implementation or acceptance record.
+Status: repair implementation is present on the working branch. Target-device
+acceptance remains pending; see the [verification record](validation/windows-android-review-repairs.md).
 
 Reviewed baseline: `codex/windows-app` at `37e74c85d10099d5129e7146e60cd930bc6be013`, compared with main at `5588b72616505bd530dd213764e0331b0c02d7ff`. Recheck the diff if either branch moves.
 
-This document is for the developer continuing work on Windows, including Android development on that machine. Use the [Windows app guide](../apps/windows/README.md) and [Android build guide](../apps/android/README.md) for toolchains. The older [Android handoff](android-ui-development-handoff.md) still contains superseded statements about the missing Gradle wrapper and Windows build script; the reviewed branch includes both.
+This document is for the developer continuing work on Windows, including Android development on that machine. Use the [Windows app guide](../apps/windows/README.md), [Android build guide](../apps/android/README.md), and [Android handoff](android-ui-development-handoff.md) for toolchains and device-update precautions.
 
 ## Evidence and scope
 

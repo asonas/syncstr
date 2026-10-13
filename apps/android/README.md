@@ -10,7 +10,7 @@ an Android Keystore AES key; backup is disabled.
 
 The current development build targets Android 9 or newer on ARM64. Use Java 21,
 Gradle 8.13, Rust 1.99, Android SDK 36, Build Tools 36.0.0 and NDK 28.2.13676358.
-The native build script currently uses the macOS NDK toolchain.
+Use `build-native.sh` for the macOS NDK toolchain or `build-native.ps1` on Windows.
 
 ```sh
 mise install java@temurin-21.0.12+101.0.LTS gradle@8.13
@@ -67,10 +67,11 @@ a verified original on the device; saved tracks expose a separate **Play**
 action and appear under **Saved**. The mini-player opens the full now-playing
 screen. Saved audio remains available after restart without a network connection.
 
-Remote relay configuration and Windows support are subsequent slices. A build
+Remote relay configuration and Android distribution are subsequent slices. A build
 does not establish Android playback acceptance; see the
 [M5 checks](../../docs/cluster-android-m5.md).
 
 For continued UI development on a Windows workstation, see the
 [development handoff](../../docs/android-ui-development-handoff.md), including
-the native build-script portability gap and device-update precautions.
+device-update precautions. The [repair record](../../docs/validation/windows-android-review-repairs.md)
+documents album presentation, repeated playback, and Activity recreation checks.

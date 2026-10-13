@@ -6,6 +6,12 @@ refreshes catalog metadata without automatically downloading originals, saves a
 selected original with integrity verification, and plays saved audio through the
 Windows multimedia subsystem.
 
+Discovery, enrollment, catalog reads, transfers, and file verification run on a
+serialized worker. The window remains available for movement and repainting,
+and existing playback can be paused/resumed during a transfer. Closing cancels
+pending delivery and the active task without waiting in the window procedure;
+interrupted jobs are recovered when the saved store opens again.
+
 The device secret is protected with Windows DPAPI for the current user and is
 stored separately from the SQLite catalog under `%LOCALAPPDATA%\Syncstr`. If an
 existing catalog has no readable protected identity, startup fails with a
@@ -45,3 +51,6 @@ transfer integrity, and wire contracts in `headless`, plus Windows DPAPI identit
 restoration. A build does not prove audible output or a real host interaction.
 Record LAN enrollment, physical playback, offline restart, and firewall behavior
 separately when they are checked on the target Windows computer.
+
+See the [review repair record](../../docs/validation/windows-android-review-repairs.md)
+for cross-build evidence and pending device checks.

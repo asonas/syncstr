@@ -43,42 +43,36 @@ catalog updates and playback.
 
 ## Windows work that is still required
 
-The current Rust crate is not Windows-ready. Source inspection found Unix
-filesystem extensions in [identity.rs](../headless/src/identity.rs),
-[peer.rs](../headless/src/peer.rs), [store.rs](../headless/src/store.rs), and
-[main.rs](../headless/src/main.rs). Their `mode` calls and directory sync behavior
-must receive Windows implementations with equivalent protection and durability;
-simply removing permission handling is not sufficient.
+The shared crate has Windows filesystem adapters in
+[platform_fs.rs](../headless/src/platform_fs.rs), and the client uses Win32
+controls, Windows multimedia playback, and per-user DPAPI identity protection.
+The repair revision moves catalog/client work off the window thread. Verify
+these behaviors on native Windows; cross-compilation does not prove filesystem
+durability, discovery, audio output, or application lifecycle behavior.
 
-Persist a stable device secret through Windows-protected storage for the current
-user, then supply its 32 bytes to `Identity::from_secret`. This follows the
-Android boundary without requiring a username or password. Confirm the exact
-Windows API and account scope on the native development machine before coding.
-Keep the catalog and originals in the application's per-user data directory.
+The client persists a stable device secret through Windows-protected storage
+for the current user and supplies its 32 bytes to `Identity::from_secret`.
+The catalog and originals use the application's per-user data directory.
 Verify directory access controls, locking, interrupted staging and atomic
 replacement on Windows. A missing or unreadable identity must produce a recovery
 error rather than silently create a replacement identity for an existing cluster.
 
-Select the native Windows UI and audio adapter after confirming the available
-toolchain. Retain the tested Rust membership and transfer implementation; do not
-rewrite working Swift or Kotlin components to prepare for Windows. Build a real
-discovery path and check the Windows firewall interaction. Do not claim that a
-WSL build or Linux playback proves Windows permissions, discovery, audio, or
-application lifecycle behavior.
+Check the real discovery path and Windows firewall interaction. Retain the
+tested Rust membership and transfer implementation. See the
+[repair verification record](validation/windows-android-review-repairs.md)
+for current checks and the remaining device acceptance.
 
 ## Development sequence on the Windows machine
 
-1. Create a worktree from the integrated Android baseline and record the Windows,
+1. Create a worktree from the repair branch and record the Windows,
    Rust and compiler versions. Run `rustc --version`, `cargo --version`, and
    `rustup show active-toolchain` in native PowerShell.
-2. Run `cargo check --manifest-path headless/Cargo.toml --features p2p` natively
-   and capture the first portability failures. Resolve filesystem and identity
-   protection at their existing boundaries; keep unrelated refactoring out.
+2. Follow [the Windows build guide](../apps/windows/README.md) and rerun native
+   builds and Clippy. Resolve any target-specific failures at their boundaries.
 3. Run the real client and multi-host integration tests natively. Retain the
    enrollment, revocation, integrity and conflict rejection contracts.
-4. Add a thin Windows application adapter for discovery, invitation confirmation,
-   catalog display, explicit save, local playback and pause/resume. Keep secure
-   key material out of logs, invitations and ordinary catalog files.
+4. Verify discovery, invitation confirmation, catalog display, explicit save,
+   local playback, pause/resume, and interruption/retry through the application.
 5. Verify the acceptance path below with an actual headless host on the LAN.
    Record source revision, build, automated checks and physical playback results
    separately before main integration.
