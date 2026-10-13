@@ -30,6 +30,60 @@ fn organization_fixture_round_trips_with_native_field_names_and_clear_revision()
 }
 
 #[test]
+fn album_membership_preserves_aliases_and_exposes_concurrent_choices() {
+    let mut organization: syncstr_headless::organization::Organization =
+        serde_json::from_slice(include_bytes!("../fixtures/album-organization.json")).unwrap();
+    organization
+        .albums
+        .push(syncstr_headless::organization::Album {
+            id: "album-b".into(),
+            title: "Collection".into(),
+            releases: vec![],
+        });
+    organization
+        .aliases
+        .insert("former-album".into(), "album-b".into());
+    organization.track_aliases = Some(std::collections::BTreeMap::from([(
+        "former-track".into(),
+        "track-a".into(),
+    )]));
+    let choice = |id: &str, value: Option<&str>, parents: Vec<String>| {
+        syncstr_headless::organization::Choice {
+            id: id.into(),
+            subject: "track-a".into(),
+            kind: "membership".into(),
+            value: value.map(str::to_owned),
+            parents,
+        }
+    };
+    organization
+        .choices
+        .push(choice("move", Some("former-album"), vec![]));
+    organization.validate().unwrap();
+    assert_eq!(
+        organization
+            .album_id_for_track("former-track")
+            .unwrap()
+            .as_deref(),
+        Some("album-b")
+    );
+    organization
+        .choices
+        .push(choice("other", Some("album-a"), vec![]));
+    assert_eq!(organization.album_id_for_track("track-a").unwrap(), None);
+    organization
+        .choices
+        .push(choice("resolve", None, vec!["move".into(), "other".into()]));
+    assert_eq!(
+        organization
+            .album_id_for_track("track-a")
+            .unwrap()
+            .as_deref(),
+        Some("album-a")
+    );
+}
+
+#[test]
 fn cluster_persistence_fixture_matches_native_identities_locations_and_pending_state()
 -> anyhow::Result<()> {
     let fixture: serde_json::Value =

@@ -244,17 +244,24 @@ class MainActivity : Activity() {
     }
 
     private fun renderGroups(list: LinearLayout, entries: List<JSONObject>, albums: Boolean) {
-        val groups = entries.groupBy { if (albums) albumName(it) else artistName(it) }.toSortedMap(String.CASE_INSENSITIVE_ORDER)
-        for ((name, tracks) in groups) {
+        val byObject = entries.associateBy { it.getString("sha256") }
+        val items = entries.map { entry ->
+            val track = entry.getJSONObject("track")
+            val presentation = entry.optJSONObject("presentation")
+            MusicItem(entry.getString("sha256"), presentation?.optString("albumId")?.takeIf { it.isNotBlank() && it != "null" },
+                presentation?.optString("album")?.takeIf { it.isNotBlank() && it != "null" } ?: albumName(entry),
+                artistName(entry), presentation?.optString("albumArtist")?.takeIf { it.isNotBlank() && it != "null" },
+                track.getString("title"), track.optInt("discNumber", 1), track.optInt("track", 0))
+        }
+        for (group in LibraryPresentation.groups(items, albums)) {
             list.addView(LinearLayout(this).apply {
                 orientation = LinearLayout.VERTICAL
                 setPadding(0, dp(24), 0, dp(8))
-                addView(label(name, 21f, WHITE, true))
-                val detail = if (albums) artistName(tracks.first()) else resources.getQuantityString(R.plurals.track_count, tracks.size, tracks.size)
+                addView(label(group.title, 21f, WHITE, true))
+                val detail = if (albums) group.credit else resources.getQuantityString(R.plurals.track_count, group.members.size, group.members.size)
                 addView(label(detail, 14f, FOG))
             })
-            tracks.sortedWith(compareBy({ it.getJSONObject("track").optInt("disc_number", 1) },
-                { it.getJSONObject("track").optInt("track", Int.MAX_VALUE) })).forEach { list.addView(trackRow(it)) }
+            group.members.forEach { list.addView(trackRow(byObject.getValue(it.objectId))) }
         }
     }
 
@@ -318,21 +325,21 @@ class MainActivity : Activity() {
         player = replacement
         try {
             replacement.apply {
-            setAudioAttributes(AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_MEDIA).setContentType(AudioAttributes.CONTENT_TYPE_MUSIC).build())
-            setDataSource(path)
-            setOnPreparedListener {
-                if (player !== it) return@setOnPreparedListener
-                prepared = true
-                if (initialPosition > 0) it.seekTo(initialPosition)
-                if (autoplay && hasWindowFocus() && requestAudioFocus()) it.start()
-                render(); scheduleProgress()
-            }
-            setOnCompletionListener { if (player === it) { render(); scheduleProgress() } }
-            setOnErrorListener { failed, _, _ ->
-                if (player === failed) playbackFailed(failed)
-                true
-            }
-            prepareAsync()
+                setAudioAttributes(AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_MEDIA).setContentType(AudioAttributes.CONTENT_TYPE_MUSIC).build())
+                setDataSource(path)
+                setOnPreparedListener {
+                    if (player !== it) return@setOnPreparedListener
+                    prepared = true
+                    if (initialPosition > 0) it.seekTo(initialPosition)
+                    if (autoplay && hasWindowFocus() && requestAudioFocus()) it.start()
+                    render(); scheduleProgress()
+                }
+                setOnCompletionListener { if (player === it) { render(); scheduleProgress() } }
+                setOnErrorListener { failed, _, _ ->
+                    if (player === failed) playbackFailed(failed)
+                    true
+                }
+                prepareAsync()
             }
         } catch (_: java.io.IOException) {
             playbackFailed(replacement)

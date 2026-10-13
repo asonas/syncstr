@@ -31,7 +31,7 @@ pub extern "system" fn Java_as_ason_syncstr_Native_run(
             match operation.as_str() {
                 "id" => Ok(serde_json::to_string(&client.id().to_string())?),
                 "hosts" => Ok(serde_json::to_string(&client.hosts().await?)?),
-                "catalog" => Ok(serde_json::to_string(&client.catalog().await?)?),
+                "catalog" => crate::present_catalog(client.catalog().await?),
                 "enroll" => {
                     client
                         .enroll(text("invitation")?, text("socket")?.parse()?)
@@ -41,7 +41,7 @@ pub extern "system" fn Java_as_ason_syncstr_Native_run(
                 "refresh" => {
                     let address = iroh::EndpointAddr::new(text("host")?.parse()?)
                         .with_ip_addr(text("socket")?.parse()?);
-                    Ok(serde_json::to_string(&client.refresh(address).await?)?)
+                    crate::present_catalog(client.refresh(address).await?)
                 }
                 "download" => {
                     let sources = args["addresses"]
@@ -83,5 +83,84 @@ pub extern "system" fn Java_as_ason_syncstr_Native_run(
             let _ = env.throw_new("java/lang/IllegalStateException", error.to_string());
             std::ptr::null_mut()
         }
+    }
+}
+
+fn present_catalog(library: syncstr_headless::cluster_client::Library) -> anyhow::Result<String> {
+    let organization = &library.catalog.organization;
+    let mut value = serde_json::to_value(&library)?;
+    let mut conflicts = library.conflicts.clone();
+    let entries = value["entries"]
+        .as_array_mut()
+        .expect("serialized catalog entries");
+    for (entry, projected) in library.catalog.entries.iter().zip(entries) {
+        let record = organization
+            .tracks
+            .iter()
+            .find(|track| track.sha256 == entry.sha256);
+        let album = match record {
+            Some(track) => organization.album_id_for_track(&track.id)?,
+            None => entry
+                .track
+                .album_id
+                .as_deref()
+                .map(|id| organization.canonical(id).map(str::to_owned))
+                .transpose()?,
+        };
+        let title = album
+            .as_ref()
+            .and_then(|id| organization.albums.iter().find(|album| &album.id == id))
+            .map(|album| album.title.as_str())
+            .filter(|title| !title.is_empty())
+            .or(entry.track.album.as_deref());
+        projected["presentation"] = serde_json::json!({
+            "albumId": album,
+            "album": title,
+            "albumArtist": record.and_then(|track| track.imported.album_artist.as_deref()),
+        });
+        if record.is_some() && album.is_none() && !conflicts.contains(&entry.sha256) {
+            conflicts.push(entry.sha256.clone());
+        }
+    }
+    value["conflicts"] = serde_json::json!(conflicts);
+    Ok(serde_json::to_string(&value)?)
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn android_projection_uses_membership_without_rewriting_imported_metadata() {
+        let mut entry: syncstr_headless::model::Entry = serde_json::from_slice(include_bytes!(
+            "../../../../headless/fixtures/local-entry.json"
+        ))
+        .unwrap();
+        entry.track.id = "track-a".into();
+        let mut organization: syncstr_headless::organization::Organization =
+            serde_json::from_slice(include_bytes!(
+                "../../../../headless/fixtures/album-organization.json"
+            ))
+            .unwrap();
+        organization.tracks[0].sha256 = entry.sha256.clone();
+        let library = syncstr_headless::cluster_client::Library {
+            catalog: syncstr_headless::model::Catalog {
+                id: "library".into(),
+                name: "Fixture".into(),
+                entries: vec![entry],
+                organization,
+            },
+            conflicts: vec![],
+        };
+        let projected: serde_json::Value =
+            serde_json::from_str(&crate::present_catalog(library).unwrap()).unwrap();
+        assert_eq!(
+            projected["entries"][0]["presentation"]["albumId"],
+            "album-a"
+        );
+        assert_eq!(
+            projected["entries"][0]["presentation"]["album"],
+            "Collection"
+        );
+        assert_eq!(projected["entries"][0]["track"]["albumId"], "fixture-album");
+        assert_eq!(projected["entries"][0]["track"]["discNumber"], 1);
     }
 }

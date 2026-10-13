@@ -190,6 +190,43 @@ impl crate::organization::Organization {
         Ok(cursor)
     }
 
+    pub fn album_id_for_track(&self, id: &str) -> anyhow::Result<Option<String>> {
+        let id = self.canonical_track(id);
+        let Some(track) = self.tracks.iter().find(|track| track.id == id) else {
+            return Ok(None);
+        };
+        let superseded: std::collections::BTreeSet<_> = self
+            .choices
+            .iter()
+            .flat_map(|choice| &choice.parents)
+            .collect();
+        let values = self
+            .choices
+            .iter()
+            .filter(|choice| {
+                choice.kind == "membership"
+                    && self.subject(choice) == id
+                    && !superseded.contains(&choice.id)
+            })
+            .map(|choice| {
+                choice
+                    .value
+                    .as_deref()
+                    .map(|value| self.canonical(value))
+                    .transpose()
+            })
+            .collect::<anyhow::Result<std::collections::BTreeSet<_>>>()?;
+        if values.len() > 1 {
+            return Ok(None);
+        }
+        let album = values
+            .first()
+            .copied()
+            .flatten()
+            .unwrap_or(&track.imported_album_id);
+        Ok(Some(self.canonical(album)?.to_owned()))
+    }
+
     pub fn validate(&self) -> anyhow::Result<()> {
         anyhow::ensure!(
             self.albums.len() <= 100000
