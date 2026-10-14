@@ -51,6 +51,10 @@ An explicit listener choice that takes precedence over imported metadata until t
 **Playlist**:
 A listener's selection of tracks that retains each track's original album membership.
 
+**Playback Queue**:
+The device-local ordered sequence of tracks selected for a listening session. Browsing or changing search results does not alter an already established queue.
+_Avoid_: Playlist when referring to the active playback sequence
+
 **Album Artwork**:
 The image used to represent an album. It may come from a participating track, an album image file, a music library, or an explicit listener choice; it does not establish album membership.
 _Avoid_: Album identity
@@ -74,6 +78,14 @@ _Avoid_: Headless Syncstr as a synonym for the library host role
 
 **Playback Device**:
 A Syncstr device used to listen to music, which may retain only part of the available library. A playback device may also act as a library host.
+
+**Playback Cache**:
+Audio retained on a playback device as a result of listening, which may be evicted and acquired again. Its presence does not mean the listener explicitly saved the music for offline use.
+_Avoid_: Offline Save when referring only to automatically cached audio
+
+**Offline Save**:
+Music the listener explicitly chooses to retain on a device for offline playback until they remove that save. Removing an offline save does not delete music from the shared library or the original import source.
+_Avoid_: Cluster deletion when referring to removal of a device's saved copy
 
 **Headless Syncstr**:
 The form of Syncstr that stores and supplies music without playback functionality.
