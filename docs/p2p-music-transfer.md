@@ -41,8 +41,8 @@ Verify both LAN and an independent cellular network. Inspect the live address re
 
 ## Register an app
 
-1. Open Settings → P2P music sharing. On a new iPhone installation the same controls are available on the initial setup screen.
-2. Copy the app's device ID. On the node, explicitly authorize it:
+1. Open Settings → Library and connections. Cluster invitations use the main enrollment form; this section describes the legacy single-node flow, retained for existing users.
+2. Expand **Legacy P2P connection and device ID** and copy the app's device ID. On the node, explicitly authorize it:
 
    ```sh
    target/debug/syncstr-headless peer-pair --state peer --peer <device-public-id>

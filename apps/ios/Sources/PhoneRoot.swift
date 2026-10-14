@@ -32,12 +32,7 @@ struct PhoneRoot: View {
             if phase == .background, library.transfer.peerConnected { library.transfer.cancel() }
         }
         .sheet(isPresented: $library.showingOrganization) { OrganizationView(library: library) }
-        .alert("この端末のコピーを削除しますか？", isPresented: Binding(get: { library.localCopyToRemove != nil }, set: { if !$0 { library.localCopyToRemove = nil } }), presenting: library.localCopyToRemove) { track in
-            Button("キャンセル", role: .cancel) {}
-            Button("コピーを削除", role: .destructive) { library.removeLocalCopy(track) }
-        } message: { track in
-            Text("「\(track.title)」のSyncstr内のコピーを削除します。保存先の音源と元のファイルは残ります。")
-        }
+        .modifier(OfflineSaveRemoval(library: library, enabled: !library.showingNowPlaying))
         .sheet(isPresented: $library.showingNowPlaying) {
             PhoneNowPlaying(library: library)
                 .presentationDragIndicator(.visible)
@@ -62,10 +57,7 @@ struct PhoneRoot: View {
             }
         }
         .onChange(of: library.connected) { _, connected in
-            tab = connected ? .library : .settings
-        }
-        .onChange(of: library.restoringSession) { _, restoring in
-            if !restoring && !library.connected { tab = .settings }
+            if connected { tab = .library }
         }
     }
 
@@ -108,12 +100,19 @@ struct PhoneRoot: View {
                 VStack(alignment: .leading, spacing: 8) {
                     Text("アルバム").font(.title3.bold())
                     if !library.connected {
-                        Text("設定からMacまたはP2Pの接続先を選び、音楽を追加してください。")
-                        Button("設定を開く") { tab = .settings }
+                        Text("ライブラリに参加するか、この端末に音楽を追加して聴き始められます。")
+                        NavigationLink("既存のライブラリに参加") {
+                            ScrollView { PeerSetupView(transfer: library.transfer).padding(20) }
+                                .navigationTitle("ライブラリに参加")
+                        }
+                        AddMusicButton(library: library)
                         if library.hasSavedLocalLibrary {
                             Button("保存した音楽を開く") { Task { await library.openSavedLocalLibrary() } }
                         }
-                    } else if library.albums.isEmpty { Text("音楽はまだありません。Macの音楽フォルダに音源を追加してください。") }
+                    } else if library.albums.isEmpty {
+                        Text("音楽はまだありません。音楽ファイルを追加できます。")
+                        AddMusicButton(library: library)
+                    }
                     albumGrid
                 }
             }
@@ -123,7 +122,10 @@ struct PhoneRoot: View {
         }
         .background(PhoneStyle.graphite)
         .navigationTitle("ライブラリ")
-        .toolbar { Button("アルバムの整理") { library.showingOrganization = true } }
+        .toolbar {
+            AddMusicButton(library: library)
+            Button("アルバムの整理") { library.showingOrganization = true }
+        }
         .toolbarTitleDisplayMode(.inlineLarge)
         .refreshable { library.reload() }
     }
@@ -186,7 +188,7 @@ struct PhoneRoot: View {
                     .buttonStyle(.plain)
                     .disabled(album.tracks.isEmpty)
                     .accessibilityLabel("再生")
-                    AlbumTransferButton(transfer: library.transfer, tracks: album.tracks).padding(.top, 16)
+                    OfflineSaveControls(library: library, tracks: album.tracks, scope: "album:" + album.id).padding(.top, 16)
                 }
                 .frame(maxWidth: .infinity)
                 .padding(.top, 8)
@@ -274,30 +276,13 @@ struct PhoneRoot: View {
             .buttonStyle(.plain)
             .accessibilityIdentifier("track-\(track.id)")
             .accessibilityValue(library.current?.id == track.id ? (library.loading ? "再生を準備中" : library.playing ? "再生中" : "選択中") : "")
-            if library.transfer.activeTrack == track.id {
-                ProgressView().frame(width: 44, height: 44)
-                    .accessibilityLabel("ダウンロード中")
-            } else if library.downloaded.contains(track.id) {
-                Image("regen-circle-check").renderingMode(.template)
-                    .resizable().frame(width: 24, height: 24)
-                    .foregroundStyle(.secondary)
-                    .frame(width: 44, height: 44)
-                    .accessibilityLabel("ダウンロード済み")
-            } else {
-                Button { library.download(track) } label: {
-                    Image("regen-cloud-download").renderingMode(.template)
-                        .resizable().frame(width: 24, height: 24)
-                        .frame(width: 44, height: 44)
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel("\(track.title)、未ダウンロード。端末に保存")
-                .disabled(library.transfer.busy)
-            }
+            OfflineSaveControls(library: library, tracks: [track], scope: "track:" + track.id, compact: true)
+                .buttonStyle(.borderless)
         }
         .contextMenu {
             Button("アルバムの整理") { library.showingOrganization = true }
-            if library.transfer.clusterRegistration != nil && library.hasManagedCopy(track) {
-                Button("この端末のコピーを削除", role: .destructive) { library.localCopyToRemove = track }.disabled(library.transfer.busy)
+            if library.canRemoveLocalCopy(track) {
+                Button("この端末の保存を解除", role: .destructive) { library.localCopiesToRemove = [track] }.disabled(library.transfer.busy)
             }
         }
     }
@@ -338,18 +323,24 @@ struct PhoneRoot: View {
     private var settings: some View {
         Form {
             Section { PlaybackStorageSettings(library: library) }
+            Section("ライブラリと接続") { PeerSetupView(transfer: library.transfer) }
+            Section { AddMusicButton(library: library) }
             if library.transfer.clusterRegistration == nil {
-                Section { PhonePairingView(transfer: library.transfer) }
+                Section("従来の接続") {
+                    NavigationLink("従来の端末間転送") {
+                        ScrollView { PhonePairingView(transfer: library.transfer).padding(20) }
+                            .navigationTitle("従来の端末間転送")
+                    }
+                }
             }
-            Section { PeerSetupView(transfer: library.transfer) }
             Section {
                 LabeledContent("曲数", value: "\(library.tracks.count)")
                 if library.connected && library.transfer.clusterRegistration == nil {
-                    Button("別のMacを選ぶ") { library.closeLibrary() }
+                    Button("ライブラリを閉じる") { library.closeLibrary() }
                 } else if library.hasSavedLocalLibrary {
                     Button("保存した音楽を開く") { Task { await library.openSavedLocalLibrary() } }
                 }
-            } header: { Text("ライブラリ") } footer: { Text("受け取った音楽はこのiPhoneに残ります。") }
+            } header: { Text("ライブラリ") } footer: { Text("保存した音楽は接続がなくても聴けます。") }
         }
         .scrollContentBackground(.hidden)
         .background(PhoneStyle.graphite)

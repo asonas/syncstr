@@ -32,7 +32,6 @@ struct StudioButton: ButtonStyle {
 
 struct LibraryView: View {
     @ObservedObject var library: Library
-    @State private var showingPairing = false
     @State private var importingAudio = false
     @State private var showingPeerSetup = false
     @State private var showingUploadStatus = false
@@ -60,10 +59,12 @@ struct LibraryView: View {
             } else {
                 VStack(spacing: 20) {
                     Text("自分の音楽を、どの端末でも").font(.title)
-                    Text("音楽フォルダを選ぶと、このMacで聴いたり、iPhoneへ持ち出したりできます。")
+                    Text("ライブラリに参加するか、この端末に音楽を追加して聴き始められます。")
+                    Button("既存のライブラリに参加") { showingPeerSetup = true }.buttonStyle(.borderedProminent)
                     LocalFolderButton(library: library).buttonStyle(.borderedProminent)
+                    AddMusicButton(library: library)
                     if library.hasSavedLocalLibrary {
-                        Button("前の音楽フォルダを開く") { Task { await library.openSavedLocalLibrary() } }
+                        Button("保存したライブラリを開く") { Task { await library.openSavedLocalLibrary() } }
                     }
                 }.padding(32).frame(maxWidth: .infinity, maxHeight: .infinity)
             }
@@ -99,16 +100,8 @@ struct LibraryView: View {
         }
         .toolbarBackground(.hidden, for: .windowToolbar)
         .task { await library.restoreLibrary() }
-        .alert("この端末のコピーを削除しますか？", isPresented: Binding(get: { library.localCopyToRemove != nil }, set: { if !$0 { library.localCopyToRemove = nil } }), presenting: library.localCopyToRemove) { track in
-            Button("キャンセル", role: .cancel) {}
-            Button("コピーを削除", role: .destructive) { library.removeLocalCopy(track) }
-        } message: { track in
-            Text("「\(track.title)」のSyncstr内のコピーを削除します。保存先の音源と元のファイルは残ります。")
-        }
+        .modifier(OfflineSaveRemoval(library: library))
         .sheet(isPresented: $library.showingOrganization) { OrganizationView(library: library) }
-        .sheet(isPresented: $showingPairing) {
-            MacPairingView(transfer: library.transfer) { Task { await library.startPairing() } }
-        }
         .sheet(isPresented: $showingPeerSetup) {
             ScrollView { PeerSetupView(transfer: library.transfer).padding(24) }
                 .frame(width: 500, height: 600)
@@ -125,7 +118,7 @@ struct LibraryView: View {
             switch result {
             case .success(let files):
                 showingUploadStatus = true
-                library.transfer.uploadPeer(files: files)
+                Task { await library.addMusic(files) }
             case .failure(let error): library.message = error.localizedDescription
             }
         }
@@ -152,8 +145,7 @@ struct LibraryView: View {
             }
             rule.padding(.vertical, 16)
             Button {
-                if library.transfer.peerConnected || library.transfer.clusterRegistration != nil { importingAudio = true }
-                else { showingPeerSetup = true }
+                importingAudio = true
             } label: {
                 HStack(spacing: 8) { MacIcon("cloud-upload"); Text("音源ファイルを追加") }
                     .frame(maxWidth: .infinity, minHeight: 32, alignment: .leading)
@@ -161,18 +153,11 @@ struct LibraryView: View {
                     .contentShape(Rectangle())
             }
             .buttonStyle(.plain).disabled(library.transfer.busy)
-            .help("P2Pの接続先に音源ファイルを追加します")
+            .help("ライブラリに音源を追加します。未登録の場合もこの端末で再生できます")
             if showingUploadStatus && library.transfer.busy {
                 ProgressView(value: library.transfer.progress).padding(.horizontal, 8)
                 Button("中断する") { library.transfer.cancel() }.buttonStyle(.plain).padding(.horizontal, 8)
             }
-            Button { showingPairing = true } label: {
-                HStack(spacing: 8) { MacIcon("cloud-upload"); Text("iPhoneに転送") }
-                    .frame(maxWidth: .infinity, minHeight: 32, alignment: .leading)
-                    .padding(.horizontal, 8)
-                    .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain).accessibilityLabel("iPhoneに音楽を転送")
             Button(action: library.reload) {
                 HStack(spacing: 8) { MacIcon("refresh"); Text(library.refreshing ? "更新中…" : "ライブラリを更新") }
                     .frame(maxWidth: .infinity, minHeight: 32, alignment: .leading)
@@ -259,12 +244,7 @@ struct LibraryView: View {
                             Text("\(album.tracks.count)曲").font(.system(size: 12)).foregroundStyle(Studio.fog)
                             Spacer(minLength: 20)
                             playButton(album.tracks)
-                            if library.transfer.peerConnected || library.transfer.clusterRegistration != nil {
-                                Button("アルバムを保存") { library.transfer.copy(album.tracks) }
-                                    .buttonStyle(.bordered).disabled(library.transfer.busy)
-                                if library.transfer.busy { ProgressView(value: library.transfer.progress) }
-                                if let status = library.transfer.status { Text(status).font(.caption).foregroundStyle(.secondary) }
-                            }
+                            OfflineSaveControls(library: library, tracks: album.tracks, scope: "album:" + album.id)
                         }.frame(minHeight: wide ? 272 : nil, alignment: .topLeading)
                         if wide { Spacer(minLength: 0) }
                     }
@@ -423,13 +403,24 @@ struct LibraryView: View {
             }.buttonStyle(.plain)
                 .accessibilityLabel("\(track.title)、\(track.artist ?? "アーティスト不明")、\(time(track.duration ?? 0))")
                 .accessibilityAddTraits(library.current?.id == track.id ? .isSelected : [])
+            if let request = library.saveRequest(for: [track], scope: "track:" + track.id),
+               request.state != .complete && !library.hasManagedCopy(track) {
+                Text(request.state == .wifi ? "Wi-Fi待ち" : request.state == .saving ? "保存中" : request.state == .failed ? "保存失敗" : request.state == .cancelled ? "保存中止" : "接続待ち")
+                    .font(.caption).foregroundStyle(.secondary)
+                    .help(request.error ?? "保存操作から中止または再試行できます")
+            } else if library.localFiles[track.id] != nil {
+                Text("保存済み").font(.caption).foregroundStyle(.secondary)
+            }
             Menu {
                 Button("再生") { library.play(track, in: tracks) }
-                if library.transfer.peerConnected || library.transfer.clusterRegistration != nil {
-                    Button("曲を保存") { library.transfer.copy([track]) }.disabled(library.transfer.busy)
+                if let request = library.saveRequest(for: [track], scope: "track:" + track.id),
+                   [.waiting, .wifi, .saving].contains(request.state) {
+                    Button(request.entries.count > 1 ? "アルバム保存を中止" : "保存を中止") { library.transfer.cancelSave(request) }
+                } else if library.localFiles[track.id] == nil {
+                    Button("この端末に保存") { library.transfer.requestSave([track], scope: "track:" + track.id) }
                 }
-                if library.transfer.clusterRegistration != nil && library.hasManagedCopy(track) {
-                    Button("この端末のコピーを削除", role: .destructive) { library.localCopyToRemove = track }.disabled(library.transfer.busy)
+                if library.canRemoveLocalCopy(track) {
+                    Button("この端末の保存を解除", role: .destructive) { library.localCopiesToRemove = [track] }.disabled(library.transfer.busy)
                 }
                 Button("アルバムを表示") { library.selectedAlbum = track.albumKey; library.search = ""; library.showingNowPlaying = false }
                 Button("アーティストを表示") { self.showArtist(track.artist ?? "アーティスト不明") }

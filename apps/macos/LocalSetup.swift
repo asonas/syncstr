@@ -1,10 +1,27 @@
 import SwiftUI
+import UniformTypeIdentifiers
 #if os(macOS)
 import CoreImage.CIFilterBuiltins
 #else
 import AVFoundation
 import VisionKit
 #endif
+
+struct AddMusicButton: View {
+    @ObservedObject var library: Library
+    @State private var importing = false
+
+    var body: some View {
+        Button("音楽ファイルを追加") { importing = true }
+            .disabled(library.refreshing || library.transfer.busy)
+            .fileImporter(isPresented: $importing, allowedContentTypes: [.audio], allowsMultipleSelection: true) { result in
+                switch result {
+                case .success(let files): Task { await library.addMusic(files) }
+                case .failure(let error): library.message = error.localizedDescription
+                }
+            }
+    }
+}
 
 struct MusicImage<Content: View, Placeholder: View>: View {
     let url: URL?
@@ -103,7 +120,7 @@ struct PhonePairingView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             Text("Macから音楽を持ち出す").font(.title2.bold())
-            Text("Macで音楽フォルダを選び、同じWi-Fiで「iPhoneに転送」を開いてください。")
+            Text("Macで音楽フォルダを選び、同じWi-Fiで設定の「従来の端末間転送」を開いてください。")
             if transfer.nearby.isEmpty {
                 Text("Macを探しています。見つからない場合は、両方のアプリとローカルネットワークの許可を確認してください。")
                     .foregroundStyle(.secondary)
@@ -209,19 +226,4 @@ struct PairingScanner: UIViewControllerRepresentable {
     }
 }
 
-struct AlbumTransferButton: View {
-    @ObservedObject var transfer: LocalTransfer
-    let tracks: [Track]
-    var body: some View {
-        VStack(spacing: 8) {
-            Button("アルバムを保存") { transfer.copy(tracks) }
-                .buttonStyle(.bordered).disabled(!transfer.connected || transfer.busy)
-            if !transfer.connected {
-                NavigationLink("Macに接続") { ScrollView { PhonePairingView(transfer: transfer).padding(24) } }
-            }
-            if transfer.busy { ProgressView(value: transfer.progress) }
-            if let status = transfer.status { Text(status).font(.caption).foregroundStyle(.secondary) }
-        }
-    }
-}
 #endif

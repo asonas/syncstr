@@ -139,7 +139,7 @@ struct ClusterConflictsView: View {
 struct PeerSetupView: View {
     @ObservedObject var transfer: LocalTransfer
     @State private var address = ""
-    @State private var name = "NAS"
+    @State private var name = "ライブラリ"
     @State private var importing = false
     @State private var showingResults = false
     @State private var confirming = false
@@ -159,10 +159,9 @@ struct PeerSetupView: View {
         VStack(alignment: .leading, spacing: 16) {
             if let registration = transfer.clusterRegistration, !updatingRegistration {
                 Text(registration.name).font(.headline)
-                Text(registration.relay == nil
-                    ? "登録済みのライブラリです。同じLANにある保存先を自動で探します。"
-                    : "外部からの接続が設定されています。同じLANでは直接接続を優先します。")
+                Text("参加済みのライブラリです。再生と保存では、利用できる音源を自動で探します。")
                     .foregroundStyle(.secondary)
+                DisclosureGroup("保存先と接続診断") {
                 if let relay = registration.relay {
                     Text(relay).font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
                         .accessibilityLabel("外部接続の中継先 \(relay)")
@@ -178,6 +177,8 @@ struct PeerSetupView: View {
                     Text(host).font(.system(.caption, design: .monospaced)).textSelection(.enabled)
                         .accessibilityLabel("保存先の端末ID \(host)")
                 }
+                Text("この端末のID: \(transfer.peerID)").font(.system(.caption, design: .monospaced)).textSelection(.enabled)
+                }
                 Button("ライブラリを更新") { transfer.connectCluster() }.disabled(transfer.busy)
                 Button("接続設定を更新") {
                     name = registration.name
@@ -188,6 +189,7 @@ struct PeerSetupView: View {
                 if !transfer.clusterBatches.isEmpty {
                     Button("音源の追加結果") { showingResults = true }
                 }
+                DisclosureGroup("変更の競合と端末の権限") {
                 ClusterConflictsView(transfer: transfer)
                 if !transfer.disputedMembers.isEmpty {
                     Text("端末の権限が競合しています").font(.headline)
@@ -197,15 +199,22 @@ struct PeerSetupView: View {
                         Text(member).font(.system(.caption, design: .monospaced)).textSelection(.enabled)
                     }
                 }
+                if transfer.disputedMembers.isEmpty && transfer.clusterConflicts.isEmpty && transfer.clusterAlbumConflicts.isEmpty {
+                    Text("確認が必要な競合はありません。表にない端末の追加や権限の変更は、ライブラリの管理者に依頼してください。")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+                }
                 Toggle("モバイル通信でも自動転送する", isOn: Binding(get: { transfer.automaticCellular }, set: { transfer.setAutomaticCellular($0) }))
-                Text("オフの場合も、曲を選んで保存する操作はモバイル通信で利用できます。")
+                Text("オフの場合も、再生と保存を選ぶ操作はモバイル通信で利用できます。保存待ちの自動再開はWi-Fiを待ちます。")
                     .font(.caption).foregroundStyle(.secondary)
             } else {
-            Text("P2Pで音楽を共有").font(.headline)
+            Text(updatingRegistration ? "ライブラリの接続設定" : "既存のライブラリに参加").font(.headline)
             Text(updatingRegistration
                 ? "同じライブラリの保存先から新しい招待を受け取り、貼り付けてください。登録済みのライブラリと保存した音源は保持されます。"
-                : "ライブラリの招待を貼り付けて参加できます。従来の接続情報を使う場合は、この端末のIDを接続先で許可してください。")
+                : "ライブラリの管理者から受け取った招待を貼り付けてください。音源の保存先は自動で選ばれます。")
                 .foregroundStyle(.secondary)
+            DisclosureGroup("従来のP2P接続と端末ID") {
+            Text("従来の接続情報を使う場合は、この端末のIDを接続先で許可してください。")
             Text("この端末のID")
             Text(transfer.peerID).font(.system(.caption, design: .monospaced)).textSelection(.enabled)
             Button("端末IDをコピー") {
@@ -216,6 +225,7 @@ struct PeerSetupView: View {
                 UIPasteboard.general.string = transfer.peerID
 #endif
             }.disabled(transfer.peerID.isEmpty)
+            }
             TextField("接続先の名前", text: $name).textFieldStyle(.roundedBorder)
 #if os(iOS)
                 .focused($editing, equals: .name)
@@ -267,7 +277,7 @@ struct PeerSetupView: View {
                 Button("P2Pの接続先を削除", role: .destructive) {
                     Task {
                         await transfer.forgetPeer()
-                        if transfer.peerName == nil { address = ""; name = "NAS" }
+                        if transfer.peerName == nil { address = ""; name = "ライブラリ" }
                     }
                 }
             }
@@ -320,7 +330,7 @@ struct PeerSetupView: View {
             await transfer.restorePeer()
             if address.isEmpty {
                 address = transfer.peerAddressText
-                name = transfer.peerName ?? "NAS"
+                name = transfer.peerName ?? "ライブラリ"
             }
         }
         .onChange(of: transfer.clusterRegistration?.localGrant) { _, grant in

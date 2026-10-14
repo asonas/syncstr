@@ -60,10 +60,21 @@ struct PhoneNowPlaying: View {
                             .frame(maxWidth: .infinity, alignment: .leading)
                             .fixedSize(horizontal: false, vertical: true)
                             Menu {
-                                Button { library.download(track) } label: {
-                                    Label("端末に保存", image: "regen-cloud-download")
+                                if let request = library.saveRequest(for: [track], scope: "track:" + track.id),
+                                   [.waiting, .wifi, .saving].contains(request.state) {
+                                    Text(request.state == .wifi ? "Wi-Fi接続待ち" : request.state == .saving ? "保存中" : "接続待ち")
+                                    Button(request.entries.count > 1 ? "アルバム保存を中止" : "保存を中止") { library.transfer.cancelSave(request) }
+                                } else if library.localFiles[track.id] == nil {
+                                    if let request = library.saveRequest(for: [track], scope: "track:" + track.id), let error = request.error { Text(error) }
+                                    Button(library.saveRequest(for: [track], scope: "track:" + track.id)?.state == .failed ? "保存を再試行" : "この端末に保存") {
+                                        library.transfer.requestSave([track], scope: "track:" + track.id)
+                                    }
+                                } else {
+                                    Text("保存済み")
                                 }
-                                .disabled(library.downloaded.contains(track.id) || library.transfer.activeTrack == track.id)
+                                if library.canRemoveLocalCopy(track) {
+                                    Button("この端末の保存を解除", role: .destructive) { library.localCopiesToRemove = [track] }
+                                }
                             } label: {
                                 // The original SVG has a 3 pt transparent inset on its right.
                                 RegenIcon(name: "dots")
@@ -173,6 +184,7 @@ struct PhoneNowPlaying: View {
                 }
             }
         }
+        .modifier(OfflineSaveRemoval(library: library))
         .background(PhoneStyle.graphite)
         .toolbar(.hidden, for: .navigationBar)
     }

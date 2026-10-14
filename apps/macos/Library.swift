@@ -54,15 +54,16 @@ final class Library: ObservableObject {
     @Published var sidebarVisible = true
     @Published var showingNowPlaying = false
     @Published var showingOrganization = false
-    @Published var localCopyToRemove: Track?
+    @Published var localCopiesToRemove: [Track] = []
     @Published private(set) var artworkURLs: [String: URL] = [:]
     let localStore: LocalMusicStore
     let transfer: LocalTransfer
-    private var localFiles: [String: URL] = [:]
+    private(set) var localFiles: [String: URL] = [:]
     private(set) var localCatalog: LocalCatalog?
     private var transferChanges: AnyCancellable?
 #if os(macOS)
     private var localFolder: LocalFolder?
+    var hasLocalFolder: Bool { localFolder != nil }
     private var scopedFolder: URL?
 #endif
 #if os(iOS)
@@ -195,12 +196,21 @@ final class Library: ObservableObject {
     func restoreLibrary() async {
         guard !restoredLibrary else { return }
         restoredLibrary = true
-        await transfer.restorePeer()
-        defer { restoringSession = false }
         if FileManager.default.fileExists(atPath: localStore.root.appendingPathComponent("active").path) {
             await openSavedLocalLibrary()
         }
+        // Local music must remain usable while Keychain or remote setup is unavailable.
+        restoringSession = false
+#if os(macOS)
+        Task { [weak self] in
+            guard let self else { return }
+            await transfer.restorePairing()
+            if transfer.pairedName != nil { await startPairing(newPairing: false) }
+        }
+#endif
+        await transfer.restorePeer()
         if transfer.clusterRegistration != nil && !transfer.busy { transfer.connectCluster() }
+        transfer.resumeSaves()
     }
 
     func reload() {
@@ -218,6 +228,7 @@ final class Library: ObservableObject {
         try Data().write(to: localStore.root.appendingPathComponent("active"), options: .atomic)
         let sameLibrary = localCatalog?.id == catalog.id
         if !sameLibrary {
+            transfer.stopSaveWorker()
             stop()
             current = nil
             queue = []
@@ -333,6 +344,34 @@ final class Library: ObservableObject {
     func openSavedLocalLibrary() async {
         do {
 #if os(macOS)
+            if let snapshot = try localStore.snapshot(), try localStore.database().clusterRegistration() != nil {
+                try openLocal(snapshot.catalog)
+                if snapshot.sourceRoot != nil {
+                    do {
+                        let data = try Data(contentsOf: localStore.root.appendingPathComponent("folder.bookmark"))
+                        var stale = false
+                        let url = try URL(resolvingBookmarkData: data, options: .withSecurityScope,
+                            relativeTo: nil, bookmarkDataIsStale: &stale)
+                        let scoped = url.startAccessingSecurityScopedResource()
+                        if let scopedFolder { scopedFolder.stopAccessingSecurityScopedResource() }
+                        scopedFolder = scoped ? url : nil
+                        let files = await Task.detached {
+                            var files: [String: URL] = [:]
+                            for entry in snapshot.catalog.entries {
+                                guard let path = snapshot.sourcePaths[entry.track.id] else { continue }
+                                let file = url.appendingPathComponent(path).resolvingSymlinksInPath()
+                                guard file.path.hasPrefix(url.resolvingSymlinksInPath().path + "/"),
+                                      (try? LocalMusicStore.digest(file: file)) == entry.sha256 else { continue }
+                                files[entry.track.id] = file
+                            }
+                            return files
+                        }.value
+                        localFolder = LocalFolder(root: url, catalog: snapshot.catalog, files: files, skipped: [])
+                        refreshLocalFiles()
+                    } catch { message = "元の音楽フォルダを開けませんでした。ライブラリと保存済み音源は保持しています。設定からアクセスを確認してください。" }
+                }
+                return
+            }
             if let snapshot = try localStore.snapshot(), snapshot.sourceRoot == nil {
                 try openLocal(snapshot.catalog)
                 return
@@ -366,7 +405,11 @@ final class Library: ObservableObject {
             }
             let sameFolder = previousFolder?.standardizedFileURL.resolvingSymlinksInPath().path == url.standardizedFileURL.resolvingSymlinksInPath().path
             let id = sameFolder ? previous?.catalog.id ?? UUID().uuidString : UUID().uuidString
-            let folder = try await Task.detached { try await LocalFolder.scan(url, id: id, previous: previous) }.value
+            var folder = try await Task.detached { try await LocalFolder.scan(url, id: id, previous: previous) }.value
+            if sameFolder, let previous {
+                let scanned = Set(folder.catalog.entries.map { $0.track.id })
+                folder.catalog.entries += previous.catalog.entries.filter { !scanned.contains($0.track.id) && localStore.hasFile($0) }
+            }
             try localStore.prepare()
             let bookmark = try url.bookmarkData(options: .withSecurityScope, includingResourceValuesForKeys: nil, relativeTo: nil)
             try localStore.save(folder)
@@ -376,9 +419,9 @@ final class Library: ObservableObject {
             scopedFolder = scoped ? url : nil
             releaseScopeOnFailure = false
             localFolder = folder
-            localFiles = folder.files
+            refreshLocalFiles()
             if !folder.skipped.isEmpty { message = "読み込めなかった音源: " + folder.skipped.joined(separator: "、") }
-            try await transfer.host(folder)
+            if transfer.pairedName != nil { try await transfer.host(folder) }
         } catch {
             if releaseScopeOnFailure { url.stopAccessingSecurityScopedResource() }
             if localCatalog == nil, let saved = try? localStore.load() {
@@ -388,9 +431,12 @@ final class Library: ObservableObject {
         }
     }
 
-    func startPairing() async {
+    func startPairing(newPairing: Bool = true) async {
         guard let localFolder else { return }
-        do { try await transfer.host(localFolder, newPairing: true) }
+        do {
+            guard try localStore.database().clusterRegistration() == nil else { return }
+            try await transfer.host(localFolder, newPairing: newPairing)
+        }
         catch { message = error.localizedDescription }
     }
 #endif
@@ -634,6 +680,7 @@ final class Library: ObservableObject {
 
     func setBackgrounded(_ backgrounded: Bool) {
         self.backgrounded = backgrounded
+        transfer.setSavesBackgrounded(backgrounded)
         if backgrounded, loading, player == nil {
             pause()
             playbackFailure = "バックグラウンドでは音源を取得できません。アプリを開いて再試行してください。"
@@ -696,6 +743,7 @@ final class Library: ObservableObject {
     }
 
     func closeLibrary() {
+        transfer.stopSaveWorker()
         transfer.cancel()
 #if os(macOS)
         transfer.stopHosting()
@@ -727,25 +775,60 @@ final class Library: ObservableObject {
         localCatalog?.entries.first(where: { $0.track.id == track.id }).map(localStore.hasFile) ?? false
     }
 
-    func removeLocalCopy(_ track: Track) {
+    func canRemoveLocalCopy(_ track: Track) -> Bool {
+        guard hasManagedCopy(track) else { return false }
+        if let registration = transfer.clusterRegistration {
+            return (try? registration.membership.verify(registration.localGrant).host) == false
+        }
+        return true
+    }
+
+    func removeLocalCopies() {
         do {
-            guard let entry = localCatalog?.entries.first(where: { $0.track.id == track.id }) else { throw LocalMusicError.invalidData }
-            try transfer.removeClusterCopy(entry)
-            if current?.id == track.id { stop() }
+            let tracks = localCopiesToRemove.filter(canRemoveLocalCopy)
+            try transfer.cancelSaves(containing: tracks)
+            if let current, tracks.contains(where: { $0.id == current.id }) { stop() }
+            for track in tracks {
+                guard let entry = localCatalog?.entries.first(where: { $0.track.id == track.id }) else { throw LocalMusicError.invalidData }
+                try transfer.removeClusterCopy(entry)
+            }
             refreshLocalFiles()
         } catch { message = error.localizedDescription }
-        localCopyToRemove = nil
+        localCopiesToRemove = []
+        transfer.resumeSaves()
+    }
+
+    func addMusic(_ files: [URL]) async {
+        if transfer.clusterRegistration != nil || transfer.peerConnected {
+            transfer.uploadPeer(files: files)
+            return
+        }
+        guard !refreshing else { return }
+        refreshing = true
+        defer { refreshing = false }
+        do {
+            var catalog = localCatalog ?? LocalCatalog(id: UUID().uuidString, name: "マイライブラリ", entries: [])
+            let prepared = try await UploadedMusic.prepare(files, organization: catalog.organization ?? AlbumOrganization(), sourceID: catalog.id)
+            catalog.organization = prepared.organization
+            for (original, entry) in zip(files, prepared.entries) {
+                let scoped = original.startAccessingSecurityScopedResource()
+                defer { if scoped { original.stopAccessingSecurityScopedResource() } }
+                let temporary = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+                defer { try? FileManager.default.removeItem(at: temporary) }
+                try FileManager.default.copyItem(at: original, to: temporary)
+                try localStore.importFile(temporary, entry: entry)
+                catalog.entries.removeAll { $0.track.id == entry.track.id }
+                catalog.entries.append(entry)
+                try localStore.save(catalog)
+            }
+            try openLocal(catalog)
+        } catch {
+            if let saved = try? localStore.load() { try? openLocal(saved) }
+            message = "音楽を追加できませんでした。\(error.localizedDescription)"
+        }
     }
 
 #if os(iOS)
-    func download(_ track: Track) {
-        guard transfer.connected || transfer.clusterRegistration != nil else {
-            message = "設定またはアルバム画面からMacに接続して保存してください。"
-            return
-        }
-        transfer.copy([track])
-    }
-
     private func activateAudio() -> Bool {
         do {
             try AVAudioSession.sharedInstance().setCategory(.playback, mode: .default)

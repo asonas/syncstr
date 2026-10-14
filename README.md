@@ -4,12 +4,14 @@ A native macOS and iPhone player for a music library you manage yourself.
 
 ## Current implementation
 
-The apps support a local music folder on macOS and direct album copies to a paired iPhone on the same LAN. Received music and its catalog can be opened without a network connection. See [local music onboarding](docs/local-music-transfer.md) for setup, the transfer contract, and verification limits.
+Both Apple apps can join an existing cluster library using an invitation, or import music for local playback without enrollment. macOS also supports a selected music folder. The retained catalog stays visible offline, and playback and explicit offline saves automatically select an authorized source. Track and album saves retain pending requests across restarts, report partial results, and resume under the communication policy while the app is active.
+
+Settings contains enrollment, hosts, connection diagnostics, conflicts, communication policy, storage limits, and legacy connections. The older Mac-to-iPhone pairing flow remains available under **Legacy device transfer** in Settings; see [the legacy transfer guide](docs/local-music-transfer.md) for its protocol and verification limits.
 
 An opt-in headless P2P node also supports catalog browsing, original-file uploads, and verified downloads from both native apps. See [P2P setup](docs/p2p-music-transfer.md); existing deployments must explicitly enable this transport.
 
 - **macOS:** album, artist, and track browsing; search; continuous playback; seeking; and folder selection.
-- **iPhone:** library browsing, search, playback, album transfers, background audio, and lock-screen controls. The saved library opens without a connection.
+- **iPhone:** library browsing, search, local import, playback, track/album offline saves, background audio, and lock-screen controls. The saved library opens without a connection.
 
 Start with the [macOS guide](apps/macos/README.md) or [iPhone guide](apps/ios/README.md) for build and verification steps. [Issue #11](https://github.com/asonas/syncstr/issues/11) records implementation milestones; [open issues](https://github.com/asonas/syncstr/issues) track follow-up work. Record local builds, distribution, and device verification separately.
 
@@ -22,6 +24,7 @@ Start with the [macOS guide](apps/macos/README.md) or [iPhone guide](apps/ios/RE
 | Compilation album organization | [Retention policy](docs/compilation-data-design.md), [revised membership and artwork policy](docs/compilation-policy-review.md), [revision implementation plan](docs/compilation-revision-implementation-plan.md), [earlier implementation](docs/compilation-implementation-spec.md), [verification](docs/validation/compilation-albums.md), [glossary](GLOSSARY.md), [metadata preservation decision](docs/adr/0001-preserve-imported-metadata-and-user-choices.md) |
 | Shared playback and pairing credentials | [Library.swift](apps/macos/Library.swift), [Track.swift](apps/macos/Track.swift), [CredentialStore.swift](apps/macos/CredentialStore.swift). The iOS target compiles these same files |
 | Player behavior and retention | [Player specification](docs/player-interaction-spec.md), [cluster interaction specification](docs/cluster-ui-review.md), [verification](docs/validation/player-interactions.md), [playback cache](apps/macos/PlaybackCache.swift) |
+| Offline-save lifecycle and Apple library entry | [Shared save queue and controls](apps/macos/OfflineSaves.swift), [cluster interaction validation](docs/validation/cluster-library-ui.md) |
 | iPhone UI and device features | [Sources](apps/ios/Sources/), [iPhone guide](apps/ios/README.md) |
 | Folder settings | [SettingsView.swift](apps/macos/SettingsView.swift) |
 | Headless NAS node and CLI | [Headless guide](headless/README.md), [HTTPS API](headless/src/api.rs), [node catalog](headless/src/store.rs) |

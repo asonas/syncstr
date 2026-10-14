@@ -195,6 +195,14 @@ final class LocalTransfer: ObservableObject {
     private var pendingClusterMetadata = false
     var clusterResultsPending = false
     @Published private(set) var automaticCellular = false
+    @Published var saveRequests: [OfflineSaveRequest] = []
+    var saveWorker: Task<Void, Never>?
+    var saveRetry: Task<Void, Never>?
+    var saveNetwork: ClusterNetwork?
+    var saveGeneration = UUID()
+    var savesBackgrounded = false
+    var savePathIsCellular: Bool { clusterPath.currentPath.usesInterfaceType(.cellular) }
+    var permitsAutomaticSaveAudio: Bool { permitsAutomaticAudio }
     private let clusterPath = NWPathMonitor()
     private var automaticAudioOperation = false
     private var clusterRetry: Task<Void, Never>?
@@ -232,9 +240,13 @@ final class LocalTransfer: ObservableObject {
         self.secrets = secrets
         self.peerSecrets = peerSecrets
         self.peerPairing = peerPairing
+        restoreSaves()
         clusterPath.pathUpdateHandler = { [weak self] path in
             Task { @MainActor in
-                guard let self, self.clusterRegistration != nil else { return }
+                guard let self else { return }
+                self.stopSaveWorker()
+                self.resumeSaves()
+                guard self.clusterRegistration != nil else { return }
                 let permitted = ClusterTransferPolicy.permitsAutomaticAudio(online: path.status == .satisfied,
                     cellular: path.usesInterfaceType(.cellular), optedIn: self.automaticCellular)
                 if !permitted && self.automaticAudioOperation {
@@ -256,6 +268,8 @@ final class LocalTransfer: ObservableObject {
         do {
             try store.database().setClusterAutomaticCellular(enabled)
             automaticCellular = enabled
+            stopSaveWorker()
+            resumeSaves()
             scheduleClusterRetry()
         } catch { status = error.localizedDescription }
     }
@@ -565,14 +579,18 @@ final class LocalTransfer: ObservableObject {
     }
 
     func removeClusterCopy(_ entry: LocalEntry) throws {
-        guard !busy, clusterRegistration != nil, LocalMusicStore.valid(entry) else { throw LocalMusicError.invalidData }
+        guard !busy, saveWorker == nil, LocalMusicStore.valid(entry) else { throw LocalMusicError.invalidData }
         let database = try store.database()
+        if let registration = try database.clusterRegistration(),
+           try registration.membership.verify(registration.localGrant).host { throw LocalMusicError.unauthorized }
         let batches = try database.clusterBatches()
         guard !batches.flatMap(\.items).contains(where: { $0.entry?.sha256 == entry.sha256 && $0.state != .stored }) else {
             throw LocalMusicError.clusterNeedsAttention
         }
         let file = store.fileURL(entry)
         if FileManager.default.fileExists(atPath: file.path) { try FileManager.default.removeItem(at: file) }
+        let cached = playbackCache.store.fileURL(entry)
+        if FileManager.default.fileExists(atPath: cached.path) { try FileManager.default.removeItem(at: cached) }
         try database.forgetReceived(entry)
         for var batch in batches {
             for index in batch.items.indices where batch.items[index].entry?.sha256 == entry.sha256 && batch.items[index].state == .stored {
@@ -630,6 +648,7 @@ final class LocalTransfer: ObservableObject {
                 peerAddressText = addressText
                 connected = true
                 status = "P2Pで接続しました。アルバムを選んで保存できます。"
+                resumeSaves()
             } catch {
                 if generation == attempt { client?.close(); client = nil; connected = false; status = error.localizedDescription }
             }
@@ -988,6 +1007,7 @@ final class LocalTransfer: ObservableObject {
                 self.catalog = catalog
                 pairedName = device.name
                 connected = true
+                resumeSaves()
                 status = "アルバムを選んで保存できます。転送中は両方のアプリを開いてください。"
             } catch {
                 if generation == attempt { client?.close(); client = nil; status = error.localizedDescription; connected = false }

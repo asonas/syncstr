@@ -128,6 +128,9 @@ final class ClusterNetwork {
                 let catalog = try await UploadedMusic.recoverClusterEvidence(database.clusterCatalog(), store: store)
                 try store.save(catalog, clusterEdits: true)
                 return
+            } catch is IrohLib.IrohError {
+                try Task.checkCancellation()
+                failure = LocalMusicError.clusterUnavailable
             } catch {
                 try Task.checkCancellation()
                 failure = error

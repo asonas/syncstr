@@ -128,13 +128,13 @@ enum LocalMusicError: LocalizedError {
     var errorDescription: String? {
         switch self {
         case .invalidData: "音楽の情報を確認できませんでした。もう一度転送してください。"
-        case .disconnected: "接続が切れました。両方のアプリを開き、同じWi-Fiで再接続してください。"
-        case .unauthorized: "ペアリングが承認されませんでした。Macで新しいコードを表示してやり直してください。"
-        case .changedFile: "音源が変更されたか読み込めません。Macのライブラリを更新してください。"
+        case .disconnected: "接続が切れました。保存済みの音楽は引き続き聴けます。接続を確認して再試行してください。"
+        case .unauthorized: "ライブラリへのアクセスが許可されませんでした。設定の登録内容を確認するか、ライブラリの管理者に確認してください。"
+        case .changedFile: "音源が変更されたか読み込めません。ライブラリを更新してください。"
         case .noMusic: "再生できる音源が見つかりませんでした。別のフォルダを選んでください。"
         case .invalidCode: "Macに表示された32文字のコードを入力してください。"
         case .incompatiblePeer: "接続先のSyncstrを更新してください。アルバムの整理情報に対応していません。"
-        case .clusterUnavailable: "ライブラリの保存先に接続できません。同じLANへの接続と保存先の起動を確認してください。保存済みの音源は引き続き再生できます。"
+        case .clusterUnavailable: "利用できる音源に接続できません。保存済みの音楽は引き続き聴けます。接続後に再試行できます。"
         case .clusterNeedsAttention: "保存先で変更の確認が必要です。ライブラリを更新して競合を確認し、解消後に再試行してください。音源はこの端末に保持しています。"
         }
     }

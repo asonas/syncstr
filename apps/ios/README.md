@@ -1,12 +1,14 @@
 # syncstr for iPhone
 
-A SwiftUI player for music copied from a paired Mac, targeting iOS 27 or later. The target compiles the shared library, local catalog, transfer, track, and pairing credential components from `apps/macos/`.
+A SwiftUI player for a cluster library or locally imported music, targeting iOS 27 or later. The target compiles the shared library, local catalog, save queue, transfer, track, and credential components from `apps/macos/`.
 
-## Local music onboarding
+## Library entry and offline saves
 
-On the Mac, choose a music folder and open **Transfer to iPhone**. On the phone, allow local-network access, choose the Mac, scan its QR code or enter its pairing code, and connect. Approve the phone on the Mac. Open an album and save it; completed tracks receive a saved indicator. Keep both apps open during copying. After interruption, reconnect and retry; completed tracks are verified and skipped.
+The library screen offers **Join an existing library** and **Add music files**. An invitation registers the existing library; local file import needs no enrollment and does not assign the library-host role. Previously received catalogs stay visible without a connection.
 
-The catalog, artwork, and completed audio remain on the phone after restarting without networking. Unsaved tracks remain distinguishable from saved tracks. Pairing controls are in Settings; removing a pairing retains received files. See [the local-transfer guide](../../docs/local-music-transfer.md).
+Save tracks or albums near playback controls. Requests and completed results survive restart. The app shows connection waiting, Wi-Fi waiting, progress, partial results, retry, and cancellation. Automatic resumption runs while the app is active and follows the cellular policy. Cancellation keeps successful tracks; album additions require another explicit Save. Save removal frees managed audio and its cache copy, preserves originals and shared items, and confirms playback interruption. Host copies are excluded.
+
+Settings groups enrollment, hosts, diagnostics, conflicts, cellular policy, and storage. Existing paired users can open **Legacy device transfer** there. On the Mac, select a folder and open the same Settings entry, then scan its QR code or enter its pairing code and approve the phone. Keep both apps open during transfer. Removing pairing retains received files. See [the legacy transfer guide](../../docs/local-music-transfer.md).
 
 ## Player behavior
 

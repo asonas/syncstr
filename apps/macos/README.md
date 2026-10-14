@@ -1,12 +1,14 @@
 # syncstr for macOS
 
-A native player for music in a folder you select. Browse albums, artists, and tracks; play original files; and copy albums directly to a paired iPhone on the same local network.
+A native player for one music library. Join an existing cluster library using an invitation, import audio files for local playback without enrollment, or select a music folder. Importing does not assign the library-host role.
 
-## Local music and iPhone pairing
+## Library entry and offline saves
 
-Choose **Select Music Folder** on first launch. Syncstr reads supported audio and tags without editing your files, and remembers folder access through a security-scoped bookmark. Open **Transfer to iPhone** in the sidebar, select the Mac from Syncstr on the phone, scan its QR code or enter its code, then approve the phone on the Mac. Keep both apps open during transfer.
+First launch offers **Join an existing library**, **Select Music Folder**, and **Add music files**. Folder access uses a security-scoped bookmark, and originals are never edited. Settings contains library registration, hosts and connection diagnostics, conflicts, communication policy, and storage settings. New cluster creation and library-host role assignment are outside this GUI delivery.
 
-The phone can save albums and listen after the Mac is closed. Use Settings to change folders. See [the local-transfer guide](../../docs/local-music-transfer.md) for trust, retry behavior, and limits.
+Track and album actions save audio on this device without host selection. Pending requests and successful tracks survive restart. Unreachable sources show connection waiting; automatic resumption obeys the cellular setting. Retry fetches unfinished items, and cancellation keeps successful saves. Album requests snapshot their tracks; later additions need another Save. Removing a save deletes its managed audio and cache copy, preserves originals and shared-library entries, and confirms interruption of an affected player. Host copies cannot be removed through this action.
+
+The former sidebar transfer action is under Settings > **Legacy connections** > **Legacy device transfer**. Select a music folder, start pairing there, and connect from the phone's corresponding Settings page. See [the legacy transfer guide](../../docs/local-music-transfer.md) for trust and protocol limits.
 
 ## P2P node connection
 

@@ -1,6 +1,6 @@
 # Cluster-aligned library interaction specification
 
-Status: accepted. Q1–Q24 and the consolidated specification are confirmed. Application implementation has not started.
+Status: accepted. Q1–Q24 and the consolidated specification are confirmed. Apple application changes are implemented; see [validation and remaining acceptance checks](validation/cluster-library-ui.md). Main integration and distribution are recorded separately from acceptance results.
 
 ## Goal and scope
 
