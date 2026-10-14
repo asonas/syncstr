@@ -34,7 +34,16 @@ An assertion that music belongs to a compilation, does not belong to one, or has
 _Avoid_: Non-compilation when the classification is merely unknown
 
 **Imported Metadata**:
-Information read from the original music files. It remains distinguishable from the listener's choices about how to organize the music.
+Information obtained from music files or a source music library, with its origin retained. It remains distinguishable from the listener's explicit organization choices made in Syncstr.
+
+**Source Library Metadata**:
+Track and album information held by the music library being migrated, including edits made there. It may differ from metadata embedded in the audio file.
+
+**Eligible Migration Track**:
+A personally imported or purchased track, including a matched or uploaded cloud copy, whose origin is established and whose audio is available without protection preventing transfer. Subscription-catalog entries and unresolved cases are outside this set.
+
+**Cloud-Retrieved Copy**:
+An audio file obtained from the listener's cloud library for an eligible track. Its encoding and quality may differ from the listener's original file.
 
 **User Override**:
 An explicit listener choice that takes precedence over imported metadata until the listener removes it.
