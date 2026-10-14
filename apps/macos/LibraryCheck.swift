@@ -176,23 +176,23 @@ struct LibraryCheck {
         try library.openLocal(beforeRepair)
         try require(library.albums.count == 2)
         print("PASS: automatic membership repair preserves player, queue and former selection")
-        try require(!library.canGoPrevious && library.canGoNext)
+        try require(library.canGoPrevious && library.canGoNext)
         library.navigate(.artists)
         library.next()
         try require(library.current?.title == "Second")
         try require(library.canGoPrevious && !library.canGoNext)
         try await wait("Second track did not play") { library.playing && library.position > 0 }
-        library.togglePlayback(in: albumTracks)
+        library.pause()
         try await wait("Album pause failed") { !library.playing && !library.loading }
         let pausedPlayer = mediaPlayers.last!
         let pausedPosition = pausedPlayer.currentTime().seconds
-        library.togglePlayback(in: albumTracks)
+        library.resumePlayback()
         try await wait("Album resume failed") { library.playing }
         try require(library.current?.title == "Second" && library.queue.map(\.title) == ["First", "Second"])
         try require(mediaPlayers.last! === pausedPlayer && pausedPlayer.currentTime().seconds >= pausedPosition)
-        print("PASS: album action starts, switches albums, pauses and resumes without replacing the queue")
+        print("PASS: album actions start playback; player pause/resume preserves position and queue")
         library.setShuffle(true)
-        try require(library.queue.map(\.title) == ["Second", "First"])
+        try require(library.queue.map(\.title) == ["First", "Second"])
         try require(mediaPlayers.last! === pausedPlayer && library.current?.title == "Second")
         library.setShuffle(false)
         try require(library.queue.map(\.title) == ["First", "Second"])

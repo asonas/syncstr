@@ -7,12 +7,11 @@ enum PhoneStyle {
     static let button = Color(red: 18 / 255, green: 83 / 255, blue: 1)
 }
 
-enum PhoneTab: Hashable { case library, search, playing, settings }
+enum PhoneTab: Hashable { case library, search, settings }
 
 struct PhoneRoot: View {
     @ObservedObject var library: Library
     @State private var tab = PhoneTab.library
-    @State private var showingPlayer = false
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @Environment(\.scenePhase) private var scenePhase
 
@@ -25,17 +24,10 @@ struct PhoneRoot: View {
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
-                tabs.tabViewBottomAccessory(isEnabled: library.current != nil && tab != .playing) { miniPlayer }
+                tabs.tabViewBottomAccessory(isEnabled: library.current != nil) { miniPlayer }
             }
         }
         .background(PhoneStyle.graphite)
-        .onChange(of: library.showingNowPlaying) { _, showing in
-            if showing { tab = .playing }
-            else if tab == .playing { tab = .library }
-        }
-        .onChange(of: tab) { _, selected in
-            library.showingNowPlaying = selected == .playing
-        }
         .onChange(of: scenePhase) { _, phase in
             if phase == .background, library.transfer.peerConnected { library.transfer.cancel() }
         }
@@ -46,7 +38,7 @@ struct PhoneRoot: View {
         } message: { track in
             Text("「\(track.title)」のSyncstr内のコピーを削除します。保存先の音源と元のファイルは残ります。")
         }
-        .sheet(isPresented: $showingPlayer) {
+        .sheet(isPresented: $library.showingNowPlaying) {
             PhoneNowPlaying(library: library)
                 .presentationDragIndicator(.visible)
                 .presentationBackground(PhoneStyle.graphite)
@@ -85,9 +77,6 @@ struct PhoneRoot: View {
             NavigationStack { search }
                 .tabItem { Label("検索", image: "regen-search") }
                 .tag(PhoneTab.search)
-            NavigationStack { PhoneNowPlaying(library: library) }
-                .tabItem { Label("再生中", image: "regen-circle-play") }
-                .tag(PhoneTab.playing)
             NavigationStack { settings }
                 .tabItem { Label("設定", image: "regen-settings") }
                 .tag(PhoneTab.settings)
@@ -170,7 +159,6 @@ struct PhoneRoot: View {
     }
 
     private func albumDetail(_ album: Album) -> some View {
-        let active = (library.playing || library.loading) && album.tracks.contains { $0.id == library.current?.id }
         return GeometryReader { geometry in
             List {
                 VStack(spacing: 0) {
@@ -188,8 +176,8 @@ struct PhoneRoot: View {
                         library.togglePlayback(in: album.tracks)
                     } label: {
                         HStack(spacing: 8) {
-                            RegenIcon(name: active ? "filled-pause" : "filled-play")
-                            Text(active ? "一時停止" : "再生")
+                            RegenIcon(name: "filled-play")
+                            Text("再生")
                         }
                         .frame(minWidth: 160, minHeight: 44)
                         .background(PhoneStyle.button, in: RoundedRectangle(cornerRadius: 8))
@@ -197,7 +185,7 @@ struct PhoneRoot: View {
                     }
                     .buttonStyle(.plain)
                     .disabled(album.tracks.isEmpty)
-                    .accessibilityLabel(active ? "一時停止" : "再生")
+                    .accessibilityLabel("再生")
                     AlbumTransferButton(transfer: library.transfer, tracks: album.tracks).padding(.top, 16)
                 }
                 .frame(maxWidth: .infinity)
@@ -316,13 +304,13 @@ struct PhoneRoot: View {
 
     private var miniPlayer: some View {
         HStack(spacing: 8) {
-            Button { showingPlayer = true } label: {
+            Button { library.showingNowPlaying = true } label: {
                 HStack(spacing: 8) {
                     artwork(library.current?.coverArt, size: 28)
                     VStack(alignment: .leading, spacing: 0) {
                         Text(library.current?.title ?? "").fontWeight(.semibold).lineLimit(1)
                         if dynamicTypeSize <= .xLarge {
-                            Text(library.current?.artist ?? "").foregroundStyle(.secondary).lineLimit(1)
+                            Text(library.loading ? "再生を準備中" : library.playbackFailure != nil ? "再生できません。詳細を確認" : library.current?.artist ?? "").foregroundStyle(.secondary).lineLimit(1)
                         }
                     }
                     .font(.subheadline)
@@ -336,18 +324,20 @@ struct PhoneRoot: View {
             .accessibilityLabel("\(library.current?.title ?? "")の再生中画面を開く")
             .accessibilityValue(library.current?.artist ?? "")
             Button { library.togglePlayback() } label: {
-                RegenIcon(name: library.playing || library.loading ? "filled-pause" : "filled-play", size: 28)
-                    .frame(width: 44, height: 44)
-                    .contentShape(Rectangle())
+                Group {
+                    if library.loading { Text("中止").font(.caption) }
+                    else { RegenIcon(name: library.playing ? "filled-pause" : "filled-play", size: 28) }
+                }.frame(width: 44, height: 44).contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            .accessibilityLabel(library.playing || library.loading ? "一時停止" : "再生")
+            .accessibilityLabel(library.playbackAction)
         }
         .padding(.horizontal, 16)
     }
 
     private var settings: some View {
         Form {
+            Section { PlaybackStorageSettings(library: library) }
             if library.transfer.clusterRegistration == nil {
                 Section { PhonePairingView(transfer: library.transfer) }
             }

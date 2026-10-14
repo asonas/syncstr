@@ -11,6 +11,8 @@ struct SettingsView: View {
                 .foregroundStyle(.secondary)
             if let message = library.message { Text(message).textSelection(.enabled) }
             Divider()
+            PlaybackStorageSettings(library: library)
+            Divider()
             PeerSetupView(transfer: library.transfer)
         }.padding(24) }
         .frame(width: 520, height: 680)

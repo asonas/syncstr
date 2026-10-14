@@ -1,6 +1,9 @@
 import AVFoundation
 import Combine
 import MediaPlayer
+#if os(macOS)
+import CoreAudio
+#endif
 
 @MainActor
 final class PhonePlayback: ObservableObject {
@@ -8,20 +11,24 @@ final class PhonePlayback: ObservableObject {
     private var targets: [(MPRemoteCommand, Any)] = []
     private var changes: AnyCancellable?
     private var interruption: AnyCancellable?
+    private var routeChange: AnyCancellable?
+#if os(macOS)
+    private var output: MacPlaybackOutput?
+#endif
 
     init(library: Library) {
         self.library = library
         let commands = MPRemoteCommandCenter.shared()
         register(commands.playCommand) { [weak self] _ in
             Task { @MainActor in
-                guard let library = self?.library, !library.playing && !library.loading else { return }
-                library.togglePlayback()
+                guard let library = self?.library else { return }
+                library.resumePlayback()
             }
             return .success
         }
         register(commands.pauseCommand) { [weak self] _ in
             Task { @MainActor in
-                guard let library = self?.library, library.playing || library.loading else { return }
+                guard let library = self?.library else { return }
                 library.pause()
             }
             return .success
@@ -47,6 +54,7 @@ final class PhonePlayback: ObservableObject {
         changes = library.objectWillChange.sink { [weak self] in
             Task { @MainActor in self?.update() }
         }
+#if os(iOS)
         interruption = NotificationCenter.default.publisher(for: AVAudioSession.interruptionNotification)
             .sink { [weak self] notification in
                 let type = notification.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt
@@ -56,6 +64,18 @@ final class PhonePlayback: ObservableObject {
                     library.pause()
                 }
             }
+        routeChange = NotificationCenter.default.publisher(for: AVAudioSession.routeChangeNotification)
+            .sink { [weak self] notification in
+                let reason = notification.userInfo?[AVAudioSessionRouteChangeReasonKey] as? UInt
+                Task { @MainActor in
+                    guard reason == AVAudioSession.RouteChangeReason.oldDeviceUnavailable.rawValue else { return }
+                    self?.library.pause()
+                }
+            }
+#endif
+#if os(macOS)
+        output = MacPlaybackOutput { [weak library] in library?.pause() }
+#endif
         update()
     }
 
@@ -75,7 +95,7 @@ final class PhonePlayback: ObservableObject {
         commands.togglePlayPauseCommand.isEnabled = selected
         commands.nextTrackCommand.isEnabled = library.canGoNext
         commands.previousTrackCommand.isEnabled = library.canGoPrevious
-        commands.changePlaybackPositionCommand.isEnabled = selected && library.duration > 0
+        commands.changePlaybackPositionCommand.isEnabled = library.canSeek
         guard let track = library.current else {
             MPNowPlayingInfoCenter.default().nowPlayingInfo = nil
             return
@@ -88,5 +108,68 @@ final class PhonePlayback: ObservableObject {
             MPNowPlayingInfoPropertyElapsedPlaybackTime: library.position,
             MPNowPlayingInfoPropertyPlaybackRate: library.playing ? 1.0 : 0.0
         ]
+#if os(macOS)
+        MPNowPlayingInfoCenter.default().playbackState = library.playing ? .playing : .paused
+#endif
     }
 }
+
+#if os(macOS)
+@MainActor
+private final class MacPlaybackOutput {
+    private let pause: () -> Void
+    private var device: AudioDeviceID = 0
+    private var jack: UInt32?
+    private var listeners: [(AudioObjectID, AudioObjectPropertyAddress, AudioObjectPropertyListenerBlock)] = []
+
+    init(pause: @escaping () -> Void) {
+        self.pause = pause
+        observe(AudioObjectID(kAudioObjectSystemObject), selector: kAudioHardwarePropertyDefaultOutputDevice, scope: kAudioObjectPropertyScopeGlobal)
+        update()
+    }
+
+    deinit {
+        for (object, address, block) in listeners {
+            var address = address
+            AudioObjectRemovePropertyListenerBlock(object, &address, .main, block)
+        }
+    }
+
+    private func observe(_ object: AudioObjectID, selector: AudioObjectPropertySelector, scope: AudioObjectPropertyScope) {
+        var address = AudioObjectPropertyAddress(mSelector: selector, mScope: scope, mElement: kAudioObjectPropertyElementMain)
+        let block: AudioObjectPropertyListenerBlock = { [weak self] _, _ in
+            Task { @MainActor in self?.update() }
+        }
+        if AudioObjectAddPropertyListenerBlock(object, &address, .main, block) == noErr {
+            listeners.append((object, address, block))
+        }
+    }
+
+    private func read(_ object: AudioObjectID, _ selector: AudioObjectPropertySelector, scope: AudioObjectPropertyScope = kAudioObjectPropertyScopeGlobal) -> UInt32? {
+        var address = AudioObjectPropertyAddress(mSelector: selector, mScope: scope, mElement: kAudioObjectPropertyElementMain)
+        var value: UInt32 = 0
+        var size = UInt32(MemoryLayout<UInt32>.size)
+        guard AudioObjectGetPropertyData(object, &address, 0, nil, &size, &value) == noErr else { return nil }
+        return value
+    }
+
+    private func update() {
+        if device != 0 {
+            let nextJack = read(device, kAudioDevicePropertyJackIsConnected, scope: kAudioDevicePropertyScopeOutput)
+            if read(device, kAudioDevicePropertyDeviceIsAlive) != 1 || (jack == 1 && nextJack == 0) { pause() }
+            jack = nextJack
+        }
+        guard let next = read(AudioObjectID(kAudioObjectSystemObject), kAudioHardwarePropertyDefaultOutputDevice), next != device else { return }
+        let oldDevice = device
+        for (object, address, block) in listeners where object == oldDevice {
+            var address = address
+            AudioObjectRemovePropertyListenerBlock(object, &address, .main, block)
+        }
+        listeners.removeAll { $0.0 == oldDevice }
+        device = next
+        jack = read(device, kAudioDevicePropertyJackIsConnected, scope: kAudioDevicePropertyScopeOutput)
+        observe(device, selector: kAudioDevicePropertyDeviceIsAlive, scope: kAudioObjectPropertyScopeGlobal)
+        observe(device, selector: kAudioDevicePropertyJackIsConnected, scope: kAudioDevicePropertyScopeOutput)
+    }
+}
+#endif

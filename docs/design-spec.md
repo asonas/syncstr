@@ -26,9 +26,9 @@ The Mac plays originals directly. The iPhone plays received files and restores i
 
 ## Playback and interface
 
-Both apps browse albums, artists, and tracks and provide search, previous/next, pause/resume, seeking, and continuous playback in a queue. Album playback orders tracks by disc and track number. Search and navigation do not change the active queue. Playback stops after the final track and can restart it.
+Both apps browse albums, artists, and tracks and provide search, previous/next, pause/resume, seeking, and continuous playback in a queue. Album playback orders tracks by disc and track number. Search and navigation do not change the active queue. Playback stops after the final track and can restart it. The accepted [player interaction specification](player-interaction-spec.md) defines transport, device-local restoration, interruptions, and mini/full-player behavior.
 
-iPhone supports background audio and lock-screen controls. Saved and unsaved tracks are distinguishable. Unsaved tracks require a transfer before playback; there is no streaming fallback.
+iPhone supports background audio and lock-screen controls. Saved and unsaved tracks are distinguishable. Unsaved tracks are acquired and verified in full before playback, using a separate playback cache; there is no progressive streaming fallback. See the [cluster interaction specification](cluster-ui-review.md) for retention and transfer policy; its broader onboarding and save-lifecycle work is separate from the player changes.
 
 Follow [DESIGN.md](../DESIGN.md) for native platform controls, layout, colors, and accessibility. Use platform APIs for file authorization, playback, discovery, and camera access.
 

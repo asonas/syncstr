@@ -90,6 +90,11 @@ final class ClusterTransferTests: XCTestCase {
             let states = try database.clusterObjectStates()
             XCTAssertEqual(states.map(\.object), [entry.sha256])
             let selected = try XCTUnwrap(states.first?.selected(in: database.clusterChanges())?.action.entry)
+            let cache = LocalMusicStore(root: root.appendingPathComponent("playback-cache"))
+            try await session.download(selected, store: cache, database: database, cacheOnly: true) { _ in }
+            XCTAssertEqual(try LocalMusicStore.digest(file: cache.fileURL(selected)), entry.sha256)
+            XCTAssertFalse(store.hasFile(selected))
+            XCTAssertTrue(try database.clusterJobs().isEmpty)
             try await session.download(selected, store: store, database: database) { _ in }
             XCTAssertEqual(try database.clusterJobs().map(\.state), [.complete])
             XCTAssertEqual(try LocalMusicStore.digest(file: store.fileURL(selected)), entry.sha256)

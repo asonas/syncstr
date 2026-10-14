@@ -145,6 +145,9 @@ final class LocalTransferTests: XCTestCase {
             try await wait { !receiver.busy }
             XCTAssertTrue(receiver.connected, receiver.status ?? "")
             XCTAssertEqual(try files.load()?.organization?.choice(subject: organizedAlbum, kind: "classification")?.value, "true")
+            let cached = try await receiver.playbackFile(folder.catalog.entries[0].track)
+            XCTAssertEqual(try LocalMusicStore.digest(file: cached), folder.catalog.entries[0].sha256)
+            XCTAssertFalse(files.hasFile(folder.catalog.entries[0]))
             receiver.onSaved = { if receiver.completed == 1 { receiver.cancel() } }
             receiver.copy(folder.catalog.entries.map(\.track))
             try await wait { !receiver.busy }

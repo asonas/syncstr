@@ -199,6 +199,7 @@ final class LocalTransfer: ObservableObject {
     private var automaticAudioOperation = false
     private var clusterRetry: Task<Void, Never>?
     private lazy var clusterNetwork = ClusterNetwork(store: store, secrets: peerSecrets)
+    lazy var playbackCache = PlaybackCache(root: store.root.appendingPathComponent("playback-cache"))
     private var recoveredClusterJobs = false
     var peerConnected: Bool { connected && client is PeerMusicConnection }
     private var operation: Task<Void, Never>?
@@ -994,6 +995,65 @@ final class LocalTransfer: ObservableObject {
         }
     }
 
+    func cachedPlaybackFile(_ track: Track) throws -> URL? {
+        guard let entry = try store.load()?.entries.first(where: { $0.track.id == track.id }) else { return nil }
+        return try playbackCache.file(entry)
+    }
+
+    func playbackFile(_ track: Track) async throws -> URL {
+        guard let entry = try store.load()?.entries.first(where: { $0.track.id == track.id }) else { throw LocalMusicError.invalidData }
+        if let cached = try playbackCache.file(entry) { return cached }
+        try playbackCache.makeRoom(for: entry)
+        if clusterRegistration == nil { return try await legacyPlaybackFile(entry) }
+        let network = ClusterNetwork(store: store, secrets: peerSecrets)
+        return try await withTaskCancellationHandler {
+            defer { network.stop() }
+            try await network.download(object: entry.sha256, cache: playbackCache.store) { _ in }
+            try Task.checkCancellation()
+            guard let result = try playbackCache.file(entry) else { throw LocalMusicError.invalidData }
+            return result
+        } onCancel: {
+            Task { @MainActor in network.stop() }
+        }
+    }
+
+    private func legacyPlaybackFile(_ entry: LocalEntry) async throws -> URL {
+        guard let client, connected, !busy, let size = entry.track.size else { throw LocalMusicError.clusterUnavailable }
+        let attempt = generation
+        busy = true
+        defer { if generation == attempt { busy = false } }
+        return try await withTaskCancellationHandler {
+            let temporary = playbackCache.store.root.appendingPathComponent(".partial-" + UUID().uuidString)
+            defer { try? FileManager.default.removeItem(at: temporary) }
+            guard FileManager.default.createFile(atPath: temporary.path, contents: nil) else { throw CocoaError(.fileWriteUnknown) }
+            let handle = try FileHandle(forWritingTo: temporary)
+            defer { try? handle.close() }
+            do {
+                try await client.send(MusicMessage(kind: "get", track: entry.track.id))
+                var received: UInt64 = 0
+                while true {
+                    try Task.checkCancellation()
+                    let response = try await client.receive()
+                    if response.kind == "end", response.track == entry.track.id { break }
+                    guard response.kind == "data", let bytes = response.bytes, !bytes.isEmpty,
+                          bytes.count <= 65536, received + UInt64(bytes.count) <= size else { throw LocalMusicError.invalidData }
+                    try handle.write(contentsOf: bytes)
+                    received += UInt64(bytes.count)
+                }
+                try handle.close()
+                try Task.checkCancellation()
+                try playbackCache.store.importFile(temporary, entry: entry, recordReceipt: false)
+                return playbackCache.store.fileURL(entry)
+            } catch {
+                client.close()
+                if generation == attempt { self.client = nil; connected = false }
+                throw error
+            }
+        } onCancel: {
+            Task { @MainActor in client.close() }
+        }
+    }
+
     func copy(_ tracks: [Track]) {
         if clusterRegistration != nil { copyCluster(tracks); return }
         guard let client, let catalog, connected, !busy else { return }
@@ -1064,6 +1124,13 @@ final class LocalTransfer: ObservableObject {
                     try Task.checkCancellation()
                     guard let entry = saved?.entries.first(where: { $0.track.id == track.id }) else { throw LocalMusicError.invalidData }
                     let files = store
+                    if !files.hasFile(entry), let cached = try playbackCache.file(entry) {
+                        let temporary = store.root.appendingPathComponent(".cache-save-" + UUID().uuidString)
+                        defer { try? FileManager.default.removeItem(at: temporary) }
+                        try FileManager.default.copyItem(at: cached, to: temporary)
+                        try files.importFile(temporary, entry: entry)
+                        onSaved?()
+                    }
                     if try await Task.detached(operation: {
                         try files.hasFile(entry) && LocalMusicStore.digest(file: files.fileURL(entry)) == entry.sha256
                     }).value {

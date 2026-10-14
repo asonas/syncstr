@@ -48,7 +48,7 @@ struct LibraryView: View {
                         .ignoresSafeArea(.container, edges: .top)
                     content.frame(maxWidth: .infinity, maxHeight: .infinity)
                         .overlay(alignment: .bottom) {
-                            playbackBar.padding(.horizontal, 20).padding(.bottom, 20)
+                            if library.current != nil { playbackBar.padding(.horizontal, 20).padding(.bottom, 20) }
                         }
                 }
             } else if library.restoringSession {
@@ -188,9 +188,18 @@ struct LibraryView: View {
 
     @ViewBuilder
     private var content: some View {
-        if library.showingNowPlaying && library.search.isEmpty {
-            nowPlaying
-        } else if library.search.isEmpty, let albumID = library.selectedAlbum,
+        ZStack {
+            libraryContent
+                .opacity(library.showingNowPlaying ? 0 : 1)
+                .allowsHitTesting(!library.showingNowPlaying)
+                .accessibilityHidden(library.showingNowPlaying)
+            if library.showingNowPlaying { nowPlaying }
+        }
+    }
+
+    @ViewBuilder
+    private var libraryContent: some View {
+        if library.search.isEmpty, let albumID = library.selectedAlbum,
                   let album = library.albums.first(where: { $0.id == albumID }) {
             albumDetail(album)
         } else {
@@ -446,11 +455,10 @@ struct LibraryView: View {
     }
 
     private func playButton(_ tracks: [Track]) -> some View {
-        let active = (library.playing || library.loading) && tracks.contains { $0.id == library.current?.id }
         return Button { library.togglePlayback(in: tracks) } label: {
             HStack(spacing: 8) {
-                MacIcon(active ? "filled-pause" : "filled-play", size: 16)
-                Text(active ? "一時停止" : "再生")
+                MacIcon("filled-play", size: 16)
+                Text("再生")
             }
                 .frame(width: 128, height: 36)
                 .background(Studio.button, in: RoundedRectangle(cornerRadius: 8))
@@ -477,6 +485,10 @@ struct LibraryView: View {
                         }
                     }
                     seeking
+                    if let failure = library.playbackFailure {
+                        Text(failure).foregroundStyle(Studio.fog)
+                        Button("再試行", action: library.resumePlayback)
+                    }
                     HStack(spacing: 20) {
                         Toggle("シャッフル", isOn: Binding(
                             get: { library.shuffled }, set: { library.setShuffle($0) }
@@ -530,14 +542,13 @@ struct LibraryView: View {
     }
 
     private var playbackTitle: some View {
-        Button { library.showingNowPlaying = true; library.search = "" } label: {
+        Button { library.showingNowPlaying = true } label: {
             HStack(spacing: 8) {
                 Artwork(url: artworkURL(library.current?.coverArt)).frame(width: 40, height: 40)
                 VStack(alignment: .leading, spacing: 4) {
                     Text(library.current?.title ?? "曲を選んでください").font(.system(size: 14, weight: .medium)).lineLimit(1)
-                    if let artist = library.current?.artist {
-                        Text(artist).font(.system(size: 12)).foregroundStyle(.secondary).lineLimit(1)
-                    }
+                    Text(library.loading ? "再生を準備中" : library.playbackFailure != nil ? "再生できません。詳細を確認" : library.current?.artist ?? "")
+                        .font(.system(size: 12)).foregroundStyle(.secondary).lineLimit(1)
                 }.frame(maxWidth: .infinity, alignment: .leading)
                 if library.loading { ProgressView().controlSize(.small) }
             }.contentShape(Rectangle())
@@ -550,8 +561,9 @@ struct LibraryView: View {
             Button(action: library.previous) { MacIcon("filled-skip-back").frame(width: 32, height: 32).contentShape(Rectangle()) }
                 .disabled(!library.canGoPrevious).accessibilityLabel("前の曲").help("前の曲")
             Button(action: library.togglePlayback) {
-                MacIcon(library.playing ? "filled-pause" : "filled-play", size: 24).frame(width: 32, height: 32).contentShape(Rectangle())
-            }.disabled(library.current == nil).accessibilityLabel(library.playing ? "一時停止" : "再生")
+                if library.loading { Text("中止").font(.caption).frame(width: 32, height: 32).contentShape(Rectangle()) }
+                else { MacIcon(library.playing ? "filled-pause" : "filled-play", size: 24).frame(width: 32, height: 32).contentShape(Rectangle()) }
+            }.disabled(library.current == nil).accessibilityLabel(library.playbackAction)
             Button(action: library.next) { MacIcon("filled-skip-forward").frame(width: 32, height: 32).contentShape(Rectangle()) }
                 .disabled(!library.canGoNext).accessibilityLabel("次の曲").help("次の曲")
         }.buttonStyle(.plain).fixedSize()
@@ -571,7 +583,7 @@ struct LibraryView: View {
     private var playbackSlider: some View {
         Slider(value: Binding(get: { min(library.position, max(library.duration, 1)) },
                               set: { library.seek(to: $0) }), in: 0...max(library.duration, 1))
-            .disabled(library.current == nil || library.duration <= 0)
+            .disabled(!library.canSeek)
             .accessibilityLabel("再生位置")
             .accessibilityValue("\(time(library.position)) / \(time(library.duration))")
             .help("\(time(library.position)) / \(time(library.duration))")
@@ -663,9 +675,18 @@ private struct Artwork: View {
 
 @main
 struct SyncstrApp: App {
-    @StateObject private var library = Library()
+    @StateObject private var library: Library
+    @StateObject private var playback: PhonePlayback
+
+    init() {
+        let library = Library()
+        _library = StateObject(wrappedValue: library)
+        _playback = StateObject(wrappedValue: PhonePlayback(library: library))
+    }
     var body: some Scene {
-        WindowGroup("Syncstr") { LibraryView(library: library) }
+        WindowGroup("Syncstr") {
+            LibraryView(library: library).onAppear { _ = playback }
+        }
             .defaultSize(width: 1080, height: 740)
             .windowToolbarStyle(.unifiedCompact)
             .commands { PlaybackCommands() }

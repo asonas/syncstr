@@ -24,10 +24,12 @@ struct SyncstrApp: App {
                 }
                 .onChange(of: scenePhase) { _, phase in
                     if phase == .background {
+                        library.setBackgrounded(true)
                         library.transfer.cancel()
                         library.transfer.stopBrowsing()
-                    } else if phase == .active && library.transfer.clusterRegistration != nil && !library.transfer.busy {
-                        library.transfer.connectCluster()
+                    } else if phase == .active {
+                        library.setBackgrounded(false)
+                        if library.transfer.clusterRegistration != nil && !library.transfer.busy { library.transfer.connectCluster() }
                     }
                 }
         }

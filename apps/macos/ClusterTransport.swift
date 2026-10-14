@@ -111,7 +111,7 @@ final class ClusterNetwork {
         return catalog
     }
 
-    func download(object: String, progress: @escaping (Double) -> Void) async throws {
+    func download(object: String, cache: LocalMusicStore? = nil, progress: @escaping (Double) -> Void) async throws {
         let database = try store.database()
         var failure: Error = LocalMusicError.clusterUnavailable
         for address in try await addresses(database: database) {
@@ -122,8 +122,9 @@ final class ClusterNetwork {
                 defer { current.close(); session = nil }
                 try await current.reconcile(database: database)
                 let entry = try database.clusterDownloadEntry(object: object, peer: current.peer)
-                try await current.download(entry, store: store, database: database, progress: progress)
+                try await current.download(entry, store: cache ?? store, database: database, cacheOnly: cache != nil, progress: progress)
                 lastPath = current.selectedPath
+                if cache != nil { return }
                 let catalog = try await UploadedMusic.recoverClusterEvidence(database.clusterCatalog(), store: store)
                 try store.save(catalog, clusterEdits: true)
                 return
@@ -430,16 +431,18 @@ final class ClusterSession {
         return revision
     }
 
-    func download(_ entry: LocalEntry, store: LocalMusicStore, database: CatalogDatabase, progress: @escaping (Double) -> Void) async throws {
+    func download(_ entry: LocalEntry, store: LocalMusicStore, database: CatalogDatabase, cacheOnly: Bool = false, progress: @escaping (Double) -> Void) async throws {
         guard LocalMusicStore.valid(entry), let size = entry.track.size else { throw LocalMusicError.invalidData }
         let current = try database.clusterDownloadEntry(object: entry.sha256, peer: peer)
         guard current.track.size == size, let registration = try database.clusterRegistration() else { throw LocalMusicError.invalidData }
         let member = try registration.membership.verify(registration.localGrant).member
         let pending = try database.clusterJobs().first { $0.sha256 == entry.sha256 && $0.source == peer && $0.destination == member && $0.state == .queued }
         let job = pending ?? ClusterTransferJob(id: UUID().uuidString, sha256: entry.sha256, source: peer, destination: member, state: .queued)
-        try database.enqueueClusterJob(job)
-        try database.beginClusterJob(job.id)
-        defer { try? database.retryClusterJob(job.id) }
+        if !cacheOnly {
+            try database.enqueueClusterJob(job)
+            try database.beginClusterJob(job.id)
+        }
+        defer { if !cacheOnly { try? database.retryClusterJob(job.id) } }
         try store.prepare()
         let temporary = store.root.appendingPathComponent(".cluster-" + UUID().uuidString)
         guard FileManager.default.createFile(atPath: temporary.path, contents: nil) else { throw LocalMusicError.invalidData }
@@ -475,6 +478,6 @@ final class ClusterSession {
         guard descriptor >= 0 else { throw LocalMusicError.invalidData }
         defer { Darwin.close(descriptor) }
         guard fsync(descriptor) == 0 else { throw LocalMusicError.invalidData }
-        try database.finishClusterDownload(job.id, entry: selected, file: store.fileURL(selected))
+        if !cacheOnly { try database.finishClusterDownload(job.id, entry: selected, file: store.fileURL(selected)) }
     }
 }

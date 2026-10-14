@@ -1,6 +1,6 @@
 # Player interaction specification
 
-Status: accepted. Q1–Q23 and the consolidated specification are confirmed. Application implementation has not started.
+Status: accepted. Q1–Q23 and the consolidated specification are confirmed. Local implementation and its verification limits are recorded in the [player verification record](validation/player-interactions.md).
 
 ## Goal and scope
 
@@ -108,4 +108,4 @@ Use focused state/queue tests with independently derived sequences, plus actual 
 
 ## Decision closure
 
-All interview decisions Q1–Q23 are recorded above. The listener confirmed the consolidated specification as the shared understanding. Application implementation and distribution remain separate from this documentation work.
+All interview decisions Q1–Q23 are recorded above. The listener confirmed the consolidated specification as the shared understanding and subsequently requested implementation. Local implementation, integration, and distribution are separate delivery stages.

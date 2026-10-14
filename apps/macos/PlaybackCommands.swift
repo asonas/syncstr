@@ -8,7 +8,7 @@ struct PlaybackCommands: Commands {
 
     var body: some Commands {
         CommandMenu("コントロール") {
-            Button(library?.playing == true || library?.loading == true ? "一時停止" : "再生") {
+            Button(library?.playbackAction ?? "再生") {
                 library?.togglePlayback()
             }
             .keyboardShortcut(.space, modifiers: [])
@@ -28,7 +28,6 @@ struct PlaybackCommands: Commands {
 #if os(macOS)
                 NSApp.keyWindow?.makeFirstResponder(nil)
 #endif
-                library?.search = ""
                 library?.showingNowPlaying = true
             }
             .keyboardShortcut("l", modifiers: .command)

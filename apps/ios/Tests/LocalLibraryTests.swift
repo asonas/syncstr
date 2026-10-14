@@ -25,7 +25,8 @@ final class LocalLibraryTests: XCTestCase {
         library.play(track)
         XCTAssertFalse(createdPlayer)
         XCTAssertTrue(library.downloaded.isEmpty)
-        XCTAssertNotNil(library.message)
+        for _ in 0..<20 { await Task.yield() }
+        XCTAssertNotNil(library.playbackFailure)
         library.closeLibrary()
     }
 

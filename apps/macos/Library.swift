@@ -25,7 +25,7 @@ enum LibraryDestination: String, CaseIterable {
     }
 }
 
-enum PlaybackRepeat: String, CaseIterable {
+enum PlaybackRepeat: String, CaseIterable, Codable {
     case off = "オフ"
     case all = "すべて"
     case one = "1曲"
@@ -45,7 +45,7 @@ final class Library: ObservableObject {
     @Published var duration = 0.0
     @Published var queue: [Track] = []
     @Published private(set) var shuffled = false
-    @Published var repeatMode = PlaybackRepeat.off
+    @Published var repeatMode = PlaybackRepeat.off { didSet { persistPlayback() } }
     @Published private(set) var volume = 1.0
     @Published var destination = LibraryDestination.albums
     @Published var selectedAlbum: String?
@@ -78,6 +78,25 @@ final class Library: ObservableObject {
     private var seeking: UUID?
     private var restoredLibrary = false
     private var orderedQueue: [Track] = []
+    private var wantsPlayback = false
+    private var backgrounded = false
+    private var playbackRequest = UUID()
+    private var acquisition: Task<Void, Never>?
+    private var restoringPlayback = false
+    private var restoredPlaybackLibrary: String?
+    private var lastPersistedSecond = -1.0
+    @Published private(set) var playbackFailure: String?
+
+    private struct PlaybackSnapshot: Codable {
+        let library: String
+        let current: Track
+        let position: Double
+        let duration: Double
+        let queue: [Track]
+        let orderedQueue: [Track]
+        let shuffled: Bool
+        let repeatMode: PlaybackRepeat
+    }
     private let makePlayer: (URL) -> AVPlayer
 
     init(makePlayer: @escaping (URL) -> AVPlayer = { AVPlayer(url: $0) },
@@ -95,8 +114,9 @@ final class Library: ObservableObject {
         }
         transfer.onSaved = { [weak self] in
             guard let self else { return }
+            let wasLocal = current.map { self.localFiles[$0.id] != nil } ?? false
             refreshLocalFiles()
-            if transfer.clusterRegistration != nil, let current, localFiles[current.id] == nil { stop() }
+            if wasLocal, transfer.clusterRegistration != nil, let current, localFiles[current.id] == nil { stop() }
         }
         transferChanges = transfer.objectWillChange.sink { [weak self] in self?.objectWillChange.send() }
     }
@@ -153,8 +173,17 @@ final class Library: ObservableObject {
     }
 
     var currentIndex: Int? { queue.firstIndex { $0.id == current?.id } }
-    var canGoPrevious: Bool { currentIndex.map { $0 > 0 || repeatMode == .all } ?? false }
+    var canGoPrevious: Bool { currentIndex != nil }
     var canGoNext: Bool { currentIndex.map { $0 + 1 < queue.count || repeatMode == .all } ?? false }
+    var canSeek: Bool { player?.currentItem?.status == .readyToPlay && !loading && duration > 0 }
+    var playbackAction: String { loading ? "再生の準備をキャンセル" : playing || wantsPlayback ? "一時停止" : "再生" }
+    var savedAudioBytes: Int64 {
+        var counted = Set<String>()
+        return (localCatalog?.entries ?? []).reduce(0) { total, entry in
+            guard localStore.hasFile(entry), counted.insert(entry.sha256).inserted else { return total }
+            return total + Int64(entry.track.size ?? 0)
+        }
+    }
 
     func navigate(_ destination: LibraryDestination) {
         self.destination = destination
@@ -207,6 +236,11 @@ final class Library: ObservableObject {
         if !sameLibrary { navigate(.albums) }
         else if let selectedAlbum { self.selectedAlbum = catalog.organization?.canonical(selectedAlbum) }
         refreshLocalFiles()
+        restorePlayback()
+        if let current, !tracks.contains(where: { $0.id == current.id }) {
+            pause()
+            playbackFailure = "この曲はライブラリから削除されているため再生できません。別の曲を選んでください。"
+        }
     }
 
     private func organizedTracks(_ catalog: LocalCatalog) -> [Track] {
@@ -363,23 +397,96 @@ final class Library: ObservableObject {
 
     func play(_ track: Track, in tracks: [Track]? = nil) {
         guard connected else { return }
-#if os(iOS)
-        guard activateAudio() else { return }
-#endif
         if let tracks {
             orderedQueue = tracks
             queue = shuffled ? [track] + tracks.filter { $0.id != track.id }.shuffled() : tracks
         }
         if !queue.contains(where: { $0.id == track.id }) { queue = [track]; orderedQueue = [track] }
+        select(track, autoplay: true)
+    }
+
+    private func select(_ track: Track, autoplay: Bool, at start: Double = 0) {
         stop()
         current = track
         duration = max(0, track.duration ?? 0)
+        position = start
+        playbackFailure = nil
         message = nil
-        guard let url = localFiles[track.id] else {
-            message = "この曲はまだ保存されていません。Macに接続して保存してください。"
+        wantsPlayback = autoplay
+        persistPlayback()
+        guard autoplay else { return }
+        resumePlayback()
+    }
+
+    func resumePlayback() {
+        guard let current, !loading else { return }
+        guard tracks.contains(where: { $0.id == current.id }) else {
+            wantsPlayback = false
+            playbackFailure = "この曲はライブラリから削除されているため再生できません。別の曲を選んでください。"
             return
         }
+        if playing { return }
+#if os(iOS)
+        guard activateAudio() else { wantsPlayback = false; return }
+#endif
+        wantsPlayback = true
+        playbackFailure = nil
+        if player?.currentItem?.status == .failed {
+            let start = position
+            stop()
+            duration = max(0, current.duration ?? 0)
+            position = start
+            wantsPlayback = true
+        }
+        if let player, player.currentItem?.status != .failed {
+            if let url = transfer.playbackCache.protectedURL {
+                do { try transfer.playbackCache.markPlayed(url) }
+                catch { message = "キャッシュの利用日時を更新できませんでした。\(error.localizedDescription)" }
+            }
+            if duration > 0 && position >= duration { seek(to: 0) }
+            player.play()
+            return
+        }
+        if let url = localFiles[current.id] {
+            preparePlayer(url, at: duration > 0 && position >= duration ? 0 : position)
+            return
+        }
+        if let url = try? transfer.cachedPlaybackFile(current) {
+            preparePlayer(url, at: duration > 0 && position >= duration ? 0 : position)
+            return
+        }
+        if backgrounded {
+            wantsPlayback = false
+            playbackFailure = "バックグラウンドでは次の音源を取得できません。アプリを開いて再試行してください。"
+            return
+        }
+        let request = playbackRequest
         loading = true
+        let preceding = acquisition
+        acquisition = Task { [weak self] in
+            guard let self else { return }
+            do {
+                await preceding?.value
+                try Task.checkCancellation()
+                let url = try await transfer.playbackFile(current)
+                try Task.checkCancellation()
+                guard playbackRequest == request, wantsPlayback else { return }
+                preparePlayer(url, at: duration > 0 && position >= duration ? 0 : position)
+            } catch {
+                guard playbackRequest == request else { return }
+                loading = false
+                wantsPlayback = false
+                playbackFailure = "音源を取得できませんでした。\(error.localizedDescription)"
+                persistPlayback()
+            }
+        }
+    }
+
+    private func preparePlayer(_ url: URL, at start: Double) {
+        loading = true
+        transfer.playbackCache.protectedURL = url
+        do { try transfer.playbackCache.markPlayed(url) }
+        catch { message = "キャッシュの利用日時を更新できませんでした。\(error.localizedDescription)" }
         let player = makePlayer(url)
         player.volume = Float(volume)
         guard let item = player.currentItem else { return }
@@ -388,7 +495,7 @@ final class Library: ObservableObject {
             Task { @MainActor [weak self] in
                 guard let self, self.player === player else { return }
                 playing = player.timeControlStatus == .playing
-                loading = player.currentItem?.status != .failed && player.timeControlStatus == .waitingToPlayAtSpecifiedRate
+                loading = wantsPlayback && player.currentItem?.status != .failed && player.currentItem?.status != .readyToPlay
             }
         }
         itemObservation = item.observe(\.status, options: [.new]) { [weak self] item, _ in
@@ -397,7 +504,8 @@ final class Library: ObservableObject {
                 self.player?.pause()
                 playing = false
                 loading = false
-                message = "曲を再生できませんでした。音源ファイルを確認して曲を選び直してください。"
+                wantsPlayback = false
+                playbackFailure = "曲を再生できませんでした。再試行するか、別の曲を選んでください。"
             }
         }
         durationObservation = item.observe(\.duration, options: [.initial, .new]) { [weak self] item, _ in
@@ -410,7 +518,10 @@ final class Library: ObservableObject {
         timeObserver = player.addPeriodicTimeObserver(forInterval: CMTime(seconds: 0.25, preferredTimescale: 600), queue: .main) { [weak self, weak player] time in
             Task { @MainActor [weak self, weak player] in
                 guard let self, let player, self.player === player, seeking == nil else { return }
-                if time.seconds.isFinite { position = max(0, time.seconds) }
+                if time.seconds.isFinite {
+                    position = max(0, time.seconds)
+                    if position.rounded(.down) != lastPersistedSecond { persistPlayback() }
+                }
             }
         }
         finishObserver = NotificationCenter.default.addObserver(forName: AVPlayerItem.didPlayToEndTimeNotification, object: item, queue: .main) { [weak self, weak player] _ in
@@ -419,31 +530,64 @@ final class Library: ObservableObject {
                 playing = false
                 loading = false
                 position = duration
-                if repeatMode == .one, let current { play(current) }
-                else { next() }
+                wantsPlayback = false
+                if repeatMode == .one, let current { select(current, autoplay: true) }
+                else if canGoNext {
+                    if shuffled && repeatMode == .all && currentIndex == queue.count - 1 {
+                        var nextRound = orderedQueue.shuffled()
+                        if nextRound.count > 1, nextRound.first?.id == current?.id { nextRound.swapAt(0, 1) }
+                        queue = nextRound
+                        if let first = queue.first { select(first, autoplay: true) }
+                    } else { advance(autoplay: true) }
+                } else {
+                    let end = duration
+                    stop()
+                    duration = end
+                    position = end
+                    persistPlayback()
+                }
             }
         }
-        player.play()
+        if start > 0 {
+            let request = playbackRequest
+            seeking = request
+            player.seek(to: CMTime(seconds: start, preferredTimescale: 600), toleranceBefore: .zero, toleranceAfter: .zero) { [weak self, weak player] _ in
+                Task { @MainActor in
+                    guard let self, let player, self.player === player, self.playbackRequest == request else { return }
+                    self.seeking = nil
+                    if self.wantsPlayback { player.play() }
+                }
+            }
+        } else { player.play() }
     }
 
     func previous() {
-        guard canGoPrevious, let index = currentIndex else { return }
-        play(queue[index > 0 ? index - 1 : queue.count - 1])
+        guard let index = currentIndex else { return }
+        let autoplay = wantsPlayback || playing
+        if position >= 3 || (index == 0 && repeatMode != .all) {
+            if canSeek { seek(to: 0) }
+            else if let current { select(current, autoplay: autoplay) }
+        } else { select(queue[index > 0 ? index - 1 : queue.count - 1], autoplay: autoplay) }
     }
 
     func next() {
+        advance(autoplay: wantsPlayback || playing)
+    }
+
+    private func advance(autoplay: Bool) {
         guard canGoNext, let index = currentIndex else { return }
-        play(queue[(index + 1) % queue.count])
+        select(queue[(index + 1) % queue.count], autoplay: autoplay)
     }
 
     func setShuffle(_ enabled: Bool) {
         guard shuffled != enabled else { return }
         shuffled = enabled
         if enabled {
-            if let current, queue.contains(where: { $0.id == current.id }) {
-                queue = [current] + orderedQueue.filter { $0.id != current.id }.shuffled()
+            if let index = currentIndex {
+                queue = Array(queue.prefix(index + 1)) + queue.dropFirst(index + 1).shuffled()
             } else { queue = orderedQueue.shuffled() }
         } else { queue = orderedQueue }
+        persistPlayback()
     }
 
     func setVolume(_ value: Double) {
@@ -453,11 +597,12 @@ final class Library: ObservableObject {
     }
 
     func seek(to seconds: Double) {
-        guard let player, seconds.isFinite, duration > 0 else { return }
+        guard let player, canSeek, seconds.isFinite else { return }
         let target = min(max(0, seconds), duration)
         let id = UUID()
         seeking = id
         position = target
+        persistPlayback()
         player.seek(to: CMTime(seconds: target, preferredTimescale: 600), toleranceBefore: .zero, toleranceAfter: .zero) { [weak self, weak player] _ in
             Task { @MainActor [weak self, weak player] in
                 guard let self, let player, self.player === player, seeking == id else { return }
@@ -468,35 +613,37 @@ final class Library: ObservableObject {
 
     func togglePlayback(in tracks: [Track]) {
         guard let first = tracks.first else { return }
-        if let current, tracks.contains(where: { $0.id == current.id }),
-           let player, player.currentItem?.status != .failed {
-            togglePlayback()
-        } else {
-            play(first, in: tracks)
-        }
+        play(first, in: tracks)
     }
 
     func togglePlayback() {
-        guard let player else { return }
-        if player.rate != 0 || loading { pause() }
-        else {
-#if os(iOS)
-            guard activateAudio() else { return }
-#endif
-            if duration > 0 && position >= duration {
-                seek(to: 0)
-            }
-            player.play()
-        }
+        if playing || loading || wantsPlayback { pause() }
+        else { resumePlayback() }
     }
 
     func pause() {
+        playbackRequest = UUID()
+        acquisition?.cancel()
+        wantsPlayback = false
+        seeking = nil
         player?.pause()
         playing = false
         loading = false
+        persistPlayback()
+    }
+
+    func setBackgrounded(_ backgrounded: Bool) {
+        self.backgrounded = backgrounded
+        if backgrounded, loading, player == nil {
+            pause()
+            playbackFailure = "バックグラウンドでは音源を取得できません。アプリを開いて再試行してください。"
+        }
     }
 
     private func stop() {
+        playbackRequest = UUID()
+        acquisition?.cancel()
+        wantsPlayback = false
         observation = nil
         itemObservation = nil
         durationObservation = nil
@@ -506,11 +653,46 @@ final class Library: ObservableObject {
         finishObserver = nil
         player?.pause()
         player = nil
+        transfer.playbackCache.protectedURL = nil
+        do { try transfer.playbackCache.trim() }
+        catch { message = "再生キャッシュを整理できませんでした。\(error.localizedDescription)" }
         playing = false
         loading = false
         seeking = nil
         position = 0
         duration = 0
+    }
+
+    func persistPlayback() {
+        guard !restoringPlayback, let id = localCatalog?.id, let current else { return }
+        do {
+            let snapshot = PlaybackSnapshot(library: id, current: current, position: position, duration: duration,
+                queue: queue, orderedQueue: orderedQueue, shuffled: shuffled, repeatMode: repeatMode)
+            try JSONEncoder().encode(snapshot).write(to: localStore.root.appendingPathComponent("playback.json"), options: .atomic)
+            lastPersistedSecond = position.rounded(.down)
+        } catch { message = "再生位置を保存できませんでした。\(error.localizedDescription)" }
+    }
+
+    private func restorePlayback() {
+        guard let id = localCatalog?.id, restoredPlaybackLibrary != id else { return }
+        restoredPlaybackLibrary = id
+        let url = localStore.root.appendingPathComponent("playback.json")
+        guard FileManager.default.fileExists(atPath: url.path) else { return }
+        do {
+            let saved = try JSONDecoder().decode(PlaybackSnapshot.self, from: Data(contentsOf: url))
+            guard saved.library == id, saved.position.isFinite, saved.position >= 0, saved.duration.isFinite, saved.duration >= 0,
+                  saved.queue.contains(where: { $0.id == saved.current.id }) else { return }
+            restoringPlayback = true
+            defer { restoringPlayback = false }
+            let latest = Dictionary(uniqueKeysWithValues: tracks.map { ($0.id, $0) })
+            queue = saved.queue.map { latest[$0.id] ?? $0 }
+            orderedQueue = saved.orderedQueue.map { latest[$0.id] ?? $0 }
+            shuffled = saved.shuffled
+            repeatMode = saved.repeatMode
+            current = latest[saved.current.id] ?? saved.current
+            duration = saved.duration
+            position = saved.duration > 0 ? min(saved.position, saved.duration) : saved.position
+        } catch { message = "前回の再生状態を復元できませんでした。\(error.localizedDescription)" }
     }
 
     func closeLibrary() {
@@ -528,6 +710,8 @@ final class Library: ObservableObject {
         try? FileManager.default.removeItem(at: localStore.root.appendingPathComponent("active"))
         stop()
         current = nil
+        restoredPlaybackLibrary = nil
+        try? FileManager.default.removeItem(at: localStore.root.appendingPathComponent("playback.json"))
         tracks = []
         queue = []
         orderedQueue = []

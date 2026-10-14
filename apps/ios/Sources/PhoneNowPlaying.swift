@@ -80,14 +80,14 @@ struct PhoneNowPlaying: View {
                         .padding(.bottom, 20)
 
                         VStack(spacing: 8) {
-                            Slider(value: Binding(get: { library.position }, set: { library.seek(to: $0) }),
+                            Slider(value: Binding(get: { min(library.position, max(library.duration, 1)) }, set: { library.seek(to: $0) }),
                                    in: 0...max(library.duration, 1))
                                 .sliderThumbVisibility(.hidden)
                                 .tint(.secondary)
                                 .frame(height: 44)
                                 .contentShape(Rectangle())
                                 .frame(height: 6)
-                                .disabled(library.duration <= 0)
+                                .disabled(!library.canSeek)
                                 .accessibilityLabel("再生位置")
                                 .accessibilityValue("\(time(library.position)) / \(time(library.duration))")
                             HStack {
@@ -108,11 +108,12 @@ struct PhoneNowPlaying: View {
                             }
                             .disabled(!library.canGoPrevious).accessibilityLabel("前の曲")
                             Button { library.togglePlayback() } label: {
-                                RegenIcon(name: library.playing || library.loading ? "filled-pause" : "filled-play", size: 48)
-                                    .frame(width: 64, height: 64)
-                                    .contentShape(Rectangle())
+                                Group {
+                                    if library.loading { Text("中止").font(.body) }
+                                    else { RegenIcon(name: library.playing ? "filled-pause" : "filled-play", size: 48) }
+                                }.frame(width: 64, height: 64).contentShape(Rectangle())
                             }
-                            .accessibilityLabel(library.playing || library.loading ? "一時停止" : "再生")
+                            .accessibilityLabel(library.playbackAction)
                             .accessibilityIdentifier("player-toggle")
                             Button { library.next() } label: {
                                 RegenIcon(name: "filled-skip-forward", size: 36).frame(width: 64, height: 64)
@@ -141,8 +142,25 @@ struct PhoneNowPlaying: View {
                         .padding(.horizontal, 20)
                         .padding(.top, 32)
                         if library.loading {
-                            ProgressView("読み込み中…").padding(.top, 16)
+                            ProgressView("再生を準備中").padding(.top, 16)
                         }
+                        if let failure = library.playbackFailure {
+                            Text(failure).padding(.horizontal, 20).padding(.top, 16)
+                            Button("再試行", action: library.resumePlayback).padding()
+                        }
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text("再生キュー").font(.headline)
+                            ForEach(library.queue) { queued in
+                                Button { library.play(queued) } label: {
+                                    HStack {
+                                        Text(queued.title).frame(maxWidth: .infinity, alignment: .leading)
+                                        if library.current?.id == queued.id { RegenIcon(name: "activity", size: 20) }
+                                    }.frame(minHeight: 44).contentShape(Rectangle())
+                                }
+                                .buttonStyle(.plain)
+                                .accessibilityAddTraits(library.current?.id == queued.id ? .isSelected : [])
+                            }
+                        }.padding(20)
                     }
                     .padding(.top, 64)
                     .padding(.bottom, 32)

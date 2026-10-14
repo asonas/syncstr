@@ -8,6 +8,14 @@ On the Mac, choose a music folder and open **Transfer to iPhone**. On the phone,
 
 The catalog, artwork, and completed audio remain on the phone after restarting without networking. Unsaved tracks remain distinguishable from saved tracks. Pairing controls are in Settings; removing a pairing retains received files. See [the local-transfer guide](../../docs/local-music-transfer.md).
 
+## Player behavior
+
+Tap a track to start a queue from its displayed list, or Album Play to start that album from the beginning. Browsing and search do not change the active queue. The mini-player appears after a track is selected; tap its metadata to open the full-player sheet and inspect or select from the queue. Playback controls are independent of that navigation.
+
+Previous restarts the track at three seconds or later, otherwise moves back. Paused navigation stays paused and does not acquire audio until Play. Queue completion retains the last track. Track, position, queue order, shuffle, and repeat restore paused after relaunch. Interruptions and unexpected output disconnections pause without automatic resumption.
+
+Unsaved audio is acquired and verified before playback. Preparation has a cancellation action; failures require manual retry. The playback cache is separate from explicit offline saves, has a configurable 10 GB default limit, and never evicts original or explicitly saved audio. Background playback and remote controls follow the same transport rules; physical interruption, output-route, and cellular behavior require device verification.
+
 ## P2P node connection
 
 Settings also provides explicit headless P2P registration, catalog access, audio uploads, and downloads. See [P2P music transfer](../../docs/p2p-music-transfer.md). The app bundles the pinned official IrohLib package and its dependency notices; existing Bonjour pairing is retained.

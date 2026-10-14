@@ -21,6 +21,7 @@ targets:
     type: application
     platform: macOS
     sources:
+      - path: Sources/PhonePlayback.swift
       - path: ../macos/OrganizationView.swift
       - path: ../macos/Syncstr.swift
       - path: ../macos/LocalCatalog.swift
@@ -35,6 +36,7 @@ targets:
       - path: ../macos/PeerSetup.swift
       - path: ../macos/LocalSetup.swift
       - path: ../macos/Library.swift
+      - path: ../macos/PlaybackCache.swift
       - path: ../macos/PlaybackCommands.swift
       - path: ../macos/AlbumOrganization.swift
       - path: ../macos/AlbumMembership.swift
@@ -94,6 +96,7 @@ targets:
       - path: ../macos/PeerSetup.swift
       - path: ../macos/LocalSetup.swift
       - path: ../macos/Library.swift
+      - path: ../macos/PlaybackCache.swift
       - path: ../macos/PlaybackCommands.swift
       - path: ../macos/AlbumOrganization.swift
       - path: ../macos/AlbumMembership.swift
@@ -132,6 +135,7 @@ targets:
     platform: iOS
     sources:
       - path: Tests
+      - path: ../macos/Tests/PlayerInteractionTests.swift
       - path: ../macos/Tests/AlbumOrganizationTests.swift
       - path: ../macos/Tests/AlbumArtworkTests.swift
       - path: ../macos/Tests/CatalogMigrationTests.swift
@@ -158,6 +162,8 @@ targets:
     type: bundle.unit-test
     platform: macOS
     sources:
+      - path: ../macos/Library.swift
+      - path: ../macos/PlaybackCache.swift
       - path: ../macos/Tests
       - path: ../../headless/fixtures/cluster-signed.json
         buildPhase: resources
@@ -199,6 +205,7 @@ targets:
     sources:
       - path: ../macos/LibraryCheck.swift
       - path: ../macos/Library.swift
+      - path: ../macos/PlaybackCache.swift
       - path: ../macos/LocalCatalog.swift
       - path: ../macos/CatalogDatabase.swift
       - path: ../macos/ClusterPersistence.swift

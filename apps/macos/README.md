@@ -39,6 +39,12 @@ The library opens on albums. Use the sidebar to switch between albums, artists, 
 
 Previous/next, pause/resume, and seeking operate on the list from which playback started. Albums are ordered by disc and track number. Navigation and search do not change the active queue. Tracks advance automatically; playback stops after the last track. Pressing play after the final track ends restarts that track.
 
+Album Play always starts a new album queue from its first track. Player controls pause/resume at the current position. Previous restarts the current track after three seconds; before that it moves back. Previous/next while paused select a track without starting audio or acquiring an unsaved file.
+
+The current track, position, decided queue order, shuffle, and repeat restore paused after relaunch. Opening Now Playing preserves the library search and scroll position. The mini-player appears only after selecting a track, and the queue can be inspected in Now Playing.
+
+Unsaved cluster tracks are acquired and verified before playback, with preparation, cancellation, and retry feedback. Playback acquisition uses a separate cache, defaulting to 10 GB and configurable in Settings. Older cache is evicted without removing explicit saves, original source files, or library-host copies. Existing paired transfers also support playback acquisition while connected. Hosts remain automatically selected for cluster playback; no acquisition occurs merely on application launch.
+
 Select a track again after a playback failure and check folder access. Playlist editing, playback history synchronization, and editing source files' metadata are not implemented. Local-folder audio plays directly from the selected folder.
 
 The screen structure follows the [Apple MVP operation model decision](https://github.com/asonas/syncstr/issues/5#issuecomment-5472974010).
@@ -49,7 +55,7 @@ The Controls menu provides playback commands while the library window is active.
 
 Option-Space toggles ordinary shuffle. Repeat supports Off, All, and One through the menu and Now Playing controls. Shuffle retains the current track and restores the original queue order when turned off. Repeat All wraps the queue; Repeat One restarts the current track when it ends, while manual next/previous still change tracks.
 
-Command-Up/Down adjusts app playback volume in 10% steps. Command-Shift-Up/Down sets it to maximum/minimum. These controls affect Syncstr audio, not the system output volume. The same commands are available on iOS with a hardware keyboard; its Now Playing screen also exposes shuffle, repeat, and volume without a keyboard. Playback options apply to the current app session.
+Command-Up/Down adjusts app playback volume in 10% steps. Command-Shift-Up/Down sets it to maximum/minimum. These controls affect Syncstr audio, not the system output volume. The same commands are available on iOS with a hardware keyboard; its Now Playing screen also exposes shuffle, repeat, and volume without a keyboard. Volume applies to the current app session; queue, position, shuffle, and repeat persist.
 
 ## TestFlight and Xcode Cloud
 
