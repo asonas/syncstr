@@ -33,7 +33,12 @@ enum PlaybackRepeat: String, CaseIterable, Codable {
 
 @MainActor
 final class Library: ObservableObject {
-    @Published var tracks: [Track] = []
+    @Published var tracks: [Track] = [] { didSet { rebuildAlbums() } }
+    private(set) var albums: [Album] = []
+    private var albumsByID: [String: Album] = [:]
+    private var albumsByArtist: [String: [Album]] = [:]
+    private var tracksByArtist: [String: [Track]] = [:]
+    private var artistNames: [String] = []
     @Published var connected = false
     @Published var current: Track?
     @Published var playing = false
@@ -122,19 +127,22 @@ final class Library: ObservableObject {
         transferChanges = transfer.objectWillChange.sink { [weak self] in self?.objectWillChange.send() }
     }
 
-    var albums: [Album] {
-        Dictionary(grouping: tracks, by: \.albumKey).map { key, tracks in
+    private func rebuildAlbums() {
+        let organization = localCatalog?.organization
+        let records = Dictionary(uniqueKeysWithValues: (organization?.tracks ?? []).map { ($0.id, $0) })
+        let images = organization.map(AlbumArtworkLookup.init)
+        albums = Dictionary(grouping: tracks, by: \.albumKey).map { key, tracks in
             Album(id: key, title: tracks.first?.album ?? "アルバム名不明",
-                  artist: localCatalog?.organization?.artistCredit(for: tracks.sorted {
+                  artist: organization?.artistCredit(for: tracks.sorted {
                       ($0.discNumber ?? 1, $0.track ?? 0, $0.id) < ($1.discNumber ?? 1, $1.track ?? 0, $1.id)
-                  }) ?? tracks.first?.artist ?? "アーティスト不明",
+                  }, records: records) ?? tracks.first?.artist ?? "アーティスト不明",
                   tracks: tracks.sorted {
                       if ($0.discNumber ?? 1) != ($1.discNumber ?? 1) {
                           return ($0.discNumber ?? 1) < ($1.discNumber ?? 1)
                       }
                       if ($0.track ?? 0) != ($1.track ?? 0) { return ($0.track ?? 0) < ($1.track ?? 0) }
                       return $0.title.localizedStandardCompare($1.title) == .orderedAscending
-                  }, artwork: localCatalog?.organization?.coverAsset(for: key))
+                  }, artwork: organization.flatMap { images?.coverAsset(for: key, in: $0) })
         }.sorted {
             let titleOrder = $0.title.localizedStandardCompare($1.title)
             if titleOrder != .orderedSame { return titleOrder == .orderedAscending }
@@ -142,27 +150,40 @@ final class Library: ObservableObject {
             if artistOrder != .orderedSame { return artistOrder == .orderedAscending }
             return $0.id < $1.id
         }
+        albumsByID = Dictionary(uniqueKeysWithValues: albums.map { ($0.id, $0) })
+        tracksByArtist = Dictionary(grouping: tracks) { $0.artist ?? "アーティスト不明" }
+        artistNames = tracksByArtist.keys.sorted { $0.localizedStandardCompare($1) == .orderedAscending }
+        albumsByArtist = [:]
+        for album in albums {
+            for artist in Set(album.tracks.map { $0.artist ?? "アーティスト不明" }) {
+                albumsByArtist[artist, default: []].append(album)
+            }
+        }
     }
 
+    func album(id: String) -> Album? { albumsByID[id] }
+    func albums(for artist: String) -> [Album] { albumsByArtist[artist] ?? [] }
+    func tracks(for artist: String) -> [Track] { tracksByArtist[artist] ?? [] }
+
     var visibleAlbums: [Album] {
-        albums.filter { search.isEmpty || $0.title.localizedStandardContains(search)
+        guard !search.isEmpty else { return albums }
+        return albums.filter { $0.title.localizedStandardContains(search)
             || $0.artist.localizedStandardContains(search) }
     }
 
     var artists: [String] {
-        Set(tracks.map { $0.artist ?? "アーティスト不明" }).sorted {
-            $0.localizedStandardCompare($1) == .orderedAscending
-        }.filter { search.isEmpty || $0.localizedStandardContains(search) }
+        guard !search.isEmpty else { return artistNames }
+        return artistNames.filter { $0.localizedStandardContains(search) }
     }
 
     var visibleTracks: [Track] {
         let source: [Track]
         if !search.isEmpty {
             source = tracks
-        } else if let selectedAlbum, let album = albums.first(where: { $0.id == selectedAlbum }) {
+        } else if let selectedAlbum, let album = album(id: selectedAlbum) {
             source = album.tracks
         } else if let selectedArtist {
-            source = tracks.filter { ($0.artist ?? "アーティスト不明") == selectedArtist }
+            source = tracks(for: selectedArtist)
         } else {
             source = tracks
         }
@@ -255,11 +276,21 @@ final class Library: ObservableObject {
     }
 
     private func organizedTracks(_ catalog: LocalCatalog) -> [Track] {
-        catalog.entries.map { entry in
+        let organization = catalog.organization
+        let images = organization.map(AlbumArtworkLookup.init)
+        let albums = Dictionary(uniqueKeysWithValues: (organization?.albums ?? []).map { ($0.id, $0) })
+        var covers: [String: String] = [:]
+        if let organization, let images {
+            for album in Set(images.albumIDs.values).union(catalog.entries.compactMap(\.track.albumId)) {
+                covers[album] = images.coverAsset(for: album, in: organization)
+            }
+        }
+        return catalog.entries.map { entry in
             var track = entry.track
-            track.albumId = catalog.organization?.albumID(for: track.id) ?? track.albumId
-            if let album = catalog.organization?.albums.first(where: { $0.id == track.albumId }) { track.album = album.title }
-            if let album = track.albumId, let asset = catalog.organization?.coverAsset(for: album) { track.coverArt = asset }
+            let id = organization?.canonicalTrack(track.id) ?? track.id
+            track.albumId = images?.albumIDs[id] ?? track.albumId
+            if let id = track.albumId, let album = albums[id] { track.album = album.title }
+            if let album = track.albumId, let asset = covers[album] { track.coverArt = asset }
             return track
         }
     }

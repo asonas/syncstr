@@ -132,25 +132,14 @@ extension AlbumOrganization {
     }
 
     func artworkCandidates(for album: String) -> [ArtworkCandidate] {
-        let records = Dictionary(uniqueKeysWithValues: tracks.map { ($0.id, $0) })
-        return (artwork?.heads ?? []).filter { albumID(for: $0.track) == canonical(album) }.sorted {
-            let left = records[canonicalTrack($0.track)]
-            let right = records[canonicalTrack($1.track)]
-            return ($0.priority, left?.discNumber ?? 1, left?.trackNumber ?? Int.max, canonicalTrack($0.track), $0.context, $0.id)
-                < ($1.priority, right?.discNumber ?? 1, right?.trackNumber ?? Int.max, canonicalTrack($1.track), $1.context, $1.id)
-        }
+        AlbumArtworkLookup(self).candidates[canonical(album)] ?? []
     }
 
     func coverAsset(for album: String) -> String? {
-        if let manual = choice(subject: album, kind: "artwork")?.value { return manual }
-        guard let first = artworkCandidates(for: album).first else { return nil }
-        let key = artworkSourceKey(first)
-        let peers = artworkCandidates(for: album).filter { artworkSourceKey($0) == key }
-        let preferred = artwork?.preferred[key] ?? artwork?.preferred[first.key]
-        return peers.first { $0.asset == preferred }?.asset ?? first.asset
+        AlbumArtworkLookup(self).coverAsset(for: album, in: self)
     }
 
-    private func artworkSourceKey(_ candidate: ArtworkCandidate) -> String {
+    fileprivate func artworkSourceKey(_ candidate: ArtworkCandidate) -> String {
         [canonicalTrack(candidate.track), candidate.source].map { "\($0.utf8.count):\($0)" }.joined()
     }
 
@@ -167,5 +156,43 @@ extension AlbumOrganization {
                   let data = entry.artwork, let normalized = ArtworkImage.normalize(data) else { continue }
             try? captureArtwork(normalized, track: id, source: "legacy", context: entry.sha256)
         }
+    }
+}
+
+struct AlbumArtworkLookup {
+    let albumIDs: [String: String]
+    let candidates: [String: [ArtworkCandidate]]
+
+    init(_ organization: AlbumOrganization) {
+        let records = Dictionary(uniqueKeysWithValues: organization.tracks.map { ($0.id, $0) })
+        let albumIDs = records.mapValues { record in
+            organization.canonical(organization.choice(subject: record.id, kind: "membership")?.value ?? record.importedAlbumID)
+        }
+        self.albumIDs = albumIDs
+        var grouped: [String: [ArtworkCandidate]] = [:]
+        for candidate in organization.artwork?.heads ?? [] {
+            if let album = albumIDs[organization.canonicalTrack(candidate.track)] {
+                grouped[album, default: []].append(candidate)
+            }
+        }
+        candidates = grouped.mapValues { candidates in
+            candidates.sorted {
+                let leftID = organization.canonicalTrack($0.track)
+                let rightID = organization.canonicalTrack($1.track)
+                let left = records[leftID]
+                let right = records[rightID]
+                return ($0.priority, left?.discNumber ?? 1, left?.trackNumber ?? Int.max, leftID, $0.context, $0.id)
+                    < ($1.priority, right?.discNumber ?? 1, right?.trackNumber ?? Int.max, rightID, $1.context, $1.id)
+            }
+        }
+    }
+
+    func coverAsset(for album: String, in organization: AlbumOrganization) -> String? {
+        if let manual = organization.choice(subject: album, kind: "artwork")?.value { return manual }
+        let candidates = candidates[organization.canonical(album)] ?? []
+        guard let first = candidates.first else { return nil }
+        let key = organization.artworkSourceKey(first)
+        let preferred = organization.artwork?.preferred[key] ?? organization.artwork?.preferred[first.key]
+        return candidates.first { organization.artworkSourceKey($0) == key && $0.asset == preferred }?.asset ?? first.asset
     }
 }

@@ -82,7 +82,7 @@ struct PhoneRoot: View {
                     NavigationLink {
                         List(library.artists, id: \.self) { artist in
                             NavigationLink(artist) {
-                                songList(library.tracks.filter { ($0.artist ?? "アーティスト不明") == artist })
+                                songList(library.tracks(for: artist))
                                     .navigationTitle(artist)
                             }
                         }

@@ -139,6 +139,7 @@ targets:
       - path: Tests
       - path: ../macos/Tests/PlayerInteractionTests.swift
       - path: ../macos/Tests/OfflineSaveTests.swift
+      - path: ../macos/Tests/LibraryPresentationTests.swift
       - path: ../macos/Tests/AlbumOrganizationTests.swift
       - path: ../macos/Tests/AlbumArtworkTests.swift
       - path: ../macos/Tests/CatalogMigrationTests.swift

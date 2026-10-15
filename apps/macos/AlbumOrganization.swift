@@ -386,7 +386,11 @@ struct AlbumOrganization: Codable, Equatable {
     }
 
     func artistCredit(for members: [Track]) -> String {
-        let records = members.compactMap { member in tracks.first { $0.id == canonicalTrack(member.id) } }
+        artistCredit(for: members, records: Dictionary(uniqueKeysWithValues: tracks.map { ($0.id, $0) }))
+    }
+
+    func artistCredit(for members: [Track], records indexed: [String: OrganizationTrack]) -> String {
+        let records = members.compactMap { indexed[canonicalTrack($0.id)] }
         let albumArtists = records.compactMap(\.imported.albumArtist)
         if albumArtists.count == members.count, let first = albumArtists.first,
            !first.isEmpty, first.lowercased() != "various artists", albumArtists.allSatisfy({ $0 == first }) { return first }

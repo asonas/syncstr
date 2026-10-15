@@ -185,7 +185,7 @@ struct LibraryView: View {
     @ViewBuilder
     private var libraryContent: some View {
         if library.search.isEmpty, let albumID = library.selectedAlbum,
-                  let album = library.albums.first(where: { $0.id == albumID }) {
+                  let album = library.album(id: albumID) {
             albumDetail(album)
         } else {
             switch library.destination {
@@ -291,7 +291,7 @@ struct LibraryView: View {
     }
 
     private func artistDetail(_ artist: String) -> some View {
-        let albums = library.albums.filter { $0.tracks.contains { ($0.artist ?? "アーティスト不明") == artist } }
+        let albums = library.albums(for: artist)
         let tracks = albums.flatMap { $0.tracks.filter { ($0.artist ?? "アーティスト不明") == artist } }
         return GeometryReader { geometry in
             ScrollView {
