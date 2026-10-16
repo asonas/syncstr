@@ -249,6 +249,7 @@ final class Library: ObservableObject {
         try Data().write(to: localStore.root.appendingPathComponent("active"), options: .atomic)
         let sameLibrary = localCatalog?.id == catalog.id
         if !sameLibrary {
+            transfer.cancelSavePreparations()
             transfer.stopSaveWorker()
             stop()
             current = nil
@@ -774,6 +775,7 @@ final class Library: ObservableObject {
     }
 
     func closeLibrary() {
+        transfer.cancelSavePreparations()
         transfer.stopSaveWorker()
         transfer.cancel()
 #if os(macOS)

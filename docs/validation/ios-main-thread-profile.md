@@ -120,3 +120,13 @@ No documented-standard violations or actionable code smells remained in the fina
 The first review identified a blocking save-start path racing with background reconstruction. Save preparation was made asynchronous and covered by contention and cancellation tests. The final review reported no remaining findings and confirmed that the broader persistence redesign was a recommendation rather than a prerequisite for this measured fix.
 
 Physical-device performance, audible playback, live NAS transfers, and macOS screen interaction were not checked in this change. Main integration, push, and deployment are separate delivery steps.
+
+## Save preparation lifecycle follow-up
+
+A subsequent Swift review reproduced save preparation finishing after the library was closed and restarting the stopped worker. It also identified repeated Save actions starting redundant full-catalog reads before stale tokens were discarded.
+
+Save preparation now owns its snapshot task. Closing or replacing the library cancels preparations and invalidates their tokens. Explicit save cancellation and caller cancellation also cancel the corresponding task. A repeated request for the same scope and track IDs returns without starting another read; a changed selection cancels the superseded preparation. SQL row reads, entry decoding, and artwork persistence check cancellation between items.
+
+Two Swift Testing regressions failed before the fix and pass afterward. One closes the library during a blocked catalog read and checks that no save intent or audio appears after completion. The other repeats Save while the first read is blocked and verifies that the duplicate returns without waiting for another database read, while the original request remains intact.
+
+Full validation passed on both platforms: 70 iOS XCTest cases and four Swift Testing cases; 93 macOS XCTest cases with the same six external-environment skips, plus four Swift Testing cases. This follow-up did not repeat Instruments recording or physical-device and screen-interaction checks. Cancellation is cooperative between storage operations; it does not interrupt an in-progress SQLite busy wait or image decoder call.

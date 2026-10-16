@@ -196,7 +196,7 @@ final class LocalTransfer: ObservableObject {
     var clusterResultsPending = false
     @Published private(set) var automaticCellular = false
     @Published var saveRequests: [OfflineSaveRequest] = []
-    var preparingSaves: [String: (token: UUID, tracks: Set<String>)] = [:]
+    var preparingSaves: [String: (token: UUID, tracks: Set<String>, task: Task<CatalogSnapshot?, Error>)] = [:]
     var saveWorker: Task<Void, Never>?
     var saveRetry: Task<Void, Never>?
     var saveNetwork: ClusterNetwork?

@@ -343,6 +343,7 @@ final class CatalogDatabase {
         defer { sqlite3_finalize(statement) }
         var rows: [[String?]] = []
         while true {
+            try Task.checkCancellation()
             let result = sqlite3_step(statement)
             if result == SQLITE_DONE { return rows }
             guard result == SQLITE_ROW else { throw failure() }
@@ -380,6 +381,7 @@ final class CatalogDatabase {
         var entries: [LocalEntry] = []
         var paths: [String: String] = [:]
         for row in try rows("SELECT id, payload, source_path FROM entries ORDER BY position") {
+            try Task.checkCancellation()
             guard let trackID = row[0], let payload = row[1] else { throw LocalMusicError.invalidData }
             let entry = try JSONDecoder().decode(LocalEntry.self, from: Data(payload.utf8))
             guard LocalMusicStore.valid(entry), entry.track.id == trackID else { throw LocalMusicError.invalidData }
@@ -391,6 +393,7 @@ final class CatalogDatabase {
             catalog.organization = try JSONDecoder().decode(AlbumOrganization.self, from: Data(payload.utf8))
             if catalog.organization?.artwork != nil {
                 for row in try rows("SELECT id, payload FROM artwork_assets") {
+                    try Task.checkCancellation()
                     guard let id = row[0], let payload = row[1], let data = Data(base64Encoded: payload) else { throw LocalMusicError.invalidData }
                     if catalog.organization?.artwork?.assets[id] != nil { catalog.organization?.artwork?.assets[id] = data }
                 }

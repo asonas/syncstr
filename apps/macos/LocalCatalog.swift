@@ -230,11 +230,13 @@ struct LocalMusicStore {
         }
         try prepare()
         for (id, data) in catalog.organization?.artwork?.assets ?? [:] {
+            try Task.checkCancellation()
             guard LocalMusicStore.digest(data) == id, ArtworkImage.valid(data) else { throw LocalMusicError.invalidData }
             let url = artworkURL(asset: id)
             if (try? Data(contentsOf: url)) != data { try data.write(to: url, options: .atomic) }
         }
         for entry in catalog.entries {
+            try Task.checkCancellation()
             guard Self.valid(entry) else { throw LocalMusicError.invalidData }
             if let artwork = entry.artwork {
                 let url = artworkURL(entry)

@@ -24,12 +24,24 @@ extension Library {
 
 extension LocalTransfer {
     func requestSave(_ tracks: [Track], scope: String) async {
-        let token = UUID()
+        guard !Task.isCancelled else { return }
         let ids = Set(tracks.map(\.id))
-        preparingSaves[scope] = (token, ids)
+        if let pending = preparingSaves[scope] {
+            if pending.tracks == ids, !pending.task.isCancelled { return }
+            pending.task.cancel()
+        }
+        let token = UUID()
+        let store = store
+        let preparation = Task { try await store.snapshotInBackground() }
+        preparingSaves[scope] = (token, ids, preparation)
         defer { if preparingSaves[scope]?.token == token { preparingSaves.removeValue(forKey: scope) } }
         do {
-            guard let catalog = try await store.snapshotInBackground()?.catalog else { throw LocalMusicError.invalidData }
+            let snapshot = try await withTaskCancellationHandler {
+                try await preparation.value
+            } onCancel: {
+                preparation.cancel()
+            }
+            guard let catalog = snapshot?.catalog else { throw LocalMusicError.invalidData }
             try Task.checkCancellation()
             guard preparingSaves[scope]?.token == token else { return }
             let entries = catalog.entries.filter { ids.contains($0.track.id) }
@@ -46,13 +58,18 @@ extension LocalTransfer {
         }
     }
 
+    func cancelSavePreparations() {
+        for preparation in preparingSaves.values { preparation.task.cancel() }
+        preparingSaves.removeAll()
+    }
+
     func cancelSave(_ request: OfflineSaveRequest) {
         var updated = saveRequests
         guard let index = updated.firstIndex(where: { $0.id == request.id && $0.library == request.library }) else { return }
         updated[index].state = .cancelled
         do {
             try persistSaves(updated)
-            preparingSaves.removeValue(forKey: request.id)
+            preparingSaves.removeValue(forKey: request.id)?.task.cancel()
             stopSaveWorker()
             resumeSaves()
         } catch { status = error.localizedDescription }
@@ -65,7 +82,10 @@ extension LocalTransfer {
             updated[index].state = .cancelled
         }
         try persistSaves(updated)
-        preparingSaves = preparingSaves.filter { $0.value.tracks.isDisjoint(with: ids) }
+        for (scope, preparation) in preparingSaves where !preparation.tracks.isDisjoint(with: ids) {
+            preparation.task.cancel()
+            preparingSaves.removeValue(forKey: scope)
+        }
         stopSaveWorker()
     }
 
