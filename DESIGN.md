@@ -50,6 +50,9 @@ The [macOS Music-inspired exploration](https://www.figma.com/design/KtfBubkg9KiK
 
 ### Information and Actions
 
+- The [album selection and sorting design](https://www.figma.com/design/KtfBubkg9KiK5LuLHIm8Qt?node-id=83-3) adds a circular, icon-only sort menu beside search. Its custom three-line icon follows the Lucide specification (24-point canvas, centered 2-point strokes, round caps and joins). This approved icon is an exception to the Regen-only rule above.
+- In the macOS album grid, click selects one album, Command-click adds or removes an album, and double-click or Return opens a single selected album. Escape clears selection. Highlight selected cards with a Signal Blue outline and Iron background. Show the selection count and batch visibility action in the toolbar; the context menu acts on the selection when opened on a selected card.
+- Sort by title or artist, with the other field as the secondary key, in ascending or descending natural order. Sorting applies to the visible album list, including hidden albums and search results, without changing the playback queue.
 - Do not repeat the sidebar selection as a content heading such as “Albums.” Omit headings such as “Library,” “Now Playing,” or “Playback Queue” when they do not help explain an action or information. Remove spacing reserved for any removed heading.
 - Communicate selection and playback through backgrounds, colors, and icons. Do not repeat visually apparent state with “Selected” or “Playing” text. Supply VoiceOver labels and accessibility attributes such as selection state.
 - Show waiting, sending, failure, and other states needed to choose the next action. This is not a blanket rule to remove status text.

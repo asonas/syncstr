@@ -440,10 +440,16 @@ final class CatalogDatabase {
     }
 
     func setAlbumHidden(_ id: String, hidden: Bool, libraryID: String) throws -> AlbumOrganization {
+        try setAlbumsHidden([id], hidden: hidden, libraryID: libraryID)
+    }
+
+    func setAlbumsHidden(_ ids: Set<String>, hidden: Bool, libraryID: String) throws -> AlbumOrganization {
         try transaction {
             guard let catalog = try readSnapshot()?.catalog, catalog.id == libraryID,
                   var organization = catalog.organization else { throw LocalMusicError.invalidData }
-            organization.set(subject: id, kind: "visibility", value: hidden ? "true" : "false")
+            for id in ids.sorted() {
+                organization.set(subject: id, kind: "visibility", value: hidden ? "true" : "false")
+            }
             try recordOrganizationEdits(organization, previous: catalog, entries: catalog.entries)
             try writeOrganization(organization)
             return organization

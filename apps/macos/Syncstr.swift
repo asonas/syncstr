@@ -37,6 +37,8 @@ struct LibraryView: View {
     @State private var showingUploadStatus = false
     @State private var showingClusterResults = false
     @State private var hoveredTrack: String?
+    @State private var selectedAlbums = Set<String>()
+    @FocusState private var albumGridFocused: Bool
 
     var body: some View {
         VStack(spacing: 0) {
@@ -92,13 +94,38 @@ struct LibraryView: View {
         .toolbar {
             if library.connected {
                 ToolbarItem { Button("アルバムの整理") { library.showingOrganization = true } }
+                if showingAlbumGrid {
+                    if !selectedAlbums.isEmpty {
+                        ToolbarItem(placement: .primaryAction) {
+                            Text("\(selectedAlbums.count)枚を選択中")
+                                .foregroundStyle(.secondary)
+                        }
+                        .sharedBackgroundVisibility(.hidden)
+                        ToolbarItem(placement: .primaryAction) {
+                            Button(albumVisibilityLabel) {
+                                changeAlbumVisibility(selectedAlbums)
+                            }
+                            .disabled(selectedAlbums.contains(where: library.isSavingAlbumVisibility))
+                        }
+                        ToolbarSpacer(.fixed, placement: .primaryAction)
+                    }
+                    ToolbarItem(placement: .primaryAction) { albumSortMenu }
+                    ToolbarSpacer(.fixed, placement: .primaryAction)
+                }
                 ToolbarItem(placement: .primaryAction) {
                     LibrarySearchField(text: $library.search, placeholder: "\(library.destination.rawValue)を検索")
-                        .frame(width: 280)
+                        .frame(width: 240)
                 }
             }
         }
         .toolbarBackground(.hidden, for: .windowToolbar)
+        .onChange(of: library.destination) { _, _ in selectedAlbums.removeAll() }
+        .onChange(of: showingAlbumGrid) { _, showing in
+            if !showing { selectedAlbums.removeAll() }
+        }
+        .onChange(of: library.visibleAlbums.map(\.id)) { _, ids in
+            selectedAlbums.formIntersection(ids)
+        }
         .task { await library.restoreLibrary() }
         .modifier(OfflineSaveRemoval(library: library))
         .sheet(isPresented: $library.showingOrganization) { OrganizationView(library: library) }
@@ -201,7 +228,14 @@ struct LibraryView: View {
             LazyVGrid(columns: [GridItem(.adaptive(minimum: 180), spacing: 20, alignment: .top)],
                       alignment: .leading, spacing: 32) {
                 ForEach(library.visibleAlbums) { album in
-                    Button { library.selectedAlbum = album.id; library.search = "" } label: {
+                    Button {
+                        if (NSApp.currentEvent?.modifierFlags ?? NSEvent.modifierFlags).contains(.command) {
+                            if !selectedAlbums.insert(album.id).inserted { selectedAlbums.remove(album.id) }
+                        } else {
+                            selectedAlbums = [album.id]
+                        }
+                        albumGridFocused = true
+                    } label: {
                         VStack(alignment: .leading, spacing: 8) {
                             Artwork(url: artworkURL(album.coverArt))
                             VStack(alignment: .leading, spacing: 4) {
@@ -209,15 +243,29 @@ struct LibraryView: View {
                                 Text(album.artist).font(.system(size: 12)).foregroundStyle(Studio.fog).lineLimit(1)
                             }
                             .frame(maxWidth: .infinity, minHeight: 60, alignment: .topLeading)
-                        }.contentShape(Rectangle())
+                        }
+                        .background(selectedAlbums.contains(album.id) ? Studio.iron : Color.clear,
+                                    in: RoundedRectangle(cornerRadius: 8))
+                        .overlay {
+                            RoundedRectangle(cornerRadius: 8)
+                                .strokeBorder(selectedAlbums.contains(album.id) ? Studio.signal : Color.clear, lineWidth: 3)
+                        }
+                        .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
+                    .simultaneousGesture(TapGesture(count: 2).onEnded { openAlbum(album.id) })
                     .help("\(album.title)\n\(album.artist)")
                     .accessibilityLabel("\(album.title)、\(album.artist)")
+                    .accessibilityAddTraits(selectedAlbums.contains(album.id) ? .isSelected : [])
+                    .accessibilityAction(named: Text("アルバムを開く")) { openAlbum(album.id) }
                     .contextMenu {
-                        Button(library.albumVisibilityLabel(album.id)) {
-                            library.setAlbumHidden(album.id, hidden: !library.isAlbumHidden(album.id))
-                        }.disabled(library.isSavingAlbumVisibility(album.id))
+                        let targets: Set<String> = selectedAlbums.contains(album.id) ? selectedAlbums : [album.id]
+                        let saving = targets.contains(where: library.isSavingAlbumVisibility)
+                        let action = library.destination == .hiddenAlbums ? "非表示を解除する" : "非表示にする"
+                        Button(saving ? "保存しています…" : targets.count > 1 ? "選択した\(targets.count)枚を\(action)" : action) {
+                            changeAlbumVisibility(targets)
+                        }.disabled(saving)
+                        Button("アルバムを開く") { openAlbum(album.id) }
                         Button("アルバムの整理") { library.showingOrganization = true }
                     }
                 }
@@ -226,7 +274,65 @@ struct LibraryView: View {
                 Text(library.search.isEmpty ? "アルバムがありません。" : "一致するアルバムがありません。")
                     .foregroundStyle(Studio.fog).padding(32)
             }
-        }.safeAreaPadding(.bottom, 120)
+        }
+        .focusable()
+        .focused($albumGridFocused)
+        .focusEffectDisabled()
+        .onKeyPress(.escape) {
+            guard !selectedAlbums.isEmpty else { return .ignored }
+            selectedAlbums.removeAll()
+            return .handled
+        }
+        .onKeyPress(.return) {
+            guard selectedAlbums.count == 1, let id = selectedAlbums.first else { return .ignored }
+            openAlbum(id)
+            return .handled
+        }
+        .safeAreaPadding(.bottom, 120)
+    }
+
+    private var showingAlbumGrid: Bool {
+        !library.showingNowPlaying && (library.destination == .albums || library.destination == .hiddenAlbums)
+            && (library.selectedAlbum == nil || !library.search.isEmpty)
+    }
+
+    private var albumVisibilityLabel: String {
+        selectedAlbums.contains(where: library.isSavingAlbumVisibility) ? "保存しています…"
+            : library.destination == .hiddenAlbums ? "非表示を解除する" : "非表示にする"
+    }
+
+    private func changeAlbumVisibility(_ ids: Set<String>) {
+        library.setAlbumsHidden(ids, hidden: library.destination != .hiddenAlbums)
+    }
+
+    private func openAlbum(_ id: String) {
+        library.search = ""
+        library.selectedAlbum = id
+        selectedAlbums.removeAll()
+    }
+
+    private var albumSortMenu: some View {
+        Menu {
+            Picker("並び替えの基準", selection: $library.albumSortField) {
+                Text("タイトル").tag(AlbumSortField.title)
+                Text("アーティスト").tag(AlbumSortField.artist)
+            }
+            .pickerStyle(.inline)
+            Divider()
+            Picker("表示順", selection: $library.albumSortDescending) {
+                Text("昇順").tag(false)
+                Text("降順").tag(true)
+            }
+            .pickerStyle(.inline)
+        } label: {
+            Image("album-sort").resizable().renderingMode(.template)
+                .frame(width: 24, height: 24)
+        }
+        .menuIndicator(.hidden)
+        .buttonBorderShape(.circle)
+        .controlSize(.large)
+        .help("並び替え")
+        .accessibilityLabel("並び替え")
     }
 
     private func albumDetail(_ album: Album) -> some View {

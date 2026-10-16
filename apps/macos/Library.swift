@@ -11,6 +11,10 @@ struct Album: Identifiable {
     var coverArt: String? { artwork ?? tracks.compactMap(\.coverArt).first }
 }
 
+#if os(macOS)
+enum AlbumSortField { case title, artist }
+#endif
+
 enum LibraryDestination: String, CaseIterable {
     case albums = "アルバム"
     case artists = "アーティスト"
@@ -61,6 +65,10 @@ final class Library: ObservableObject {
     @Published var repeatMode = PlaybackRepeat.off { didSet { persistPlayback() } }
     @Published private(set) var volume = 1.0
     @Published var destination = LibraryDestination.albums
+#if os(macOS)
+    @Published var albumSortField = AlbumSortField.title
+    @Published var albumSortDescending = false
+#endif
     @Published var selectedAlbum: String?
     @Published var selectedArtist: String?
     @Published var search = ""
@@ -189,21 +197,28 @@ final class Library: ObservableObject {
 
     @discardableResult
     func setAlbumHidden(_ id: String, hidden: Bool) -> Task<Void, Never> {
+        setAlbumsHidden([id], hidden: hidden)
+    }
+
+    @discardableResult
+    func setAlbumsHidden(_ ids: Set<String>, hidden: Bool) -> Task<Void, Never> {
         let previous = visibilityChange
         let generation = visibilityGeneration
         let libraryID = localCatalog?.id
-        visibilityRequests[id, default: 0] += 1
+        for id in ids { visibilityRequests[id, default: 0] += 1 }
         let task = Task {
             defer {
                 if visibilityGeneration == generation {
-                    visibilityRequests[id, default: 0] -= 1
-                    if visibilityRequests[id] == 0 { visibilityRequests.removeValue(forKey: id) }
+                    for id in ids {
+                        visibilityRequests[id, default: 0] -= 1
+                        if visibilityRequests[id] == 0 { visibilityRequests.removeValue(forKey: id) }
+                    }
                 }
             }
             await previous?.value
             guard visibilityGeneration == generation, let libraryID, localCatalog?.id == libraryID else { return }
             do {
-                let result = try await localStore.setAlbumHidden(id, hidden: hidden, libraryID: libraryID)
+                let result = try await localStore.setAlbumsHidden(ids, hidden: hidden, libraryID: libraryID)
                 guard visibilityGeneration == generation, localCatalog?.id == libraryID,
                       var organization = localCatalog?.organization else { return }
                 // Apply visibility only so edits received during the save remain intact.
@@ -213,7 +228,7 @@ final class Library: ObservableObject {
                 localCatalog?.organization = organization
                 objectWillChange.send()
                 rebuildVisibleCatalog()
-                if selectedAlbum == id { selectedAlbum = nil }
+                if let selectedAlbum, ids.contains(selectedAlbum) { self.selectedAlbum = nil }
 #if os(macOS)
                 if var folder = localFolder, folder.catalog.id == libraryID, let catalog = localCatalog {
                     folder.catalog = catalog
@@ -236,9 +251,23 @@ final class Library: ObservableObject {
 
     var visibleAlbums: [Album] {
         let albums = destination == .hiddenAlbums ? hiddenAlbums : self.albums
-        guard !search.isEmpty else { return albums }
-        return albums.filter { $0.title.localizedStandardContains(search)
+        let filtered = albums.filter { search.isEmpty || $0.title.localizedStandardContains(search)
             || $0.artist.localizedStandardContains(search) }
+#if os(macOS)
+        return filtered.sorted { lhs, rhs in
+            let primary = albumSortField == .title
+                ? lhs.title.localizedStandardCompare(rhs.title)
+                : lhs.artist.localizedStandardCompare(rhs.artist)
+            let secondary = albumSortField == .title
+                ? lhs.artist.localizedStandardCompare(rhs.artist)
+                : lhs.title.localizedStandardCompare(rhs.title)
+            let order = primary != .orderedSame ? primary : secondary
+            if order == .orderedSame { return albumSortDescending ? lhs.id > rhs.id : lhs.id < rhs.id }
+            return order == (albumSortDescending ? .orderedDescending : .orderedAscending)
+        }
+#else
+        return filtered
+#endif
     }
 
     var artists: [String] {

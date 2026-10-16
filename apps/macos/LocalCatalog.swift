@@ -181,8 +181,13 @@ struct LocalMusicStore {
 
     @concurrent
     func setAlbumHidden(_ id: String, hidden: Bool, libraryID: String) async throws -> (organization: AlbumOrganization, pendingMetadata: Bool) {
+        return try await setAlbumsHidden([id], hidden: hidden, libraryID: libraryID)
+    }
+
+    @concurrent
+    func setAlbumsHidden(_ ids: Set<String>, hidden: Bool, libraryID: String) async throws -> (organization: AlbumOrganization, pendingMetadata: Bool) {
         let database = try database()
-        let organization = try database.setAlbumHidden(id, hidden: hidden, libraryID: libraryID)
+        let organization = try database.setAlbumsHidden(ids, hidden: hidden, libraryID: libraryID)
         return (organization, try !database.clusterMetadataEdits().isEmpty)
     }
 

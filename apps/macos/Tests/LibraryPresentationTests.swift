@@ -8,6 +8,68 @@ import Testing
 @MainActor
 struct LibraryPresentationTests {
     @Test
+    func multipleAlbumsCanBeHiddenTogetherAndRestoredAfterReopening() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let entries = ["First", "Second", "Third"].enumerated().map { index, title in
+            LocalEntry(track: Track(id: title, title: "Song", artist: "Artist", album: title, suffix: "mp3", size: 4),
+                       sha256: String(repeating: String(index + 1), count: 64), artwork: nil)
+        }
+        let store = LocalMusicStore(root: root)
+        let library = Library(localStore: store)
+        defer { library.closeLibrary() }
+        try library.openLocal(LocalCatalog(id: "fixture", name: "Fixture", entries: entries))
+        let selected = Set(library.albums.filter { $0.title != "Third" }.map(\.id))
+        library.queue = library.tracks
+        let save = library.setAlbumsHidden(selected, hidden: true)
+        #expect(selected.allSatisfy(library.isSavingAlbumVisibility))
+        await save.value
+        #expect(!selected.contains(where: library.isSavingAlbumVisibility))
+        #expect(library.message == nil)
+        #expect(library.visibleAlbums.map(\.title) == ["Third"])
+        #expect(Set(library.hiddenAlbums.map(\.title)) == ["First", "Second"])
+        #expect(library.queue.count == 3)
+
+        let reopened = Library(localStore: store)
+        defer { reopened.closeLibrary() }
+        let saved = try store.load()
+        try reopened.openLocal(try #require(saved))
+        reopened.navigate(.hiddenAlbums)
+        #expect(Set(reopened.visibleAlbums.map(\.id)) == selected)
+        await reopened.setAlbumsHidden(selected, hidden: false).value
+        #expect(reopened.visibleAlbums.isEmpty)
+        reopened.navigate(.albums)
+        #expect(reopened.visibleAlbums.map(\.title) == ["First", "Second", "Third"])
+    }
+
+#if os(macOS)
+    @Test
+    func albumSortingUsesNaturalOrderAndSecondaryFieldWithoutChangingQueue() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let library = Library(localStore: LocalMusicStore(root: root))
+        defer { library.closeLibrary() }
+        library.tracks = [
+            Track(id: "ten", title: "Song", artist: "B", album: "Album 10"),
+            Track(id: "two-b", title: "Song", artist: "B", album: "Album 2"),
+            Track(id: "two-a", title: "Song", artist: "A", album: "Album 2"),
+            Track(id: "one-b", title: "Song", artist: "B", album: "Album 1")
+        ]
+        library.queue = library.tracks
+        #expect(library.visibleAlbums.map { $0.tracks[0].id } == ["one-b", "two-a", "two-b", "ten"])
+        library.albumSortField = .artist
+        #expect(library.visibleAlbums.map { $0.tracks[0].id } == ["two-a", "one-b", "two-b", "ten"])
+        library.albumSortDescending = true
+        #expect(library.visibleAlbums.map { $0.tracks[0].id } == ["ten", "two-b", "one-b", "two-a"])
+        library.albumSortField = .title
+        #expect(library.visibleAlbums.map { $0.tracks[0].id } == ["ten", "two-b", "two-a", "one-b"])
+        library.search = "Album 2"
+        #expect(library.visibleAlbums.map { $0.tracks[0].id } == ["two-b", "two-a"])
+        #expect(library.queue.map(\.id) == ["ten", "two-b", "two-a", "one-b"])
+    }
+#endif
+
+    @Test
     func closingLibraryDuringVisibilitySaveDoesNotReopenIt() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }

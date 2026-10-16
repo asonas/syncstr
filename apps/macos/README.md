@@ -39,6 +39,10 @@ A per-user lock prevents concurrent launches through the script. If an abnormal 
 
 The library opens on albums. Use the sidebar to switch between albums, artists, and tracks, or to refresh the library. The title-bar search filters the current section. Open an album and select a track to play it; the mini-player opens the Now Playing view in the same window.
 
+Click an album to select it, Command-click to add or remove albums from the selection, and double-click or press Return to open a selected album. Escape clears the selection. The toolbar and album context menu can hide selected albums together; **Hidden Albums** offers the corresponding batch restore action. Visibility changes use the existing cluster synchronization.
+
+The three-line menu beside search sorts albums by title or artist in ascending or descending natural order. The other field breaks ties. Sorting also applies to search results and hidden albums and does not change the playback queue.
+
 Previous/next, pause/resume, and seeking operate on the list from which playback started. Albums are ordered by disc and track number. Navigation and search do not change the active queue. Tracks advance automatically; playback stops after the last track. Pressing play after the final track ends restarts that track.
 
 Album Play always starts a new album queue from its first track. Player controls pause/resume at the current position. Previous restarts the current track after three seconds; before that it moves back. Previous/next while paused select a track without starting audio or acquiring an unsaved file.
