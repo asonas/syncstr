@@ -423,19 +423,8 @@ final class CatalogDatabase {
             if organized.organization == nil, sameLibrary { organized.organization = previous?.catalog.organization }
             organized.organize(folders: root == nil ? [:] : paths.mapValues { ($0 as NSString).deletingLastPathComponent })
             try organized.organization?.validate()
-            if clusterEdits, let registration = try clusterRegistration(), let organization = organized.organization {
-                _ = try registration.membership.verify(registration.localGrant)
-                let records = try clusterChanges()
-                let pending = try clusterMetadataEdits()
-                for state in try ClusterObjectState.project(records, membership: registration.membership) {
-                    let metadata = try organization.forClusterObject(state.object)
-                    guard try metadata != previous?.catalog.organization?.forClusterObject(state.object) else { continue }
-                    guard !state.conflicted else { throw LocalMusicError.clusterNeedsAttention }
-                    guard let selected = try state.selected(in: records)?.action.entry else { continue }
-                    let entry = organized.entries.first { $0.sha256 == state.object } ?? selected
-                    let parents = pending.first(where: { $0.entry.sha256 == state.object })?.parents ?? state.heads.map(\.id)
-                    try saveClusterMetadataEdit(ClusterMetadataEdit(id: UUID().uuidString, entry: entry, organization: metadata, parents: parents))
-                }
+            if clusterEdits, let organization = organized.organization {
+                try recordOrganizationEdits(organization, previous: previous?.catalog, entries: organized.entries)
             }
             try writeOrganization(organized.organization!)
             try execute("DELETE FROM entries")
@@ -447,6 +436,33 @@ final class CatalogDatabase {
             }
             for entry in received { try recordReceived(entry) }
             try indexClusterCatalog(organized, memberID: nil)
+        }
+    }
+
+    func setAlbumHidden(_ id: String, hidden: Bool, libraryID: String) throws -> AlbumOrganization {
+        try transaction {
+            guard let catalog = try readSnapshot()?.catalog, catalog.id == libraryID,
+                  var organization = catalog.organization else { throw LocalMusicError.invalidData }
+            organization.set(subject: id, kind: "visibility", value: hidden ? "true" : "false")
+            try recordOrganizationEdits(organization, previous: catalog, entries: catalog.entries)
+            try writeOrganization(organization)
+            return organization
+        }
+    }
+
+    private func recordOrganizationEdits(_ organization: AlbumOrganization, previous: LocalCatalog?, entries: [LocalEntry]) throws {
+        guard let registration = try clusterRegistration() else { return }
+        _ = try registration.membership.verify(registration.localGrant)
+        let records = try clusterChanges()
+        let pending = try clusterMetadataEdits()
+        for state in try ClusterObjectState.project(records, membership: registration.membership) {
+            let metadata = try organization.forClusterObject(state.object)
+            guard try metadata != previous?.organization?.forClusterObject(state.object) else { continue }
+            guard !state.conflicted else { throw LocalMusicError.clusterNeedsAttention }
+            guard let selected = try state.selected(in: records)?.action.entry else { continue }
+            let entry = entries.first { $0.sha256 == state.object } ?? selected
+            let parents = pending.first(where: { $0.entry.sha256 == state.object })?.parents ?? state.heads.map(\.id)
+            try saveClusterMetadataEdit(ClusterMetadataEdit(id: UUID().uuidString, entry: entry, organization: metadata, parents: parents))
         }
     }
 

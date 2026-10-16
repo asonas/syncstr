@@ -179,6 +179,13 @@ struct LocalMusicStore {
         return snapshot
     }
 
+    @concurrent
+    func setAlbumHidden(_ id: String, hidden: Bool, libraryID: String) async throws -> (organization: AlbumOrganization, pendingMetadata: Bool) {
+        let database = try database()
+        let organization = try database.setAlbumHidden(id, hidden: hidden, libraryID: libraryID)
+        return (organization, try !database.clusterMetadataEdits().isEmpty)
+    }
+
     var hasCatalog: Bool {
         if FileManager.default.fileExists(atPath: root.appendingPathComponent("catalog.json").path) { return true }
         guard hasStorage else { return false }

@@ -164,9 +164,9 @@ struct PhoneRoot: View {
                 }
                 .buttonStyle(.plain)
                 .contextMenu {
-                    Button(library.isAlbumHidden(album.id) ? "非表示を解除する" : "非表示にする") {
+                    Button(library.albumVisibilityLabel(album.id)) {
                         library.setAlbumHidden(album.id, hidden: !library.isAlbumHidden(album.id))
-                    }
+                    }.disabled(library.isSavingAlbumVisibility(album.id))
                     Button("アルバムの整理") { library.showingOrganization = true }
                 }
             }
@@ -201,9 +201,9 @@ struct PhoneRoot: View {
                     .buttonStyle(.plain)
                     .disabled(album.tracks.isEmpty)
                     .accessibilityLabel("再生")
-                    Button(library.isAlbumHidden(album.id) ? "非表示を解除する" : "非表示にする") {
+                    Button(library.albumVisibilityLabel(album.id)) {
                         library.setAlbumHidden(album.id, hidden: !library.isAlbumHidden(album.id))
-                    }
+                    }.disabled(library.isSavingAlbumVisibility(album.id))
                     OfflineSaveControls(library: library, tracks: album.tracks, scope: "album:" + album.id).padding(.top, 16)
                 }
                 .frame(maxWidth: .infinity)

@@ -1,4 +1,5 @@
 import Foundation
+import SQLite3
 import Testing
 #if os(iOS)
 @testable import Syncstr
@@ -7,7 +8,58 @@ import Testing
 @MainActor
 struct LibraryPresentationTests {
     @Test
-    func hiddenAlbumsLeaveCatalogButKeepAudioQueueAndRestoreAfterReopen() throws {
+    func closingLibraryDuringVisibilitySaveDoesNotReopenIt() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = LocalMusicStore(root: root)
+        let library = Library(localStore: store)
+        let entry = LocalEntry(track: Track(id: "one", title: "Song", artist: "Artist", album: "Album", suffix: "mp3", size: 4),
+                               sha256: String(repeating: "a", count: 64), artwork: nil)
+        try library.openLocal(LocalCatalog(id: "fixture", name: "Fixture", entries: [entry]))
+        let album = try #require(library.albums.first)
+        var connection: OpaquePointer?
+        #expect(sqlite3_open(root.appendingPathComponent("catalog.sqlite").path, &connection) == SQLITE_OK)
+        let writer = try #require(connection)
+        defer { sqlite3_close(writer) }
+        #expect(sqlite3_exec(writer, "BEGIN EXCLUSIVE", nil, nil, nil) == SQLITE_OK)
+        let save = library.setAlbumHidden(album.id, hidden: true)
+        #expect(library.isSavingAlbumVisibility(album.id))
+        let pulseStart = ProcessInfo.processInfo.systemUptime
+        try await Task.sleep(for: .milliseconds(50))
+        #expect(ProcessInfo.processInfo.systemUptime - pulseStart < 0.5)
+        #expect(library.hiddenAlbums.isEmpty)
+        library.closeLibrary()
+        #expect(sqlite3_exec(writer, "COMMIT", nil, nil, nil) == SQLITE_OK)
+        await save.value
+        #expect(!library.connected)
+        #expect(library.albums.isEmpty)
+        #expect(library.hiddenAlbums.isEmpty)
+        #expect(library.message == nil)
+        #expect(!library.isSavingAlbumVisibility(album.id))
+    }
+
+    @Test
+    func failedVisibilitySaveKeepsTheDisplayedAlbum() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = LocalMusicStore(root: root)
+        let library = Library(localStore: store)
+        defer { library.closeLibrary() }
+        let entry = LocalEntry(track: Track(id: "one", title: "Song", artist: "Artist", album: "Album", suffix: "mp3", size: 4),
+                               sha256: String(repeating: "a", count: 64), artwork: nil)
+        try library.openLocal(LocalCatalog(id: "fixture", name: "Fixture", entries: [entry]))
+        let album = try #require(library.albums.first)
+        try store.save(LocalCatalog(id: "replacement", name: "Replacement", entries: []))
+        await library.setAlbumHidden(album.id, hidden: true).value
+        #expect(library.message != nil)
+        #expect(library.albums.map(\.id) == [album.id])
+        #expect(library.hiddenAlbums.isEmpty)
+        #expect(try store.load()?.id == "replacement")
+        #expect(!library.isSavingAlbumVisibility(album.id))
+    }
+
+    @Test
+    func hiddenAlbumsLeaveCatalogButKeepAudioQueueAndRestoreAfterReopen() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }
         let entry = LocalEntry(track: Track(id: "one", title: "Song", artist: "Artist", album: "Album", suffix: "mp3", size: 4), sha256: String(repeating: "a", count: 64), artwork: nil)
@@ -16,7 +68,7 @@ struct LibraryPresentationTests {
         try library.openLocal(LocalCatalog(id: "fixture", name: "Fixture", entries: [entry]))
         let album = try #require(library.albums.first)
         library.queue = album.tracks
-        library.setAlbumHidden(album.id, hidden: true)
+        await library.setAlbumHidden(album.id, hidden: true).value
         #expect(library.message == nil)
         #expect(library.albums.isEmpty)
         #expect(library.artists.isEmpty)
@@ -33,7 +85,7 @@ struct LibraryPresentationTests {
         let saved = try store.load()
         try reopened.openLocal(try #require(saved))
         #expect(reopened.hiddenAlbums.map(\.id) == [album.id])
-        reopened.setAlbumHidden(album.id, hidden: false)
+        await reopened.setAlbumHidden(album.id, hidden: false).value
         #expect(reopened.albums.map(\.id) == [album.id])
         #expect(reopened.hiddenAlbums.isEmpty)
         #expect(reopened.catalogTracks.map(\.id) == ["one"])
@@ -95,14 +147,14 @@ struct LibraryPresentationTests {
     }
 
     @Test
-    func testSelectionAndPlaybackUpdatesBrowseRetainedCatalogWithoutBlocking() throws {
+    func testSelectionAndPlaybackUpdatesBrowseRetainedCatalogWithoutBlocking() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }
         let images = try AlbumArtworkTests.fixture()
         var organization = AlbumOrganization()
         organization.artwork = AlbumArtwork(assets: [images.blue: try #require(images.organization.artwork?.assets[images.blue])])
         var entries: [LocalEntry] = []
-        for number in 0..<200 {
+        for number in 0..<2000 {
             let id = "track-\(number)"
             let album = "album-\(number / 10)"
             let metadata = ImportedAlbumMetadata(title: album, artist: "Artist \(number / 10)", albumArtist: nil, compilationValues: [], release: nil)
@@ -119,13 +171,37 @@ struct LibraryPresentationTests {
         for number in 0..<3 {
             library.selectedAlbum = "album-\(number)"
             library.position = Double(number)
-            #expect(library.albums.count == 20)
+            #expect(library.albums.count == 200)
             #expect(library.visibleTracks.count == 10)
-            #expect(library.artists.count == 20)
+            #expect(library.artists.count == 200)
             #expect(library.albums.first?.coverArt == images.blue)
         }
         #expect(ProcessInfo.processInfo.systemUptime - start < 0.2,
                 "Warm browsing must not rebuild the catalog for selection or playback updates")
+        let hideStart = ProcessInfo.processInfo.systemUptime
+        let hiding = library.setAlbumHidden("album-0", hidden: true)
+        let hideDuration = ProcessInfo.processInfo.systemUptime - hideStart
+        print("Visibility action main-actor time: \(hideDuration)s")
+        #expect(hideDuration < 0.1, "Hiding an album must return control to the UI promptly")
+        #expect(library.albums.count == 200)
+        library.position = 12
+        library.selectedAlbum = "album-1"
+        let restoring = library.setAlbumHidden("album-0", hidden: false)
+        let hidingAnother = library.setAlbumHidden("album-1", hidden: true)
+        let pulseStart = ProcessInfo.processInfo.systemUptime
+        try await Task.sleep(for: .milliseconds(10))
+        #expect(ProcessInfo.processInfo.systemUptime - pulseStart < 0.2,
+                "The main actor must remain responsive while visibility is saved")
+        await hiding.value
+        await restoring.value
+        await hidingAnother.value
+        #expect(library.message == nil)
+        #expect(library.position == 12)
+        #expect(library.albums.count == 199)
+        #expect(library.hiddenAlbums.map(\.id) == ["album-1"])
+        let saved = try #require(try library.localStore.load())
+        #expect(saved.organization?.isHidden("album-0") == false)
+        #expect(saved.organization?.isHidden("album-1") == true)
         library.closeLibrary()
     }
 }

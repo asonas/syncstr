@@ -40,6 +40,10 @@ final class Library: ObservableObject {
     private(set) var hiddenAlbums: [Album] = []
     private(set) var catalogTracks: [Track] = []
     private var albumsByID: [String: Album] = [:]
+    private var allAlbums: [Album] = []
+    private var visibilityChange: Task<Void, Never>?
+    private var visibilityGeneration = UUID()
+    @Published private var visibilityRequests: [String: Int] = [:]
     private var albumsByArtist: [String: [Album]] = [:]
     private var tracksByArtist: [String: [Track]] = [:]
     private var artistNames: [String] = []
@@ -155,9 +159,14 @@ final class Library: ObservableObject {
             return $0.id < $1.id
         }
         albumsByID = Dictionary(uniqueKeysWithValues: albums.map { ($0.id, $0) })
-        hiddenAlbums = albums.filter { isAlbumHidden($0.id) }
+        allAlbums = albums
+        rebuildVisibleCatalog()
+    }
+
+    private func rebuildVisibleCatalog() {
+        hiddenAlbums = allAlbums.filter { isAlbumHidden($0.id) }
         let hiddenIDs = Set(hiddenAlbums.map(\.id))
-        albums.removeAll { hiddenIDs.contains($0.id) }
+        albums = allAlbums.filter { !hiddenIDs.contains($0.id) }
         catalogTracks = tracks.filter { !hiddenIDs.contains($0.albumKey) }
         tracksByArtist = Dictionary(grouping: catalogTracks) { $0.artist ?? "アーティスト不明" }
         artistNames = tracksByArtist.keys.sorted { $0.localizedStandardCompare($1) == .orderedAscending }
@@ -171,14 +180,54 @@ final class Library: ObservableObject {
 
     func isAlbumHidden(_ id: String) -> Bool { localCatalog?.organization?.isHidden(id) ?? false }
 
-    func setAlbumHidden(_ id: String, hidden: Bool) {
-        do {
-            guard var organization = localCatalog?.organization else { throw LocalMusicError.invalidData }
-            organization.set(subject: id, kind: "visibility", value: hidden ? "true" : "false")
-            try saveOrganization(organization)
-            selectedAlbum = nil
-            try transfer.organizationChanged()
-        } catch { message = error.localizedDescription }
+    func isSavingAlbumVisibility(_ id: String) -> Bool { visibilityRequests[id, default: 0] > 0 }
+
+    func albumVisibilityLabel(_ id: String) -> String {
+        if isSavingAlbumVisibility(id) { return "保存しています…" }
+        return isAlbumHidden(id) ? "非表示を解除する" : "非表示にする"
+    }
+
+    @discardableResult
+    func setAlbumHidden(_ id: String, hidden: Bool) -> Task<Void, Never> {
+        let previous = visibilityChange
+        let generation = visibilityGeneration
+        let libraryID = localCatalog?.id
+        visibilityRequests[id, default: 0] += 1
+        let task = Task {
+            defer {
+                if visibilityGeneration == generation {
+                    visibilityRequests[id, default: 0] -= 1
+                    if visibilityRequests[id] == 0 { visibilityRequests.removeValue(forKey: id) }
+                }
+            }
+            await previous?.value
+            guard visibilityGeneration == generation, let libraryID, localCatalog?.id == libraryID else { return }
+            do {
+                let result = try await localStore.setAlbumHidden(id, hidden: hidden, libraryID: libraryID)
+                guard visibilityGeneration == generation, localCatalog?.id == libraryID,
+                      var organization = localCatalog?.organization else { return }
+                // Apply visibility only so edits received during the save remain intact.
+                let existing = Set(organization.choices.map(\.id))
+                organization.choices += result.organization.choices.filter { $0.kind == "visibility" && !existing.contains($0.id) }
+                organization.preferred.merge(result.organization.preferred.filter { $0.key.hasPrefix("visibility:") }) { _, saved in saved }
+                localCatalog?.organization = organization
+                objectWillChange.send()
+                rebuildVisibleCatalog()
+                if selectedAlbum == id { selectedAlbum = nil }
+#if os(macOS)
+                if var folder = localFolder, folder.catalog.id == libraryID, let catalog = localCatalog {
+                    folder.catalog = catalog
+                    localFolder = folder
+                    transfer.updateHostedCatalog(catalog)
+                }
+#endif
+                transfer.organizationChanged(pendingMetadata: result.pendingMetadata)
+            } catch {
+                if visibilityGeneration == generation { message = error.localizedDescription }
+            }
+        }
+        visibilityChange = task
+        return task
     }
 
     func album(id: String) -> Album? { albumsByID[id] }
@@ -270,6 +319,8 @@ final class Library: ObservableObject {
         try Data().write(to: localStore.root.appendingPathComponent("active"), options: .atomic)
         let sameLibrary = localCatalog?.id == catalog.id
         if !sameLibrary {
+            visibilityGeneration = UUID()
+            visibilityRequests = [:]
             transfer.cancelSavePreparations()
             transfer.stopSaveWorker()
             stop()
@@ -796,6 +847,8 @@ final class Library: ObservableObject {
     }
 
     func closeLibrary() {
+        visibilityGeneration = UUID()
+        visibilityRequests = [:]
         transfer.cancelSavePreparations()
         transfer.stopSaveWorker()
         transfer.cancel()
