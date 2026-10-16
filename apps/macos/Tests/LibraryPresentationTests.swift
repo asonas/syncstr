@@ -7,6 +7,41 @@ import Testing
 @MainActor
 struct LibraryPresentationTests {
     @Test
+    func hiddenAlbumsLeaveCatalogButKeepAudioQueueAndRestoreAfterReopen() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let entry = LocalEntry(track: Track(id: "one", title: "Song", artist: "Artist", album: "Album", suffix: "mp3", size: 4), sha256: String(repeating: "a", count: 64), artwork: nil)
+        let store = LocalMusicStore(root: root)
+        let library = Library(localStore: store)
+        try library.openLocal(LocalCatalog(id: "fixture", name: "Fixture", entries: [entry]))
+        let album = try #require(library.albums.first)
+        library.queue = album.tracks
+        library.setAlbumHidden(album.id, hidden: true)
+        #expect(library.message == nil)
+        #expect(library.albums.isEmpty)
+        #expect(library.artists.isEmpty)
+        #expect(library.catalogTracks.isEmpty)
+        #expect(library.tracks(for: "Artist").isEmpty)
+        #expect(library.queue.map(\.id) == ["one"])
+        #expect(library.tracks.count == 1)
+        library.search = "Song"
+        #expect(library.visibleTracks.isEmpty)
+        library.search = ""
+        library.navigate(.hiddenAlbums)
+        #expect(library.visibleAlbums.map(\.id) == [album.id])
+        let reopened = Library(localStore: store)
+        let saved = try store.load()
+        try reopened.openLocal(try #require(saved))
+        #expect(reopened.hiddenAlbums.map(\.id) == [album.id])
+        reopened.setAlbumHidden(album.id, hidden: false)
+        #expect(reopened.albums.map(\.id) == [album.id])
+        #expect(reopened.hiddenAlbums.isEmpty)
+        #expect(reopened.catalogTracks.map(\.id) == ["one"])
+        library.closeLibrary()
+        reopened.closeLibrary()
+    }
+
+    @Test
     func testCatalogAndOrganizationUpdatesRefreshAlbumsArtistsAndArtwork() throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }

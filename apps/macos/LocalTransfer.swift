@@ -346,6 +346,11 @@ final class LocalTransfer: ObservableObject {
         disputedMembers = try clusterRegistration?.membership.revocationState().disputed.sorted() ?? []
     }
 
+    func organizationChanged() throws {
+        try updateClusterState(store.database())
+        scheduleClusterRetry()
+    }
+
     private func scheduleClusterRetry() {
         clusterRetry?.cancel()
         guard clusterRegistration != nil, pendingClusterMetadata || clusterBatches.contains(where: { $0.items.contains(where: { $0.state == .queued }) }) else { return }

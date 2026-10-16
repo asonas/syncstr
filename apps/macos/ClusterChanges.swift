@@ -17,7 +17,7 @@ extension AlbumOrganization {
         choices = choices.filter { choice in
             switch choice.kind {
             case "membership": return trackIDs.contains(canonicalTrack(choice.subject))
-            case "classification", "artwork": return albumIDs.contains(canonical(choice.subject))
+            case "classification", "artwork", "visibility": return albumIDs.contains(canonical(choice.subject))
             case "proposal": return choice.subject.split(separator: ",").contains { albumIDs.contains(canonical(String($0))) }
             default: return false
             }
@@ -45,7 +45,7 @@ extension AlbumOrganization {
         let choices = choices.filter { choice in
             switch choice.kind {
             case "membership": return trackIDs.contains(choice.subject)
-            case "classification", "artwork": return albumIDs.contains(canonical(choice.subject))
+            case "classification", "artwork", "visibility": return albumIDs.contains(canonical(choice.subject))
             case "proposal": return choice.subject.split(separator: ",").contains { albumIDs.contains(canonical(String($0))) }
             default: return false
             }

@@ -85,6 +85,32 @@ pub struct Organization {
 }
 
 impl crate::organization::Organization {
+    pub fn is_hidden(&self, album: &str) -> bool {
+        let superseded: std::collections::BTreeSet<_> = self.choices.iter().flat_map(|c| &c.parents).collect();
+        self.choices.iter().any(|c| c.kind == "visibility"
+            && self.canonical(&c.subject).ok() == self.canonical(album).ok()
+            && !superseded.contains(&c.id) && c.value.as_deref() == Some("true"))
+    }
+
+    pub fn set_hidden(&mut self, album: &str, hidden: bool) -> anyhow::Result<()> {
+        let target = self.canonical(album)?.to_owned();
+        anyhow::ensure!(self.albums.iter().any(|a| a.id == target), "unknown album");
+        let aliases = self.automatic_aliases.clone();
+        let members = self.albums.iter().filter(|a| self.canonical(&a.id).ok() == Some(target.as_str()))
+            .map(|a| a.id.clone()).collect::<Vec<_>>();
+        self.automatic_aliases = None;
+        let subjects = members.iter().map(|id| self.canonical(id).map(str::to_owned)).collect::<anyhow::Result<std::collections::BTreeSet<_>>>()?;
+        for subject in subjects {
+            let superseded: std::collections::BTreeSet<_> = self.choices.iter().flat_map(|c| &c.parents).collect();
+            let parents = self.choices.iter().filter(|c| c.kind == "visibility"
+                && self.subject(c) == subject && !superseded.contains(&c.id)).map(|c| c.id.clone()).collect();
+            self.choices.push(crate::organization::Choice { id: uuid::Uuid::new_v4().to_string(),
+                subject, kind: "visibility".into(), value: Some(hidden.to_string()), parents });
+        }
+        self.automatic_aliases = aliases;
+        self.validate()
+    }
+
     #[cfg(feature = "p2p")]
     pub(crate) fn exclude_objects(&mut self, objects: &std::collections::BTreeSet<String>) -> anyhow::Result<()> {
         self.tracks.retain(|track| !objects.contains(&track.sha256));
@@ -94,7 +120,7 @@ impl crate::organization::Organization {
             .map(|id| self.canonical(id).map(str::to_owned)).collect::<anyhow::Result<_>>()?;
         let choices: Vec<_> = self.choices.iter().filter(|choice| match choice.kind.as_str() {
             "membership" => tracks.contains(&self.canonical_track(&choice.subject)),
-            "classification" | "artwork" => albums.contains(&self.subject(choice)),
+            "classification" | "artwork" | "visibility" => albums.contains(&self.subject(choice)),
             "proposal" => choice.subject.split(',').any(|album| self.canonical(album).is_ok_and(|id| albums.contains(id))),
             _ => false,
         }).cloned().collect();
@@ -124,7 +150,7 @@ impl crate::organization::Organization {
         }
         let choices: Vec<_> = self.choices.iter().filter(|choice| match choice.kind.as_str() {
             "membership" => track_ids.contains(choice.subject.as_str()),
-            "classification" | "artwork" => albums.contains(&self.subject(choice)),
+            "classification" | "artwork" | "visibility" => albums.contains(&self.subject(choice)),
             "proposal" => choice.subject.split(',').any(|album| self.canonical(album).is_ok_and(|id| albums.contains(id))),
             _ => false,
         }).cloned().collect();
@@ -168,7 +194,7 @@ impl crate::organization::Organization {
     pub(crate) fn subject(&self, choice: &crate::organization::Choice) -> String {
         match choice.kind.as_str() {
             "membership" => self.canonical_track(&choice.subject),
-            "classification" | "artwork" => self
+            "classification" | "artwork" | "visibility" => self
                 .canonical(&choice.subject)
                 .unwrap_or(&choice.subject)
                 .to_owned(),
@@ -301,7 +327,7 @@ impl crate::organization::Organization {
                         );
                     }
                 }
-                "classification" => {
+                "classification" | "visibility" => {
                     anyhow::ensure!(
                         albums.contains(self.canonical(&choice.subject)?),
                         "unknown classification album"

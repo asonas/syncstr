@@ -15,12 +15,14 @@ enum LibraryDestination: String, CaseIterable {
     case albums = "アルバム"
     case artists = "アーティスト"
     case songs = "曲"
+    case hiddenAlbums = "非表示にしたアルバム"
 
     var symbol: String {
         switch self {
         case .albums: "square.stack"
         case .artists: "person.2"
         case .songs: "music.note.list"
+        case .hiddenAlbums: "eye.slash"
         }
     }
 }
@@ -35,6 +37,8 @@ enum PlaybackRepeat: String, CaseIterable, Codable {
 final class Library: ObservableObject {
     @Published var tracks: [Track] = [] { didSet { rebuildAlbums() } }
     private(set) var albums: [Album] = []
+    private(set) var hiddenAlbums: [Album] = []
+    private(set) var catalogTracks: [Track] = []
     private var albumsByID: [String: Album] = [:]
     private var albumsByArtist: [String: [Album]] = [:]
     private var tracksByArtist: [String: [Track]] = [:]
@@ -151,7 +155,11 @@ final class Library: ObservableObject {
             return $0.id < $1.id
         }
         albumsByID = Dictionary(uniqueKeysWithValues: albums.map { ($0.id, $0) })
-        tracksByArtist = Dictionary(grouping: tracks) { $0.artist ?? "アーティスト不明" }
+        hiddenAlbums = albums.filter { isAlbumHidden($0.id) }
+        let hiddenIDs = Set(hiddenAlbums.map(\.id))
+        albums.removeAll { hiddenIDs.contains($0.id) }
+        catalogTracks = tracks.filter { !hiddenIDs.contains($0.albumKey) }
+        tracksByArtist = Dictionary(grouping: catalogTracks) { $0.artist ?? "アーティスト不明" }
         artistNames = tracksByArtist.keys.sorted { $0.localizedStandardCompare($1) == .orderedAscending }
         albumsByArtist = [:]
         for album in albums {
@@ -161,11 +169,24 @@ final class Library: ObservableObject {
         }
     }
 
+    func isAlbumHidden(_ id: String) -> Bool { localCatalog?.organization?.isHidden(id) ?? false }
+
+    func setAlbumHidden(_ id: String, hidden: Bool) {
+        do {
+            guard var organization = localCatalog?.organization else { throw LocalMusicError.invalidData }
+            organization.set(subject: id, kind: "visibility", value: hidden ? "true" : "false")
+            try saveOrganization(organization)
+            selectedAlbum = nil
+            try transfer.organizationChanged()
+        } catch { message = error.localizedDescription }
+    }
+
     func album(id: String) -> Album? { albumsByID[id] }
     func albums(for artist: String) -> [Album] { albumsByArtist[artist] ?? [] }
     func tracks(for artist: String) -> [Track] { tracksByArtist[artist] ?? [] }
 
     var visibleAlbums: [Album] {
+        let albums = destination == .hiddenAlbums ? hiddenAlbums : self.albums
         guard !search.isEmpty else { return albums }
         return albums.filter { $0.title.localizedStandardContains(search)
             || $0.artist.localizedStandardContains(search) }
@@ -179,13 +200,13 @@ final class Library: ObservableObject {
     var visibleTracks: [Track] {
         let source: [Track]
         if !search.isEmpty {
-            source = tracks
+            source = catalogTracks
         } else if let selectedAlbum, let album = album(id: selectedAlbum) {
             source = album.tracks
         } else if let selectedArtist {
             source = tracks(for: selectedArtist)
         } else {
-            source = tracks
+            source = catalogTracks
         }
         return source.filter {
             search.isEmpty || $0.title.localizedStandardContains(search)

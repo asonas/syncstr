@@ -33,7 +33,7 @@ class MainActivity : Activity() {
     }
 
     private enum class Screen { LIBRARY, SAVED, PLAYER, CONNECTIONS }
-    private enum class BrowseMode { ALBUMS, ARTISTS, SONGS }
+    private enum class BrowseMode { ALBUMS, ARTISTS, SONGS, HIDDEN }
     private enum class SaveState { REMOTE, DOWNLOADING, SAVED, FAILED }
     private data class LibrarySnapshot(val entries: JSONArray, val conflicts: JSONArray,
         val saved: Map<String, SaveState>, val hosts: Int?, val hostError: String?)
@@ -197,6 +197,19 @@ class MainActivity : Activity() {
         return@task { applyCatalog(snapshot); showStatus(getString(R.string.library_updated)) }
     }
 
+    private fun changeVisibility(album: String, hidden: Boolean) = task {
+        call("visibility", JSONObject().put("album", album).put("hidden", hidden))
+        var synced = false
+        try {
+            val sources = availableHosts()
+            for (index in 0 until sources.length()) {
+                try { call("refresh", sources.getJSONObject(index)); synced = true; break } catch (_: Exception) { }
+            }
+        } catch (_: Exception) { }
+        val snapshot = loadCatalog()
+        return@task { applyCatalog(snapshot); showStatus(getString(if (synced) R.string.library_updated else R.string.visibility_pending)) }
+    }
+
     private fun render() {
         body.removeAllViews()
         miniPlayer.removeAllViews()
@@ -218,18 +231,19 @@ class MainActivity : Activity() {
         body.addView(ScrollView(this).apply { addView(list) })
         if (!savedOnly && conflicts.length() > 0) list.addView(conflictCard())
         val entries = (0 until catalog.length()).map { catalog.getJSONObject(it) }
+            .filter { (it.optJSONObject("presentation")?.optBoolean("hidden", false) == true) == (browseMode == BrowseMode.HIDDEN) }
             .filter { !savedOnly || saveStates[it.getString("sha256")] == SaveState.SAVED }
-        if (entries.isEmpty()) {
-            list.addView(emptyState(getString(if (savedOnly) R.string.no_saved_music else R.string.no_music)))
-            return
-        }
         list.addView(LinearLayout(this).apply {
             addView(modeButton(getString(R.string.albums), BrowseMode.ALBUMS), LinearLayout.LayoutParams(0, dp(48), 1f))
             addView(modeButton(getString(R.string.artists), BrowseMode.ARTISTS), LinearLayout.LayoutParams(0, dp(48), 1f))
             addView(modeButton(getString(R.string.songs), BrowseMode.SONGS), LinearLayout.LayoutParams(0, dp(48), 1f))
         })
+        list.addView(modeButton(getString(R.string.hidden_albums), BrowseMode.HIDDEN))
+        if (entries.isEmpty()) {
+            list.addView(emptyState(getString(if (browseMode == BrowseMode.HIDDEN) R.string.no_hidden_albums else if (savedOnly) R.string.no_saved_music else R.string.no_music)))
+        }
         when (browseMode) {
-            BrowseMode.ALBUMS -> renderGroups(list, entries, true)
+            BrowseMode.ALBUMS, BrowseMode.HIDDEN -> renderGroups(list, entries, true)
             BrowseMode.ARTISTS -> renderGroups(list, entries, false)
             BrowseMode.SONGS -> entries.sortedBy { it.getJSONObject("track").getString("title").lowercase() }.forEach { list.addView(trackRow(it)) }
         }
@@ -260,6 +274,12 @@ class MainActivity : Activity() {
                 addView(label(group.title, 21f, WHITE, true))
                 val detail = if (albums) group.credit else resources.getQuantityString(R.plurals.track_count, group.members.size, group.members.size)
                 addView(label(detail, 14f, FOG))
+                if (albums) {
+                    val album = group.members.first().albumId
+                    if (album != null) addView(primary(getString(if (browseMode == BrowseMode.HIDDEN) R.string.unhide_album else R.string.hide_album)) {
+                        changeVisibility(album, browseMode != BrowseMode.HIDDEN)
+                    })
+                }
             })
             group.members.forEach { list.addView(trackRow(byObject.getValue(it.objectId))) }
         }

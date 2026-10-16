@@ -112,6 +112,7 @@ final class ClusterTransferTests: XCTestCase {
         var editedCatalog = try XCTUnwrap(store.load())
         let album = try XCTUnwrap(editedCatalog.organization?.albumID(for: entry.track.id))
         editedCatalog.organization?.set(subject: album, kind: "classification", value: "true")
+        editedCatalog.organization?.set(subject: album, kind: "visibility", value: "true")
         try store.save(editedCatalog, clusterEdits: true)
         XCTAssertEqual(try CatalogDatabase(databaseURL).clusterMetadataEdits().count, 1)
         let metadataNetwork = ClusterNetwork(store: store, secrets: secrets)
@@ -120,6 +121,7 @@ final class ClusterTransferTests: XCTestCase {
         metadataNetwork.stop()
         XCTAssertTrue(try CatalogDatabase(databaseURL).clusterMetadataEdits().isEmpty)
         XCTAssertEqual(edited.organization?.choice(subject: album, kind: "classification")?.value, "true")
+        XCTAssertTrue(edited.organization?.isHidden(album) == true)
         let storedBytes = try Data(contentsOf: store.fileURL(entry))
         let storedDate = try store.fileURL(entry).resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate
         let jobs = try restored.clusterJobs().count

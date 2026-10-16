@@ -131,7 +131,7 @@ struct LibraryView: View {
             ForEach(LibraryDestination.allCases, id: \.self) { destination in
                 Button { library.navigate(destination); library.search = "" } label: {
                     HStack(spacing: 8) {
-                        MacIcon(destination == .albums ? "layers" : destination == .artists ? "users" : "music")
+                        MacIcon((destination == .albums || destination == .hiddenAlbums) ? "layers" : destination == .artists ? "users" : "music")
                         Text(destination.rawValue)
                     }
                         .frame(maxWidth: .infinity, minHeight: 32, alignment: .leading)
@@ -189,7 +189,7 @@ struct LibraryView: View {
             albumDetail(album)
         } else {
             switch library.destination {
-            case .albums: albums
+            case .albums, .hiddenAlbums: albums
             case .artists: artists
             case .songs: songs
             }
@@ -214,7 +214,12 @@ struct LibraryView: View {
                     .buttonStyle(.plain)
                     .help("\(album.title)\n\(album.artist)")
                     .accessibilityLabel("\(album.title)、\(album.artist)")
-                    .contextMenu { Button("アルバムの整理") { library.showingOrganization = true } }
+                    .contextMenu {
+                        Button(library.isAlbumHidden(album.id) ? "非表示を解除する" : "非表示にする") {
+                            library.setAlbumHidden(album.id, hidden: !library.isAlbumHidden(album.id))
+                        }
+                        Button("アルバムの整理") { library.showingOrganization = true }
+                    }
                 }
             }.padding(32)
             if library.visibleAlbums.isEmpty {
@@ -243,6 +248,9 @@ struct LibraryView: View {
                             }.buttonStyle(.plain)
                             Text("\(album.tracks.count)曲").font(.system(size: 12)).foregroundStyle(Studio.fog)
                             Spacer(minLength: 20)
+                            Button(library.isAlbumHidden(album.id) ? "非表示を解除する" : "非表示にする") {
+                                library.setAlbumHidden(album.id, hidden: !library.isAlbumHidden(album.id))
+                            }
                             playButton(album.tracks)
                             OfflineSaveControls(library: library, tracks: album.tracks, scope: "album:" + album.id)
                         }.frame(minHeight: wide ? 272 : nil, alignment: .topLeading)
@@ -368,7 +376,12 @@ struct LibraryView: View {
         LazyVStack(spacing: 0) {
             ForEach(Array(tracks.enumerated()), id: \.element.id) { index, track in
                 trackRow(track, index: index, tracks: preservingQueue ? nil : tracks, showArtist: showArtist)
-                    .contextMenu { Button("アルバムの整理") { library.showingOrganization = true } }
+                    .contextMenu {
+                        Button(library.isAlbumHidden(track.albumKey) ? "非表示を解除する" : "非表示にする") {
+                            library.setAlbumHidden(track.albumKey, hidden: !library.isAlbumHidden(track.albumKey))
+                        }
+                        Button("アルバムの整理") { library.showingOrganization = true }
+                    }
                     .overlay(alignment: .bottom) { rule }
             }
         }

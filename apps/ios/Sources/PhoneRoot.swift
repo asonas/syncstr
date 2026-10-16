@@ -93,8 +93,14 @@ struct PhoneRoot: View {
                             .background(PhoneStyle.graphite).navigationTitle("アルバム")
                     } label: { categoryLabel("アルバム", icon: "layers") }
                     NavigationLink {
-                        songList(library.tracks).navigationTitle("曲")
+                        songList(library.catalogTracks).navigationTitle("曲")
                     } label: { categoryLabel("曲", icon: "music") }
+                    NavigationLink {
+                        ScrollView {
+                            if library.hiddenAlbums.isEmpty { Text("非表示にしたアルバムはありません。").padding(20) }
+                            albumGrid(library.hiddenAlbums).padding(20)
+                        }.background(PhoneStyle.graphite).navigationTitle("非表示にしたアルバム")
+                    } label: { categoryLabel("非表示にしたアルバム", icon: "layers") }
                 }
                 .buttonStyle(.plain)
                 VStack(alignment: .leading, spacing: 8) {
@@ -109,7 +115,7 @@ struct PhoneRoot: View {
                         if library.hasSavedLocalLibrary {
                             Button("保存した音楽を開く") { Task { await library.openSavedLocalLibrary() } }
                         }
-                    } else if library.albums.isEmpty {
+                    } else if library.tracks.isEmpty {
                         Text("音楽はまだありません。音楽ファイルを追加できます。")
                         AddMusicButton(library: library)
                     }
@@ -141,10 +147,12 @@ struct PhoneRoot: View {
         .contentShape(Rectangle())
     }
 
-    private var albumGrid: some View {
+    private var albumGrid: some View { albumGrid(library.albums) }
+
+    private func albumGrid(_ albums: [Album]) -> some View {
         LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 16),
                                 count: dynamicTypeSize.isAccessibilitySize ? 1 : 2), spacing: 16) {
-            ForEach(library.albums) { album in
+            ForEach(albums) { album in
                 NavigationLink { albumDetail(album) } label: {
                     VStack(alignment: .leading, spacing: 4) {
                         PhoneArtwork(url: album.coverArt.flatMap { library.artworkURLs[$0] })
@@ -155,7 +163,12 @@ struct PhoneRoot: View {
                     }
                 }
                 .buttonStyle(.plain)
-                .contextMenu { Button("アルバムの整理") { library.showingOrganization = true } }
+                .contextMenu {
+                    Button(library.isAlbumHidden(album.id) ? "非表示を解除する" : "非表示にする") {
+                        library.setAlbumHidden(album.id, hidden: !library.isAlbumHidden(album.id))
+                    }
+                    Button("アルバムの整理") { library.showingOrganization = true }
+                }
             }
         }
     }
@@ -188,6 +201,9 @@ struct PhoneRoot: View {
                     .buttonStyle(.plain)
                     .disabled(album.tracks.isEmpty)
                     .accessibilityLabel("再生")
+                    Button(library.isAlbumHidden(album.id) ? "非表示を解除する" : "非表示にする") {
+                        library.setAlbumHidden(album.id, hidden: !library.isAlbumHidden(album.id))
+                    }
                     OfflineSaveControls(library: library, tracks: album.tracks, scope: "album:" + album.id).padding(.top, 16)
                 }
                 .frame(maxWidth: .infinity)

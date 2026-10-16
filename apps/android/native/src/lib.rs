@@ -32,6 +32,7 @@ pub extern "system" fn Java_as_ason_syncstr_Native_run(
                 "id" => Ok(serde_json::to_string(&client.id().to_string())?),
                 "hosts" => Ok(serde_json::to_string(&client.hosts().await?)?),
                 "catalog" => crate::present_catalog(client.catalog().await?),
+                "visibility" => crate::present_catalog(client.set_album_hidden(text("album")?, args["hidden"].as_bool().ok_or_else(|| anyhow::anyhow!("missing hidden state"))?).await?),
                 "enroll" => {
                     client
                         .enroll(text("invitation")?, text("socket")?.parse()?)
@@ -114,6 +115,7 @@ fn present_catalog(library: syncstr_headless::cluster_client::Library) -> anyhow
             .filter(|title| !title.is_empty())
             .or(entry.track.album.as_deref());
         projected["presentation"] = serde_json::json!({
+            "hidden": album.as_deref().is_some_and(|id| organization.is_hidden(id)),
             "albumId": album,
             "album": title,
             "albumArtist": record.and_then(|track| track.imported.album_artist.as_deref()),
@@ -141,6 +143,7 @@ mod tests {
             ))
             .unwrap();
         organization.tracks[0].sha256 = entry.sha256.clone();
+        organization.set_hidden("album-a", true).unwrap();
         let library = syncstr_headless::cluster_client::Library {
             catalog: syncstr_headless::model::Catalog {
                 id: "library".into(),
@@ -162,5 +165,6 @@ mod tests {
         );
         assert_eq!(projected["entries"][0]["track"]["albumId"], "fixture-album");
         assert_eq!(projected["entries"][0]["track"]["discNumber"], 1);
+        assert_eq!(projected["entries"][0]["presentation"]["hidden"], true);
     }
 }

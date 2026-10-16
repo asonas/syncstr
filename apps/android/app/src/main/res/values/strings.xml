@@ -54,4 +54,9 @@
     <string name="conflict_item">Library item %1$s…</string>
     <string name="refresh_conflicts">Refresh conflicts</string>
     <string name="operation_failed">The operation could not be completed.</string>
+    <string name="hidden_albums">Hidden albums</string>
+    <string name="no_hidden_albums">No hidden albums</string>
+    <string name="hide_album">Hide album</string>
+    <string name="unhide_album">Unhide album</string>
+    <string name="visibility_pending">Saved on this device. Refresh the library when connected to sync.</string>
 </resources>

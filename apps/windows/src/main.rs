@@ -20,6 +20,9 @@ const ID_PLAY: i32 = 106;
 const ID_PAUSE: i32 = 107;
 const ID_HOSTS: i32 = 108;
 const ID_TRACKS: i32 = 109;
+const ID_LIBRARY: i32 = 110;
+const ID_HIDDEN: i32 = 111;
+const ID_VISIBILITY: i32 = 112;
 
 #[derive(Default)]
 struct Ui {
@@ -30,6 +33,10 @@ struct Ui {
     action_buttons: Vec<HWND>,
     discovered: Vec<iroh::EndpointAddr>,
     entries: Vec<syncstr_headless::model::Entry>,
+    all_entries: Vec<syncstr_headless::model::Entry>,
+    organization: syncstr_headless::organization::Organization,
+    hidden: bool,
+    conflicts: usize,
     paused: bool,
     busy: bool,
     worker: Option<OperationWorker>,
@@ -127,24 +134,42 @@ fn client() -> anyhow::Result<syncstr_headless::cluster_client::PlaybackClient> 
 
 unsafe fn show_library(library: syncstr_headless::cluster_client::Library) {
     let mut ui = UI.get().unwrap().lock().unwrap();
+    ui.conflicts = library.conflicts.len();
+    ui.all_entries = library.catalog.entries;
+    ui.organization = library.catalog.organization;
+    render_entries(&mut ui);
+}
+
+fn entry_album(organization: &syncstr_headless::organization::Organization, entry: &syncstr_headless::model::Entry) -> Option<String> {
+    organization.tracks.iter().find(|track| track.sha256 == entry.sha256)
+        .and_then(|track| organization.album_id_for_track(&track.id).ok().flatten())
+}
+
+unsafe fn render_entries(ui: &mut Ui) {
     list_clear(ui.tracks);
-    for entry in &library.catalog.entries {
+    let mut albums = std::collections::BTreeSet::new();
+    ui.entries = ui.all_entries.iter().filter(|entry| {
+        let album = entry_album(&ui.organization, entry);
+        album.as_deref().is_some_and(|id| ui.organization.is_hidden(id)) == ui.hidden
+            && (!ui.hidden || albums.insert(album))
+    }).cloned().collect();
+    for entry in &ui.entries {
         list_add(
             ui.tracks,
             &format!(
                 "{} — {}",
-                entry.track.title,
+                if ui.hidden { entry.track.album.as_deref().unwrap_or("Unknown Album") } else { &entry.track.title },
                 entry.track.artist.as_deref().unwrap_or("Unknown Artist")
             ),
         );
     }
-    ui.entries = library.catalog.entries;
     set_text(
         ui.status,
         &format!(
-            "{} tracks available. {} unresolved conflicts.",
+            "{} {} available. {} unresolved conflicts.",
             ui.entries.len(),
-            library.conflicts.len()
+            if ui.hidden { "hidden albums" } else { "tracks" },
+            ui.conflicts
         ),
     );
 }
@@ -214,6 +239,7 @@ enum Work {
         sources: Vec<iroh::EndpointAddr>,
     },
     Play(String),
+    Visibility { album: String, hidden: bool },
 }
 
 enum Completed {
@@ -221,6 +247,7 @@ enum Completed {
     Discovered(Vec<iroh::EndpointAddr>),
     Message(String),
     Play(std::path::PathBuf),
+    Visibility(Box<syncstr_headless::cluster_client::Library>),
 }
 
 #[derive(Default)]
@@ -353,6 +380,7 @@ async fn execute(work: Work) -> anyhow::Result<Completed> {
                 anyhow::anyhow!("This track is not saved. Save it before playing.")
             })?,
         )),
+        Work::Visibility { album, hidden } => Ok(Completed::Visibility(Box::new(client.set_album_hidden(&album, hidden).await?))),
         Work::Discover => unreachable!(),
     }
 }
@@ -383,6 +411,11 @@ unsafe fn capture_work(id: i32) -> anyhow::Result<Work> {
         ID_REFRESH => {
             anyhow::ensure!(!ui.discovered.is_empty(), "Discover a library host first");
             Ok(Work::Refresh(ui.discovered.clone()))
+        }
+        ID_VISIBILITY => {
+            let index = selected(ui.tracks).ok_or_else(|| anyhow::anyhow!("Select an album or track"))?;
+            let album = ui.entries.get(index).and_then(|entry| entry_album(&ui.organization, entry)).ok_or_else(|| anyhow::anyhow!("Album is unavailable"))?;
+            Ok(Work::Visibility { album, hidden: !ui.hidden })
         }
         ID_SAVE | ID_PLAY => {
             let index = selected(ui.tracks).ok_or_else(|| anyhow::anyhow!("Select a track"))?;
@@ -416,6 +449,7 @@ unsafe fn dispatch(work: Work) -> anyhow::Result<()> {
         Work::Refresh(_) => "Refreshing the library without downloading originals…",
         Work::Save { .. } => "Saving and verifying the selected original…",
         Work::Play(_) => "Checking saved audio…",
+        Work::Visibility { .. } => "Saving album visibility. Refresh the library to sync this change…",
     });
     let ui = UI.get().unwrap().lock().unwrap();
     ui.worker
@@ -429,6 +463,10 @@ unsafe fn dispatch(work: Work) -> anyhow::Result<()> {
 unsafe fn apply_completed(completed: Completed) -> anyhow::Result<()> {
     match completed {
         Completed::Library(library) => show_library(*library),
+        Completed::Visibility(library) => {
+            show_library(*library);
+            status("Saved on this device. Refresh the library when connected to sync this change.");
+        },
         Completed::Discovered(hosts) => {
             let mut ui = UI.get().unwrap().lock().unwrap();
             list_clear(ui.hosts);
@@ -592,14 +630,15 @@ unsafe extern "system" fn wndproc(
                 32,
                 ID_REFRESH,
             );
-            create(w!("STATIC"), "Library", WS_GROUP, 20, 318, 300, 22, 0);
+            let library_button = create(w!("BUTTON"), "Library", WINDOW_STYLE(BS_PUSHBUTTON as u32), 20, 342, 130, 32, ID_LIBRARY);
+            let hidden_button = create(w!("BUTTON"), "Hidden albums", WINDOW_STYLE(BS_PUSHBUTTON as u32), 20, 382, 130, 32, ID_HIDDEN);
             let tracks = create(
                 w!("LISTBOX"),
                 "",
                 WS_BORDER | WS_VSCROLL | WINDOW_STYLE(LBS_NOTIFY as u32),
-                20,
+                165,
                 342,
-                625,
+                480,
                 190,
                 ID_TRACKS,
             );
@@ -633,6 +672,7 @@ unsafe extern "system" fn wndproc(
                 32,
                 ID_PAUSE,
             );
+            let visibility_button = create(w!("BUTTON"), "Hide / Unhide album", WINDOW_STYLE(BS_PUSHBUTTON as u32), 385, 548, 200, 32, ID_VISIBILITY);
             let status_hwnd = create(
                 w!("STATIC"),
                 "Ready. Discover a host or play an already saved track.",
@@ -655,6 +695,9 @@ unsafe extern "system" fn wndproc(
                     refresh_button,
                     save_button,
                     play_button,
+                    library_button,
+                    hidden_button,
+                    visibility_button,
                 ],
                 ..Default::default()
             }));
@@ -666,11 +709,16 @@ unsafe extern "system" fn wndproc(
         }
         WM_COMMAND => {
             let id = (wparam.0 & 0xffff) as i32;
-            let result = if id == ID_PAUSE {
+            let result = if (id == ID_LIBRARY || id == ID_HIDDEN) && !UI.get().unwrap().lock().unwrap().busy {
+                let mut ui = UI.get().unwrap().lock().unwrap();
+                ui.hidden = id == ID_HIDDEN;
+                render_entries(&mut ui);
+                Ok(())
+            } else if id == ID_PAUSE {
                 pause_playback()
             } else if matches!(
                 id,
-                ID_DISCOVER | ID_REGISTER | ID_REFRESH | ID_SAVE | ID_PLAY
+                ID_DISCOVER | ID_REGISTER | ID_REFRESH | ID_SAVE | ID_PLAY | ID_VISIBILITY
             ) && !UI.get().unwrap().lock().unwrap().busy
             {
                 capture_work(id).and_then(|work| dispatch(work))

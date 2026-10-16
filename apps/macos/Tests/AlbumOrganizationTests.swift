@@ -7,6 +7,26 @@ import AudioTags
 #endif
 
 final class AlbumOrganizationTests: XCTestCase {
+    func testConcurrentVisibilityConvergesAndExplicitUnhideSupersedesBoth() throws {
+        var base = AlbumOrganization()
+        base.importEntries([entry("one", artist: "A", release: "edition")])
+        let album = try XCTUnwrap(base.albumID(for: "one"))
+        var hidden = base
+        var visible = base
+        hidden.set(subject: album, kind: "visibility", value: "true")
+        visible.set(subject: album, kind: "visibility", value: "false")
+        let otherOrder = hidden
+        try hidden.merge(visible)
+        try visible.merge(otherOrder)
+        XCTAssertTrue(hidden.isHidden(album))
+        XCTAssertTrue(visible.isHidden(album))
+        visible.set(subject: album, kind: "visibility", value: "false")
+        try hidden.merge(visible)
+        XCTAssertFalse(hidden.isHidden(album))
+        XCTAssertFalse(try hidden.forClusterObject(hidden.tracks[0].sha256).isHidden(album))
+        try hidden.validate()
+    }
+
     func testReleaseReconciliationDoesNotInventClassificationRevisions() throws {
         var local = AlbumOrganization()
         local.importEntries([entry("one", artist: "A", release: "edition")])

@@ -381,6 +381,18 @@ impl crate::cluster_sync::Session {
         Ok(())
     }
 
+    pub async fn edit_metadata(&self, entry: crate::model::Entry, organization: crate::organization::Organization, parents: Vec<String>) -> anyhow::Result<()> {
+        let object = entry.sha256.clone();
+        let (mut output, mut input) = self.connection.open_bi().await?;
+        crate::cluster_net::send(&mut output, &crate::cluster_sync::Request::Metadata { entry: Box::new(entry), organization: Box::new(organization), parents }).await?;
+        output.finish()?;
+        match crate::cluster_net::receive::<crate::cluster_sync::Response>(&mut input, crate::model::MAX_METADATA).await? {
+            crate::cluster_sync::Response::Edited { object: received, .. } if received == object => Ok(()),
+            crate::cluster_sync::Response::NeedsAttention { .. } => anyhow::bail!("album changes require conflict resolution"),
+            _ => anyhow::bail!("invalid metadata response"),
+        }
+    }
+
     pub async fn recover_evidence(&self, object: String) -> anyhow::Result<bool> {
         let (mut output, mut input) = self.connection.open_bi().await?;
         crate::cluster_net::send(&mut output, &crate::cluster_sync::Request::Evidence { object: object.clone() }).await?;

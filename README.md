@@ -15,6 +15,21 @@ An opt-in headless P2P node also supports catalog browsing, original-file upload
 
 Start with the [macOS guide](apps/macos/README.md) or [iPhone guide](apps/ios/README.md) for build and verification steps. [Issue #11](https://github.com/asonas/syncstr/issues/11) records implementation milestones; [open issues](https://github.com/asonas/syncstr/issues) track follow-up work. Record local builds, distribution, and device verification separately.
 
+## Hidden albums
+
+Hide an album from its menu or detail page on macOS and iPhone, from its album
+group on Android, or with **Hide / Unhide album** after selecting a track on
+Windows. **Hidden albums** lists these albums and lets you restore them. Hidden
+albums are excluded from normal album, artist, and track browsing and search;
+original audio and the current playback queue are retained.
+
+Visibility is shared by members of the same cluster. Local changes survive
+restarts while awaiting synchronization. Apple apps retry while active; Android
+tries immediately, and **Refresh library** retries pending changes on Android
+and Windows. Update the headless hosts and all clients before using this feature:
+older versions do not recognize the new visibility records. Object conflicts
+continue to use the existing conflict-resolution flow.
+
 ## Code and documentation map
 
 | Task | Start here |
