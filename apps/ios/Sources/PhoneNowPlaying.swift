@@ -67,7 +67,7 @@ struct PhoneNowPlaying: View {
                                 } else if library.localFiles[track.id] == nil {
                                     if let request = library.saveRequest(for: [track], scope: "track:" + track.id), let error = request.error { Text(error) }
                                     Button(library.saveRequest(for: [track], scope: "track:" + track.id)?.state == .failed ? "保存を再試行" : "この端末に保存") {
-                                        library.transfer.requestSave([track], scope: "track:" + track.id)
+                                        Task { await library.transfer.requestSave([track], scope: "track:" + track.id) }
                                     }
                                 } else {
                                     Text("保存済み")

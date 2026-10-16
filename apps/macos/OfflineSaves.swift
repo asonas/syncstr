@@ -23,10 +23,15 @@ extension Library {
 }
 
 extension LocalTransfer {
-    func requestSave(_ tracks: [Track], scope: String) {
+    func requestSave(_ tracks: [Track], scope: String) async {
+        let token = UUID()
+        let ids = Set(tracks.map(\.id))
+        preparingSaves[scope] = (token, ids)
+        defer { if preparingSaves[scope]?.token == token { preparingSaves.removeValue(forKey: scope) } }
         do {
-            guard let catalog = try store.load() else { throw LocalMusicError.invalidData }
-            let ids = Set(tracks.map(\.id))
+            guard let catalog = try await store.snapshotInBackground()?.catalog else { throw LocalMusicError.invalidData }
+            try Task.checkCancellation()
+            guard preparingSaves[scope]?.token == token else { return }
             let entries = catalog.entries.filter { ids.contains($0.track.id) }
             guard entries.count == ids.count, !entries.isEmpty else { throw LocalMusicError.invalidData }
             stopSaveWorker()
@@ -34,7 +39,11 @@ extension LocalTransfer {
             updated.append(OfflineSaveRequest(id: scope, library: catalog.id, entries: entries))
             try persistSaves(updated)
             resumeSaves(explicit: scope)
-        } catch { status = error.localizedDescription }
+        } catch is CancellationError {
+            return
+        } catch {
+            if preparingSaves[scope]?.token == token { status = error.localizedDescription }
+        }
     }
 
     func cancelSave(_ request: OfflineSaveRequest) {
@@ -43,6 +52,7 @@ extension LocalTransfer {
         updated[index].state = .cancelled
         do {
             try persistSaves(updated)
+            preparingSaves.removeValue(forKey: request.id)
             stopSaveWorker()
             resumeSaves()
         } catch { status = error.localizedDescription }
@@ -55,6 +65,7 @@ extension LocalTransfer {
             updated[index].state = .cancelled
         }
         try persistSaves(updated)
+        preparingSaves = preparingSaves.filter { $0.value.tracks.isDisjoint(with: ids) }
         stopSaveWorker()
     }
 
@@ -94,7 +105,8 @@ extension LocalTransfer {
     }
 
     func resumeSaves(explicit: String? = nil) {
-        guard !savesBackgrounded, saveWorker == nil else { return }
+        guard !savesBackgrounded, saveWorker == nil,
+              saveRequests.contains(where: { [.waiting, .wifi, .saving].contains($0.state) }) else { return }
         saveRetry?.cancel()
         let token = saveGeneration
         saveWorker = Task { [weak self] in
@@ -111,7 +123,11 @@ extension LocalTransfer {
                 }
             }
             do {
-                guard let catalog = try store.load() else { return }
+                try Task.checkCancellation()
+                guard saveGeneration == token else { return }
+                guard let catalog = try await store.snapshotInBackground()?.catalog else { return }
+                try Task.checkCancellation()
+                guard saveGeneration == token else { return }
                 for index in saveRequests.indices {
                     guard saveRequests[index].library == catalog.id,
                           [.waiting, .wifi, .saving].contains(saveRequests[index].state) else { continue }
@@ -186,7 +202,9 @@ extension LocalTransfer {
                 }
             } catch is CancellationError {
                 // Verified files already committed to storage remain protected.
-            } catch { status = "保存待ちを更新できませんでした。\(error.localizedDescription)" }
+            } catch {
+                if saveGeneration == token { status = "保存待ちを更新できませんでした。\(error.localizedDescription)" }
+            }
         }
     }
 
@@ -228,7 +246,7 @@ struct OfflineSaveControls: View {
                         .help(request.error ?? "保存できませんでした")
                 }
                 Button(request?.state == .failed ? "保存を再試行" : compact ? "保存" : "この端末に保存") {
-                    library.transfer.requestSave(tracks, scope: scope)
+                    Task { await library.transfer.requestSave(tracks, scope: scope) }
                 }
             }
             if !compact && tracks.contains(where: library.canRemoveLocalCopy) && !pending {

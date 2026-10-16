@@ -6,6 +6,30 @@ import XCTest
 #endif
 
 final class CatalogMigrationTests: XCTestCase {
+    func testCatalogReadRetainsUnchangedArtworkFileAndRepairsMissingCopy() throws {
+        let (store, catalog) = try legacyStore()
+        _ = try store.load()
+        let image = store.artworkURL(catalog.entries[0])
+        let originalDate = Date(timeIntervalSince1970: 1_000_000)
+        try FileManager.default.setAttributes([.modificationDate: originalDate], ofItemAtPath: image.path)
+        _ = try store.load()
+        XCTAssertEqual(try FileManager.default.attributesOfItem(atPath: image.path)[.modificationDate] as? Date, originalDate)
+        try FileManager.default.removeItem(at: image)
+        XCTAssertEqual(try store.load()?.entries, catalog.entries)
+        XCTAssertEqual(try Data(contentsOf: image), Data([1, 2, 3]))
+    }
+
+    func testCurrentSchemaMetadataAccessDoesNotDecodeEntriesButSnapshotStillValidates() throws {
+        let (store, _) = try legacyStore()
+        _ = try store.load()
+        var connection: OpaquePointer?
+        XCTAssertEqual(sqlite3_open(store.root.appendingPathComponent("catalog.sqlite").path, &connection), SQLITE_OK)
+        defer { sqlite3_close(connection) }
+        XCTAssertEqual(sqlite3_exec(connection, "UPDATE entries SET payload = 'invalid JSON'", nil, nil, nil), SQLITE_OK)
+        XCTAssertTrue(try store.database().containsCatalog())
+        XCTAssertThrowsError(try store.load())
+    }
+
     func testSchemaTwoRepairIsTransactionalAndRepeatable() throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }

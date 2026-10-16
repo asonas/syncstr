@@ -417,7 +417,7 @@ struct LibraryView: View {
                    [.waiting, .wifi, .saving].contains(request.state) {
                     Button(request.entries.count > 1 ? "アルバム保存を中止" : "保存を中止") { library.transfer.cancelSave(request) }
                 } else if library.localFiles[track.id] == nil {
-                    Button("この端末に保存") { library.transfer.requestSave([track], scope: "track:" + track.id) }
+                    Button("この端末に保存") { Task { await library.transfer.requestSave([track], scope: "track:" + track.id) } }
                 }
                 if library.canRemoveLocalCopy(track) {
                     Button("この端末の保存を解除", role: .destructive) { library.localCopiesToRemove = [track] }.disabled(library.transfer.busy)

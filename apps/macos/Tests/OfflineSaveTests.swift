@@ -1,4 +1,5 @@
 import Foundation
+import SQLite3
 import XCTest
 #if os(macOS)
 import Network
@@ -37,12 +38,100 @@ final class OfflineSaveTests: XCTestCase {
         XCTFail("Save worker did not settle")
     }
 
+    private func lockCatalog(_ store: LocalMusicStore) throws -> OpaquePointer {
+        var writer: OpaquePointer?
+        guard sqlite3_open(store.root.appendingPathComponent("catalog.sqlite").path, &writer) == SQLITE_OK,
+              let writer else { sqlite3_close(writer); throw LocalMusicError.invalidData }
+        guard sqlite3_exec(writer, "BEGIN EXCLUSIVE", nil, nil, nil) == SQLITE_OK else {
+            sqlite3_close(writer)
+            throw LocalMusicError.invalidData
+        }
+        return writer
+    }
+
+    func testEmptySaveQueueDoesNotReadUnavailableCatalogOnForeground() async throws {
+        let (store, _) = try fixture()
+        let transfer = LocalTransfer(store: store)
+        defer { transfer.stopSaveWorker() }
+        transfer.setSavesBackgrounded(true)
+        try Data("unavailable catalog".utf8).write(to: store.root.appendingPathComponent("catalog.sqlite"), options: .atomic)
+        let status = transfer.status
+        transfer.setSavesBackgrounded(false)
+        try await settled(transfer)
+        XCTAssertEqual(transfer.status, status)
+        XCTAssertTrue(transfer.saveRequests.isEmpty)
+    }
+
+    func testCatalogContentionDoesNotPreventMainActorFromReleasingWriter() async throws {
+        let (store, entries) = try fixture()
+        let transfer = LocalTransfer(store: store)
+        defer { transfer.stopSaveWorker() }
+        transfer.setSavesBackgrounded(true)
+        try cache(entries[0], transfer: transfer, number: 1)
+        await transfer.requestSave([entries[0].track], scope: "track:track-1")
+        let writer = try lockCatalog(store)
+        defer { sqlite3_close(writer) }
+        let started = ContinuousClock.now
+        let unlock = Task { @MainActor in
+            try await Task.sleep(for: .milliseconds(100))
+            XCTAssertEqual(sqlite3_exec(writer, "COMMIT", nil, nil, nil), SQLITE_OK)
+            XCTAssertLessThan(started.duration(to: .now), .seconds(2), "Catalog I/O must not hold the main actor until SQLite times out")
+        }
+        transfer.setSavesBackgrounded(false)
+        try await unlock.value
+        try await settled(transfer)
+        XCTAssertEqual(transfer.saveRequests.first?.state, .complete, transfer.status ?? "")
+        XCTAssertTrue(store.hasFile(entries[0]))
+    }
+
+    func testSaveStartWaitsForCatalogWithoutBlockingMainActor() async throws {
+        let (store, entries) = try fixture()
+        let transfer = LocalTransfer(store: store)
+        defer { transfer.stopSaveWorker() }
+        transfer.setSavesBackgrounded(true)
+        try cache(entries[0], transfer: transfer, number: 1)
+        let writer = try lockCatalog(store)
+        defer { sqlite3_close(writer) }
+        let started = ContinuousClock.now
+        let save = Task { await transfer.requestSave([entries[0].track], scope: "track:track-1") }
+        try await Task.sleep(for: .milliseconds(100))
+        XCTAssertEqual(sqlite3_exec(writer, "COMMIT", nil, nil, nil), SQLITE_OK)
+        XCTAssertLessThan(started.duration(to: .now), .seconds(2))
+        await save.value
+        transfer.setSavesBackgrounded(false)
+        try await settled(transfer)
+        XCTAssertEqual(transfer.saveRequests.first?.state, .complete, transfer.status ?? "")
+    }
+
+    func testCancelDuringRetryPreparationDoesNotRecreateSaveIntent() async throws {
+        let (store, entries) = try fixture()
+        let transfer = LocalTransfer(store: store)
+        defer { transfer.stopSaveWorker() }
+        transfer.setSavesBackgrounded(true)
+        await transfer.requestSave([entries[0].track], scope: "track:track-1")
+        let request = try XCTUnwrap(transfer.saveRequests.first)
+        let writer = try lockCatalog(store)
+        defer { sqlite3_close(writer) }
+        let retry = Task { await transfer.requestSave([entries[0].track], scope: request.id) }
+        try await Task.sleep(for: .milliseconds(100))
+        transfer.cancelSave(request)
+        XCTAssertEqual(sqlite3_exec(writer, "COMMIT", nil, nil, nil), SQLITE_OK)
+        await retry.value
+        transfer.setSavesBackgrounded(false)
+        try await settled(transfer)
+        XCTAssertEqual(transfer.saveRequests.first?.state, .cancelled)
+        XCTAssertFalse(store.hasFile(entries[0]))
+        let restored = LocalTransfer(store: store)
+        defer { restored.stopSaveWorker() }
+        XCTAssertEqual(restored.saveRequests.first?.state, .cancelled)
+    }
+
     func testOfflineIntentAndPartialResultsSurviveRestartAndAlbumGrowth() async throws {
         let (store, entries) = try fixture()
         let transfer = LocalTransfer(store: store)
         defer { transfer.stopSaveWorker() }
         try cache(entries[0], transfer: transfer, number: 1)
-        transfer.requestSave(Array(entries.prefix(2)).map(\.track), scope: "album:fixture")
+        await transfer.requestSave(Array(entries.prefix(2)).map(\.track), scope: "album:fixture")
         try await settled(transfer)
         let request = try XCTUnwrap(transfer.saveRequests.first)
         XCTAssertEqual(request.state, .waiting)
@@ -63,7 +152,7 @@ final class OfflineSaveTests: XCTestCase {
         XCTAssertFalse(store.hasFile(entries[2]))
         let firstDate = try FileManager.default.attributesOfItem(atPath: store.fileURL(entries[0]).path)[.modificationDate] as? Date
         try cache(entries[2], transfer: restored, number: 3)
-        restored.requestSave(entries.map(\.track), scope: "album:fixture")
+        await restored.requestSave(entries.map(\.track), scope: "album:fixture")
         try await settled(restored)
         XCTAssertEqual(restored.saveRequests.first?.completed.count, 3)
         XCTAssertEqual(try FileManager.default.attributesOfItem(atPath: store.fileURL(entries[0]).path)[.modificationDate] as? Date, firstDate)
@@ -74,7 +163,7 @@ final class OfflineSaveTests: XCTestCase {
         let transfer = LocalTransfer(store: store)
         defer { transfer.stopSaveWorker() }
         try cache(entries[0], transfer: transfer, number: 1)
-        transfer.requestSave(entries.map(\.track), scope: "album:fixture")
+        await transfer.requestSave(entries.map(\.track), scope: "album:fixture")
         try await settled(transfer)
         transfer.cancelSave(try XCTUnwrap(transfer.saveRequests.first))
         try cache(entries[1], transfer: transfer, number: 2)
@@ -93,7 +182,7 @@ final class OfflineSaveTests: XCTestCase {
         let transfer = LocalTransfer(store: store)
         defer { transfer.stopSaveWorker() }
         try cache(entries[2], transfer: transfer, number: 3)
-        transfer.requestSave(entries.map(\.track), scope: "album:fixture")
+        await transfer.requestSave(entries.map(\.track), scope: "album:fixture")
         try await settled(transfer)
         XCTAssertEqual(transfer.saveRequests.first?.state, .waiting)
         XCTAssertTrue(store.hasFile(entries[2]))
@@ -105,7 +194,7 @@ final class OfflineSaveTests: XCTestCase {
         let transfer = LocalTransfer(store: store)
         defer { transfer.stopSaveWorker() }
         transfer.setSavesBackgrounded(true)
-        transfer.requestSave(Array(entries.prefix(2)).map(\.track), scope: "album:fixture")
+        await transfer.requestSave(Array(entries.prefix(2)).map(\.track), scope: "album:fixture")
         try store.save(LocalCatalog(id: "fixture", name: "Library", entries: [entries[0], entries[2]]))
         try cache(entries[0], transfer: transfer, number: 1)
         transfer.setSavesBackgrounded(false)
@@ -114,7 +203,7 @@ final class OfflineSaveTests: XCTestCase {
         XCTAssertEqual(transfer.saveRequests.first?.completed, [entries[0].sha256])
         try store.save(LocalCatalog(id: "fixture", name: "Library", entries: entries))
         try cache(entries[1], transfer: transfer, number: 2)
-        transfer.requestSave(Array(entries.prefix(2)).map(\.track), scope: "album:fixture")
+        await transfer.requestSave(Array(entries.prefix(2)).map(\.track), scope: "album:fixture")
         try await settled(transfer)
         XCTAssertEqual(transfer.saveRequests.first?.state, .complete)
         XCTAssertTrue(store.hasFile(entries[0]))
@@ -129,7 +218,7 @@ final class OfflineSaveTests: XCTestCase {
         let original = root.appendingPathComponent("original.wav")
         try Data(repeating: 1, count: 1024).write(to: original)
         try cache(entries[0], transfer: library.transfer, number: 1)
-        library.transfer.requestSave([entries[0].track], scope: "track:track-1")
+        await library.transfer.requestSave([entries[0].track], scope: "track:track-1")
         try await settled(library.transfer)
         XCTAssertEqual(library.saveRequest(for: [entries[0].track], scope: "track:track-1")?.state, .complete)
         XCTAssertTrue(library.canRemoveLocalCopy(entries[0].track))
@@ -211,7 +300,7 @@ final class OfflineSaveTests: XCTestCase {
         let sender = LocalTransfer(store: LocalMusicStore(root: root.appendingPathComponent("sender")), secrets: senderCredentials)
         let receiver = LocalTransfer(store: store, secrets: receiverCredentials)
         defer { sender.stopHosting(); sender.cancel(); receiver.stopSaveWorker(); receiver.cancel() }
-        receiver.requestSave(entries.map(\.track), scope: "album:fixture")
+        await receiver.requestSave(entries.map(\.track), scope: "album:fixture")
         try await settled(receiver)
         XCTAssertEqual(receiver.saveRequests.first?.state, .waiting)
         receiver.onSaved = {
@@ -227,7 +316,7 @@ final class OfflineSaveTests: XCTestCase {
         try await wait { !receiver.busy && receiver.saveRequests.first?.state == .cancelled }
         XCTAssertEqual(entries.filter(store.hasFile).count, 1)
         receiver.onSaved = nil
-        receiver.requestSave(entries.map(\.track), scope: "album:fixture")
+        await receiver.requestSave(entries.map(\.track), scope: "album:fixture")
         try await wait { receiver.saveRequests.first?.state == .complete }
         XCTAssertTrue(entries.allSatisfy(store.hasFile))
         XCTAssertTrue(files.values.allSatisfy { FileManager.default.fileExists(atPath: $0.path) })

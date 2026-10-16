@@ -171,6 +171,14 @@ struct LocalMusicStore {
         try snapshot()?.catalog
     }
 
+    @concurrent
+    func snapshotInBackground() async throws -> CatalogSnapshot? {
+        try Task.checkCancellation()
+        let snapshot = try snapshot()
+        try Task.checkCancellation()
+        return snapshot
+    }
+
     var hasCatalog: Bool {
         if FileManager.default.fileExists(atPath: root.appendingPathComponent("catalog.json").path) { return true }
         guard hasStorage else { return false }
@@ -228,7 +236,10 @@ struct LocalMusicStore {
         }
         for entry in catalog.entries {
             guard Self.valid(entry) else { throw LocalMusicError.invalidData }
-            if let artwork = entry.artwork { try artwork.write(to: artworkURL(entry), options: .atomic) }
+            if let artwork = entry.artwork {
+                let url = artworkURL(entry)
+                if (try? Data(contentsOf: url)) != artwork { try artwork.write(to: url, options: .atomic) }
+            }
         }
     }
 

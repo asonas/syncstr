@@ -298,7 +298,7 @@ final class CatalogDatabase {
                 try execute("CREATE TABLE IF NOT EXISTS received_files (relative_path TEXT PRIMARY KEY, sha256 TEXT NOT NULL)")
                 try execute("CREATE TABLE IF NOT EXISTS organization (singleton INTEGER PRIMARY KEY CHECK(singleton = 1), payload TEXT NOT NULL)")
                 try execute("CREATE TABLE IF NOT EXISTS artwork_assets (id TEXT PRIMARY KEY, payload TEXT NOT NULL)")
-                _ = try readSnapshot()
+                if version != "4" { _ = try readSnapshot() }
                 try migrateCluster()
                 try migrateClusterMembership()
                 try execute("PRAGMA user_version = 4")
