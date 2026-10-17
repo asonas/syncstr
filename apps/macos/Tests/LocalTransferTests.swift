@@ -145,7 +145,14 @@ final class LocalTransferTests: XCTestCase {
             try await wait { !receiver.busy }
             XCTAssertTrue(receiver.connected, receiver.status ?? "")
             XCTAssertEqual(try files.load()?.organization?.choice(subject: organizedAlbum, kind: "classification")?.value, "true")
-            let cached = try await receiver.playbackFile(folder.catalog.entries[0].track)
+            let diagnostics = PlaybackDiagnostics(root: root.appendingPathComponent("diagnostics"))
+            let trace = diagnostics.begin(title: "Fixture", track: folder.catalog.entries[0].track.id,
+                sha256: folder.catalog.entries[0].sha256, library: folder.catalog.id)
+            let cached = try await receiver.playbackFile(folder.catalog.entries[0].track, diagnostic: trace)
+            let diagnosticTrace = await diagnostics.recent().first
+            XCTAssertTrue(diagnosticTrace?.events.contains { $0.stage == "selection" && $0.fields["mode"] == "tls_psk_channel" } == true)
+            XCTAssertTrue(diagnosticTrace?.events.contains { $0.stage == "verification" && $0.event == "hash" && $0.outcome == "matched" } == true)
+            XCTAssertTrue(diagnosticTrace?.events.contains { $0.stage == "save" && $0.outcome == "succeeded" } == true)
             XCTAssertEqual(try LocalMusicStore.digest(file: cached), folder.catalog.entries[0].sha256)
             XCTAssertFalse(files.hasFile(folder.catalog.entries[0]))
             receiver.onSaved = { if receiver.completed == 1 { receiver.cancel() } }

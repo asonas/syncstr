@@ -37,6 +37,7 @@ targets:
       - path: ../macos/LocalSetup.swift
       - path: ../macos/Library.swift
       - path: ../macos/PlaybackCache.swift
+      - path: ../macos/PlaybackDiagnostics.swift
       - path: ../macos/OfflineSaves.swift
       - path: ../macos/PlaybackCommands.swift
       - path: ../macos/AlbumOrganization.swift
@@ -98,6 +99,7 @@ targets:
       - path: ../macos/LocalSetup.swift
       - path: ../macos/Library.swift
       - path: ../macos/PlaybackCache.swift
+      - path: ../macos/PlaybackDiagnostics.swift
       - path: ../macos/OfflineSaves.swift
       - path: ../macos/PlaybackCommands.swift
       - path: ../macos/AlbumOrganization.swift
@@ -169,6 +171,7 @@ targets:
     sources:
       - path: ../macos/Library.swift
       - path: ../macos/PlaybackCache.swift
+      - path: ../macos/PlaybackDiagnostics.swift
       - path: ../macos/OfflineSaves.swift
       - path: ../macos/Tests
       - path: ../../headless/fixtures/cluster-signed.json
@@ -212,6 +215,7 @@ targets:
       - path: ../macos/LibraryCheck.swift
       - path: ../macos/Library.swift
       - path: ../macos/PlaybackCache.swift
+      - path: ../macos/PlaybackDiagnostics.swift
       - path: ../macos/OfflineSaves.swift
       - path: ../macos/LocalCatalog.swift
       - path: ../macos/CatalogDatabase.swift

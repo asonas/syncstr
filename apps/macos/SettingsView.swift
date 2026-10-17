@@ -17,6 +17,8 @@ struct SettingsView: View {
             Divider()
             PlaybackStorageSettings(library: library)
             Divider()
+            PlaybackDiagnosticSettings(recorder: library.diagnostics)
+            Divider()
             PeerSetupView(transfer: library.transfer)
             Divider()
             DisclosureGroup("従来の接続") {

@@ -283,20 +283,31 @@ struct LocalMusicStore {
         return size.uint64Value == entry.track.size
     }
 
-    func importFile(_ temporary: URL, entry: LocalEntry, recordReceipt: Bool = true) throws {
-        guard Self.valid(entry),
-              (try FileManager.default.attributesOfItem(atPath: temporary.path)[.size] as? NSNumber)?.uint64Value == entry.track.size,
-              try Self.digest(file: temporary) == entry.sha256 else { throw LocalMusicError.invalidData }
-        try prepare()
-        let destination = fileURL(entry)
-        if FileManager.default.fileExists(atPath: destination.path) {
-            if try Self.digest(file: destination) != entry.sha256 {
-                _ = try FileManager.default.replaceItemAt(destination, withItemAt: temporary)
+    func importFile(_ temporary: URL, entry: LocalEntry, recordReceipt: Bool = true, diagnostic: PlaybackDiagnosticContext? = nil) throws {
+        var stage = "verification"
+        do {
+            guard Self.valid(entry) else { throw LocalMusicError.invalidData }
+            let actualSize = (try FileManager.default.attributesOfItem(atPath: temporary.path)[.size] as? NSNumber)?.uint64Value
+            diagnostic?.record(stage, "size", outcome: actualSize == entry.track.size ? "matched" : "mismatch",
+                fields: ["actual_size": actualSize.map(String.init) ?? "unknown", "expected_size": entry.track.size.map(String.init) ?? "unknown"])
+            guard actualSize == entry.track.size else { throw LocalMusicError.invalidData }
+            let matches = try Self.digest(file: temporary) == entry.sha256
+            diagnostic?.record(stage, "hash", outcome: matches ? "matched" : "mismatch")
+            guard matches else { throw LocalMusicError.invalidData }
+            diagnostic?.record("verification", "size_and_hash", outcome: "succeeded")
+            stage = "save"
+            try prepare()
+            let destination = fileURL(entry)
+            if FileManager.default.fileExists(atPath: destination.path) {
+                if try Self.digest(file: destination) != entry.sha256 {
+                    _ = try FileManager.default.replaceItemAt(destination, withItemAt: temporary)
+                }
+            } else {
+                try FileManager.default.moveItem(at: temporary, to: destination)
             }
-        } else {
-            try FileManager.default.moveItem(at: temporary, to: destination)
-        }
-        if recordReceipt { try database().recordReceived(entry) }
+            if recordReceipt { try database().recordReceived(entry) }
+            diagnostic?.record("save", "import", outcome: "succeeded")
+        } catch { diagnostic?.failure(stage, error); throw error }
     }
 
 #if os(macOS)

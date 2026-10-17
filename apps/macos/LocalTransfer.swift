@@ -1021,56 +1021,85 @@ final class LocalTransfer: ObservableObject {
         }
     }
 
-    func cachedPlaybackFile(_ track: Track) throws -> URL? {
-        guard let entry = try store.load()?.entries.first(where: { $0.track.id == track.id }) else { return nil }
-        return try playbackCache.file(entry)
+    func cachedPlaybackFile(_ track: Track, diagnostic: PlaybackDiagnosticContext? = nil) throws -> URL? {
+        guard let entry = try store.load()?.entries.first(where: { $0.track.id == track.id }) else {
+            diagnostic?.record("cache", "miss", fields: ["reason": "no_catalog_entry"])
+            return nil
+        }
+        return try playbackCache.file(entry, diagnostic: diagnostic)
     }
 
-    func playbackFile(_ track: Track) async throws -> URL {
-        guard let entry = try store.load()?.entries.first(where: { $0.track.id == track.id }) else { throw LocalMusicError.invalidData }
-        if let cached = try playbackCache.file(entry) { return cached }
-        try playbackCache.makeRoom(for: entry)
-        if clusterRegistration == nil { return try await legacyPlaybackFile(entry) }
+    func playbackFile(_ track: Track, diagnostic: PlaybackDiagnosticContext? = nil) async throws -> URL {
+        let entry: LocalEntry
+        do {
+            guard let found = try store.load()?.entries.first(where: { $0.track.id == track.id }) else { throw LocalMusicError.invalidData }
+            entry = found
+        } catch { diagnostic?.failure("resolution", error); throw error }
+        diagnostic?.record("resolution", "catalog_entry", fields: ["track_id": entry.track.id, "sha256": entry.sha256, "expected_size": String(entry.track.size ?? 0)])
+        if let cached = try playbackCache.file(entry, diagnostic: diagnostic) { return cached }
+        do { try playbackCache.makeRoom(for: entry) }
+        catch { diagnostic?.failure("cache_capacity", error); throw error }
+        diagnostic?.record("selection", "mode", fields: ["mode": clusterRegistration == nil ? "legacy" : "cluster"])
+        if clusterRegistration == nil { return try await legacyPlaybackFile(entry, diagnostic: diagnostic) }
         let network = ClusterNetwork(store: store, secrets: peerSecrets)
         return try await withTaskCancellationHandler {
             defer { network.stop() }
-            try await network.download(object: entry.sha256, cache: playbackCache.store) { _ in }
+            try await network.download(object: entry.sha256, cache: playbackCache.store, diagnostic: diagnostic) { _ in }
             try Task.checkCancellation()
-            guard let result = try playbackCache.file(entry) else { throw LocalMusicError.invalidData }
+            guard let result = try playbackCache.file(entry, diagnostic: diagnostic) else { throw LocalMusicError.invalidData }
             return result
         } onCancel: {
             Task { @MainActor in network.stop() }
         }
     }
 
-    private func legacyPlaybackFile(_ entry: LocalEntry) async throws -> URL {
+    private func legacyPlaybackFile(_ entry: LocalEntry, diagnostic: PlaybackDiagnosticContext? = nil) async throws -> URL {
+        diagnostic?.record("selection", "legacy_candidate", fields: ["count": connected && client != nil && !busy ? "1" : "0",
+            "connected": String(connected), "busy": String(busy), "device_id": "not_observable"])
+        if let client, connected { diagnostic?.record("selection", "legacy_mode", fields: ["mode": client is PeerMusicConnection ? "iroh_channel" : "tls_psk_channel"]) }
+        diagnostic?.record("connection", "reused", fields: ["reused": String(client != nil && connected), "path": "unknown", "reason": connected ? "existing_music_channel" : "no_connection", "authentication": connected ? "preexisting_session" : "not_attempted"])
         guard let client, connected, !busy, let size = entry.track.size else { throw LocalMusicError.clusterUnavailable }
         let attempt = generation
         busy = true
         defer { if generation == attempt { busy = false } }
         return try await withTaskCancellationHandler {
+            var received: UInt64 = 0
+            var stage = "save"
+            var lastProgress = ProcessInfo.processInfo.systemUptime
             let temporary = playbackCache.store.root.appendingPathComponent(".partial-" + UUID().uuidString)
             defer { try? FileManager.default.removeItem(at: temporary) }
             guard FileManager.default.createFile(atPath: temporary.path, contents: nil) else { throw CocoaError(.fileWriteUnknown) }
             let handle = try FileHandle(forWritingTo: temporary)
             defer { try? handle.close() }
             do {
+                stage = "transfer"
+                diagnostic?.record(stage, "request", fields: ["track_id": entry.track.id, "sha256": entry.sha256, "expected_size": String(size)])
                 try await client.send(MusicMessage(kind: "get", track: entry.track.id))
-                var received: UInt64 = 0
                 while true {
                     try Task.checkCancellation()
+                    stage = "transfer"
                     let response = try await client.receive()
                     if response.kind == "end", response.track == entry.track.id { break }
                     guard response.kind == "data", let bytes = response.bytes, !bytes.isEmpty,
                           bytes.count <= 65536, received + UInt64(bytes.count) <= size else { throw LocalMusicError.invalidData }
-                    try handle.write(contentsOf: bytes)
                     received += UInt64(bytes.count)
+                    stage = "save"
+                    try handle.write(contentsOf: bytes)
+                    if ProcessInfo.processInfo.systemUptime - lastProgress >= 1 {
+                        diagnostic?.record("transfer", "progress", fields: ["received_bytes": String(received)])
+                        lastProgress = ProcessInfo.processInfo.systemUptime
+                    }
                 }
+                diagnostic?.record("transfer", "eof", fields: ["received_bytes": String(received)])
+                stage = "save"
                 try handle.close()
                 try Task.checkCancellation()
-                try playbackCache.store.importFile(temporary, entry: entry, recordReceipt: false)
+                stage = "import"
+                try playbackCache.store.importFile(temporary, entry: entry, recordReceipt: false, diagnostic: diagnostic)
                 return playbackCache.store.fileURL(entry)
             } catch {
+                diagnostic?.record(stage, "incomplete", fields: ["received_bytes": String(received)])
+                diagnostic?.failure(stage, error)
                 client.close()
                 if generation == attempt { self.client = nil; connected = false }
                 throw error

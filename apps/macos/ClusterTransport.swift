@@ -39,12 +39,20 @@ final class ClusterNetwork {
         }
     }
 
-    private func addresses(database: CatalogDatabase) async throws -> [IrohLib.EndpointAddr] {
+    private func addresses(database: CatalogDatabase, diagnostic: PlaybackDiagnosticContext? = nil) async throws -> [IrohLib.EndpointAddr] {
         guard let registration = try database.clusterRegistration() else { throw LocalMusicError.unauthorized }
         let own = try registration.membership.verify(registration.localGrant).member
         let hosts = Set(registration.membership.grants.filter {
             $0.host && $0.member != own && (try? registration.membership.verify($0.id)) != nil
         }.map(\.member))
+        if let diagnostic {
+            for grant in registration.membership.grants {
+                let reason = !grant.host ? "not_host" : grant.member == own ? "self" :
+                    (try? registration.membership.verify(grant.id)) == nil ? "invalid_grant" : "eligible"
+                diagnostic.record("selection", "membership", fields: ["device_id": grant.member, "reason": reason, "device_name": "not_observable"])
+            }
+        }
+        diagnostic?.record("selection", "eligible", fields: ["count": String(hosts.count)])
         discovery.start()
         if let configured = registration.relay {
             let relay = try ClusterInvitation.validatedRelay(configured)
@@ -64,9 +72,15 @@ final class ClusterNetwork {
         for _ in 0..<60 {
             try Task.checkCancellation()
             let found = discovery.endpoints.filter { hosts.contains($0.key) }.sorted { $0.key < $1.key }.map(\.value)
-            if !found.isEmpty { return found }
+            if !found.isEmpty {
+                for host in hosts where !found.contains(where: { $0.id().description == host }) {
+                    diagnostic?.record("selection", "excluded", fields: ["device_id": host, "reason": "no_discovered_endpoint"])
+                }
+                return found
+            }
             try await Task.sleep(for: .milliseconds(250))
         }
+        diagnostic?.record("selection", "no_candidates", outcome: "failed", fields: ["count": "0", "reason": hosts.isEmpty ? "no_authorized_hosts" : "no_discovered_endpoint"])
         throw LocalMusicError.clusterUnavailable
     }
 
@@ -111,27 +125,45 @@ final class ClusterNetwork {
         return catalog
     }
 
-    func download(object: String, cache: LocalMusicStore? = nil, progress: @escaping (Double) -> Void) async throws {
+    func download(object: String, cache: LocalMusicStore? = nil, diagnostic: PlaybackDiagnosticContext? = nil, progress: @escaping (Double) -> Void) async throws {
         let database = try store.database()
         var failure: Error = LocalMusicError.clusterUnavailable
-        for address in try await addresses(database: database) {
+        let candidates: [IrohLib.EndpointAddr]
+        do { candidates = try await addresses(database: database, diagnostic: diagnostic) }
+        catch { diagnostic?.failure("selection", error); throw error }
+        diagnostic?.record("selection", "candidates", fields: ["count": String(candidates.count), "reason": candidates.isEmpty ? "no_authorized_hosts" : "available"])
+        for (ordinal, address) in candidates.enumerated() {
+            let trace = diagnostic?.source(ordinal + 1, peer: address.id().description)
+            var stage = "connection"
             try Task.checkCancellation()
             do {
-                let current = try await ClusterSession.connect(address: address, secrets: secrets, database: database)
+                let current = try await ClusterSession.connect(address: address, secrets: secrets, database: database, diagnostic: trace)
                 session = current
-                defer { current.close(); session = nil }
+                defer {
+                    trace?.record("connection", "final_path", fields: ["path": current.selectedPath ?? "unknown"])
+                    current.close(); session = nil
+                }
+                stage = "synchronization"
+                trace?.record(stage, "start")
                 try await current.reconcile(database: database)
+                trace?.record(stage, "finished", outcome: "succeeded")
+                stage = "resolution"
+                trace?.record(stage, "local_catalog", fields: ["sha256": object, "evidence": "local_synchronized_catalog"])
                 let entry = try database.clusterDownloadEntry(object: object, peer: current.peer)
-                try await current.download(entry, store: cache ?? store, database: database, cacheOnly: cache != nil, progress: progress)
+                trace?.record(stage, "authorized", outcome: "succeeded", fields: ["track_id": entry.track.id, "sha256": entry.sha256])
+                stage = "transfer"
+                try await current.download(entry, store: cache ?? store, database: database, cacheOnly: cache != nil, diagnostic: trace, progress: progress)
                 lastPath = current.selectedPath
                 if cache != nil { return }
                 let catalog = try await UploadedMusic.recoverClusterEvidence(database.clusterCatalog(), store: store)
                 try store.save(catalog, clusterEdits: true)
                 return
-            } catch is IrohLib.IrohError {
+            } catch let error as IrohLib.IrohError {
+                trace?.failure(stage, error)
                 try Task.checkCancellation()
                 failure = LocalMusicError.clusterUnavailable
             } catch {
+                trace?.failure(stage, error)
                 try Task.checkCancellation()
                 failure = error
             }
@@ -341,9 +373,12 @@ final class ClusterSession {
             ownID: await PeerMusicConnection.publicID(secrets: secrets), name: name)
     }
 
-    static func connect(address: IrohLib.EndpointAddr, secrets: CredentialStore, database: CatalogDatabase) async throws -> ClusterSession {
+    static func connect(address: IrohLib.EndpointAddr, secrets: CredentialStore, database: CatalogDatabase, diagnostic: PlaybackDiagnosticContext? = nil) async throws -> ClusterSession {
         guard let registration = try database.clusterRegistration() else { throw LocalMusicError.unauthorized }
+        diagnostic?.record("connection", "start", fields: ["path": "unknown", "reason": "not_established", "reused": "false"])
         let session = try await open(address: address, alpn: "syncstr/cluster/3", secrets: secrets)
+        diagnostic?.record("connection", "established", outcome: "succeeded", fields: ["peer_id": session.peer, "identity_match": "true", "path": session.selectedPath ?? "unknown"])
+        diagnostic?.record("authentication", "start")
         do {
             let stream = try await session.connection.openBi()
             try await session.send(Hello(capabilities: ClusterCapabilities(version: 1, membership: true, deletions: true, conflicts: true), proof: registration.membership), stream: stream)
@@ -351,8 +386,9 @@ final class ClusterSession {
             let hello = try await session.receive(Hello.self, stream: stream)
             guard hello.capabilities.allowsAutomaticWriter else { throw LocalMusicError.incompatiblePeer }
             try database.authenticateClusterPeer(session.peer, membership: hello.proof)
+            diagnostic?.record("authentication", "verified", outcome: "succeeded")
             return session
-        } catch { session.close(); throw error }
+        } catch { diagnostic?.failure("authentication", error); session.close(); throw error }
     }
 
     func reconcile(database: CatalogDatabase) async throws {
@@ -434,53 +470,82 @@ final class ClusterSession {
         return revision
     }
 
-    func download(_ entry: LocalEntry, store: LocalMusicStore, database: CatalogDatabase, cacheOnly: Bool = false, progress: @escaping (Double) -> Void) async throws {
-        guard LocalMusicStore.valid(entry), let size = entry.track.size else { throw LocalMusicError.invalidData }
-        let current = try database.clusterDownloadEntry(object: entry.sha256, peer: peer)
-        guard current.track.size == size, let registration = try database.clusterRegistration() else { throw LocalMusicError.invalidData }
-        let member = try registration.membership.verify(registration.localGrant).member
-        let pending = try database.clusterJobs().first { $0.sha256 == entry.sha256 && $0.source == peer && $0.destination == member && $0.state == .queued }
-        let job = pending ?? ClusterTransferJob(id: UUID().uuidString, sha256: entry.sha256, source: peer, destination: member, state: .queued)
-        if !cacheOnly {
-            try database.enqueueClusterJob(job)
-            try database.beginClusterJob(job.id)
-        }
-        defer { if !cacheOnly { try? database.retryClusterJob(job.id) } }
-        try store.prepare()
-        let temporary = store.root.appendingPathComponent(".cluster-" + UUID().uuidString)
-        guard FileManager.default.createFile(atPath: temporary.path, contents: nil) else { throw LocalMusicError.invalidData }
-        defer { try? FileManager.default.removeItem(at: temporary) }
-        let timeout = Task {
-            do { try await Task.sleep(for: .seconds(240)) } catch { return }
-            close()
-        }
-        defer { timeout.cancel() }
-        let stream = try await connection.openBi()
-        try await send(Request(operation: "audio", object: entry.sha256), stream: stream)
-        try await stream.send().finish()
-        let response = try await receive(Response.self, stream: stream)
-        guard response.status == "audio", let remote = response.entry,
-              remote.sha256 == entry.sha256, remote.track.size == size else { throw LocalMusicError.disconnected }
-        let file = try FileHandle(forWritingTo: temporary)
-        defer { try? file.close() }
+    func download(_ entry: LocalEntry, store: LocalMusicStore, database: CatalogDatabase, cacheOnly: Bool = false, diagnostic: PlaybackDiagnosticContext? = nil, progress: @escaping (Double) -> Void) async throws {
+        var stage = "resolution"
         var received: UInt64 = 0
-        while received < size {
+        var lastProgress = ProcessInfo.processInfo.systemUptime
+        do {
+            guard LocalMusicStore.valid(entry), let size = entry.track.size else { throw LocalMusicError.invalidData }
+            diagnostic?.record("transfer", "expected", fields: ["expected_size": String(size), "sha256": entry.sha256])
+            let current = try database.clusterDownloadEntry(object: entry.sha256, peer: peer)
+            guard current.track.size == size, let registration = try database.clusterRegistration() else { throw LocalMusicError.invalidData }
+            let member = try registration.membership.verify(registration.localGrant).member
+            let pending = try database.clusterJobs().first { $0.sha256 == entry.sha256 && $0.source == peer && $0.destination == member && $0.state == .queued }
+            let job = pending ?? ClusterTransferJob(id: UUID().uuidString, sha256: entry.sha256, source: peer, destination: member, state: .queued)
+            if !cacheOnly {
+                try database.enqueueClusterJob(job)
+                try database.beginClusterJob(job.id)
+            }
+            defer { if !cacheOnly { try? database.retryClusterJob(job.id) } }
+            stage = "save"
+            try store.prepare()
+            let temporary = store.root.appendingPathComponent(".cluster-" + UUID().uuidString)
+            guard FileManager.default.createFile(atPath: temporary.path, contents: nil) else { throw LocalMusicError.invalidData }
+            diagnostic?.record("save", "temporary_created", outcome: "succeeded")
+            defer { try? FileManager.default.removeItem(at: temporary) }
+            let timeout = Task {
+                do { try await Task.sleep(for: .seconds(240)) } catch { return }
+                close()
+            }
+            defer { timeout.cancel() }
+            stage = "remote_resolution"
+            let stream = try await connection.openBi()
+            diagnostic?.record(stage, "request", fields: ["sha256": entry.sha256, "track_id": entry.track.id])
+            try await send(Request(operation: "audio", object: entry.sha256), stream: stream)
+            try await stream.send().finish()
+            let response = try await receive(Response.self, stream: stream)
+            diagnostic?.record(stage, "response", fields: ["protocol_status": ["audio", "unavailable", "denied", "error"].contains(response.status) ? response.status : "unrecognized",
+                "sha_match": String(response.entry?.sha256 == entry.sha256), "size_match": String(response.entry?.track.size == size), "remote_internal_resolution": "not_observable"])
+            guard response.status == "audio", let remote = response.entry,
+                  remote.sha256 == entry.sha256, remote.track.size == size else { throw LocalMusicError.disconnected }
+            stage = "save"
+            let file = try FileHandle(forWritingTo: temporary)
+            defer { try? file.close() }
+            while received < size {
+                stage = "transfer"
+                try Task.checkCancellation()
+                let bytes = try await stream.recv().readExact(size: UInt32(min(65536, size - received)))
+                received += UInt64(bytes.count)
+                stage = "save"
+                try file.write(contentsOf: bytes)
+                progress(Double(received) / Double(size))
+                if ProcessInfo.processInfo.systemUptime - lastProgress >= 1 {
+                    diagnostic?.record("transfer", "progress", fields: ["received_bytes": String(received)])
+                    lastProgress = ProcessInfo.processInfo.systemUptime
+                }
+            }
+            stage = "transfer"
+            guard try await stream.recv().readToEnd(sizeLimit: 1).isEmpty else { throw LocalMusicError.invalidData }
+            diagnostic?.record("transfer", "eof", outcome: "succeeded", fields: ["received_bytes": String(received)])
+            stage = "save"
+            try file.synchronize()
+            try file.close()
             try Task.checkCancellation()
-            let bytes = try await stream.recv().readExact(size: UInt32(min(65536, size - received)))
-            try file.write(contentsOf: bytes)
-            received += UInt64(bytes.count)
-            progress(Double(received) / Double(size))
+            stage = "resolution"
+            let selected = try database.clusterDownloadEntry(object: entry.sha256, peer: peer)
+            stage = "import"
+            try await Task.detached { try store.importFile(temporary, entry: selected, recordReceipt: false, diagnostic: diagnostic) }.value
+            stage = "save"
+            let descriptor = Darwin.open(store.root.path, O_RDONLY)
+            guard descriptor >= 0 else { throw LocalMusicError.invalidData }
+            defer { Darwin.close(descriptor) }
+            guard fsync(descriptor) == 0 else { throw LocalMusicError.invalidData }
+            if !cacheOnly { try database.finishClusterDownload(job.id, entry: selected, file: store.fileURL(selected)) }
+            diagnostic?.record("save", "durable", outcome: "succeeded")
+        } catch {
+            diagnostic?.record(stage, "incomplete", outcome: "failed", fields: ["received_bytes": String(received)])
+            diagnostic?.failure(stage, error)
+            throw error
         }
-        guard try await stream.recv().readToEnd(sizeLimit: 1).isEmpty else { throw LocalMusicError.invalidData }
-        try file.synchronize()
-        try file.close()
-        try Task.checkCancellation()
-        let selected = try database.clusterDownloadEntry(object: entry.sha256, peer: peer)
-        try await Task.detached { try store.importFile(temporary, entry: selected, recordReceipt: false) }.value
-        let descriptor = Darwin.open(store.root.path, O_RDONLY)
-        guard descriptor >= 0 else { throw LocalMusicError.invalidData }
-        defer { Darwin.close(descriptor) }
-        guard fsync(descriptor) == 0 else { throw LocalMusicError.invalidData }
-        if !cacheOnly { try database.finishClusterDownload(job.id, entry: selected, file: store.fileURL(selected)) }
     }
 }

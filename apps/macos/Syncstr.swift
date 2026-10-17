@@ -598,6 +598,9 @@ struct LibraryView: View {
                     if let failure = library.playbackFailure {
                         Text(failure).foregroundStyle(Studio.fog)
                         Button("再試行", action: library.resumePlayback)
+                        if let id = library.failedDiagnosticID {
+                            PlaybackDiagnosticCopyButton(attemptID: id, recorder: library.diagnostics).id(id)
+                        }
                     }
                     HStack(spacing: 20) {
                         Toggle("シャッフル", isOn: Binding(

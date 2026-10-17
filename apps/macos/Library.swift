@@ -94,15 +94,22 @@ final class Library: ObservableObject {
     private var player: AVPlayer?
     private var observation: NSKeyValueObservation?
     private var itemObservation: NSKeyValueObservation?
+    private var waitingObservation: NSKeyValueObservation?
     private var durationObservation: NSKeyValueObservation?
     private var timeObserver: Any?
     private var finishObserver: NSObjectProtocol?
+    private var playbackErrorObserver: NSObjectProtocol?
     private var seeking: UUID?
     private var restoredLibrary = false
     private var orderedQueue: [Track] = []
     private var wantsPlayback = false
     private var backgrounded = false
     private var playbackRequest = UUID()
+    private var diagnostic: PlaybackDiagnosticContext?
+    @Published private(set) var failedDiagnosticID: String?
+    private var diagnosticFailed = false
+    private var diagnosticAdvanced = false
+    private var diagnosticPosition: Double?
     private var acquisition: Task<Void, Never>?
     private var restoringPlayback = false
     private var restoredPlaybackLibrary: String?
@@ -120,13 +127,16 @@ final class Library: ObservableObject {
         let repeatMode: PlaybackRepeat
     }
     private let makePlayer: (URL) -> AVPlayer
+    let diagnostics: PlaybackDiagnostics
 
     init(makePlayer: @escaping (URL) -> AVPlayer = { AVPlayer(url: $0) },
+         diagnostics: PlaybackDiagnostics? = nil,
          localStore: LocalMusicStore = LocalMusicStore(),
          pairingSecrets: CredentialStore = CredentialStore(service: "as.ason.syncstr.local-pair"),
          peerSecrets: CredentialStore = CredentialStore(service: "as.ason.syncstr.p2p.identity"),
          peerPairing: CredentialStore = CredentialStore(service: "as.ason.syncstr.p2p.peer")) {
         self.makePlayer = makePlayer
+        self.diagnostics = diagnostics ?? PlaybackDiagnostics(root: localStore.root.appendingPathComponent("PlaybackDiagnostics"))
         self.localStore = localStore
         self.transfer = LocalTransfer(store: localStore, secrets: pairingSecrets, peerSecrets: peerSecrets, peerPairing: peerPairing)
         transfer.onCatalog = { [weak self] catalog in try self?.openLocal(catalog) }
@@ -599,7 +609,23 @@ final class Library: ObservableObject {
 
     func resumePlayback() {
         guard let current, !loading else { return }
+        let retryOf = diagnosticFailed ? diagnostic?.id : nil
+#if os(macOS)
+        if diagnostic == nil || diagnosticFailed {
+            let entry = localCatalog?.entries.first { $0.track.id == current.id }
+            diagnostic = diagnostics.begin(title: current.title, track: current.id,
+                sha256: entry?.sha256, library: localCatalog?.id, retryOf: retryOf)
+            diagnosticFailed = false
+            diagnosticAdvanced = false
+            diagnosticPosition = nil
+        }
+#endif
+        let trace = diagnostic
+        trace?.record("request", "resume", fields: ["already_playing": String(playing)])
         guard tracks.contains(where: { $0.id == current.id }) else {
+            trace?.record("request", "rejected", outcome: "failed", fields: ["reason": "track_removed"], terminal: true)
+            diagnosticFailed = true
+            failedDiagnosticID = trace?.id
             wantsPlayback = false
             playbackFailure = "この曲はライブラリから削除されているため再生できません。別の曲を選んでください。"
             return
@@ -612,12 +638,16 @@ final class Library: ObservableObject {
         playbackFailure = nil
         if player?.currentItem?.status == .failed {
             let start = position
+            let retryTrace = diagnostic
+            diagnostic = nil
             stop()
+            diagnostic = retryTrace
             duration = max(0, current.duration ?? 0)
             position = start
             wantsPlayback = true
         }
         if let player, player.currentItem?.status != .failed {
+            trace?.record("player", "reuse")
             if let url = transfer.playbackCache.protectedURL {
                 do { try transfer.playbackCache.markPlayed(url) }
                 catch { message = "キャッシュの利用日時を更新できませんでした。\(error.localizedDescription)" }
@@ -627,14 +657,27 @@ final class Library: ObservableObject {
             return
         }
         if let url = localFiles[current.id] {
+            var role = "saved_copy"
+            #if os(macOS)
+            if localFolder?.files[current.id] != nil { role = "original_folder" }
+            #endif
+            trace?.file(url, role: role)
+            trace?.record("selection", "mode", fields: ["mode": "local", "reason": role])
             preparePlayer(url, at: duration > 0 && position >= duration ? 0 : position)
             return
         }
-        if let url = try? transfer.cachedPlaybackFile(current) {
-            preparePlayer(url, at: duration > 0 && position >= duration ? 0 : position)
-            return
-        }
+        do {
+            if let url = try transfer.cachedPlaybackFile(current, diagnostic: trace) {
+                trace?.record("selection", "mode", fields: ["mode": "local", "reason": "cache_hit"])
+                preparePlayer(url, at: duration > 0 && position >= duration ? 0 : position)
+                return
+            }
+        } catch { trace?.failure("cache", error) }
+        trace?.record("local", "acquisition_required", fields: ["reason": "no_usable_local_file"])
         if backgrounded {
+            trace?.record("request", "rejected", outcome: "failed", fields: ["reason": "backgrounded"], terminal: true)
+            diagnosticFailed = true
+            failedDiagnosticID = trace?.id
             wantsPlayback = false
             playbackFailure = "バックグラウンドでは次の音源を取得できません。アプリを開いて再試行してください。"
             return
@@ -647,12 +690,15 @@ final class Library: ObservableObject {
             do {
                 await preceding?.value
                 try Task.checkCancellation()
-                let url = try await transfer.playbackFile(current)
+                let url = try await transfer.playbackFile(current, diagnostic: trace)
                 try Task.checkCancellation()
                 guard playbackRequest == request, wantsPlayback else { return }
                 preparePlayer(url, at: duration > 0 && position >= duration ? 0 : position)
             } catch {
+                trace?.failure("acquisition", error, terminal: playbackRequest == request)
                 guard playbackRequest == request else { return }
+                diagnosticFailed = true
+                failedDiagnosticID = trace?.id
                 loading = false
                 wantsPlayback = false
                 playbackFailure = "音源を取得できませんでした。\(error.localizedDescription)"
@@ -662,24 +708,47 @@ final class Library: ObservableObject {
     }
 
     private func preparePlayer(_ url: URL, at start: Double) {
+        let trace = diagnostic
+        trace?.file(url, role: "player_input", stage: "player")
+        diagnosticPosition = nil
         loading = true
         transfer.playbackCache.protectedURL = url
         do { try transfer.playbackCache.markPlayed(url) }
         catch { message = "キャッシュの利用日時を更新できませんでした。\(error.localizedDescription)" }
         let player = makePlayer(url)
         player.volume = Float(volume)
+        trace?.record("player", "created", fields: ["has_item": String(player.currentItem != nil)])
         guard let item = player.currentItem else { return }
         self.player = player
+        trace?.record("player", "item_status", fields: ["status": String(item.status.rawValue)])
+        if item.status == .failed, let error = item.error { trace?.failure("player", error, terminal: true) }
+        playbackErrorObserver = NotificationCenter.default.addObserver(forName: AVPlayerItem.failedToPlayToEndTimeNotification,
+            object: item, queue: .main) { notification in
+            if let error = notification.userInfo?[AVPlayerItemFailedToPlayToEndTimeErrorKey] as? Error {
+                trace?.failure("player", error, terminal: true)
+            } else { trace?.record("player", "failed_to_end", outcome: "failed", terminal: true) }
+        }
+        waitingObservation = player.observe(\.reasonForWaitingToPlay, options: [.initial, .new]) { player, _ in
+            trace?.record("player", "waiting_reason", fields: ["reason": player.reasonForWaitingToPlay?.rawValue ?? "none"])
+        }
         observation = player.observe(\.timeControlStatus, options: [.initial, .new]) { [weak self] player, _ in
             Task { @MainActor [weak self] in
                 guard let self, self.player === player else { return }
+                trace?.record("player", "time_control", fields: ["status": String(player.timeControlStatus.rawValue), "waiting_reason": player.reasonForWaitingToPlay?.rawValue ?? "none"])
                 playing = player.timeControlStatus == .playing
                 loading = wantsPlayback && player.currentItem?.status != .failed && player.currentItem?.status != .readyToPlay
             }
         }
         itemObservation = item.observe(\.status, options: [.new]) { [weak self] item, _ in
             Task { @MainActor [weak self] in
+                trace?.record("player", "item_status", fields: ["status": String(item.status.rawValue)])
+                if item.status == .failed {
+                    if let error = item.error { trace?.failure("player", error, terminal: true) }
+                    else { trace?.record("player", "item_failed", outcome: "failed", terminal: true) }
+                }
                 guard let self, self.player?.currentItem === item, item.status == .failed else { return }
+                diagnosticFailed = true
+                failedDiagnosticID = trace?.id
                 self.player?.pause()
                 playing = false
                 loading = false
@@ -698,6 +767,12 @@ final class Library: ObservableObject {
             Task { @MainActor [weak self, weak player] in
                 guard let self, let player, self.player === player, seeking == nil else { return }
                 if time.seconds.isFinite {
+                    if !diagnosticAdvanced, player.timeControlStatus == .playing,
+                       let previous = diagnosticPosition, time.seconds > previous, time.seconds - previous < 1 {
+                        diagnosticAdvanced = true
+                        trace?.record("player", "first_advancement", outcome: "succeeded")
+                    }
+                    diagnosticPosition = time.seconds
                     position = max(0, time.seconds)
                     if position.rounded(.down) != lastPersistedSecond { persistPlayback() }
                 }
@@ -708,6 +783,7 @@ final class Library: ObservableObject {
                 guard let self, let player, self.player === player else { return }
                 playing = false
                 loading = false
+                trace?.record("player", "ended", outcome: "completed", terminal: true)
                 position = duration
                 wantsPlayback = false
                 if repeatMode == .one, let current { select(current, autoplay: true) }
@@ -777,6 +853,7 @@ final class Library: ObservableObject {
 
     func seek(to seconds: Double) {
         guard let player, canSeek, seconds.isFinite else { return }
+        diagnosticPosition = nil
         let target = min(max(0, seconds), duration)
         let id = UUID()
         seeking = id
@@ -801,6 +878,8 @@ final class Library: ObservableObject {
     }
 
     func pause() {
+        diagnostic?.record("player", "pause")
+        diagnosticPosition = nil
         playbackRequest = UUID()
         acquisition?.cancel()
         wantsPlayback = false
@@ -821,16 +900,23 @@ final class Library: ObservableObject {
     }
 
     private func stop() {
+        diagnostic?.record("player", "stop_or_replace", outcome: "stopped", terminal: true)
+        diagnostic = nil
+        diagnosticFailed = false
+        diagnosticPosition = nil
         playbackRequest = UUID()
         acquisition?.cancel()
         wantsPlayback = false
         observation = nil
         itemObservation = nil
+        waitingObservation = nil
         durationObservation = nil
         if let timeObserver { player?.removeTimeObserver(timeObserver) }
         timeObserver = nil
         if let finishObserver { NotificationCenter.default.removeObserver(finishObserver) }
         finishObserver = nil
+        if let playbackErrorObserver { NotificationCenter.default.removeObserver(playbackErrorObserver) }
+        playbackErrorObserver = nil
         player?.pause()
         player = nil
         transfer.playbackCache.protectedURL = nil

@@ -55,6 +55,10 @@ A listener's selection of tracks that retains each track's original album member
 The device-local ordered sequence of tracks selected for a listening session. Browsing or changing search results does not alter an already established queue.
 _Avoid_: Playlist when referring to the active playback sequence
 
+**Playback Attempt**:
+One request to play a track, including the audio-source candidates and automatic retries needed to fulfill that request. A listener's manual retry starts a separate attempt linked to the preceding one.
+_Avoid_: Connection attempt when referring to the complete playback request
+
 **Album Artwork**:
 The image used to represent an album. It may come from a participating track, an album image file, a music library, or an explicit listener choice; it does not establish album membership.
 _Avoid_: Album identity

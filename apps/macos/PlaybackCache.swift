@@ -28,14 +28,22 @@ final class PlaybackCache {
         try trim()
     }
 
-    func file(_ entry: LocalEntry) throws -> URL? {
-        guard store.hasFile(entry) else { return nil }
-        let url = store.fileURL(entry)
-        guard try LocalMusicStore.digest(file: url) == entry.sha256 else {
-            try FileManager.default.removeItem(at: url)
-            return nil
-        }
-        return url
+    func file(_ entry: LocalEntry, diagnostic: PlaybackDiagnosticContext? = nil) throws -> URL? {
+        do {
+            diagnostic?.file(store.fileURL(entry), role: "cache")
+            guard store.hasFile(entry) else {
+                diagnostic?.record("cache", "miss", fields: ["reason": "missing_or_size_mismatch"])
+                return nil
+            }
+            let url = store.fileURL(entry)
+            guard try LocalMusicStore.digest(file: url) == entry.sha256 else {
+                diagnostic?.record("cache", "hash", outcome: "mismatch")
+                try FileManager.default.removeItem(at: url)
+                return nil
+            }
+            diagnostic?.record("cache", "hit", fields: ["hash": "verified"])
+            return url
+        } catch { diagnostic?.failure("cache", error); throw error }
     }
 
     func markPlayed(_ url: URL) throws {
