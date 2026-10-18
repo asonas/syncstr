@@ -12,9 +12,7 @@ struct Album: Identifiable {
     var coverArt: String? { artwork ?? tracks.compactMap(\.coverArt).first }
 }
 
-#if os(macOS)
 enum AlbumSortField { case title, artist }
-#endif
 
 enum LibraryDestination: String, CaseIterable {
     case albums = "アルバム"
@@ -52,7 +50,7 @@ final class Library: ObservableObject {
     @Published private var visibilityRequests: [String: Int] = [:]
     private var albumsByArtist: [String: [Album]] = [:]
     private var tracksByArtist: [String: [Track]] = [:]
-    private var artistNames: [String] = []
+    private(set) var artistNames: [String] = []
     @Published var connected = false
     @Published var current: Track?
     @Published var playing = false
@@ -72,10 +70,8 @@ final class Library: ObservableObject {
     @Published var repeatMode = PlaybackRepeat.off { didSet { persistPlayback() } }
     @Published private(set) var volume = 1.0
     @Published var destination = LibraryDestination.albums
-#if os(macOS)
     @Published var albumSortField = AlbumSortField.title
     @Published var albumSortDescending = false
-#endif
     @Published var selectedAlbum: String?
     @Published var selectedArtist: String?
     @Published var search = ""
@@ -280,8 +276,11 @@ final class Library: ObservableObject {
         let albums = destination == .hiddenAlbums ? hiddenAlbums : self.albums
         let filtered = albums.filter { search.isEmpty || $0.title.localizedStandardContains(search)
             || $0.artist.localizedStandardContains(search) }
-#if os(macOS)
-        return filtered.sorted { lhs, rhs in
+        return sortedAlbums(filtered)
+    }
+
+    func sortedAlbums(_ albums: [Album]) -> [Album] {
+        albums.sorted { lhs, rhs in
             let primary = albumSortField == .title
                 ? lhs.title.localizedStandardCompare(rhs.title)
                 : lhs.artist.localizedStandardCompare(rhs.artist)
@@ -292,9 +291,6 @@ final class Library: ObservableObject {
             if order == .orderedSame { return albumSortDescending ? lhs.id > rhs.id : lhs.id < rhs.id }
             return order == (albumSortDescending ? .orderedDescending : .orderedAscending)
         }
-#else
-        return filtered
-#endif
     }
 
     var artists: [String] {
@@ -651,7 +647,6 @@ final class Library: ObservableObject {
     func resumePlayback() {
         guard let current, !loading else { return }
         let retryOf = diagnosticFailed ? diagnostic?.id : nil
-#if os(macOS)
         if diagnostic == nil || diagnosticFailed {
             let entry = localCatalog?.entries.first { $0.track.id == current.id }
             diagnostic = diagnostics.begin(title: current.title, track: current.id,
@@ -664,7 +659,6 @@ final class Library: ObservableObject {
             diagnosticAdvanced = false
             diagnosticPosition = nil
         }
-#endif
         let trace = diagnostic
         trace?.record("request", "resume", fields: ["already_playing": String(playing)])
         guard tracks.contains(where: { $0.id == current.id }) else {

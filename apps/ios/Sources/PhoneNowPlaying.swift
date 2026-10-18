@@ -157,6 +157,9 @@ struct PhoneNowPlaying: View {
                         if let failure = library.playbackFailure {
                             Text(failure).padding(.horizontal, 20).padding(.top, 16)
                             Button("再試行", action: library.resumePlayback).padding()
+                            if let id = library.failedDiagnosticID {
+                                PlaybackDiagnosticCopyButton(attemptID: id, recorder: library.diagnostics).id(id)
+                            }
                         }
                         VStack(alignment: .leading, spacing: 8) {
                             Text("再生キュー").font(.headline)

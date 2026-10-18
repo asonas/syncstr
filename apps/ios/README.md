@@ -1,4 +1,4 @@
-# syncstr for iPhone
+# syncstr for iPhone and iPad
 
 A SwiftUI player for a cluster library or locally imported music, targeting iOS 27 or later. The target compiles the shared library, local catalog, save queue, transfer, track, and credential components from `apps/macos/`.
 
@@ -11,6 +11,22 @@ Save tracks or albums near playback controls. Requests and completed results sur
 Settings groups enrollment, hosts, diagnostics, conflicts, cellular policy, and storage. Existing paired users can open **Legacy device transfer** there. On the Mac, select a folder and open the same Settings entry, then scan its QR code or enter its pairing code and approve the phone. Keep both apps open during transfer. Removing pairing retains received files. See [the legacy transfer guide](../../docs/local-music-transfer.md).
 
 ## Player behavior
+
+On iPad, a native split view keeps library categories available in a sidebar and
+collapses to one-column navigation in narrow windows. Album grids adapt to the
+available width, with one column at accessibility text sizes. Details place
+artwork beside metadata in wide layouts and above it in compact layouts.
+
+The album browser provides title/artist sorting, ascending/descending order, and
+selection mode for batch hide/restore. Command-click also toggles selection with
+a hardware keyboard. A normal tap opens details, and returning centers the opened
+album. The context menu acts on the selection when invoked on a selected album.
+Visibility remains synchronized through the existing library metadata.
+
+Playback failures offer **Copy Diagnostics** in the player; Settings also lists
+recent attempts. JSONL exports preserve retry ancestry and redaction. Logs retain
+up to 20 attempts and 5 MB on the device. A loading player keeps its Play control
+disabled while reporting preparation progress.
 
 Tap a track to start a queue from its displayed list, or Album Play to start that album from the beginning. Browsing and search do not change the active queue. The mini-player appears after a track is selected; tap its metadata to open the full-player sheet and inspect or select from the queue. Playback controls are independent of that navigation.
 
@@ -66,9 +82,9 @@ The same YAML defines the `SyncstrMac` scheme. See the [macOS distribution guide
 
 ## Implemented behavior
 
-- The library combines artist, album, and track navigation with a two-column album grid. Album details place artwork and metadata above Play and the ordered track list. Accessibility text sizes use a single album column.
+- The library combines artist, album, and track navigation with an adaptive album grid. Album details place artwork and metadata above or beside Play and the ordered track list. Accessibility text sizes use a single album column.
 - Search covers tracks, albums, and artists.
-- Selecting a track plays the originating list in order. The native glass mini-player opens Now Playing as a sheet, with pause/resume, previous/next, seeking, and a track save menu. The Now Playing tab provides the same controls.
+- Selecting a track plays the originating list in order. The native glass mini-player opens Now Playing as a sheet, with pause/resume, previous/next, seeking, and a track save menu.
 - A cloud/download icon marks an unsaved track, a spinner marks downloading, and a check marks a saved track. Tap the cloud to download; tap the title to play. A spinner next to the title indicates playback preparation.
 - Playback uses verified received files. The catalog and audio survive restarts without a network. Choosing another Mac or removing a pairing retains audio files.
 - Lock-screen and Control Center integration expose track information, playback position, pause/resume, previous/next, and seeking.
@@ -84,6 +100,12 @@ The app icon is exported from the [selected design](https://www.figma.com/design
 App-owned navigation and playback icons use original SVGs from [Regen Icons](https://github.com/kazdenc/regen-icons), pinned to revision `64c0e165c3ce6d5c9d7329acf5762306f86d6b1d`. Download-state icons use its `cloud-download` and `circle-check`. Its MIT license is preserved in [Licenses/RegenIcons.txt](Licenses/RegenIcons.txt) and bundled with the app. System navigation chrome remains native. See [DESIGN.md](../../DESIGN.md) for layout and typography rules.
 
 ## Verification
+
+The `SyncstrUITests` scheme checks album sorting, batch visibility, restoration,
+search and keyboard focus, and failure-log copying on iPhone and iPad Simulators.
+It launches a Debug-only fictional catalog in a temporary directory via
+`--ui-fixture`; ordinary launches never select this fixture. TestFlight and
+Release builds do not include the fixture.
 
 After generating the project, select an available iPhone Simulator destination:
 

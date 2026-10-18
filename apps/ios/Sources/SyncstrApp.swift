@@ -7,7 +7,15 @@ struct SyncstrApp: App {
     @StateObject private var playback: PhonePlayback
 
     init() {
-        let library = Library()
+        let library: Library
+#if DEBUG
+        if ProcessInfo.processInfo.arguments.contains("--ui-fixture") {
+            do { library = try MobileUITestFixture.makeLibrary() }
+            catch { fatalError("Cannot create UI test fixture: \(error)") }
+        } else { library = Library() }
+#else
+        library = Library()
+#endif
         _library = StateObject(wrappedValue: library)
         _playback = StateObject(wrappedValue: PhonePlayback(library: library))
     }

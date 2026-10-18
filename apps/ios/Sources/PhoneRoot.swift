@@ -9,9 +9,26 @@ enum PhoneStyle {
 
 enum PhoneTab: Hashable { case library, search, settings }
 
+private enum TabletSection: String, CaseIterable, Identifiable {
+    case albums = "アルバム", artists = "アーティスト", songs = "曲"
+    case hidden = "非表示にしたアルバム", search = "検索", settings = "設定"
+    var id: Self { self }
+    var icon: String {
+        switch self {
+        case .albums, .hidden: "layers"
+        case .artists: "users"
+        case .songs: "music"
+        case .search: "search"
+        case .settings: "settings"
+        }
+    }
+}
+
 struct PhoneRoot: View {
     @ObservedObject var library: Library
     @State private var tab = PhoneTab.library
+    @State private var tabletSection: TabletSection? = .albums
+    @FocusState private var searchFocused: Bool
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @Environment(\.scenePhase) private var scenePhase
 
@@ -24,7 +41,19 @@ struct PhoneRoot: View {
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
-                tabs.tabViewBottomAccessory(isEnabled: library.current != nil) { miniPlayer }
+                Group {
+                    if UIDevice.current.userInterfaceIdiom == .pad {
+                        tabletNavigation
+                            .safeAreaInset(edge: .bottom) {
+                                if library.current != nil {
+                                    miniPlayer.padding(8).frame(maxWidth: 704)
+                                        .glassEffect(.regular, in: Capsule()).padding(20)
+                                }
+                            }
+                    } else {
+                        tabs.tabViewBottomAccessory(isEnabled: library.current != nil) { miniPlayer }
+                    }
+                }
             }
         }
         .background(PhoneStyle.graphite)
@@ -56,8 +85,46 @@ struct PhoneRoot: View {
             }
         }
         .onChange(of: library.connected) { _, connected in
-            if connected { tab = .library }
+            if connected { tab = .library; tabletSection = .albums }
         }
+    }
+
+    private var tabletNavigation: some View {
+        NavigationSplitView {
+            List(TabletSection.allCases, selection: $tabletSection) { section in
+                Label { Text(section.rawValue) } icon: { RegenIcon(name: section.icon) }
+                    .tag(section)
+            }
+            .navigationTitle("ライブラリ")
+            .navigationSplitViewColumnWidth(min: 200, ideal: 240, max: 300)
+            .toolbar { AddMusicButton(library: library) }
+        } detail: {
+            NavigationStack {
+                Group {
+                    switch tabletSection ?? .albums {
+                    case .albums:
+                        if library.connected { PhoneAlbumBrowser(library: library, detail: albumDetail) }
+                        else { catalog }
+                    case .hidden: PhoneAlbumBrowser(library: library, hidden: true, detail: albumDetail)
+                    case .artists: artistList
+                    case .songs: songList(library.catalogTracks).navigationTitle("曲")
+                    case .search: search
+                    case .settings: settings
+                    }
+                }.id(tabletSection)
+            }
+        }
+    }
+
+    private var artistList: some View {
+        List(library.artistNames, id: \.self) { artist in
+            NavigationLink(artist) {
+                songList(library.tracks(for: artist)).navigationTitle(artist)
+            }
+        }
+        .scrollContentBackground(.hidden)
+        .background(PhoneStyle.graphite)
+        .navigationTitle("アーティスト")
     }
 
     private var tabs: some View {
@@ -79,26 +146,16 @@ struct PhoneRoot: View {
             VStack(alignment: .leading, spacing: 16) {
                 VStack(spacing: 0) {
                     NavigationLink {
-                        List(library.artists, id: \.self) { artist in
-                            NavigationLink(artist) {
-                                songList(library.tracks(for: artist))
-                                    .navigationTitle(artist)
-                            }
-                        }
-                        .navigationTitle("アーティスト")
+                        artistList
                     } label: { categoryLabel("アーティスト", icon: "users") }
                     NavigationLink {
-                        ScrollView { albumGrid.padding(20) }
-                            .background(PhoneStyle.graphite).navigationTitle("アルバム")
+                        PhoneAlbumBrowser(library: library, detail: albumDetail)
                     } label: { categoryLabel("アルバム", icon: "layers") }
                     NavigationLink {
                         songList(library.catalogTracks).navigationTitle("曲")
                     } label: { categoryLabel("曲", icon: "music") }
                     NavigationLink {
-                        ScrollView {
-                            if library.hiddenAlbums.isEmpty { Text("非表示にしたアルバムはありません。").padding(20) }
-                            albumGrid(library.hiddenAlbums).padding(20)
-                        }.background(PhoneStyle.graphite).navigationTitle("非表示にしたアルバム")
+                        PhoneAlbumBrowser(library: library, hidden: true, detail: albumDetail)
                     } label: { categoryLabel("非表示にしたアルバム", icon: "layers") }
                 }
                 .buttonStyle(.plain)
@@ -148,9 +205,8 @@ struct PhoneRoot: View {
     private var albumGrid: some View { albumGrid(library.albums) }
 
     private func albumGrid(_ albums: [Album]) -> some View {
-        LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 16),
-                                count: dynamicTypeSize.isAccessibilitySize ? 1 : 2), spacing: 16) {
-            ForEach(albums) { album in
+        LazyVGrid(columns: dynamicTypeSize.isAccessibilitySize ? [GridItem(.flexible())] : [GridItem(.adaptive(minimum: 160), spacing: 20)], spacing: 32) {
+            ForEach(library.sortedAlbums(albums)) { album in
                 NavigationLink { albumDetail(album) } label: {
                     VStack(alignment: .leading, spacing: 4) {
                         PhoneArtwork(url: album.coverArt.flatMap { library.artworkURLs[$0] })
@@ -173,36 +229,37 @@ struct PhoneRoot: View {
     private func albumDetail(_ album: Album) -> some View {
         return GeometryReader { geometry in
             List {
-                VStack(spacing: 0) {
+                let wide = geometry.size.width >= 700 && !dynamicTypeSize.isAccessibilitySize
+                let layout = wide ? AnyLayout(HStackLayout(alignment: .center, spacing: 32)) : AnyLayout(VStackLayout(spacing: 20))
+                layout {
                     PhoneArtwork(url: album.coverArt.flatMap { library.artworkURLs[$0] })
-                        .frame(width: max(0, min(geometry.size.width - 128, dynamicTypeSize.isAccessibilitySize ? 120 : 320)))
-                        .padding(.bottom, 20)
-                    VStack(spacing: 4) {
-                        Text(album.title).font(.title3.bold())
-                        Text(album.detailArtist ?? album.artist).font(.body)
-                            .foregroundStyle(album.detailArtist == "V.A." ? .secondary : PhoneStyle.signal)
-                        Text("\(album.tracks.count)曲").font(.caption).foregroundStyle(.secondary)
-                    }
-                    .multilineTextAlignment(.center)
-                    .padding(.bottom, 16)
-                    Button {
-                        library.togglePlayback(in: album.tracks)
-                    } label: {
-                        HStack(spacing: 8) {
-                            RegenIcon(name: "filled-play")
-                            Text("再生")
+                        .frame(width: max(0, min(geometry.size.width - 80, dynamicTypeSize.isAccessibilitySize ? 120 : 320)))
+                    VStack(alignment: wide ? .leading : .center, spacing: 20) {
+                        VStack(alignment: wide ? .leading : .center, spacing: 4) {
+                            Text(album.title).font(.title3.bold())
+                            Text(album.detailArtist ?? album.artist).font(.body)
+                                .foregroundStyle(album.detailArtist == "V.A." ? .secondary : PhoneStyle.signal)
+                            Text("\(album.tracks.count)曲").font(.caption).foregroundStyle(.secondary)
                         }
-                        .frame(minWidth: 160, minHeight: 44)
-                        .background(PhoneStyle.button, in: RoundedRectangle(cornerRadius: 8))
-                        .foregroundStyle(.white)
+                        .multilineTextAlignment(wide ? .leading : .center)
+                        HStack(spacing: 20) {
+                            Button {
+                                library.togglePlayback(in: album.tracks)
+                            } label: {
+                                HStack(spacing: 8) {
+                                    RegenIcon(name: "filled-play")
+                                    Text("再生")
+                                }
+                                .frame(minWidth: 160, minHeight: 44)
+                                .background(PhoneStyle.button, in: RoundedRectangle(cornerRadius: 8))
+                                .foregroundStyle(.white)
+                            }
+                            .buttonStyle(.plain)
+                            .disabled(album.tracks.isEmpty)
+                            .accessibilityLabel("再生")
+                            OfflineSaveControls(library: library, tracks: album.tracks, scope: "album:" + album.id, iconOnly: true)
+                        }
                     }
-                    .buttonStyle(.plain)
-                    .disabled(album.tracks.isEmpty)
-                    .accessibilityLabel("再生")
-                    Button(library.albumVisibilityLabel(album.id)) {
-                        library.setAlbumHidden(album.id, hidden: !library.isAlbumHidden(album.id))
-                    }.disabled(library.isSavingAlbumVisibility(album.id))
-                    OfflineSaveControls(library: library, tracks: album.tracks, scope: "album:" + album.id).padding(.top, 16)
                 }
                 .frame(maxWidth: .infinity)
                 .padding(.top, 8)
@@ -213,7 +270,7 @@ struct PhoneRoot: View {
                 ForEach(Array(album.tracks.enumerated()), id: \.element.id) { index, track in
                     trackRow(track, in: album.tracks, index: index + 1)
                         .listRowInsets(EdgeInsets(top: 0, leading: 20, bottom: 0, trailing: 20))
-                        .listRowBackground(Color.clear)
+                        .listRowBackground(library.current?.id == track.id ? PhoneStyle.button : Color.clear)
                 }
             }
             .listStyle(.plain)
@@ -239,6 +296,10 @@ struct PhoneRoot: View {
         }
         .navigationTitle("検索")
         .searchable(text: $library.search, prompt: "曲、アルバム、アーティスト")
+        .searchFocused($searchFocused)
+        .scrollDismissesKeyboard(.interactively)
+        .simultaneousGesture(TapGesture().onEnded { searchFocused = false })
+        .onDisappear { searchFocused = false }
         .background(PhoneStyle.graphite)
     }
 
@@ -251,47 +312,53 @@ struct PhoneRoot: View {
     }
 
     private func trackRow(_ track: Track, in tracks: [Track], index: Int? = nil) -> some View {
-        HStack(spacing: 8) {
-            Button {
-                start(track, in: tracks)
-            } label: {
-                HStack(spacing: 8) {
-                    if let index {
-                        Group {
-                            if library.current?.id == track.id {
+        let current = library.current?.id == track.id
+        let accented = current && index != nil
+        return PhoneTrackRowSurface(selected: accented) { hovered in
+            HStack(spacing: 8) {
+                Button {
+                    start(track, in: tracks)
+                } label: {
+                    HStack(spacing: 8) {
+                        if let index {
+                            Group {
+                                if current && library.loading {
+                                    ProgressView().tint(.white).accessibilityLabel(library.playbackLoadingLabel)
+                                } else if current || hovered {
+                                    RegenIcon(name: "filled-play").foregroundStyle(accented ? .white : PhoneStyle.signal)
+                                } else { Text("\(index)").font(.subheadline).foregroundStyle(.secondary) }
+                            }
+                            .frame(width: 24)
+                        }
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text(track.title).font(.callout)
+                                .foregroundStyle(accented ? .white : current ? PhoneStyle.signal : .primary)
+                            Text(track.artist ?? "アーティスト不明")
+                                .font(.subheadline).foregroundStyle(accented ? Color.white : .secondary)
+                        }
+                        Spacer(minLength: 8)
+                        if index == nil && library.current?.id == track.id {
+                            if library.loading {
+                                ProgressView().accessibilityLabel(library.playbackLoadingLabel)
+                            } else {
                                 RegenIcon(name: library.playing ? "activity" : "filled-pause")
-                                    .foregroundStyle(PhoneStyle.signal)
-                            } else { Text("\(index)").font(.subheadline).foregroundStyle(.secondary) }
+                                    .accessibilityLabel(library.playing ? "再生中" : "選択中")
+                            }
                         }
-                        .frame(width: 24)
-                    }
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text(track.title).font(.callout)
-                            .foregroundStyle(library.current?.id == track.id ? PhoneStyle.signal : .primary)
-                        Text(track.artist ?? "アーティスト不明")
-                            .font(.subheadline).foregroundStyle(.secondary)
-                    }
-                    Spacer(minLength: 8)
-                    if index == nil && library.current?.id == track.id {
-                        if library.loading {
-                            ProgressView().accessibilityLabel(library.playbackLoadingLabel)
-                        } else {
-                            RegenIcon(name: library.playing ? "activity" : "filled-pause")
-                                .accessibilityLabel(library.playing ? "再生中" : "選択中")
+                        if index == nil, let duration = track.duration {
+                            Text(time(duration)).font(.caption).monospacedDigit().foregroundStyle(.secondary)
                         }
                     }
-                    if index == nil, let duration = track.duration {
-                        Text(time(duration)).font(.caption).monospacedDigit().foregroundStyle(.secondary)
-                    }
+                    .padding(.vertical, 8)
+                    .contentShape(Rectangle())
                 }
-                .padding(.vertical, 8)
-                .contentShape(Rectangle())
+                .buttonStyle(.plain)
+                .accessibilityIdentifier("track-\(track.id)")
+                .accessibilityValue(library.current?.id == track.id ? (library.loading ? library.playbackLoadingLabel : library.playing ? "再生中" : "選択中") : "")
+                OfflineSaveControls(library: library, tracks: [track], scope: "track:" + track.id, compact: true)
+                    .buttonStyle(.borderless)
+                    .tint(accented ? .white : PhoneStyle.signal)
             }
-            .buttonStyle(.plain)
-            .accessibilityIdentifier("track-\(track.id)")
-            .accessibilityValue(library.current?.id == track.id ? (library.loading ? library.playbackLoadingLabel : library.playing ? "再生中" : "選択中") : "")
-            OfflineSaveControls(library: library, tracks: [track], scope: "track:" + track.id, compact: true)
-                .buttonStyle(.borderless)
         }
         .contextMenu {
             if library.canRemoveLocalCopy(track) {
@@ -334,6 +401,7 @@ struct PhoneRoot: View {
 
     private var settings: some View {
         Form {
+            Section { PlaybackDiagnosticSettings(recorder: library.diagnostics) }
             Section { PlaybackStorageSettings(library: library) }
             Section("ライブラリと接続") { PeerSetupView(transfer: library.transfer) }
             Section { AddMusicButton(library: library) }
@@ -360,7 +428,7 @@ struct PhoneRoot: View {
         .scrollDismissesKeyboard(.interactively)
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
-                Button("ライブラリへ戻る") { tab = .library }
+                Button("ライブラリへ戻る") { tab = .library; tabletSection = .albums }
             }
         }
     }
@@ -371,6 +439,7 @@ struct PhoneRoot: View {
     }
 
     private func start(_ track: Track, in tracks: [Track]) {
+        searchFocused = false
         library.play(track, in: tracks)
     }
 

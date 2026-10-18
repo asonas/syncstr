@@ -272,7 +272,11 @@ struct OfflineSaveControls: View {
                     if iconOnly {
                         Image("regen-cloud-download").resizable().renderingMode(.template)
                             .scaledToFit().frame(width: 20, height: 20)
+#if os(iOS)
+                            .frame(minWidth: 44, minHeight: 44)
+#else
                             .frame(width: 32, height: 32)
+#endif
                     } else {
                         Text(request?.state == .failed ? "保存を再試行" : compact ? "保存" : "この端末に保存")
                     }

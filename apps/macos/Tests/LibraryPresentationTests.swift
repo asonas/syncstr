@@ -63,7 +63,6 @@ struct LibraryPresentationTests {
         #expect(reopened.visibleAlbums.map(\.title) == ["First", "Second", "Third"])
     }
 
-#if os(macOS)
     @Test
     func albumSortingUsesNaturalOrderAndSecondaryFieldWithoutChangingQueue() throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
@@ -88,7 +87,6 @@ struct LibraryPresentationTests {
         #expect(library.visibleAlbums.map { $0.tracks[0].id } == ["two-b", "two-a"])
         #expect(library.queue.map(\.id) == ["ten", "two-b", "two-a", "one-b"])
     }
-#endif
 
     @Test
     func closingLibraryDuringVisibilitySaveDoesNotReopenIt() async throws {

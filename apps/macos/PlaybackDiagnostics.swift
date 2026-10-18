@@ -321,9 +321,12 @@ struct PlaybackDiagnosticContext: Sendable {
     }
 }
 
-#if os(macOS)
 import SwiftUI
+#if os(macOS)
 import AppKit
+#else
+import UIKit
+#endif
 
 struct PlaybackDiagnosticCopyButton: View {
     let attemptID: String
@@ -338,8 +341,13 @@ struct PlaybackDiagnosticCopyButton: View {
                 let selected = attemptID
                 Task {
                     let json = await recorder.export(selected)
+#if os(macOS)
                     NSPasteboard.general.clearContents()
                     result = NSPasteboard.general.setString(json, forType: .string) ? "コピーしました" : "コピーできませんでした"
+#else
+                    UIPasteboard.general.string = json
+                    result = "コピーしました"
+#endif
                     copying = false
                 }
             }.disabled(copying)
@@ -383,7 +391,7 @@ struct PlaybackDiagnosticSettings: View {
                     PlaybackDiagnosticCopyButton(attemptID: trace.id, recorder: recorder).id(trace.id)
                 }
             }
-            Text("直近20試行・最大5 MBをこのMacに保存します。コピーには曲名と端末の識別情報が含まれます。")
+            Text("直近20試行・最大5 MBをこの端末に保存します。コピーには曲名と端末の識別情報が含まれます。")
                 .font(.caption).foregroundStyle(.secondary)
         }.task {
             traces = await recorder.recent()
@@ -403,4 +411,3 @@ struct PlaybackDiagnosticSettings: View {
         }
     }
 }
-#endif

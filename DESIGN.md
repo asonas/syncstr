@@ -36,6 +36,18 @@ The [iOS Music-inspired exploration](https://www.figma.com/design/KtfBubkg9KiK5L
 - Use original SVGs from `kazdenc/regen-icons` for app-owned icons. Native system chrome remains system-managed. Artwork comes from the library, not the fictional Figma fixture.
 - Treat safe areas, native control metrics, icon optical offsets, and touch-target sizes as constraints rather than spacing tokens. Verify normal text, long text, accessibility text sizes, and narrow screens on iOS 27. Physical-device playback remains a separate check.
 
+### iPhone and iPad Library Operations
+
+- Use native navigation and search controls. On iPad, keep library categories in a `NavigationSplitView` sidebar and allow the system to collapse it for narrow windows. Keep navigation identity stable while resizing. iPhone keeps its library, search, and settings tabs.
+- Adapt album grid columns to the available width, using one column at accessibility text sizes. Album details use side-by-side artwork and metadata only when the content is wide enough; otherwise center them vertically.
+- Place title/artist sort and selection actions at the trailing edge of the album navigation bar. A normal tap opens details. Selection mode and Command-click support multiple albums; batch hide/restore acts on the selection. Sorting, visibility, and search do not change the playback queue.
+- Keep album visibility in the grid selection bar and context menu. Place an icon-only save action with a minimum 44-point target beside Play in details, retaining progress, cancellation, retry, and removal states. Returning from details centers the opened album.
+- Album track rows show a play icon for the current or hovered track, with blue/white current-track styling and a preparation spinner while loading. Touch operation does not depend on hover.
+- Search does not request focus automatically. End editing when acting on content or scrolling, and preserve the query when leaving the field. Text editing retains normal space entry; playback shortcuts apply outside editing.
+- Show playback diagnostic copying next to a failure and in Settings. Preserve the shared attempt IDs, retry chain, redaction, retention limits, and JSONL export format.
+
+The [iPhone and iPad layout reference](https://www.figma.com/design/KtfBubkg9KiK5LuLHIm8Qt?node-id=123-196) uses existing Syncstr components and fictional artwork. Its flat navigation preview does not override native Liquid Glass rendering.
+
 ## macOS UI Guidance
 
 The [macOS Music-inspired exploration](https://www.figma.com/design/KtfBubkg9KiK5LuLHIm8Qt?node-id=47-2) defines the library layout and reusable controls. Keep the Syncstr palette and native system typography; Inter and Noto Sans JP in Figma are preview substitutes.
