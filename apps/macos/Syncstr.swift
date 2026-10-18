@@ -49,6 +49,7 @@ struct LibraryView: View {
                     Rectangle().fill(Studio.iron).frame(width: 1)
                         .ignoresSafeArea(.container, edges: .top)
                     content.frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .ignoresSafeArea(.container, edges: .top)
                         .overlay(alignment: .bottom) {
                             if library.current != nil { playbackBar.padding(.horizontal, 20).padding(.bottom, 20) }
                         }
@@ -503,29 +504,32 @@ struct LibraryView: View {
 
     private func trackRow(_ track: Track, index: Int, tracks: [Track]?, showArtist: Bool,
                           showAlbum: Bool = false, dense: Bool = false, striped: Bool = false) -> some View {
-        HStack(spacing: 16) {
+        let selected = library.current?.id == track.id
+        let accentSelection = selected && !dense
+        let secondary = accentSelection ? Color.white : Studio.fog
+        return HStack(spacing: 16) {
             Button { library.play(track, in: tracks) } label: {
                 HStack(spacing: 16) {
                     if !dense {
                         Group {
-                            if library.current?.id == track.id || hoveredTrack == track.id {
-                                MacIcon("filled-play").foregroundStyle(Studio.signal)
+                            if selected || hoveredTrack == track.id {
+                                MacIcon("filled-play").foregroundStyle(accentSelection ? Color.white : Studio.signal)
                             }
                             else { Text("\(index + 1)").foregroundStyle(Studio.fog) }
                         }.frame(width: 24).accessibilityHidden(true)
                     }
                     Text(track.title).lineLimit(1).frame(maxWidth: .infinity, alignment: .leading)
                     if showArtist {
-                        Text(track.artist ?? "アーティスト不明").foregroundStyle(Studio.fog)
+                        Text(track.artist ?? "アーティスト不明").foregroundStyle(secondary)
                             .font(.system(size: showAlbum ? 14 : 12)).lineLimit(1)
                             .frame(width: showAlbum ? nil : 280, alignment: .leading)
                             .frame(maxWidth: showAlbum ? .infinity : nil, alignment: .leading)
                     }
                     if showAlbum {
-                        Text(track.album ?? "アルバム名不明").foregroundStyle(Studio.fog)
+                        Text(track.album ?? "アルバム名不明").foregroundStyle(secondary)
                             .lineLimit(1).frame(maxWidth: .infinity, alignment: .leading)
                     }
-                    Text(time(track.duration ?? 0)).monospacedDigit().foregroundStyle(Studio.fog)
+                    Text(time(track.duration ?? 0)).monospacedDigit().foregroundStyle(secondary)
                         .font(.system(size: 12))
                         .frame(width: 40, alignment: .trailing)
                 }.frame(maxWidth: .infinity, minHeight: dense ? 32 : 48).contentShape(Rectangle())
@@ -555,13 +559,15 @@ struct LibraryView: View {
                 Button("アーティストを表示") { self.showArtist(track.artist ?? "アーティスト不明") }
             } label: { Text("\(track.title)のその他の操作").hidden().frame(width: 32, height: 32) }
             .menuStyle(.borderlessButton).menuIndicator(.hidden).frame(width: 32, height: 32)
-            .overlay { MacIcon("dots").foregroundStyle(Studio.fog).allowsHitTesting(false) }
+            .overlay { MacIcon("dots").foregroundStyle(secondary).allowsHitTesting(false) }
             .accessibilityLabel("\(track.title)のその他の操作")
         }
         .font(.system(size: 14))
-        .foregroundStyle(library.current?.id == track.id ? Studio.signal : Color.white)
+        .foregroundStyle(selected && dense ? Studio.signal : Color.white)
         .padding(.horizontal, 8)
-        .background(library.current?.id == track.id ? Studio.iron : striped || hoveredTrack == track.id ? Studio.carbon : Color.clear,
+        .background(selected ? (dense ? Studio.iron : Studio.button)
+                    : hoveredTrack == track.id ? (dense ? Studio.carbon : Studio.iron)
+                    : striped ? Studio.carbon : Color.clear,
                     in: RoundedRectangle(cornerRadius: 4))
         .onHover { hoveredTrack = $0 ? track.id : nil }
         .help("\(track.title)\n\(track.artist ?? "アーティスト不明")")
@@ -811,6 +817,7 @@ struct SyncstrApp: App {
             LibraryView(library: library).onAppear { _ = playback }
         }
             .defaultSize(width: 1080, height: 740)
+            .windowStyle(.hiddenTitleBar)
             .windowToolbarStyle(.unifiedCompact)
             .commands { PlaybackCommands() }
         Settings { SettingsView(library: library) }

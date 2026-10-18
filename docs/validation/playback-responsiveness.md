@@ -51,3 +51,9 @@ The initial Back action used the window-level navigation toolbar, which placed i
 Album track rows now show Play instead of the number on hover or when the track is current. Computer use confirmed the current row's Play icon during playback and after pausing. Hover-only display and narrow-window layout were not separately verified. No playback action or queue behavior changed. These changes are macOS-only; iOS uses its existing native navigation and has no pointer-hover requirement.
 
 Only the proposed accent-colored selected background remains pending approval in the Figma row comparison.
+
+## Approved album design and top-row alignment
+
+Following approval of both Figma views, album track rows use Button Blue for the current row and white foregrounds for its Play icon, title, artist, duration, and menu icon. Non-current hovered album rows use Iron. Dense song-table styling remains separate.
+
+The window uses a hidden titlebar, and only the content column extends through the top container safe area. This removes the separate empty titlebar above the header while keeping sidebar content below the window controls. The signed macOS Debug build passed. Its executable path and single running process were verified through the launch script. Computer use confirmed Back and search at the top of the content column, clear of the sidebar, and the blue current row with white text and icons. Hover-only appearance, narrow-window and fullscreen states were not manually rechecked in this pass. No iOS source changed.
