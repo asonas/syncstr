@@ -153,7 +153,7 @@ struct LibraryView: View {
                 .frame(minWidth: 120, idealWidth: 240, maxWidth: 240)
                 .layoutPriority(-1)
         }
-        .padding(.horizontal, 32).padding(.vertical, 8)
+        .padding(.horizontal, 8).padding(.vertical, 8)
         .frame(minHeight: 52)
     }
 
