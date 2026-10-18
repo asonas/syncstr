@@ -31,7 +31,6 @@ struct PhoneRoot: View {
         .onChange(of: scenePhase) { _, phase in
             if phase == .background, library.transfer.peerConnected { library.transfer.cancel() }
         }
-        .sheet(isPresented: $library.showingOrganization) { OrganizationView(library: library) }
         .modifier(OfflineSaveRemoval(library: library, enabled: !library.showingNowPlaying))
         .sheet(isPresented: $library.showingNowPlaying) {
             PhoneNowPlaying(library: library)
@@ -130,7 +129,6 @@ struct PhoneRoot: View {
         .navigationTitle("ライブラリ")
         .toolbar {
             AddMusicButton(library: library)
-            Button("アルバムの整理") { library.showingOrganization = true }
         }
         .toolbarTitleDisplayMode(.inlineLarge)
         .refreshable { library.reload() }
@@ -167,7 +165,6 @@ struct PhoneRoot: View {
                     Button(library.albumVisibilityLabel(album.id)) {
                         library.setAlbumHidden(album.id, hidden: !library.isAlbumHidden(album.id))
                     }.disabled(library.isSavingAlbumVisibility(album.id))
-                    Button("アルバムの整理") { library.showingOrganization = true }
                 }
             }
         }
@@ -296,7 +293,6 @@ struct PhoneRoot: View {
                 .buttonStyle(.borderless)
         }
         .contextMenu {
-            Button("アルバムの整理") { library.showingOrganization = true }
             if library.canRemoveLocalCopy(track) {
                 Button("この端末の保存を解除", role: .destructive) { library.localCopiesToRemove = [track] }.disabled(library.transfer.busy)
             }

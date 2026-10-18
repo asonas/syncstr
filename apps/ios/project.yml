@@ -22,7 +22,6 @@ targets:
     platform: macOS
     sources:
       - path: Sources/PhonePlayback.swift
-      - path: ../macos/OrganizationView.swift
       - path: ../macos/Syncstr.swift
       - path: ../macos/LocalCatalog.swift
       - path: ../macos/CatalogDatabase.swift
@@ -83,7 +82,6 @@ targets:
     platform: iOS
     sources:
       - path: Sources
-      - path: ../macos/OrganizationView.swift
       - path: Licenses
         buildPhase: resources
       - path: ../macos/LocalCatalog.swift

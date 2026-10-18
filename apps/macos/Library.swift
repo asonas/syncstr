@@ -74,7 +74,6 @@ final class Library: ObservableObject {
     @Published var search = ""
     @Published var sidebarVisible = true
     @Published var showingNowPlaying = false
-    @Published var showingOrganization = false
     @Published var localCopiesToRemove: [Track] = []
     @Published private(set) var artworkURLs: [String: URL] = [:]
     let localStore: LocalMusicStore
