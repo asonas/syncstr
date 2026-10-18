@@ -279,6 +279,7 @@ extension CatalogDatabase {
 /// Each operation owns its connection; catalog replacement commits as one transaction.
 final class CatalogDatabase {
     private var connection: OpaquePointer?
+    private var operation = "open"
 
     init(_ url: URL) throws {
         guard sqlite3_open_v2(url.path, &connection, SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_FULLMUTEX, nil) == SQLITE_OK else {
@@ -314,10 +315,13 @@ final class CatalogDatabase {
 
     private func failure() -> NSError {
         NSError(domain: "Syncstr.CatalogDatabase", code: Int(sqlite3_errcode(connection)),
-            userInfo: [NSLocalizedDescriptionKey: String(cString: sqlite3_errmsg(connection))])
+            userInfo: [NSLocalizedDescriptionKey: String(cString: sqlite3_errmsg(connection)),
+                       "database_operation": operation])
     }
 
     private func statement(_ sql: String, _ values: [String?]) throws -> OpaquePointer {
+        let verb = sql.split(separator: " ").first.map(String.init) ?? ""
+        operation = ["BEGIN", "COMMIT", "ROLLBACK", "SELECT", "INSERT", "UPDATE", "DELETE", "CREATE", "ALTER", "PRAGMA"].contains(verb) ? verb : "other"
         var statement: OpaquePointer?
         guard sqlite3_prepare_v2(connection, sql, -1, &statement, nil) == SQLITE_OK, let statement else { throw failure() }
         for (index, value) in values.enumerated() {

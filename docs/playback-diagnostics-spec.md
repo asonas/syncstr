@@ -91,6 +91,16 @@ Use an allowlist for exported fields. Never serialize raw `userInfo`, generic er
 
 Track title and track/library/object/device identifiers are necessary diagnostic metadata. Omit absolute local paths, raw network addresses, full URLs, URL credentials/query/fragment, and user account/home-directory names. Export file role and measurements instead. Normalize error descriptions before persistence and clipboard use; keep native type/domain/code and bounded underlying errors. If a free-form description cannot be normalized safely, omit it and mark that omission rather than exporting an unchecked string. Underlying-error traversal must detect cycles and impose a depth limit.
 
+### Connection-context follow-up
+
+The listener explicitly requested runtime paths to distinguish TestFlight and manual-build configuration stores. The `environment/runtime` event therefore includes the application bundle path, bundle identifier, local store root and catalog database path. This exception does not include audio paths, credential contents or network addresses. Keychain service names identify the credential store; key material and saved endpoint JSON remain excluded.
+
+Preserve bounded pre-playback connection observations across restarts. Each observation retains its original timestamp and connection operation ID when copied into an attempt, under `connection_history`; the copy timestamp is not the time of the original connection. Capture new connection observations again at acquisition selection, without duplicating previously copied event IDs. Keep up to 128 observations with a maximum 128 KB event budget inside the existing overall retention limit, plus the last observed success, failure and disconnection. Disclose history eviction separately from attempt-event truncation. An unobserved historical connection time stays `not_observed`.
+
+Record calls and skips at startup restore, library reload, explicit legacy reconnect and playback selection. Distinguish in-memory cluster-registration presence from the last read result (`not_read`, `absent`, `present`, `failed`). Preserve restoration failures before the first registration read, Keychain OSStatus values, saved-peer presence, and address availability without endpoint contents. A saved peer ID identifies a peer, not necessarily a catalog: only a successfully received remote catalog establishes the library association. Keep unknown associations explicit and report the last successful peer/catalog pair separately from current configuration.
+
+This follow-up observes the existing policy: startup automatically connects a registered cluster, reload can reconnect a restored legacy peer, and legacy playback requires an existing channel. It does not introduce automatic legacy reconnect or clear settings/cache. The diagnostic archive reads the earlier trace-array format without discarding those traces; schema version 2 exports add connection context.
+
 ## Non-interference and durability
 
 Recording must not perform synchronous disk I/O on the playback actor or wait for diagnostic persistence before connection, transfer, or playback. Avoid unbounded buffering, per-audio-chunk disk writes, extra reads/hashes, new sleeps, retry changes, or connection reuse changes. Capture existing progress counters and state transitions; throttle progress records.

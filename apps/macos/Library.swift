@@ -138,7 +138,7 @@ final class Library: ObservableObject {
         self.makePlayer = makePlayer
         self.diagnostics = diagnostics ?? PlaybackDiagnostics(root: localStore.root.appendingPathComponent("PlaybackDiagnostics"))
         self.localStore = localStore
-        self.transfer = LocalTransfer(store: localStore, secrets: pairingSecrets, peerSecrets: peerSecrets, peerPairing: peerPairing)
+        self.transfer = LocalTransfer(store: localStore, secrets: pairingSecrets, peerSecrets: peerSecrets, peerPairing: peerPairing, diagnostics: self.diagnostics)
         transfer.onCatalog = { [weak self] catalog in try self?.openLocal(catalog) }
         transfer.onOrganization = { [weak self] organization in
             do { try self?.saveOrganization(organization) }
@@ -324,7 +324,11 @@ final class Library: ObservableObject {
     }
 
     func restoreLibrary() async {
-        guard !restoredLibrary else { return }
+        transfer.connectionEvent("startup_restore_called")
+        guard !restoredLibrary else {
+            transfer.connectionEvent("startup_connect_skipped", fields: ["reason": "already_restored"])
+            return
+        }
         restoredLibrary = true
         if FileManager.default.fileExists(atPath: localStore.root.appendingPathComponent("active").path) {
             await openSavedLocalLibrary()
@@ -340,15 +344,18 @@ final class Library: ObservableObject {
 #endif
         await transfer.restorePeer()
         if transfer.clusterRegistration != nil && !transfer.busy { transfer.connectCluster() }
+        else { transfer.connectionEvent("startup_connect_skipped", fields: ["reason": transfer.busy ? "busy" : "no_in_memory_cluster_registration", "legacy_auto_connect": "not_requested"]) }
         transfer.resumeSaves()
     }
 
     func reload() {
+        transfer.connectionEvent("library_reload_called")
         if transfer.clusterRegistration != nil { transfer.connectCluster(); return }
 #if os(macOS)
-        if let folder = localFolder, folder.catalog.id == localCatalog?.id { Task { await chooseFolder(folder.root) }; return }
+        if let folder = localFolder, folder.catalog.id == localCatalog?.id { transfer.connectionEvent("reload_connect_skipped", fields: ["reason": "local_folder_rescan"]); Task { await chooseFolder(folder.root) }; return }
 #endif
         if transfer.peerName != nil { Task { await transfer.reconnectPeer() } }
+        else { transfer.connectionEvent("reload_connect_skipped", fields: ["reason": "peer_name_unavailable"]) }
     }
 
     func openLocal(_ catalog: LocalCatalog) throws {
@@ -368,6 +375,8 @@ final class Library: ObservableObject {
             orderedQueue = []
         }
         localCatalog = catalog
+        transfer.diagnosticLibraryID = catalog.id
+        transfer.connectionEvent("library_selected")
         tracks = organizedTracks(catalog)
         artworkURLs = Dictionary(uniqueKeysWithValues: catalog.entries.compactMap { entry in
             entry.track.coverArt.map { ($0, localStore.artworkURL(entry)) }
@@ -591,6 +600,11 @@ final class Library: ObservableObject {
             queue = shuffled ? [track] + tracks.filter { $0.id != track.id }.shuffled() : tracks
         }
         if !queue.contains(where: { $0.id == track.id }) { queue = [track]; orderedQueue = [track] }
+        if loading, current?.id == track.id {
+            diagnostic?.record("request", "reuse_acquisition", fields: ["reason": "same_track_selected"])
+            persistPlayback()
+            return
+        }
         select(track, autoplay: true)
     }
 
@@ -615,6 +629,10 @@ final class Library: ObservableObject {
             let entry = localCatalog?.entries.first { $0.track.id == current.id }
             diagnostic = diagnostics.begin(title: current.title, track: current.id,
                 sha256: entry?.sha256, library: localCatalog?.id, retryOf: retryOf)
+            diagnostic?.record("environment", "runtime", fields: ["bundle_id": Bundle.main.bundleIdentifier ?? "unknown",
+                "app_path": Bundle.main.bundleURL.path, "settings_root": localStore.root.path,
+                "catalog_path": localStore.root.appendingPathComponent("catalog.sqlite").path,
+                "credential_storage": "keychain", "peer_credential_service": "as.ason.syncstr.p2p.peer"])
             diagnosticFailed = false
             diagnosticAdvanced = false
             diagnosticPosition = nil

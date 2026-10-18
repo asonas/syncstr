@@ -595,13 +595,6 @@ struct LibraryView: View {
                         }
                     }
                     seeking
-                    if let failure = library.playbackFailure {
-                        Text(failure).foregroundStyle(Studio.fog)
-                        Button("再試行", action: library.resumePlayback)
-                        if let id = library.failedDiagnosticID {
-                            PlaybackDiagnosticCopyButton(attemptID: id, recorder: library.diagnostics).id(id)
-                        }
-                    }
                     HStack(spacing: 20) {
                         Toggle("シャッフル", isOn: Binding(
                             get: { library.shuffled }, set: { library.setShuffle($0) }
@@ -617,6 +610,13 @@ struct LibraryView: View {
                             .frame(maxWidth: 180)
                     }
                     trackRows(library.queue, showArtist: false, preservingQueue: true)
+                    if let failure = library.playbackFailure {
+                        Text(failure).foregroundStyle(Studio.fog)
+                        Button("再試行", action: library.resumePlayback)
+                        if let id = library.failedDiagnosticID {
+                            PlaybackDiagnosticCopyButton(attemptID: id, recorder: library.diagnostics).id(id)
+                        }
+                    }
                 }
             }.padding(32)
         }.safeAreaPadding(.bottom, 120)

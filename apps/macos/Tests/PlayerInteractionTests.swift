@@ -46,6 +46,20 @@ final class PlayerInteractionTests: XCTestCase {
         library.closeLibrary()
     }
 
+    func testAlbumPlayKeepsPendingAcquisitionOfItsFirstTrack() async throws {
+        let library = try library()
+        let album = Array(library.tracks.prefix(3))
+        library.play(album[0])
+        XCTAssertTrue(library.loading)
+        library.togglePlayback(in: album)
+        XCTAssertTrue(library.loading)
+        XCTAssertEqual(library.queue.map(\.id), album.map(\.id))
+        let traces = await library.diagnostics.recent()
+        XCTAssertEqual(traces.count, 1)
+        XCTAssertFalse(traces.first?.events.contains { $0.event == "stop_or_replace" } == true)
+        library.closeLibrary()
+    }
+
     func testAlbumPlayRestartsAndQueueSelectionDoesNotRebuild() throws {
         let library = try library()
         let source = library.tracks

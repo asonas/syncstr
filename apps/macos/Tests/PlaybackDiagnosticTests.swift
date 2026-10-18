@@ -1,5 +1,6 @@
 import Foundation
 import Testing
+import SQLite3
 
 private final class CyclicDiagnosticError: NSError, @unchecked Sendable {
     override var userInfo: [String: Any] { [NSUnderlyingErrorKey: self] }
@@ -7,6 +8,132 @@ private final class CyclicDiagnosticError: NSError, @unchecked Sendable {
 
 struct PlaybackDiagnosticTests {
     private func root() -> URL { FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString) }
+
+    @Test func databaseContentionExportsOperationWithoutSQLOrPaths() async throws {
+        let directory = root()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = LocalMusicStore(root: directory)
+        _ = try store.database()
+        var writer: OpaquePointer?
+        #expect(sqlite3_open(directory.appendingPathComponent("catalog.sqlite").path, &writer) == SQLITE_OK)
+        defer { sqlite3_close(writer) }
+        #expect(sqlite3_exec(writer, "BEGIN IMMEDIATE", nil, nil, nil) == SQLITE_OK)
+        defer { sqlite3_exec(writer, "ROLLBACK", nil, nil, nil) }
+        let recorder = PlaybackDiagnostics(root: directory.appendingPathComponent("diagnostics"))
+        let attempt = recorder.begin(title: "Fixture", track: "one", sha256: nil, library: nil)
+        do {
+            _ = try store.database()
+            Issue.record("Expected the competing writer to block database initialization")
+        } catch {
+            attempt.failure("resolution", error, terminal: true)
+        }
+        let exported = await recorder.export(attempt.id)
+        #expect(exported.contains("Syncstr.CatalogDatabase"))
+        #expect(exported.contains("database_busy"))
+        #expect(exported.contains("\"error_database_operation\":\"BEGIN\""))
+        #expect(!exported.contains(directory.path))
+        #expect(!exported.contains("BEGIN IMMEDIATE"))
+    }
+
+    @Test func connectionHistorySurvivesRestartAndPrecedesRetryWithoutDuplicateEvents() async throws {
+        let directory = root()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let recorder = PlaybackDiagnostics(root: directory)
+        recorder.connection("connect_peer_called", fields: ["operation_id": "connection-one"])
+        recorder.connection("connect_peer", outcome: "failed", fields: ["operation_id": "connection-one", "reason": "connection_refused"],
+            error: NSError(domain: NSPOSIXErrorDomain, code: 61))
+        let first = recorder.begin(title: "Fixture", track: "one", sha256: nil, library: "fixture-library")
+        first.record("acquisition", "failed", outcome: "failed", terminal: true)
+        _ = await recorder.export(first.id)
+        let reopened = PlaybackDiagnostics(root: directory)
+        _ = await reopened.recent()
+        reopened.connection("connect_peer_called", fields: ["operation_id": "connection-two"])
+        reopened.connection("connect_peer", outcome: "succeeded", fields: ["operation_id": "connection-two", "reason": "catalog_received"])
+        let retry = reopened.begin(title: "Fixture", track: "one", sha256: nil, library: "fixture-library", retryOf: first.id)
+        reopened.captureConnections(in: retry)
+        let traces = await reopened.recent()
+        let events = try #require(traces.first).events
+        #expect(events.filter { $0.event == "connect_peer_called" }.count == 2)
+        #expect(events.contains { $0.fields["last_failed_reason"] == "connection_refused" })
+        #expect(events.contains { $0.fields["last_succeeded_reason"] == "catalog_received" })
+        #expect(events.filter { $0.stage == "connection_history" && $0.event != "snapshot" }.allSatisfy { $0.fields["observed_at"] != nil })
+        let json = await reopened.export(retry.id)
+        #expect(json.contains("connection-one") && json.contains("connection-two"))
+    }
+
+    @Test func readsPreviousArchiveWithoutDroppingPlaybackEvidence() async throws {
+        let directory = root()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        var previous = PlaybackDiagnosticTrace(id: "old-attempt", retryOf: nil, title: "Original", started: "2026-01-01T00:00:00Z")
+        previous.outcome = "failed"
+        try JSONEncoder().encode([previous]).write(to: directory.appendingPathComponent("attempts.json"))
+        let recorder = PlaybackDiagnostics(root: directory)
+        let traces = await recorder.recent()
+        #expect(traces.first?.id == "old-attempt")
+        #expect(!(await recorder.hasPersistenceFailure()))
+    }
+
+    @Test func connectionHistoryIsBoundedAndDisclosesOmissions() async throws {
+        let directory = root()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let recorder = PlaybackDiagnostics(root: directory, limit: 32_000)
+        for index in 0..<200 {
+            recorder.connection("connect", fields: ["operation_id": String(index), "reason": "fixture"])
+        }
+        let context = recorder.begin(title: "Fixture", track: "one", sha256: nil, library: nil)
+        let exported = await recorder.export(context.id)
+        let trace = try #require(await recorder.recent().first)
+        let summary = try #require(trace.events.last(where: { $0.event == "snapshot" }))
+        #expect(Int(summary.fields["history_omitted"] ?? "0") ?? 0 > 0)
+        #expect(!exported.contains("\"persistence_failed\":\"true\""))
+        #expect(exported.contains("\"complete\":\"false\""))
+        #expect(try Data(contentsOf: directory.appendingPathComponent("attempts.json")).count <= 32_000)
+    }
+
+    @MainActor @Test func reloadWithoutRestoredPeerRecordsSkipAndPlaybackDecision() async throws {
+        let directory = root()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let recorder = PlaybackDiagnostics(root: directory.appendingPathComponent("diagnostics"))
+        let library = Library(diagnostics: recorder, localStore: LocalMusicStore(root: directory.appendingPathComponent("music")))
+        let entry = LocalEntry(track: Track(id: "track-one", title: "Fixture", artist: "Artist", suffix: "wav", size: 4),
+            sha256: String(repeating: "a", count: 64), artwork: nil)
+        try library.openLocal(LocalCatalog(id: "fixture-library", name: "Fixture", entries: [entry]))
+        library.reload()
+        library.play(entry.track)
+        for _ in 0..<1000 where library.loading { await Task.yield() }
+        let trace = try #require(await recorder.recent().first)
+        #expect(trace.events.contains { $0.event == "reload_connect_skipped" && $0.fields["reason"] == "peer_name_unavailable" })
+        #expect(trace.events.contains { $0.event == "playback_connection_decision" && $0.fields["cluster_registration_read"] == "not_read" })
+        #expect(trace.events.contains { $0.event == "playback_connection_decision" && $0.fields["connection_start"] == "reconnect_if_saved_endpoint" })
+        #expect(trace.events.contains { $0.event == "runtime" && $0.fields["settings_root"] == library.localStore.root.path })
+        library.closeLibrary()
+    }
+
+    @MainActor @Test(arguments: [false, true]) func absentAndUnreadableRegistrationStayDistinct(corrupt: Bool) async throws {
+        let directory = root()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let recorder = PlaybackDiagnostics(root: directory.appendingPathComponent("diagnostics"))
+        let store = LocalMusicStore(root: directory.appendingPathComponent("music"))
+        let library = Library(diagnostics: recorder, localStore: store)
+        let entry = LocalEntry(track: Track(id: "track-one", title: "Fixture", artist: "Artist", suffix: "wav", size: 4),
+            sha256: String(repeating: "a", count: 64), artwork: nil)
+        try library.openLocal(LocalCatalog(id: "fixture-library", name: "Fixture", entries: [entry]))
+        if corrupt {
+            var database: OpaquePointer?
+            #expect(sqlite3_open(store.root.appendingPathComponent("catalog.sqlite").path, &database) == SQLITE_OK)
+            defer { sqlite3_close(database) }
+            #expect(sqlite3_exec(database, "INSERT INTO cluster_registration VALUES (1, 'invalid-json')", nil, nil, nil) == SQLITE_OK)
+        }
+        library.transfer.connectCluster()
+        for _ in 0..<1000 where library.transfer.busy { await Task.yield() }
+        #expect(!library.transfer.busy)
+        library.play(entry.track)
+        for _ in 0..<1000 where library.loading { await Task.yield() }
+        let trace = try #require(await recorder.recent().first)
+        #expect(trace.events.contains { $0.event == "cluster_registration_read" && $0.fields["cluster_registration_read"] == (corrupt ? "failed" : "absent") })
+        library.closeLibrary()
+    }
 
     @MainActor @Test func libraryRetriesLinkAttemptsAndPreserveFailedCopyTarget() async throws {
         let directory = root()
