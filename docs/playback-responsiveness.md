@@ -22,7 +22,7 @@ An idle authenticated legacy channel is reused. Cancelling an active legacy tran
 
 ## Presentation
 
-The existing playback controls show checking, connecting, catalog synchronization, receiving, and player preparation states. The cancel action stays available. Transfer progress updates are bounded; obsolete requests cannot publish state or late failures after pause, replacement, or library closure. macOS and iOS share these states.
+The existing playback controls show checking, connecting, catalog synchronization, receiving, and player preparation states. During preparation the transport button retains its play icon and is disabled; it does not turn into a text cancel button. Transfer progress updates are bounded; obsolete requests cannot publish state or late failures after pause, replacement, or library closure. macOS and iOS share these states.
 
 ## Acceptance
 

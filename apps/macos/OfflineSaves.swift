@@ -244,6 +244,7 @@ struct OfflineSaveControls: View {
     var tracks: [Track]
     var scope: String
     var compact = false
+    var iconOnly = false
 
     private var request: OfflineSaveRequest? { library.saveRequest(for: tracks, scope: scope) }
     private var saved: Int { tracks.filter { library.localFiles[$0.id] != nil }.count }
@@ -265,9 +266,19 @@ struct OfflineSaveControls: View {
                     Text(compact ? "保存できませんでした" : request.error ?? "保存できませんでした").font(.caption).foregroundStyle(.secondary)
                         .help(request.error ?? "保存できませんでした")
                 }
-                Button(request?.state == .failed ? "保存を再試行" : compact ? "保存" : "この端末に保存") {
+                Button {
                     Task { await library.transfer.requestSave(tracks, scope: scope) }
+                } label: {
+                    if iconOnly {
+                        Image("regen-cloud-download").resizable().renderingMode(.template)
+                            .scaledToFit().frame(width: 20, height: 20)
+                            .frame(width: 32, height: 32)
+                    } else {
+                        Text(request?.state == .failed ? "保存を再試行" : compact ? "保存" : "この端末に保存")
+                    }
                 }
+                .accessibilityLabel(request?.state == .failed ? "保存を再試行" : "この端末に保存")
+                .help(request?.state == .failed ? "保存を再試行" : "この端末に保存")
             }
             if !compact && tracks.contains(where: library.canRemoveLocalCopy) && !pending {
                 Button("この端末の保存を解除", role: .destructive) { library.localCopiesToRemove = tracks }

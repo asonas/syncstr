@@ -179,7 +179,8 @@ struct PhoneRoot: View {
                         .padding(.bottom, 20)
                     VStack(spacing: 4) {
                         Text(album.title).font(.title3.bold())
-                        Text(album.artist).font(.body).foregroundStyle(PhoneStyle.signal)
+                        Text(album.detailArtist ?? album.artist).font(.body)
+                            .foregroundStyle(album.detailArtist == "V.A." ? .secondary : PhoneStyle.signal)
                         Text("\(album.tracks.count)曲").font(.caption).foregroundStyle(.secondary)
                     }
                     .multilineTextAlignment(.center)
@@ -321,13 +322,12 @@ struct PhoneRoot: View {
             .accessibilityLabel("\(library.current?.title ?? "")の再生中画面を開く")
             .accessibilityValue(library.current?.artist ?? "")
             Button { library.togglePlayback() } label: {
-                Group {
-                    if library.loading { Text("中止").font(.caption) }
-                    else { RegenIcon(name: library.playing ? "filled-pause" : "filled-play", size: 28) }
-                }.frame(width: 44, height: 44).contentShape(Rectangle())
+                RegenIcon(name: !library.loading && library.playing ? "filled-pause" : "filled-play", size: 28)
+                    .frame(width: 44, height: 44).contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            .accessibilityLabel(library.playbackAction)
+            .disabled(library.current == nil || library.loading)
+            .accessibilityLabel(library.loading ? "再生" : library.playbackAction)
         }
         .padding(.horizontal, 16)
     }

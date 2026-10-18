@@ -30,3 +30,16 @@ Observed through computer use:
 A two-second process sample during the connection wait found the main thread waiting in the application event loop, rather than SQLite or file verification. This is a bounded observation, not a guarantee that every app interaction is free of stalls.
 
 The configured endpoint timed out while establishing the peer transport during this run. Consequently, fresh audio acquisition through that endpoint remains unverified in this build. The real local TLS test verifies the acquisition path independently. Narrow-window layout and physical-device behavior were not checked.
+
+## Album and loading UI follow-up, 2026-10-18
+
+The signed macOS Debug build was launched through `apps/macos/run.sh`, with its executable path and single running process verified. Computer use confirmed:
+
+- One ordinary album-card click opens details directly. Command-click still adds two albums to the batch selection; an ordinary click opens details and clears that selection.
+- Returning through the icon-only toolbar action centers the previously opened album in the grid rather than returning to the top. Back and search share the toolbar row.
+- The detail header uses an icon-only download action beside Play and no longer contains a visibility button. The retained catalog's multi-artist album displays `V.A.` while track rows retain individual artist names.
+- During an uncached playback request, the mini-player displays a spinner and a disabled Play icon, with accessibility reporting a disabled Play button. It does not replace Play with a textual Cancel action.
+
+The focused regression run passed 19 AlbumOrganization XCTest cases and eight LibraryPresentation Swift Testing cases. The new case checks abbreviated detail credits, unchanged full browsing credits and track artists, and preservation of an explicit album artist. macOS Debug and iOS Simulator builds passed. iOS changes were compiled, not visually checked on a device. Narrow-window layout and every offline-save state were not manually rechecked in this follow-up.
+
+The editable [album detail proposal](https://www.figma.com/design/KtfBubkg9KiK5LuLHIm8Qt?node-id=103-1142) and [row state comparison](https://www.figma.com/design/KtfBubkg9KiK5LuLHIm8Qt?node-id=103-1435) were visually inspected. The proposed hover/selection row appearance remains a design-only deliverable pending approval.

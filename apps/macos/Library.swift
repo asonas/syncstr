@@ -8,6 +8,7 @@ struct Album: Identifiable {
     let artist: String
     let tracks: [Track]
     var artwork: String? = nil
+    var detailArtist: String? = nil
     var coverArt: String? { artwork ?? tracks.compactMap(\.coverArt).first }
 }
 
@@ -174,7 +175,9 @@ final class Library: ObservableObject {
                       }
                       if ($0.track ?? 0) != ($1.track ?? 0) { return ($0.track ?? 0) < ($1.track ?? 0) }
                       return $0.title.localizedStandardCompare($1.title) == .orderedAscending
-                  }, artwork: organization.flatMap { images?.coverAsset(for: key, in: $0) })
+                  }, artwork: organization.flatMap { images?.coverAsset(for: key, in: $0) },
+                  detailArtist: organization?.artistCredit(for: tracks, records: records, abbreviatingMultipleArtists: true)
+                    ?? (Set(tracks.compactMap(\.artist).filter { !$0.isEmpty }).count > 1 ? "V.A." : tracks.first?.artist))
         }.sorted {
             let titleOrder = $0.title.localizedStandardCompare($1.title)
             if titleOrder != .orderedSame { return titleOrder == .orderedAscending }

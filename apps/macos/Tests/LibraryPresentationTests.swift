@@ -8,6 +8,27 @@ import Testing
 @MainActor
 struct LibraryPresentationTests {
     @Test
+    func albumDetailsAbbreviateMultipleArtistsWithoutChangingCredits() {
+        let tracks = [
+            Track(id: "one", title: "First", artist: "Artist A", album: "Collection", albumId: "collection"),
+            Track(id: "two", title: "Second", artist: "Artist B", album: "Collection", albumId: "collection")
+        ]
+        var organization = AlbumOrganization()
+        organization.importEntries(tracks.map {
+            LocalEntry(track: $0, sha256: String(repeating: "a", count: 64), artwork: nil)
+        })
+        let album = Library.preparedAlbums(tracks, organization: organization).first
+        #expect(album?.artist == "Artist A、Artist B")
+        #expect(album?.detailArtist == "V.A.")
+        #expect(Set(album?.tracks.compactMap(\.artist) ?? []) == ["Artist A", "Artist B"])
+        for index in organization.tracks.indices {
+            organization.tracks[index].imported.albumArtist = "Album Artist"
+        }
+        #expect(Library.preparedAlbums(tracks, organization: organization).first?.detailArtist == "Album Artist")
+        #expect(Library.preparedAlbums([tracks[0]], organization: nil).first?.detailArtist == "Artist A")
+    }
+
+    @Test
     func multipleAlbumsCanBeHiddenTogetherAndRestoredAfterReopening() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }

@@ -51,7 +51,7 @@ The [macOS Music-inspired exploration](https://www.figma.com/design/KtfBubkg9KiK
 ### Information and Actions
 
 - The [album selection and sorting design](https://www.figma.com/design/KtfBubkg9KiK5LuLHIm8Qt?node-id=83-3) adds a circular, icon-only sort menu beside search. Its custom three-line icon follows the Lucide specification (24-point canvas, centered 2-point strokes, round caps and joins). This approved icon is an exception to the Regen-only rule above.
-- In the macOS album grid, click selects one album, Command-click adds or removes an album, and double-click or Return opens a single selected album. Escape clears selection. Highlight selected cards with a Signal Blue outline and Iron background. Show the selection count and batch visibility action in the toolbar; the context menu acts on the selection when opened on a selected card.
+- In the macOS album grid, click opens the album immediately. Command-click adds or removes an album from the batch selection, and Return opens a single selected album. Escape clears selection. Highlight batch-selected cards with a Signal Blue outline and Iron background. Show the selection count and batch visibility action in the toolbar; the context menu acts on the selection when opened on a selected card.
 - Sort by title or artist, with the other field as the secondary key, in ascending or descending natural order. Sorting applies to the visible album list, including hidden albums and search results, without changing the playback queue.
 - Do not repeat the sidebar selection as a content heading such as “Albums.” Omit headings such as “Library,” “Now Playing,” or “Playback Queue” when they do not help explain an action or information. Remove spacing reserved for any removed heading.
 - Communicate selection and playback through backgrounds, colors, and icons. Do not repeat visually apparent state with “Selected” or “Playing” text. Supply VoiceOver labels and accessibility attributes such as selection state.
@@ -62,6 +62,11 @@ The [macOS Music-inspired exploration](https://www.figma.com/design/KtfBubkg9KiK
 ### Album Details
 
 Follow Music.app's information placement: group the album title, artist, and track count beside the artwork, with Play below them. The button starts with the first track in disc and track-number order. Place the track list directly below.
+
+- Place the icon-only Back action in the same toolbar row as search. Returning to the album grid centers the album that was open.
+- Place an icon-only download action beside Play. Preserve save progress, cancellation, retry, and local-copy removal states. Keep album visibility actions in grid selection and context menus rather than in the detail header.
+- Abbreviate an aggregate of multiple track artists to `V.A.` in the detail header. Preserve a consistent, explicit album artist, full credits in browsing, and individual track artists.
+- The [track selection proposal](https://www.figma.com/design/KtfBubkg9KiK5LuLHIm8Qt?node-id=103-1142) previews Play on hover and selection with an accent-colored selected row. This row behavior is a design proposal awaiting approval.
 
 ### Search and Windows
 

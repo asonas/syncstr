@@ -119,12 +119,11 @@ struct PhoneNowPlaying: View {
                             }
                             .disabled(!library.canGoPrevious).accessibilityLabel("前の曲")
                             Button { library.togglePlayback() } label: {
-                                Group {
-                                    if library.loading { Text("中止").font(.body) }
-                                    else { RegenIcon(name: library.playing ? "filled-pause" : "filled-play", size: 48) }
-                                }.frame(width: 64, height: 64).contentShape(Rectangle())
+                                RegenIcon(name: !library.loading && library.playing ? "filled-pause" : "filled-play", size: 48)
+                                    .frame(width: 64, height: 64).contentShape(Rectangle())
                             }
-                            .accessibilityLabel(library.playbackAction)
+                            .disabled(library.current == nil || library.loading)
+                            .accessibilityLabel(library.loading ? "再生" : library.playbackAction)
                             .accessibilityIdentifier("player-toggle")
                             Button { library.next() } label: {
                                 RegenIcon(name: "filled-skip-forward", size: 36).frame(width: 64, height: 64)

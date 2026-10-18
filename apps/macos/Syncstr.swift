@@ -38,6 +38,7 @@ struct LibraryView: View {
     @State private var showingClusterResults = false
     @State private var hoveredTrack: String?
     @State private var selectedAlbums = Set<String>()
+    @State private var albumScrollPosition = ScrollPosition(idType: String.self)
     @FocusState private var albumGridFocused: Bool
 
     var body: some View {
@@ -93,6 +94,18 @@ struct LibraryView: View {
         .focusedSceneObject(library)
         .toolbar {
             if library.connected {
+                if !library.showingNowPlaying, library.search.isEmpty, let albumID = library.selectedAlbum {
+                    ToolbarItem(placement: .navigation) {
+                        Button {
+                            albumScrollPosition = ScrollPosition(id: albumID, anchor: .center)
+                            library.selectedAlbum = nil
+                        } label: {
+                            MacIcon("chevron-left").frame(width: 32, height: 32)
+                        }
+                        .help("アルバムへ戻る")
+                        .accessibilityLabel("アルバムへ戻る")
+                    }
+                }
                 if showingAlbumGrid {
                     if !selectedAlbums.isEmpty {
                         ToolbarItem(placement: .primaryAction) {
@@ -229,10 +242,10 @@ struct LibraryView: View {
                     Button {
                         if (NSApp.currentEvent?.modifierFlags ?? NSEvent.modifierFlags).contains(.command) {
                             if !selectedAlbums.insert(album.id).inserted { selectedAlbums.remove(album.id) }
+                            albumGridFocused = true
                         } else {
-                            selectedAlbums = [album.id]
+                            openAlbum(album.id)
                         }
-                        albumGridFocused = true
                     } label: {
                         VStack(alignment: .leading, spacing: 8) {
                             Artwork(url: artworkURL(album.coverArt))
@@ -251,7 +264,7 @@ struct LibraryView: View {
                         .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
-                    .simultaneousGesture(TapGesture(count: 2).onEnded { openAlbum(album.id) })
+                    .id(album.id)
                     .help("\(album.title)\n\(album.artist)")
                     .accessibilityLabel("\(album.title)、\(album.artist)")
                     .accessibilityAddTraits(selectedAlbums.contains(album.id) ? .isSelected : [])
@@ -266,12 +279,13 @@ struct LibraryView: View {
                         Button("アルバムを開く") { openAlbum(album.id) }
                     }
                 }
-            }.padding(32)
+            }.scrollTargetLayout().padding(32)
             if library.visibleAlbums.isEmpty {
                 Text(library.search.isEmpty ? "アルバムがありません。" : "一致するアルバムがありません。")
                     .foregroundStyle(Studio.fog).padding(32)
             }
         }
+        .scrollPosition($albumScrollPosition)
         .focusable()
         .focused($albumGridFocused)
         .focusEffectDisabled()
@@ -336,7 +350,6 @@ struct LibraryView: View {
         GeometryReader { geometry in
             ScrollView {
                 VStack(alignment: .leading, spacing: 20) {
-                    backButton("アルバムへ戻る") { library.selectedAlbum = nil }
                     let wide = geometry.size.width >= 640
                     let layout = wide ? AnyLayout(HStackLayout(alignment: .top, spacing: 32))
                                       : AnyLayout(VStackLayout(alignment: .leading, spacing: 20))
@@ -346,16 +359,20 @@ struct LibraryView: View {
                             Text(album.title).font(.system(size: 28, weight: .semibold))
                                 .padding(.top, wide ? 48 : 0)
                                 .fixedSize(horizontal: false, vertical: true).accessibilityAddTraits(.isHeader)
-                            Button { showArtist(album.artist) } label: {
-                                Text(album.artist).font(.system(size: 20)).foregroundStyle(Studio.signal)
-                            }.buttonStyle(.plain)
+                            if album.detailArtist == "V.A." {
+                                Text("V.A.").font(.system(size: 20)).foregroundStyle(Studio.fog)
+                            } else {
+                                Button { showArtist(album.artist) } label: {
+                                    Text(album.detailArtist ?? album.artist).font(.system(size: 20)).foregroundStyle(Studio.signal)
+                                }.buttonStyle(.plain)
+                            }
                             Text("\(album.tracks.count)曲").font(.system(size: 12)).foregroundStyle(Studio.fog)
                             Spacer(minLength: 20)
-                            Button(library.albumVisibilityLabel(album.id)) {
-                                library.setAlbumHidden(album.id, hidden: !library.isAlbumHidden(album.id))
-                            }.disabled(library.isSavingAlbumVisibility(album.id))
-                            playButton(album.tracks)
-                            OfflineSaveControls(library: library, tracks: album.tracks, scope: "album:" + album.id)
+                            HStack(alignment: .top, spacing: 16) {
+                                playButton(album.tracks)
+                                OfflineSaveControls(library: library, tracks: album.tracks,
+                                                    scope: "album:" + album.id, iconOnly: true)
+                            }
                         }.frame(minHeight: wide ? 272 : nil, alignment: .topLeading)
                         if wide { Spacer(minLength: 0) }
                     }
@@ -669,9 +686,10 @@ struct LibraryView: View {
             Button(action: library.previous) { MacIcon("filled-skip-back").frame(width: 32, height: 32).contentShape(Rectangle()) }
                 .disabled(!library.canGoPrevious).accessibilityLabel("前の曲").help("前の曲")
             Button(action: library.togglePlayback) {
-                if library.loading { Text("中止").font(.caption).frame(width: 32, height: 32).contentShape(Rectangle()) }
-                else { MacIcon(library.playing ? "filled-pause" : "filled-play", size: 24).frame(width: 32, height: 32).contentShape(Rectangle()) }
-            }.disabled(library.current == nil).accessibilityLabel(library.playbackAction)
+                MacIcon(!library.loading && library.playing ? "filled-pause" : "filled-play", size: 24)
+                    .frame(width: 32, height: 32).contentShape(Rectangle())
+            }.disabled(library.current == nil || library.loading)
+                .accessibilityLabel(library.loading ? "再生" : library.playbackAction)
             Button(action: library.next) { MacIcon("filled-skip-forward").frame(width: 32, height: 32).contentShape(Rectangle()) }
                 .disabled(!library.canGoNext).accessibilityLabel("次の曲").help("次の曲")
         }.buttonStyle(.plain).fixedSize()
