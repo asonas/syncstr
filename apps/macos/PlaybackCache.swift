@@ -1,5 +1,55 @@
 import Foundation
 import SwiftUI
+import Darwin
+
+actor PlaybackDownload {
+    private let executor = StorageExecutor(label: "as.ason.syncstr.audio")
+    nonisolated var unownedExecutor: UnownedSerialExecutor { executor.asUnownedSerialExecutor() }
+    private let store: LocalMusicStore
+    private let temporary: URL
+    private var handle: FileHandle?
+
+    init(store: LocalMusicStore) {
+        self.store = store
+        temporary = store.root.appendingPathComponent(".partial-" + UUID().uuidString)
+    }
+
+    func prepare() throws {
+        try Task.checkCancellation()
+        if handle == nil {
+            try store.prepare()
+            guard FileManager.default.createFile(atPath: temporary.path, contents: nil) else { throw CocoaError(.fileWriteUnknown) }
+            handle = try FileHandle(forWritingTo: temporary)
+        }
+    }
+
+    func append(_ bytes: Data) throws {
+        try prepare()
+        try handle?.write(contentsOf: bytes)
+    }
+
+    func finish(_ entry: LocalEntry, diagnostic: PlaybackDiagnosticContext?, durable: Bool = false) throws -> URL {
+        defer { discard() }
+        if durable { try handle?.synchronize() }
+        try handle?.close()
+        handle = nil
+        try Task.checkCancellation()
+        try store.importFile(temporary, entry: entry, recordReceipt: false, diagnostic: diagnostic)
+        if durable {
+            let descriptor = Darwin.open(store.root.path, O_RDONLY)
+            guard descriptor >= 0 else { throw LocalMusicError.invalidData }
+            defer { Darwin.close(descriptor) }
+            guard fsync(descriptor) == 0 else { throw LocalMusicError.invalidData }
+        }
+        return store.fileURL(entry)
+    }
+
+    func discard() {
+        try? handle?.close()
+        handle = nil
+        try? FileManager.default.removeItem(at: temporary)
+    }
+}
 
 @MainActor
 final class PlaybackCache {
@@ -7,6 +57,23 @@ final class PlaybackCache {
     var protectedURL: URL?
     private let settings: URL
     private(set) var limitGB: Int
+    private var maintenance: Task<Void, Never>?
+    private var maintenanceID = UUID()
+
+    func requestTrim(after acquisition: Task<Void, Never>?, onError: @escaping (Error) -> Void) {
+        let previous = maintenance
+        let token = UUID()
+        maintenanceID = token
+        maintenance = Task { [weak self] in
+            await previous?.value
+            await acquisition?.value
+            guard let self else { return }
+            do { try await Self.makeRoom(store: store, incoming: 0, limitGB: limitGB, protectedURL: protectedURL) }
+            catch {
+                if maintenanceID == token { onError(error) }
+            }
+        }
+    }
 
     var usedBytes: Int64 {
         let files = (try? FileManager.default.contentsOfDirectory(at: store.root, includingPropertiesForKeys: [.fileSizeKey])) ?? []
@@ -29,6 +96,22 @@ final class PlaybackCache {
     }
 
     func file(_ entry: LocalEntry, diagnostic: PlaybackDiagnosticContext? = nil) throws -> URL? {
+        try Self.verifiedFile(entry, store: store, diagnostic: diagnostic)
+    }
+
+    func fileInBackground(_ entry: LocalEntry, diagnostic: PlaybackDiagnosticContext? = nil) async throws -> URL? {
+        await maintenance?.value
+        try Task.checkCancellation()
+        return try await Self.verifyInBackground(entry, store: store, diagnostic: diagnostic)
+    }
+
+    @concurrent
+    private static func verifyInBackground(_ entry: LocalEntry, store: LocalMusicStore, diagnostic: PlaybackDiagnosticContext?) async throws -> URL? {
+        try Task.checkCancellation()
+        return try verifiedFile(entry, store: store, diagnostic: diagnostic)
+    }
+
+    nonisolated private static func verifiedFile(_ entry: LocalEntry, store: LocalMusicStore, diagnostic: PlaybackDiagnosticContext?) throws -> URL? {
         do {
             diagnostic?.file(store.fileURL(entry), role: "cache")
             guard store.hasFile(entry) else {
@@ -56,7 +139,25 @@ final class PlaybackCache {
         try trim(incoming: entry.track.size ?? 0)
     }
 
+    func makeRoomInBackground(for entry: LocalEntry) async throws {
+        await maintenance?.value
+        try Task.checkCancellation()
+        try await Self.makeRoom(store: store, incoming: entry.track.size ?? 0, limitGB: limitGB, protectedURL: protectedURL)
+    }
+
+    @concurrent
+    private static func makeRoom(store: LocalMusicStore, incoming: UInt64, limitGB: Int, protectedURL: URL?) async throws {
+        try Task.checkCancellation()
+        if incoming > 0 { try store.prepare() }
+        try trimFiles(store: store, incoming: incoming, limitGB: limitGB, protectedURL: protectedURL)
+    }
+
     func trim(incoming: UInt64 = 0) throws {
+        try Self.trimFiles(store: store, incoming: incoming, limitGB: limitGB, protectedURL: protectedURL)
+    }
+
+    nonisolated private static func trimFiles(store: LocalMusicStore, incoming: UInt64, limitGB: Int, protectedURL: URL?) throws {
+        try Task.checkCancellation()
         let directory = store.root
         guard FileManager.default.fileExists(atPath: directory.path) else { return }
         let files = try FileManager.default.contentsOfDirectory(at: directory,
@@ -71,6 +172,7 @@ final class PlaybackCache {
         var total = entries.reduce(UInt64(0)) { $0 + $1.1 }
         let budget = UInt64(limitGB) * 1_000_000_000
         for (url, size, _) in entries where total + incoming > budget {
+            try Task.checkCancellation()
             guard url.resolvingSymlinksInPath().path != protectedURL?.resolvingSymlinksInPath().path else { continue }
             try FileManager.default.removeItem(at: url)
             total -= size

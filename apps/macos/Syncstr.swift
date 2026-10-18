@@ -655,7 +655,7 @@ struct LibraryView: View {
                 Artwork(url: artworkURL(library.current?.coverArt)).frame(width: 40, height: 40)
                 VStack(alignment: .leading, spacing: 4) {
                     Text(library.current?.title ?? "曲を選んでください").font(.system(size: 14, weight: .medium)).lineLimit(1)
-                    Text(library.loading ? "再生を準備中" : library.playbackFailure != nil ? "再生できません。詳細を確認" : library.current?.artist ?? "")
+                    Text(library.loading ? library.playbackLoadingLabel : library.playbackFailure != nil ? "再生できません。詳細を確認" : library.current?.artist ?? "")
                         .font(.system(size: 12)).foregroundStyle(.secondary).lineLimit(1)
                 }.frame(maxWidth: .infinity, alignment: .leading)
                 if library.loading { ProgressView().controlSize(.small) }

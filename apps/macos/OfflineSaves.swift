@@ -166,14 +166,14 @@ extension LocalTransfer {
                             }
                             if store.hasFile(entry), try LocalMusicStore.digest(file: store.fileURL(entry)) == entry.sha256 {
                                 if clusterRegistration != nil {
-                                    try ClusterNetwork(store: store, secrets: peerSecrets).recoverDownloadedFile(entry)
+                                    try await ClusterNetwork(store: store, secrets: peerSecrets).recoverDownloadedFile(entry)
                                 }
                                 saveRequests[index].completed.insert(entry.sha256)
                                 try persistSaves(saveRequests)
                                 continue
                             }
                             if let cached = try playbackCache.file(entry) {
-                                try protectCachedFile(cached, entry: entry)
+                                try await protectCachedFile(cached, entry: entry)
                             } else {
                                 if waiting { continue }
                                 if automatic && !permitsAutomaticSaveAudio {
@@ -192,7 +192,7 @@ extension LocalTransfer {
                                 } else if connected && !busy {
                                     let cached = try await playbackFile(entry.track)
                                     try Task.checkCancellation()
-                                    try protectCachedFile(cached, entry: entry)
+                                    try await protectCachedFile(cached, entry: entry)
                                 } else {
                                     waiting = true
                                     continue
@@ -228,13 +228,13 @@ extension LocalTransfer {
         }
     }
 
-    private func protectCachedFile(_ url: URL, entry: LocalEntry) throws {
+    private func protectCachedFile(_ url: URL, entry: LocalEntry) async throws {
         let temporary = store.root.appendingPathComponent(".offline-save-" + UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: temporary) }
         try FileManager.default.copyItem(at: url, to: temporary)
         try store.importFile(temporary, entry: entry)
         if clusterRegistration != nil {
-            try ClusterNetwork(store: store, secrets: peerSecrets).recoverDownloadedFile(entry)
+            try await ClusterNetwork(store: store, secrets: peerSecrets).recoverDownloadedFile(entry)
         }
     }
 }

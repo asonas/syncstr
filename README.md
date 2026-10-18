@@ -40,6 +40,7 @@ continue to use the existing conflict-resolution flow.
 | Shared playback and pairing credentials | [Library.swift](apps/macos/Library.swift), [Track.swift](apps/macos/Track.swift), [CredentialStore.swift](apps/macos/CredentialStore.swift). The iOS target compiles these same files |
 | Player behavior and retention | [Player specification](docs/player-interaction-spec.md), [cluster interaction specification](docs/cluster-ui-review.md), [verification](docs/validation/player-interactions.md), [playback cache](apps/macos/PlaybackCache.swift) |
 | Playback failure diagnostics | [Specification](docs/playback-diagnostics-spec.md), [recorder and copy UI](apps/macos/PlaybackDiagnostics.swift), [validation and observation limits](docs/validation/playback-diagnostics.md) |
+| Connection and playback responsiveness | [Execution and cancellation design](docs/playback-responsiveness.md), [regression and app verification](docs/validation/playback-responsiveness.md) |
 | Offline-save lifecycle and Apple library entry | [Shared save queue and controls](apps/macos/OfflineSaves.swift), [cluster interaction validation](docs/validation/cluster-library-ui.md) |
 | iPhone UI and device features | [Sources](apps/ios/Sources/), [iPhone guide](apps/ios/README.md) |
 | Folder settings | [SettingsView.swift](apps/macos/SettingsView.swift) |

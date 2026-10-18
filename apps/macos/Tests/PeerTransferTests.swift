@@ -111,9 +111,8 @@ final class PeerTransferTests: XCTestCase {
         let files = LocalMusicStore(root: root.appendingPathComponent("received"))
         let transfer = LocalTransfer(store: files, secrets: localPairing, peerSecrets: secrets, peerPairing: pairing)
         var displayedCatalog: LocalCatalog?
-        transfer.onCatalog = { catalog in
-            try files.save(catalog)
-            displayedCatalog = catalog
+        transfer.onCatalog = { prepared in
+            displayedCatalog = prepared.catalog
         }
         await transfer.restorePeer()
         _ = try run(["peer-pair", "--state", peer.path, "--peer", transfer.peerID])

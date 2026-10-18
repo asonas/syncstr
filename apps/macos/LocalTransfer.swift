@@ -149,6 +149,42 @@ struct NearbyMusicDevice: Identifiable {
     var endpoint: NWEndpoint
 }
 
+enum PlaybackPreparation: Equatable {
+    case checking, connecting, synchronizing, receiving(UInt64, UInt64), preparing
+
+    var label: String {
+        switch self {
+        case .checking: "音源を確認中"
+        case .connecting: "接続中"
+        case .synchronizing: "ライブラリを確認中"
+        case .receiving: "音源を取得中"
+        case .preparing: "再生を準備中"
+        }
+    }
+}
+
+private struct ClusterUIState {
+    let registration: ClusterRegistration?
+    let batches: [ClusterImportBatch]
+    let changes: [ClusterChange]
+    let conflicts: [ClusterObjectState]
+    let albums: [ClusterAlbumConflict]
+    let pendingMetadata: Bool
+    let disputed: [String]
+    let cellular: Bool
+
+    init(_ database: CatalogDatabase) throws {
+        registration = try database.clusterRegistration()
+        batches = try database.clusterBatches()
+        changes = try database.clusterChanges()
+        conflicts = try database.clusterObjectStates().filter(\.conflicted)
+        albums = try database.clusterAlbumConflicts()
+        pendingMetadata = try !database.clusterMetadataEdits().isEmpty
+        disputed = try registration?.membership.revocationState().disputed.sorted() ?? []
+        cellular = try database.clusterAutomaticCellular()
+    }
+}
+
 @MainActor
 final class LocalTransfer: ObservableObject {
     private var hostedCatalog: LocalCatalog?
@@ -162,12 +198,19 @@ final class LocalTransfer: ObservableObject {
     @Published var pairedName: String?
     @Published var busy = false {
         didSet {
+            if !busy {
+                let waiters = idleWaiters
+                idleWaiters.removeAll()
+                for waiter in waiters.values { waiter.resume() }
+            }
             if !busy && pendingOrganization {
                 pendingOrganization = false
                 Task { syncOrganization() }
             }
         }
     }
+    private var idleWaiters: [UUID: CheckedContinuation<Void, Error>] = [:]
+    @Published private(set) var receivingCatalog = false
     private var pendingOrganization = false
     @Published var completed = 0
     @Published var total = 0
@@ -180,7 +223,7 @@ final class LocalTransfer: ObservableObject {
         }
     }
     @Published private(set) var activeTrack: String?
-    var onCatalog: ((LocalCatalog) throws -> Void)?
+    var onCatalog: ((PreparedLocalCatalog) throws -> Void)?
     var onSaved: (() -> Void)?
     private var browser: NWBrowser?
     private var listener: NWListener?
@@ -357,19 +400,28 @@ final class LocalTransfer: ObservableObject {
 
     func restorePeer() async {
         connectionEvent("restore_peer_called")
+        let attempt = generation
         var stage = "peer_identity_keychain"
         do {
-            peerID = try await PeerMusicConnection.publicID(secrets: peerSecrets)
+            let identity = try await PeerMusicConnection.publicID(secrets: peerSecrets)
+            guard generation == attempt else { return }
+            peerID = identity
             stage = "cluster_database"
-            let database = try store.database()
-            try updateClusterState(database)
-            automaticCellular = try database.clusterAutomaticCellular()
-            if !recoveredClusterJobs {
-                try database.recoverClusterJobs()
-                recoveredClusterJobs = true
+            let files = store
+            let recover = !recoveredClusterJobs
+            let state = try await CatalogStorage.shared.perform {
+                let database = try files.database()
+                if recover { try database.recoverClusterJobs() }
+                return try ClusterUIState(database)
             }
+            try Task.checkCancellation()
+            guard generation == attempt else { return }
+            applyClusterState(state)
+            automaticCellular = state.cellular
+            recoveredClusterJobs = true
             stage = "saved_peer_keychain"
             let saved = try await peerPairing.load()
+            guard generation == attempt else { return }
             savedPeerReadState = saved == nil ? "absent" : "present"
             savedPeerID = saved?.libraryID
             peerName = saved?.name
@@ -377,12 +429,16 @@ final class LocalTransfer: ObservableObject {
                 .flatMap { String(data: $0, encoding: .utf8) } ?? ""
             stage = "remember_saved_peer"
             if let saved {
-                try store.rememberClusterPeer(ClusterKnownPeer(id: saved.libraryID, name: saved.name,
-                    address: peerAddressText.isEmpty ? nil : peerAddressText))
+                let address = peerAddressText.isEmpty ? nil : peerAddressText
+                try await CatalogStorage.shared.perform {
+                    try files.rememberClusterPeer(ClusterKnownPeer(id: saved.libraryID, name: saved.name, address: address))
+                }
             }
+            guard generation == attempt else { return }
             connectionEvent("restore_peer_finished", fields: ["address_present": String(!peerAddressText.isEmpty)])
             scheduleClusterRetry()
         } catch {
+            guard generation == attempt, !(error is CancellationError) else { return }
             if stage == "saved_peer_keychain" { savedPeerReadState = "failed" }
             if stage == "cluster_database" && registrationReadState == "not_read" { registrationReadState = "failed" }
             connectionEvent("restore_peer_failed", outcome: "failed", fields: ["reason": stage], error: error)
@@ -390,23 +446,32 @@ final class LocalTransfer: ObservableObject {
         }
     }
 
-    private func updateClusterState(_ database: CatalogDatabase) throws {
+    private func updateClusterState(_ database: CatalogDatabase? = nil) async throws {
+        let files = store
+        let attempt = generation
         clusterLastPath = clusterNetwork.lastPath
         do {
-            clusterRegistration = try database.clusterRegistration()
-            registrationReadState = clusterRegistration == nil ? "absent" : "present"
-            connectionEvent("cluster_registration_read")
+            let state = try await CatalogStorage.shared.perform { try ClusterUIState(database ?? files.database()) }
+            try Task.checkCancellation()
+            guard generation == attempt else { throw CancellationError() }
+            applyClusterState(state)
         } catch {
             registrationReadState = "failed"
             connectionEvent("cluster_registration_read", outcome: "failed", fields: ["reason": "database_read_or_decode"], error: error)
             throw error
         }
-        clusterBatches = try database.clusterBatches()
-        clusterChanges = try database.clusterChanges()
-        clusterConflicts = try database.clusterObjectStates().filter(\.conflicted)
-        clusterAlbumConflicts = try database.clusterAlbumConflicts()
-        pendingClusterMetadata = try !database.clusterMetadataEdits().isEmpty
-        disputedMembers = try clusterRegistration?.membership.revocationState().disputed.sorted() ?? []
+    }
+
+    private func applyClusterState(_ state: ClusterUIState) {
+        clusterRegistration = state.registration
+        registrationReadState = state.registration == nil ? "absent" : "present"
+        clusterBatches = state.batches
+        clusterChanges = state.changes
+        clusterConflicts = state.conflicts
+        clusterAlbumConflicts = state.albums
+        pendingClusterMetadata = state.pendingMetadata
+        disputedMembers = state.disputed
+        connectionEvent("cluster_registration_read")
     }
 
     func organizationChanged(pendingMetadata: Bool) {
@@ -436,15 +501,17 @@ final class LocalTransfer: ObservableObject {
             do {
                 if let invitation {
                     try await clusterNetwork.enroll(ClusterInvitation.parse(invitation), name: name)
-                    clusterRegistration = try store.database().clusterRegistration()
+                    let files = store
+                    clusterRegistration = try await CatalogStorage.shared.perform { try files.database().clusterRegistration() }
                 }
                 let catalog = try await clusterNetwork.refresh()
                 try Task.checkCancellation()
                 guard generation == attempt else { return }
-                try onCatalog?(catalog)
+                try await publishCatalog(catalog, attempt: attempt)
                 self.catalog = catalog
-                let database = try store.database()
-                try updateClusterState(database)
+                let files = store
+                let database = try await CatalogStorage.shared.perform { try files.database() }
+                try await updateClusterState(database)
                 connected = true
                 connectionEvent("connect_cluster", outcome: "succeeded", fields: ["reason": "catalog_synchronized"], operationID: attempt)
                 status = "ライブラリを更新しました。音源を選んでこの端末に保存できます。"
@@ -457,11 +524,11 @@ final class LocalTransfer: ObservableObject {
                     try Task.checkCancellation()
                     status = "ライブラリを更新しました。整理情報の変更は送信待ちです。\(error.localizedDescription)"
                 }
-                try updateClusterState(database)
+                try await updateClusterState(database)
             } catch {
                 if generation == attempt {
                     connectionEvent("connect_cluster", outcome: "failed", fields: ["reason": "connect_or_sync"], error: error, operationID: attempt)
-                    try? updateClusterState(store.database())
+                    try? await updateClusterState()
                     status = error.localizedDescription
                 }
             }
@@ -478,10 +545,11 @@ final class LocalTransfer: ObservableObject {
                 let catalog = try await clusterNetwork.resolve(object: conflict.object, selected: selected, parents: conflict.heads.map(\.id))
                 try Task.checkCancellation()
                 guard generation == attempt else { return }
-                try onCatalog?(catalog)
+                try await publishCatalog(catalog, attempt: attempt)
                 self.catalog = catalog
-                let database = try store.database()
-                try updateClusterState(database)
+                let files = store
+                let database = try await CatalogStorage.shared.perform { try files.database() }
+                try await updateClusterState(database)
                 status = "選んだ内容を保存先に反映しました。"
             } catch {
                 if generation == attempt { status = error.localizedDescription }
@@ -499,9 +567,9 @@ final class LocalTransfer: ObservableObject {
                 let catalog = try await clusterNetwork.resolveAlbum(conflict, title: title)
                 try Task.checkCancellation()
                 guard generation == attempt else { return }
-                try onCatalog?(catalog)
+                try await publishCatalog(catalog, attempt: attempt)
                 self.catalog = catalog
-                try updateClusterState(store.database())
+                try await updateClusterState()
                 status = "選んだアルバム名を保存先に反映しました。"
             } catch { if generation == attempt { status = error.localizedDescription } }
         }
@@ -619,8 +687,8 @@ final class LocalTransfer: ObservableObject {
             try database.saveClusterBatch(batch)
             clusterBatches = try database.clusterBatches()
         }
-        if let catalog = try store.load() { try onCatalog?(catalog); self.catalog = catalog }
-        try updateClusterState(database)
+        if let catalog = try await store.snapshotInBackground()?.catalog { try await publishCatalog(catalog, attempt: attempt); self.catalog = catalog }
+        try await updateClusterState(database)
         onSaved?()
         if completed > previouslyStored { clusterResultsPending = true }
         status = "\(total)曲中\(completed)曲を保存先に追加しました。"
@@ -688,7 +756,7 @@ final class LocalTransfer: ObservableObject {
         connectionEvent("connect_peer_started", fields: ["expected_peer_id": expected])
         status = "P2Pで接続中…"
         operation = Task {
-            defer { if generation == attempt { busy = false } }
+            defer { if generation == attempt { busy = false; receivingCatalog = false } }
             var stage = "address_decode"
             do {
                 guard addressText.utf8.count <= 16384 else { throw LocalMusicError.invalidData }
@@ -698,12 +766,14 @@ final class LocalTransfer: ObservableObject {
                 let channel = try await PeerMusicConnection.connect(address: address, expected: expected, secrets: peerSecrets)
                 guard generation == attempt, !Task.isCancelled else { channel.close(); return }
                 connectionEvent("peer_transport_established", fields: ["reason": "authenticated_peer_transport"], operationID: attempt)
+                receivingCatalog = true
                 stage = "catalog_exchange"
                 client = channel
-                try await channel.sendOrganized(MusicMessage(kind: "hello", name: name, clusterCapabilities: ClusterCapabilities(version: 1)), organization: try store.load()?.organization)
+                try await channel.sendOrganized(MusicMessage(kind: "hello", name: name, clusterCapabilities: ClusterCapabilities(version: 1)), organization: try await store.snapshotInBackground()?.catalog.organization)
                 let header = try await channel.receive()
                 guard header.kind == "catalog", let id = header.library, UUID(uuidString: id) != nil else { throw LocalMusicError.invalidData }
                 if let playbackLibrary, id != playbackLibrary { throw LocalMusicError.unauthorized }
+                receivingCatalog = true
                 let incomingOrganization = try await channel.receiveOrganization(header)
                 var entries: [LocalEntry] = []
                 var metadataBytes = 0
@@ -718,16 +788,13 @@ final class LocalTransfer: ObservableObject {
                     entries.append(entry)
                 }
                 guard generation == attempt, !Task.isCancelled else { channel.close(); return }
-                if let previous = try store.load(), previous.id == id {
-                    let saved = previous.entries.filter { store.hasFile($0) }
-                    entries += saved.filter { !ids.contains($0.track.id) }
-                }
-                let catalog = try mergedCatalog(id: id, name: header.name ?? name, entries: entries, incoming: incomingOrganization)
+                let catalog = try await mergedCatalog(id: id, name: header.name ?? name, entries: entries, incoming: incomingOrganization)
                 stage = "catalog_save"
-                if let onCatalog { try onCatalog(catalog) } else { try store.save(catalog) }
+                try await publishCatalog(catalog, attempt: attempt)
                 stage = "saved_peer_keychain_write"
                 try await peerPairing.save(PairingCredentials(libraryID: expected, name: name, key: bytes.base64EncodedString()))
-                try store.rememberClusterPeer(ClusterKnownPeer(id: expected, name: name, address: addressText))
+                let files = store
+                try await CatalogStorage.shared.perform { try files.rememberClusterPeer(ClusterKnownPeer(id: expected, name: name, address: addressText)) }
                 guard generation == attempt else { return }
                 self.catalog = catalog
                 savedPeerReadState = "present"
@@ -853,15 +920,31 @@ final class LocalTransfer: ObservableObject {
 
     var onOrganization: ((AlbumOrganization) -> Void)?
 
-    private func mergedCatalog(id: String, name: String, entries: [LocalEntry], incoming: AlbumOrganization?) throws -> LocalCatalog {
-        guard let incoming else { throw LocalMusicError.incompatiblePeer }
-        var catalog = LocalCatalog(id: id, name: name, entries: entries,
-            organization: try store.load()?.organization)
-        var organization = catalog.organization ?? AlbumOrganization()
-        try organization.merge(incoming)
-        catalog.organization = organization
-        catalog.organize()
-        return catalog
+    private func publishCatalog(_ catalog: LocalCatalog, attempt: UUID) async throws {
+        let prepared = try await CatalogStorage.shared.prepare(catalog, store: store)
+        try Task.checkCancellation()
+        guard generation == attempt else { throw CancellationError() }
+        try onCatalog?(prepared)
+    }
+
+    private func mergedCatalog(id: String, name: String, entries: [LocalEntry], incoming: AlbumOrganization?) async throws -> LocalCatalog {
+        let files = store
+        return try await CatalogStorage.shared.perform {
+            guard let incoming else { throw LocalMusicError.incompatiblePeer }
+            let previous = try files.load()
+            var entries = entries
+            if let previous, previous.id == id {
+                let incomingIDs = Set(entries.map { $0.track.id })
+                entries += previous.entries.filter { !incomingIDs.contains($0.track.id) && files.hasFile($0) }
+            }
+            var catalog = LocalCatalog(id: id, name: name, entries: entries,
+                organization: previous?.id == id ? previous?.organization : nil)
+            var organization = catalog.organization ?? AlbumOrganization()
+            try organization.merge(incoming)
+            catalog.organization = organization
+            catalog.organize()
+            return catalog
+        }
     }
 
     func syncOrganization() {
@@ -880,7 +963,7 @@ final class LocalTransfer: ObservableObject {
         operation = Task {
             defer { if generation == attempt { busy = false } }
             do {
-                try await client.sendOrganized(MusicMessage(kind: "organize"), organization: try store.load()?.organization)
+                try await client.sendOrganized(MusicMessage(kind: "organize"), organization: try await store.snapshotInBackground()?.catalog.organization)
                 let response = try await client.receive()
                 guard response.kind == "organized", let incoming = try await client.receiveOrganization(response) else { throw LocalMusicError.invalidData }
                 var organization = try store.load()?.organization ?? AlbumOrganization()
@@ -909,6 +992,7 @@ final class LocalTransfer: ObservableObject {
         client = nil
         clusterNetwork.stop()
         connected = false
+        receivingCatalog = false
         busy = false
         activeTrack = nil
         approve(false)
@@ -1081,7 +1165,7 @@ final class LocalTransfer: ObservableObject {
         busy = true
         status = "Macに接続中…"
         operation = Task {
-            defer { if generation == attempt { busy = false } }
+            defer { if generation == attempt { busy = false; receivingCatalog = false } }
             do {
                 let saved = try await secrets.load()
                 let identity = String(device.id.dropFirst("Syncstr-".count))
@@ -1091,10 +1175,11 @@ final class LocalTransfer: ObservableObject {
                     using: try MusicConnection.parameters(code: secret, identity: identity)))
                 client = channel
                 try await channel.start()
-                try await channel.sendOrganized(MusicMessage(kind: "hello", name: name, clusterCapabilities: ClusterCapabilities(version: 1)), organization: try store.load()?.organization)
+                try await channel.sendOrganized(MusicMessage(kind: "hello", name: name, clusterCapabilities: ClusterCapabilities(version: 1)), organization: try await store.snapshotInBackground()?.catalog.organization)
                 status = "Macでこの端末とのペアリングを承認してください。"
                 let header = try await channel.receive()
                 guard header.kind == "catalog", header.library == identity else { throw LocalMusicError.invalidData }
+                receivingCatalog = true
                 let incomingOrganization = try await channel.receiveOrganization(header)
                 var entries: [LocalEntry] = []
                 var metadataBytes = 0
@@ -1108,14 +1193,8 @@ final class LocalTransfer: ObservableObject {
                 }
                 try Task.checkCancellation()
                 guard generation == attempt else { return }
-                if let previous = try store.load(), previous.id == identity {
-                    let savedEntries = previous.entries.filter { store.hasFile($0) }
-                    let incomingIDs = Set(entries.map { $0.track.id })
-                    entries += savedEntries.filter { !incomingIDs.contains($0.track.id) }
-                }
-                let catalog = try mergedCatalog(id: identity, name: header.name ?? "Mac", entries: entries, incoming: incomingOrganization)
-                if let onCatalog { try onCatalog(catalog) }
-                else { try store.save(catalog) }
+                let catalog = try await mergedCatalog(id: identity, name: header.name ?? "Mac", entries: entries, incoming: incomingOrganization)
+                try await publishCatalog(catalog, attempt: attempt)
                 try await secrets.save(PairingCredentials(libraryID: identity, name: device.name, key: secret))
                 guard generation == attempt else { return }
                 self.catalog = catalog
@@ -1134,23 +1213,29 @@ final class LocalTransfer: ObservableObject {
         }
     }
 
-    func cachedPlaybackFile(_ track: Track, diagnostic: PlaybackDiagnosticContext? = nil) throws -> URL? {
-        guard let entry = try store.load()?.entries.first(where: { $0.track.id == track.id }) else {
-            diagnostic?.record("cache", "miss", fields: ["reason": "no_catalog_entry"])
-            return nil
-        }
-        return try playbackCache.file(entry, diagnostic: diagnostic)
-    }
-
-    func playbackFile(_ track: Track, diagnostic: PlaybackDiagnosticContext? = nil) async throws -> URL {
+    func playbackFile(_ track: Track, diagnostic: PlaybackDiagnosticContext? = nil,
+                      allowAcquisition: Bool = true,
+                      progress: @escaping (PlaybackPreparation) -> Void = { _ in }) async throws -> URL {
+        progress(.checking)
         let entry: LocalEntry
+        let libraryID: String
         do {
-            guard let found = try store.load()?.entries.first(where: { $0.track.id == track.id }) else { throw LocalMusicError.invalidData }
-            entry = found
+            guard let source = try await CatalogStorage.shared.entry(store: store, track: track.id) else { throw LocalMusicError.invalidData }
+            entry = source.entry
+            libraryID = source.library
         } catch { diagnostic?.failure("resolution", error); throw error }
         diagnostic?.record("resolution", "catalog_entry", fields: ["track_id": entry.track.id, "sha256": entry.sha256, "expected_size": String(entry.track.size ?? 0)])
-        if let cached = try playbackCache.file(entry, diagnostic: diagnostic) { return cached }
-        do { try playbackCache.makeRoom(for: entry) }
+        if let cached = try await playbackCache.fileInBackground(entry, diagnostic: diagnostic) {
+            diagnostic?.record("selection", "mode", fields: ["mode": "local", "reason": "cache_hit"])
+            return cached
+        }
+        try Task.checkCancellation()
+        guard allowAcquisition else {
+            diagnostic?.record("request", "rejected", fields: ["reason": "backgrounded"])
+            throw LocalMusicError.backgroundAcquisition
+        }
+        diagnostic?.record("local", "acquisition_required", fields: ["reason": "no_usable_local_file"])
+        do { try await playbackCache.makeRoomInBackground(for: entry) }
         catch { diagnostic?.failure("cache_capacity", error); throw error }
         connectionEvent("playback_connection_decision", fields: ["mode": clusterRegistration == nil ? "legacy" : "cluster",
             "reason": clusterRegistration == nil ? "in_memory_registration_nil" : "in_memory_registration_present",
@@ -1158,26 +1243,32 @@ final class LocalTransfer: ObservableObject {
         if let diagnostic { diagnostics?.captureConnections(in: diagnostic) }
         diagnostic?.record("selection", "mode", fields: ["mode": clusterRegistration == nil ? "legacy" : "cluster", "registration_read": registrationReadState,
             "registration_present": String(clusterRegistration != nil)])
-        if clusterRegistration == nil { return try await legacyPlaybackFile(entry, diagnostic: diagnostic) }
+        progress(.connecting)
+        if clusterRegistration == nil { return try await legacyPlaybackFile(entry, libraryID: libraryID, diagnostic: diagnostic, progress: progress) }
         let network = ClusterNetwork(store: store, secrets: peerSecrets)
         return try await withTaskCancellationHandler {
             defer { network.stop() }
-            try await network.download(object: entry.sha256, cache: playbackCache.store, diagnostic: diagnostic) { _ in }
+            try await network.download(object: entry.sha256, cache: playbackCache.store, diagnostic: diagnostic) { fraction in
+                progress(.receiving(UInt64(fraction * Double(entry.track.size ?? 0)), entry.track.size ?? 0))
+            }
             try Task.checkCancellation()
-            guard let result = try playbackCache.file(entry, diagnostic: diagnostic) else { throw LocalMusicError.invalidData }
+            guard let result = try await playbackCache.fileInBackground(entry, diagnostic: diagnostic) else { throw LocalMusicError.invalidData }
             return result
         } onCancel: {
             Task { @MainActor in network.stop() }
         }
     }
 
-    private func legacyPlaybackFile(_ entry: LocalEntry, diagnostic: PlaybackDiagnosticContext? = nil) async throws -> URL {
+    private func legacyPlaybackFile(_ entry: LocalEntry, libraryID: String, diagnostic: PlaybackDiagnosticContext? = nil,
+                                    progress: @escaping (PlaybackPreparation) -> Void) async throws -> URL {
         try Task.checkCancellation()
+        defer { if let diagnostic { diagnostics?.captureConnections(in: diagnostic) } }
+        try await waitForIdle()
         if !connected || client == nil {
             diagnostic?.record("selection", "legacy_candidate", fields: ["count": "0", "connected": String(connected),
                 "busy": String(busy), "device_id": "not_observable", "reason": "before_reconnect"])
             guard !busy else { throw LocalMusicError.clusterUnavailable }
-            let expectedLibrary = try store.load()?.id
+            let expectedLibrary = libraryID
             diagnostic?.record("connection", "reconnect", fields: ["reason": "no_usable_channel"])
             if let device = lastLegacyDevice {
                 connect(device, code: "", name: pairedName ?? "")
@@ -1192,14 +1283,7 @@ final class LocalTransfer: ObservableObject {
                 throw LocalMusicError.clusterUnavailable
             }
             let attempt = generation
-            let connecting = operation
-            await withTaskCancellationHandler {
-                await connecting?.value
-            } onCancel: {
-                Task { @MainActor [weak self] in
-                    if self?.generation == attempt { self?.cancel(reason: "playback_reconnect_cancelled") }
-                }
-            }
+            try await waitForIdle()
             try Task.checkCancellation()
             if let diagnostic { diagnostics?.captureConnections(in: diagnostic) }
             guard generation == attempt else { throw CancellationError() }
@@ -1209,19 +1293,16 @@ final class LocalTransfer: ObservableObject {
             "connected": String(connected), "busy": String(busy), "device_id": "not_observable"])
         if let client, connected { diagnostic?.record("selection", "legacy_mode", fields: ["mode": client is PeerMusicConnection ? "iroh_channel" : "tls_psk_channel"]) }
         diagnostic?.record("connection", "reused", fields: ["reused": String(client != nil && connected), "path": "unknown", "reason": connected ? "existing_music_channel" : "no_connection", "authentication": connected ? "preexisting_session" : "not_attempted"])
-        guard let client, connected, !busy, let size = entry.track.size else { throw LocalMusicError.clusterUnavailable }
+        guard let client, connected, !busy, catalog?.id == libraryID, let size = entry.track.size else { throw LocalMusicError.clusterUnavailable }
         let attempt = generation
         busy = true
         defer { if generation == attempt { busy = false } }
         return try await withTaskCancellationHandler {
+            progress(.receiving(0, size))
             var received: UInt64 = 0
             var stage = "save"
             var lastProgress = ProcessInfo.processInfo.systemUptime
-            let temporary = playbackCache.store.root.appendingPathComponent(".partial-" + UUID().uuidString)
-            defer { try? FileManager.default.removeItem(at: temporary) }
-            guard FileManager.default.createFile(atPath: temporary.path, contents: nil) else { throw CocoaError(.fileWriteUnknown) }
-            let handle = try FileHandle(forWritingTo: temporary)
-            defer { try? handle.close() }
+            let download = PlaybackDownload(store: playbackCache.store)
             do {
                 stage = "transfer"
                 diagnostic?.record(stage, "request", fields: ["track_id": entry.track.id, "sha256": entry.sha256, "expected_size": String(size)])
@@ -1235,20 +1316,21 @@ final class LocalTransfer: ObservableObject {
                           bytes.count <= 65536, received + UInt64(bytes.count) <= size else { throw LocalMusicError.invalidData }
                     received += UInt64(bytes.count)
                     stage = "save"
-                    try handle.write(contentsOf: bytes)
+                    try await download.append(bytes)
                     if ProcessInfo.processInfo.systemUptime - lastProgress >= 1 {
+                        progress(.receiving(received, size))
                         diagnostic?.record("transfer", "progress", fields: ["received_bytes": String(received)])
                         lastProgress = ProcessInfo.processInfo.systemUptime
                     }
                 }
                 diagnostic?.record("transfer", "eof", fields: ["received_bytes": String(received)])
                 stage = "save"
-                try handle.close()
                 try Task.checkCancellation()
                 stage = "import"
-                try playbackCache.store.importFile(temporary, entry: entry, recordReceipt: false, diagnostic: diagnostic)
-                return playbackCache.store.fileURL(entry)
+                progress(.preparing)
+                return try await download.finish(entry, diagnostic: diagnostic)
             } catch {
+                await download.discard()
                 diagnostic?.record(stage, "incomplete", fields: ["received_bytes": String(received)])
                 diagnostic?.failure(stage, error)
                 client.close()
@@ -1258,6 +1340,26 @@ final class LocalTransfer: ObservableObject {
             }
         } onCancel: {
             Task { @MainActor in client.close() }
+        }
+    }
+
+    private func waitForIdle() async throws {
+        let attempt = generation
+        while busy {
+            try Task.checkCancellation()
+            let id = UUID()
+            try await withTaskCancellationHandler {
+                try await withCheckedThrowingContinuation { (waiter: CheckedContinuation<Void, Error>) in
+                    if Task.isCancelled { waiter.resume(throwing: CancellationError()) }
+                    else { idleWaiters[id] = waiter }
+                }
+            } onCancel: {
+                Task { @MainActor [weak self] in
+                    self?.idleWaiters.removeValue(forKey: id)?.resume(throwing: CancellationError())
+                }
+            }
+            try Task.checkCancellation()
+            guard generation == attempt else { throw CancellationError() }
         }
     }
 
@@ -1341,7 +1443,7 @@ final class LocalTransfer: ObservableObject {
                     if try await Task.detached(operation: {
                         try files.hasFile(entry) && LocalMusicStore.digest(file: files.fileURL(entry)) == entry.sha256
                     }).value {
-                        try clusterNetwork.recoverDownloadedFile(entry)
+                        try await clusterNetwork.recoverDownloadedFile(entry)
                         completed += 1
                         continue
                     }

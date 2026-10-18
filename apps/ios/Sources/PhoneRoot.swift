@@ -273,7 +273,7 @@ struct PhoneRoot: View {
                     Spacer(minLength: 8)
                     if index == nil && library.current?.id == track.id {
                         if library.loading {
-                            ProgressView().accessibilityLabel("再生を準備中")
+                            ProgressView().accessibilityLabel(library.playbackLoadingLabel)
                         } else {
                             RegenIcon(name: library.playing ? "activity" : "filled-pause")
                                 .accessibilityLabel(library.playing ? "再生中" : "選択中")
@@ -288,7 +288,7 @@ struct PhoneRoot: View {
             }
             .buttonStyle(.plain)
             .accessibilityIdentifier("track-\(track.id)")
-            .accessibilityValue(library.current?.id == track.id ? (library.loading ? "再生を準備中" : library.playing ? "再生中" : "選択中") : "")
+            .accessibilityValue(library.current?.id == track.id ? (library.loading ? library.playbackLoadingLabel : library.playing ? "再生中" : "選択中") : "")
             OfflineSaveControls(library: library, tracks: [track], scope: "track:" + track.id, compact: true)
                 .buttonStyle(.borderless)
         }
@@ -307,7 +307,7 @@ struct PhoneRoot: View {
                     VStack(alignment: .leading, spacing: 0) {
                         Text(library.current?.title ?? "").fontWeight(.semibold).lineLimit(1)
                         if dynamicTypeSize <= .xLarge {
-                            Text(library.loading ? "再生を準備中" : library.playbackFailure != nil ? "再生できません。詳細を確認" : library.current?.artist ?? "").foregroundStyle(.secondary).lineLimit(1)
+                            Text(library.loading ? library.playbackLoadingLabel : library.playbackFailure != nil ? "再生できません。詳細を確認" : library.current?.artist ?? "").foregroundStyle(.secondary).lineLimit(1)
                         }
                     }
                     .font(.subheadline)

@@ -3,6 +3,99 @@ import CryptoKit
 import Foundation
 import AudioTags
 import ImageIO
+
+final class StorageExecutor: SerialExecutor {
+    private let queue: DispatchQueue
+
+    init(label: String) { queue = DispatchQueue(label: label, qos: .userInitiated) }
+
+    func enqueue(_ job: consuming ExecutorJob) {
+        let job = UnownedJob(job)
+        queue.async { job.runSynchronously(on: self.asUnownedSerialExecutor()) }
+    }
+}
+
+@globalActor
+actor TransportActor {
+    static let shared = TransportActor()
+    nonisolated var unownedExecutor: UnownedSerialExecutor { CatalogStorage.shared.unownedExecutor }
+}
+
+actor CatalogStorage {
+    static let shared = CatalogStorage()
+    private let executor = StorageExecutor(label: "as.ason.syncstr.catalog")
+    nonisolated var unownedExecutor: UnownedSerialExecutor { executor.asUnownedSerialExecutor() }
+    private var databases: [URL: CatalogDatabase] = [:]
+
+    func perform<T: Sendable>(_ operation: @Sendable () throws -> T) throws -> T {
+        try Task.checkCancellation()
+        let result = try operation()
+        try Task.checkCancellation()
+        return result
+    }
+
+    private func database(_ store: LocalMusicStore) throws -> CatalogDatabase {
+        let root = store.root.standardizedFileURL
+        if let database = databases[root] { return database }
+        let database = try store.database()
+        databases[root] = database
+        return database
+    }
+
+    func entry(store: LocalMusicStore, track: String) throws -> (library: String, entry: LocalEntry)? {
+        try Task.checkCancellation()
+        let result = try database(store).playbackEntry(track)
+        try Task.checkCancellation()
+        return result
+    }
+
+    func snapshot(store: LocalMusicStore) throws -> CatalogSnapshot? {
+        try Task.checkCancellation()
+        guard store.hasCatalog else { return nil }
+        let result = try store.snapshot(database: database(store))
+        try Task.checkCancellation()
+        return result
+    }
+
+    func save(_ catalog: LocalCatalog, store: LocalMusicStore) throws {
+        try Task.checkCancellation()
+        try store.save(catalog, database: database(store))
+    }
+
+    func prepare(_ catalog: LocalCatalog, store: LocalMusicStore) throws -> PreparedLocalCatalog {
+        try Task.checkCancellation()
+        var catalog = catalog
+        catalog.organize()
+        try save(catalog, store: store)
+        try Task.checkCancellation()
+        return try PreparedLocalCatalog(catalog, store: store)
+    }
+}
+
+struct PreparedLocalCatalog {
+    let catalog: LocalCatalog
+    let files: [String: URL]
+    let tracks: [Track]
+    let albums: [Album]
+    let artworkURLs: [String: URL]
+
+    init(_ catalog: LocalCatalog, store: LocalMusicStore) throws {
+        self.catalog = catalog
+        tracks = catalog.displayTracks()
+        albums = Library.preparedAlbums(tracks, organization: catalog.organization)
+        var artworkURLs = Dictionary(uniqueKeysWithValues: catalog.entries.compactMap { entry in
+            entry.track.coverArt.map { ($0, store.artworkURL(entry)) }
+        })
+        for asset in catalog.organization?.artwork?.assets.keys.map({ $0 }) ?? [] { artworkURLs[asset] = store.artworkURL(asset: asset) }
+        self.artworkURLs = artworkURLs
+        var files: [String: URL] = [:]
+        for entry in catalog.entries {
+            try Task.checkCancellation()
+            if store.hasFile(entry) { files[entry.track.id] = store.fileURL(entry) }
+        }
+        self.files = files
+    }
+}
 import UniformTypeIdentifiers
 
 struct LocalEntry: Codable, Equatable {
@@ -124,6 +217,7 @@ struct LocalCatalog: Codable {
 enum LocalMusicError: LocalizedError {
     case invalidData, disconnected, unauthorized, changedFile, noMusic, invalidCode, incompatiblePeer
     case clusterUnavailable, clusterNeedsAttention
+    case backgroundAcquisition
 
     var errorDescription: String? {
         switch self {
@@ -136,6 +230,7 @@ enum LocalMusicError: LocalizedError {
         case .incompatiblePeer: "接続先のSyncstrを更新してください。アルバムの整理情報に対応していません。"
         case .clusterUnavailable: "利用できる音源に接続できません。保存済みの音楽は引き続き聴けます。接続後に再試行できます。"
         case .clusterNeedsAttention: "保存先で変更の確認が必要です。ライブラリを更新して競合を確認し、解消後に再試行してください。音源はこの端末に保持しています。"
+        case .backgroundAcquisition: "バックグラウンドでは次の音源を取得できません。アプリを開いて再試行してください。"
         }
     }
 }
@@ -171,12 +266,8 @@ struct LocalMusicStore {
         try snapshot()?.catalog
     }
 
-    @concurrent
     func snapshotInBackground() async throws -> CatalogSnapshot? {
-        try Task.checkCancellation()
-        let snapshot = try snapshot()
-        try Task.checkCancellation()
-        return snapshot
+        try await CatalogStorage.shared.snapshot(store: self)
     }
 
     @concurrent
@@ -202,9 +293,9 @@ struct LocalMusicStore {
             || FileManager.default.fileExists(atPath: root.appendingPathComponent("catalog.json").path)
     }
 
-    func snapshot() throws -> CatalogSnapshot? {
+    func snapshot(database: CatalogDatabase? = nil) throws -> CatalogSnapshot? {
         guard hasStorage else { return nil }
-        let snapshot = try database().snapshot()
+        let snapshot = try (database ?? self.database()).snapshot()
         if let catalog = snapshot?.catalog { try writeArtwork(catalog) }
         return snapshot
     }
@@ -221,8 +312,8 @@ struct LocalMusicStore {
         return database
     }
 
-    func save(_ catalog: LocalCatalog, clusterEdits: Bool = false) throws {
-        let database = try database()
+    func save(_ catalog: LocalCatalog, clusterEdits: Bool = false, database: CatalogDatabase? = nil) throws {
+        let database = try database ?? self.database()
         try writeArtwork(catalog)
         let received = try database.clusterRegistration() == nil ? catalog.entries.filter(hasFile) : []
         try database.save(catalog, received: received, clusterEdits: clusterEdits)
@@ -423,3 +514,27 @@ struct LocalFolder {
     }
 }
 #endif
+
+extension LocalCatalog {
+    func displayTracks() -> [Track] {
+        let catalog = self
+        let organization = catalog.organization
+        let images = organization.map(AlbumArtworkLookup.init)
+        let albums = Dictionary(uniqueKeysWithValues: (organization?.albums ?? []).map { ($0.id, $0) })
+        var covers: [String: String] = [:]
+        if let organization, let images {
+            for album in Set(images.albumIDs.values).union(catalog.entries.compactMap(\.track.albumId)) {
+                covers[album] = images.coverAsset(for: album, in: organization)
+            }
+        }
+        return catalog.entries.map { entry in
+            var track = entry.track
+            let id = organization?.canonicalTrack(track.id) ?? track.id
+            track.albumId = images?.albumIDs[id] ?? track.albumId
+            if let id = track.albumId, let album = albums[id] { track.album = album.title }
+            if let album = track.albumId, let asset = covers[album] { track.coverArt = asset }
+            return track
+        }
+    }
+
+}

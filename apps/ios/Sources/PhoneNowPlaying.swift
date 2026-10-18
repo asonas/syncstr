@@ -153,7 +153,7 @@ struct PhoneNowPlaying: View {
                         .padding(.horizontal, 20)
                         .padding(.top, 32)
                         if library.loading {
-                            ProgressView("再生を準備中").padding(.top, 16)
+                            ProgressView(library.playbackLoadingLabel).padding(.top, 16)
                         }
                         if let failure = library.playbackFailure {
                             Text(failure).padding(.horizontal, 20).padding(.top, 16)

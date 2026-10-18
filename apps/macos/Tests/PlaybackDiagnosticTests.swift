@@ -22,8 +22,8 @@ struct PlaybackDiagnosticTests {
         let recorder = PlaybackDiagnostics(root: directory.appendingPathComponent("diagnostics"))
         let attempt = recorder.begin(title: "Fixture", track: "one", sha256: nil, library: nil)
         do {
-            _ = try store.database()
-            Issue.record("Expected the competing writer to block database initialization")
+            _ = try store.database().createCluster(memberID: String(repeating: "1", count: 64))
+            Issue.record("Expected the competing writer to block a database write")
         } catch {
             attempt.failure("resolution", error, terminal: true)
         }

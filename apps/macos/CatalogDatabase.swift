@@ -276,7 +276,7 @@ extension CatalogDatabase {
     }
 }
 
-/// Each operation owns its connection; catalog replacement commits as one transaction.
+/// Catalog replacement commits as one transaction.
 final class CatalogDatabase {
     private var connection: OpaquePointer?
     private var operation = "open"
@@ -292,6 +292,14 @@ final class CatalogDatabase {
         do {
             let version = try rows("PRAGMA user_version").first?.first ?? nil
             guard ["0", "1", "2", "3", "4"].contains(version) else { throw LocalMusicError.invalidData }
+            if version == "4" {
+                let required: Set<String> = ["catalog", "entries", "received_files", "organization", "artwork_assets",
+                    "cluster_schema", "cluster_identity", "cluster_peers", "cluster_objects", "cluster_locations",
+                    "cluster_pending_changes", "cluster_jobs", "cluster_registration", "cluster_signed_changes",
+                    "cluster_peer_cursors", "cluster_track_ids", "cluster_import_batches", "cluster_transfer_settings", "cluster_metadata_queue"]
+                let existing = Set(try rows("SELECT name FROM sqlite_master WHERE type = 'table'").compactMap { $0[0] })
+                if required.isSubset(of: existing), try rows("SELECT version FROM cluster_schema WHERE singleton = 1").first?.first == "1" { return }
+            }
             try transaction {
                 try execute("CREATE TABLE IF NOT EXISTS catalog (singleton INTEGER PRIMARY KEY CHECK(singleton = 1), id TEXT NOT NULL, name TEXT NOT NULL, source_root TEXT)")
                 try execute("CREATE TABLE IF NOT EXISTS entries (id TEXT PRIMARY KEY, position INTEGER NOT NULL, sha256 TEXT NOT NULL, payload TEXT NOT NULL, source_path TEXT)")
@@ -378,6 +386,15 @@ final class CatalogDatabase {
     func containsCatalog() throws -> Bool {
         try rows("SELECT EXISTS(SELECT 1 FROM catalog WHERE singleton = 1)").first?.first == "1"
     }
+
+    func playbackEntry(_ id: String) throws -> (library: String, entry: LocalEntry)? {
+        guard let row = try rows("SELECT catalog.id, entries.payload FROM catalog JOIN entries ON entries.id = ? WHERE catalog.singleton = 1", [id]).first,
+              let library = row[0], let payload = row[1] else { return nil }
+        let entry = try JSONDecoder().decode(LocalEntry.self, from: Data(payload.utf8))
+        guard entry.track.id == id, LocalMusicStore.valid(entry) else { throw LocalMusicError.invalidData }
+        return (library, entry)
+    }
+
 
     private func readSnapshot() throws -> CatalogSnapshot? {
         guard let header = try rows("SELECT id, name, source_root FROM catalog WHERE singleton = 1").first,

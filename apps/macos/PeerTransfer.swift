@@ -2,6 +2,31 @@ import Foundation
 import CryptoKit
 import IrohLib
 
+extension AlbumOrganization {
+    @concurrent
+    fileprivate func transferPayload() async throws -> (Data, [String: Data]) {
+        try Task.checkCancellation()
+        var metadata = self
+        let images = metadata.artwork?.assets ?? [:]
+        metadata.artwork?.assets = images.mapValues { _ in Data() }
+        let data = try JSONEncoder().encode(metadata)
+        guard data.count <= 64 * 1024 * 1024 else { throw LocalMusicError.invalidData }
+        return (data, images)
+    }
+
+    @concurrent
+    fileprivate static func decodeTransfer(_ data: Data) async throws -> AlbumOrganization {
+        try Task.checkCancellation()
+        return try JSONDecoder().decode(Self.self, from: data)
+    }
+
+    @concurrent
+    fileprivate func validateTransfer() async throws {
+        try Task.checkCancellation()
+        try validate()
+    }
+}
+
 @MainActor
 protocol MusicChannel: AnyObject {
     func send(_ message: MusicMessage) async throws
@@ -15,11 +40,7 @@ extension MusicChannel {
     func sendOrganized(_ message: MusicMessage, organization: AlbumOrganization?) async throws {
         var header = message
         guard let organization else { try await send(header); return }
-        var metadata = organization
-        let images = metadata.artwork?.assets ?? [:]
-        metadata.artwork?.assets = images.mapValues { _ in Data() }
-        let data = try JSONEncoder().encode(metadata)
-        guard data.count <= 64 * 1024 * 1024 else { throw LocalMusicError.invalidData }
+        let (data, images) = try await organization.transferPayload()
         if images.isEmpty && data.count <= 1024 * 1024 {
             header.organization = organization
             try await send(header)
@@ -39,7 +60,7 @@ extension MusicChannel {
     }
 
     func receiveOrganization(_ header: MusicMessage) async throws -> AlbumOrganization? {
-        if let organization = header.organization { try organization.validate(); return organization }
+        if let organization = header.organization { try await organization.validateTransfer(); return organization }
         guard header.track == "organization" else { return nil }
         var bytes = Data()
         var hasImages = false
@@ -51,7 +72,7 @@ extension MusicChannel {
                   chunk.count <= 65536, bytes.count + chunk.count <= 64 * 1024 * 1024 else { throw LocalMusicError.invalidData }
             bytes.append(chunk)
         }
-        var organization = try JSONDecoder().decode(AlbumOrganization.self, from: bytes)
+        var organization = try await AlbumOrganization.decodeTransfer(bytes)
         if hasImages {
             var pending = Set(organization.artwork?.assets.keys.map { $0 } ?? [])
             guard pending.count <= 100000 else { throw LocalMusicError.invalidData }
@@ -65,7 +86,7 @@ extension MusicChannel {
             }
             guard pending.isEmpty else { throw LocalMusicError.invalidData }
         }
-        try organization.validate()
+        try await organization.validateTransfer()
         return organization
     }
 }
