@@ -463,11 +463,12 @@ struct LibraryView: View {
     private var songs: some View {
         GeometryReader { geometry in
             let wide = geometry.size.width >= 640
+            let tracks = library.visibleTracks
             ScrollView {
                 LazyVStack(spacing: 0, pinnedViews: [.sectionHeaders]) {
                     Section {
-                        ForEach(Array(library.visibleTracks.enumerated()), id: \.element.id) { index, track in
-                            trackRow(track, index: index, tracks: library.visibleTracks, showArtist: wide,
+                        ForEach(Array(tracks.enumerated()), id: \.element.id) { index, track in
+                            trackRow(track, index: index, tracks: tracks, showArtist: wide,
                                      showAlbum: wide, dense: true, striped: index.isMultiple(of: 2))
                         }
                     } header: {
@@ -483,7 +484,7 @@ struct LibraryView: View {
                             .padding(.horizontal, 8).frame(height: 32).background(Studio.graphite)
                     }
                 }.padding(.horizontal, 32).padding(.top, 20)
-                if library.visibleTracks.isEmpty { Text("一致する曲がありません。").foregroundStyle(Studio.fog).padding(32) }
+                if tracks.isEmpty { Text("一致する曲がありません。").foregroundStyle(Studio.fog).padding(32) }
             }.safeAreaPadding(.bottom, 120)
         }
     }
