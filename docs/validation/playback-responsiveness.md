@@ -43,3 +43,11 @@ The signed macOS Debug build was launched through `apps/macos/run.sh`, with its 
 The focused regression run passed 19 AlbumOrganization XCTest cases and eight LibraryPresentation Swift Testing cases. The new case checks abbreviated detail credits, unchanged full browsing credits and track artists, and preservation of an explicit album artist. macOS Debug and iOS Simulator builds passed. iOS changes were compiled, not visually checked on a device. Narrow-window layout and every offline-save state were not manually rechecked in this follow-up.
 
 The editable [album detail proposal](https://www.figma.com/design/KtfBubkg9KiK5LuLHIm8Qt?node-id=103-1142) and [row state comparison](https://www.figma.com/design/KtfBubkg9KiK5LuLHIm8Qt?node-id=103-1435) were visually inspected. The proposed hover/selection row appearance remains a design-only deliverable pending approval.
+
+## Content header and track icon correction
+
+The initial Back action used the window-level navigation toolbar, which placed it above the custom sidebar. Back, search, sorting, and selection actions now belong to the content column's shared header instead. The signed macOS Debug build passed and was launched as the only Syncstr process. Computer use confirmed that Back is to the right of the sidebar divider and shares a row with search.
+
+Album track rows now show Play instead of the number on hover or when the track is current. Computer use confirmed the current row's Play icon during playback and after pausing. Hover-only display and narrow-window layout were not separately verified. No playback action or queue behavior changed. These changes are macOS-only; iOS uses its existing native navigation and has no pointer-hover requirement.
+
+Only the proposed accent-colored selected background remains pending approval in the Figma row comparison.

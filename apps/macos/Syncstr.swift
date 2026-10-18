@@ -92,44 +92,6 @@ struct LibraryView: View {
         .frame(minWidth: 640, minHeight: 560)
         .navigationTitle("")
         .focusedSceneObject(library)
-        .toolbar {
-            if library.connected {
-                if !library.showingNowPlaying, library.search.isEmpty, let albumID = library.selectedAlbum {
-                    ToolbarItem(placement: .navigation) {
-                        Button {
-                            albumScrollPosition = ScrollPosition(id: albumID, anchor: .center)
-                            library.selectedAlbum = nil
-                        } label: {
-                            MacIcon("chevron-left").frame(width: 32, height: 32)
-                        }
-                        .help("アルバムへ戻る")
-                        .accessibilityLabel("アルバムへ戻る")
-                    }
-                }
-                if showingAlbumGrid {
-                    if !selectedAlbums.isEmpty {
-                        ToolbarItem(placement: .primaryAction) {
-                            Text("\(selectedAlbums.count)枚を選択中")
-                                .foregroundStyle(.secondary)
-                        }
-                        .sharedBackgroundVisibility(.hidden)
-                        ToolbarItem(placement: .primaryAction) {
-                            Button(albumVisibilityLabel) {
-                                changeAlbumVisibility(selectedAlbums)
-                            }
-                            .disabled(selectedAlbums.contains(where: library.isSavingAlbumVisibility))
-                        }
-                        ToolbarSpacer(.fixed, placement: .primaryAction)
-                    }
-                    ToolbarItem(placement: .primaryAction) { albumSortMenu }
-                    ToolbarSpacer(.fixed, placement: .primaryAction)
-                }
-                ToolbarItem(placement: .primaryAction) {
-                    LibrarySearchField(text: $library.search, placeholder: "\(library.destination.rawValue)を検索")
-                        .frame(width: 240)
-                }
-            }
-        }
         .toolbarBackground(.hidden, for: .windowToolbar)
         .onChange(of: library.destination) { _, _ in selectedAlbums.removeAll() }
         .onChange(of: showingAlbumGrid) { _, showing in
@@ -163,6 +125,36 @@ struct LibraryView: View {
     }
 
     private var rule: some View { Rectangle().fill(Studio.iron).frame(height: 1) }
+
+    private var contentHeader: some View {
+        HStack(spacing: 16) {
+            if !library.showingNowPlaying, library.search.isEmpty, let albumID = library.selectedAlbum {
+                Button {
+                    albumScrollPosition = ScrollPosition(id: albumID, anchor: .center)
+                    library.selectedAlbum = nil
+                } label: {
+                    MacIcon("chevron-left").frame(width: 32, height: 32)
+                }
+                .buttonBorderShape(.circle)
+                .help("アルバムへ戻る")
+                .accessibilityLabel("アルバムへ戻る")
+            }
+            Spacer(minLength: 0)
+            if showingAlbumGrid {
+                if !selectedAlbums.isEmpty {
+                    Text("\(selectedAlbums.count)枚を選択中").foregroundStyle(.secondary)
+                    Button(albumVisibilityLabel) { changeAlbumVisibility(selectedAlbums) }
+                        .disabled(selectedAlbums.contains(where: library.isSavingAlbumVisibility))
+                }
+                albumSortMenu
+            }
+            LibrarySearchField(text: $library.search, placeholder: "\(library.destination.rawValue)を検索")
+                .frame(minWidth: 120, idealWidth: 240, maxWidth: 240)
+                .layoutPriority(-1)
+        }
+        .padding(.horizontal, 32).padding(.vertical, 8)
+        .frame(minHeight: 52)
+    }
 
     private var sidebar: some View {
         VStack(alignment: .leading, spacing: 4) {
@@ -211,12 +203,15 @@ struct LibraryView: View {
 
     @ViewBuilder
     private var content: some View {
-        ZStack {
-            libraryContent
-                .opacity(library.showingNowPlaying ? 0 : 1)
-                .allowsHitTesting(!library.showingNowPlaying)
-                .accessibilityHidden(library.showingNowPlaying)
-            if library.showingNowPlaying { nowPlaying }
+        VStack(spacing: 0) {
+            contentHeader
+            ZStack {
+                libraryContent
+                    .opacity(library.showingNowPlaying ? 0 : 1)
+                    .allowsHitTesting(!library.showingNowPlaying)
+                    .accessibilityHidden(library.showingNowPlaying)
+                if library.showingNowPlaying { nowPlaying }
+            }
         }
     }
 
@@ -513,7 +508,9 @@ struct LibraryView: View {
                 HStack(spacing: 16) {
                     if !dense {
                         Group {
-                            if library.current?.id == track.id { MacIcon("activity") }
+                            if library.current?.id == track.id || hoveredTrack == track.id {
+                                MacIcon("filled-play").foregroundStyle(Studio.signal)
+                            }
                             else { Text("\(index + 1)").foregroundStyle(Studio.fog) }
                         }.frame(width: 24).accessibilityHidden(true)
                     }

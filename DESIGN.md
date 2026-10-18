@@ -63,10 +63,10 @@ The [macOS Music-inspired exploration](https://www.figma.com/design/KtfBubkg9KiK
 
 Follow Music.app's information placement: group the album title, artist, and track count beside the artwork, with Play below them. The button starts with the first track in disc and track-number order. Place the track list directly below.
 
-- Place the icon-only Back action in the same toolbar row as search. Returning to the album grid centers the album that was open.
+- Place the icon-only Back action and search in a shared header inside the content column, to the right of the sidebar divider. Returning to the album grid centers the album that was open.
 - Place an icon-only download action beside Play. Preserve save progress, cancellation, retry, and local-copy removal states. Keep album visibility actions in grid selection and context menus rather than in the detail header.
 - Abbreviate an aggregate of multiple track artists to `V.A.` in the detail header. Preserve a consistent, explicit album artist, full credits in browsing, and individual track artists.
-- The [track selection proposal](https://www.figma.com/design/KtfBubkg9KiK5LuLHIm8Qt?node-id=103-1142) previews Play on hover and selection with an accent-colored selected row. This row behavior is a design proposal awaiting approval.
+- In album track rows, show Play in place of the track number when hovered or when the track is current. Preserve the existing playback action. The [track selection proposal](https://www.figma.com/design/KtfBubkg9KiK5LuLHIm8Qt?node-id=103-1142) also previews an accent-colored selected background; that background remains a design proposal awaiting approval.
 
 ### Search and Windows
 
