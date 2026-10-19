@@ -16,7 +16,7 @@ final class AppearanceFlowTests: XCTestCase {
         let settled = XCTNSPredicateExpectation(predicate: NSPredicate(format: "value == %@", "選択中"), object: current)
         XCTAssertEqual(XCTWaiter.wait(for: [settled], timeout: 15), .completed)
         capture(app, "Light selected row after preparation")
-        app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "の再生中画面を開く")).firstMatch.tap()
+        app.buttons["mini-player-open"].firstMatch.tap()
         capture(app, "Light full player")
         app.terminate()
     }
@@ -81,7 +81,7 @@ final class AppearanceFlowTests: XCTestCase {
     private func showAlbum(_ app: XCUIApplication) {
         app.buttons["ライブラリへ戻る"].tap()
         if !app.buttons["選択"].exists { app.buttons["アルバム"].firstMatch.tap() }
-        let album = app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "Album 1、")).firstMatch
+        let album = app.buttons.containing(.staticText, identifier: "Album 1").firstMatch
         XCTAssertTrue(album.waitForExistence(timeout: 5))
         album.tap()
         XCTAssertTrue(app.staticTexts["V.A."].waitForExistence(timeout: 5))

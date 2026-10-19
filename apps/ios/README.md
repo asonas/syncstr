@@ -104,20 +104,55 @@ App-owned navigation and playback icons use original SVGs from [Regen Icons](htt
 
 ## Verification
 
+The [Verification workflow](../../.github/workflows/verification.yml) runs on pull
+requests and pushes to main. It runs macOS tests, iPhone/iPad unit and UI tests,
+and the focused headless regression tests and Clippy. It uses GitHub's
+[Xcode 27 image](https://github.blog/changelog/2026-10-15-xcode-27-runner-image-generally-available/).
+Xcode Cloud remains the distribution workflow; its Archive action does not
+replace these regression tests.
+
+For the same Simulator verification locally, install XcodeGen and the iOS 27.0
+runtime, select Xcode, then run from the repository root:
+
+```sh
+DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer \
+  python3 apps/ios/scripts/verify_simulator.py --device iphone
+DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer \
+  python3 apps/ios/scripts/verify_simulator.py --device ipad
+```
+
+Each run creates its own Simulator, reboots it after initial data migration,
+and deletes it on success or failure. Existing
+Simulators are not reset or reconfigured. Tests run serially in Japanese with the
+Japan region; the library experience test fixes portrait orientation. Fresh iPad
+devices avoid inherited multitasking window sizes. UI queries use album/control
+identifiers or exact fixture titles rather than punctuation in combined labels.
+The fictional catalog uses fixed addition dates, keeping its first albums stable
+across launches. Album actions wait for hittability before interacting.
+The main-actor responsiveness measurement runs in a separate test invocation so
+other Swift Testing tasks cannot consume its 200 ms scheduling budget. The
+threshold and test remain unchanged on both Apple platforms.
+
+Logs, environment metadata, result status, and `.xcresult` bundles are retained
+under `.build/verification/<run>/`. CI uploads them for seven days, including on
+failure. Local results remain until explicitly removed. DerivedData is reused
+under `.build/SimulatorDerivedData/`. Use `--only-testing
+SyncstrUITests/LibraryExperienceTests` to limit UI tests while retaining unit tests.
+The runner's process-boundary tests are:
+
+```sh
+python3 -m unittest discover -s apps/ios/scripts/tests -v
+```
+
 The `SyncstrUITests` scheme checks album sorting, batch visibility, restoration,
 search and keyboard focus, and failure-log copying on iPhone and iPad Simulators.
 It launches a Debug-only fictional catalog in a temporary directory via
 `--ui-fixture`; ordinary launches never select this fixture. TestFlight and
 Release builds do not include the fixture.
 
-After generating the project, select an available iPhone Simulator destination:
-
-```sh
-DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer xcodebuild \
-  -project apps/ios/Syncstr.xcodeproj -scheme Syncstr \
-  -destination 'platform=iOS Simulator,name=iPhone 18 Pro' \
-  -derivedDataPath apps/ios/.build/DerivedData CODE_SIGN_IDENTITY=- test
-```
+For interactive debugging, select `Syncstr` for unit tests or `SyncstrUITests`
+for UI tests in Xcode. Use the runner above for the same isolation and result
+collection as CI.
 
 Audio fixtures cover offline catalog restoration, received-file availability, AVPlayer local playback, and Now Playing updates. Tests use temporary storage and do not use production credentials.
 

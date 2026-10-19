@@ -30,10 +30,12 @@ final class LibraryFlowTests: XCTestCase {
     @MainActor
     func testArtistAlbumListScrollPerformance() {
         let app = launchFixture()
-        if app.buttons["選択"].waitForExistence(timeout: 3), app.navigationBars.buttons["ライブラリ"].exists {
+        let artists = app.descendants(matching: .any)["アーティスト"].firstMatch
+        if !artists.exists, app.navigationBars.buttons["ライブラリ"].exists {
             app.navigationBars.buttons["ライブラリ"].tap()
         }
-        app.descendants(matching: .any)["アーティスト"].firstMatch.tap()
+        XCTAssertTrue(artists.waitForExistence(timeout: 5))
+        artists.tap()
         app.buttons["Fixture Ensemble"].tap()
         XCTAssertTrue(app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "Album ")).firstMatch.waitForExistence(timeout: 5))
         let options = XCTMeasureOptions()
@@ -80,7 +82,7 @@ final class LibraryFlowTests: XCTestCase {
         XCTAssertTrue(app.staticTexts["11曲"].waitForExistence(timeout: 5))
         XCTAssertFalse(app.keyboards.firstMatch.exists)
         attach(app, "Album detail")
-        app.buttons["再生"].firstMatch.tap()
+        app.buttons["album-play"].firstMatch.tap()
         app.navigationBars.buttons["アルバム"].tap()
         let restored = searchField(app)
         app.typeKey(" ", modifierFlags: [])
@@ -136,9 +138,9 @@ final class LibraryFlowTests: XCTestCase {
         first.tap()
         XCTAssertTrue(app.staticTexts["V.A."].waitForExistence(timeout: 5))
         XCTAssertFalse(app.buttons["非表示にする"].exists)
-        XCTAssertTrue(app.buttons["この端末に保存"].firstMatch.exists)
-        app.buttons["再生"].firstMatch.tap()
-        app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "の再生中画面を開く")).firstMatch.tap()
+        XCTAssertTrue(app.buttons["album-save"].firstMatch.exists)
+        app.buttons["album-play"].firstMatch.tap()
+        app.buttons["mini-player-open"].firstMatch.tap()
         let copy = app.buttons["診断ログをコピー"]
         if !copy.isHittable { app.swipeUp() }
         XCTAssertTrue(copy.waitForExistence(timeout: 10))
@@ -159,7 +161,12 @@ final class LibraryFlowTests: XCTestCase {
     @MainActor
     private func openAlbums(_ app: XCUIApplication) {
         if !app.buttons["選択"].waitForExistence(timeout: 3) {
-            app.buttons["アルバム"].firstMatch.tap()
+            let albums = app.descendants(matching: .any)["アルバム"].firstMatch
+            if !albums.exists, app.navigationBars.buttons["ライブラリ"].exists {
+                app.navigationBars.buttons["ライブラリ"].tap()
+            }
+            XCTAssertTrue(albums.waitForExistence(timeout: 5))
+            albums.tap()
         }
         XCTAssertTrue(app.buttons["選択"].waitForExistence(timeout: 5))
         attach(app, "Album browser")
@@ -167,7 +174,7 @@ final class LibraryFlowTests: XCTestCase {
 
     @MainActor
     private func album(_ app: XCUIApplication, _ number: Int) -> XCUIElement {
-        app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "Album \(number)、")).firstMatch
+        app.buttons.containing(.staticText, identifier: "Album \(number)").firstMatch
     }
 
     @MainActor

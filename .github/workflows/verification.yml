@@ -1,0 +1,88 @@
+name: Verification
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: verification-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  headless:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: headless
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install Rust
+        run: rustup toolchain install 1.99.1 --profile minimal --component clippy
+      - name: Focused regression tests
+        run: >-
+          cargo +1.99.1 test --locked --features p2p --lib
+          --test cluster_changes --test cluster_client --test cluster_remote
+          --test cluster_replication --test contracts --test node
+      - name: Clippy
+        run: cargo +1.99.1 clippy --locked --features p2p --lib -- -D warnings
+  simulator:
+    runs-on: xcode-27
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        device: [iphone, ipad]
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install XcodeGen
+        run: brew install xcodegen
+      - name: Runner regression tests
+        run: python3 -m unittest discover -s apps/ios/scripts/tests -v
+      - name: Unit and library UI tests
+        run: python3 apps/ios/scripts/verify_simulator.py --device "${{ matrix.device }}"
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: simulator-${{ matrix.device }}
+          path: .build/verification/
+          retention-days: 7
+  macos:
+    runs-on: xcode-27
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - run: brew install xcodegen
+      - run: xcodegen generate --spec apps/ios/project.yml
+      - name: Resolve locked packages
+        run: >-
+          xcodebuild -resolvePackageDependencies -project apps/ios/Syncstr.xcodeproj
+          -scheme SyncstrMac -derivedDataPath .build/MacDerivedData
+          -disableAutomaticPackageResolution -onlyUsePackageVersionsFromResolvedFile
+      - name: macOS regression tests
+        run: >-
+          xcodebuild -project apps/ios/Syncstr.xcodeproj -scheme SyncstrMac
+          -disableAutomaticPackageResolution -onlyUsePackageVersionsFromResolvedFile
+          -destination 'platform=macOS' -derivedDataPath .build/MacDerivedData
+          -resultBundlePath .build/mac-tests.xcresult CODE_SIGNING_ALLOWED=NO test
+          '-skip-testing:LocalMusicTests/LibraryPresentationTests/testSelectionAndPlaybackUpdatesBrowseRetainedCatalogWithoutBlocking()'
+      - name: Isolated macOS responsiveness test
+        run: >-
+          xcodebuild -project apps/ios/Syncstr.xcodeproj -scheme SyncstrMac
+          -disableAutomaticPackageResolution -onlyUsePackageVersionsFromResolvedFile
+          -destination 'platform=macOS' -derivedDataPath .build/MacDerivedData
+          -resultBundlePath .build/mac-responsiveness.xcresult CODE_SIGNING_ALLOWED=NO test
+          '-only-testing:LocalMusicTests/LibraryPresentationTests/testSelectionAndPlaybackUpdatesBrowseRetainedCatalogWithoutBlocking()'
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: macos-tests
+          path: |
+            .build/mac-tests.xcresult
+            .build/mac-responsiveness.xcresult
+          retention-days: 7

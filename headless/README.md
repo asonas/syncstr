@@ -85,6 +85,14 @@ To back up the node, stop it and copy both `data` and `identity`. To replace an 
 
 ## Verification
 
+The [Verification workflow](../.github/workflows/verification.yml) runs the P2P
+library tests, `cluster_changes`, `cluster_client`, `cluster_remote`,
+`cluster_replication`, `contracts`, and `node`, followed by library Clippy.
+This is a focused regression gate, not the full suite below. LAN-discovery
+subprocess tests in `cli_process` remain outside that gate because a discovery
+timeout also reproduced on the baseline. Run them explicitly when changing LAN
+discovery; their failures are not converted into successful checks.
+
 ```sh
 cargo fmt --all -- --check
 cargo test --locked

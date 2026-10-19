@@ -16,7 +16,8 @@
                     track: Track(
                         id: "fixture-\(index)", title: "曲 \(index + 1) 夜の輪郭",
                         artist: index == 1 ? "Guest Artist" : "Fixture Ensemble", album: "Album \(index / 11 + 1)",
-                        albumId: "album-\(index / 11)", duration: 10, track: index % 11 + 1, suffix: "wav", size: 44),
+                        albumId: "album-\(index / 11)", duration: 10, track: index % 11 + 1, suffix: "wav", size: 44,
+                        addedAt: 1_700_000_000_000 - Int64(index)),
                     sha256: String(repeating: "a", count: 64), artwork: nil)
             }
             try library.openLocal(LocalCatalog(id: "ui-fixture", name: "UI Fixture", entries: entries))

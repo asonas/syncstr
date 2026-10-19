@@ -170,6 +170,7 @@ struct PhoneRoot: View {
                                 .contentShape(Rectangle())
                             }
                             .buttonStyle(.plain)
+                            .accessibilityIdentifier("album-\(album.id)")
                             .id(album.id)
                         }
                     }
@@ -280,6 +281,7 @@ struct PhoneRoot: View {
                     }
                 }
                 .buttonStyle(.plain)
+                .accessibilityIdentifier("album-\(album.id)")
                 .contextMenu {
                     Button(library.albumVisibilityLabel(album.id)) {
                         library.setAlbumHidden(album.id, hidden: !library.isAlbumHidden(album.id))
@@ -316,6 +318,7 @@ struct PhoneRoot: View {
                             }
                             .buttonStyle(.plain).foregroundStyle(PhoneStyle.signal)
                             .accessibilityLabel("アルバムをシャッフル再生")
+                            .accessibilityIdentifier("album-shuffle")
                             Button {
                                 library.startAlbum(album.tracks)
                             } label: {
@@ -330,8 +333,10 @@ struct PhoneRoot: View {
                             .buttonStyle(.plain)
                             .disabled(album.tracks.isEmpty)
                             .accessibilityLabel("再生")
+                            .accessibilityIdentifier("album-play")
                             OfflineSaveControls(library: library, tracks: album.tracks, scope: "album:" + album.id, iconOnly: true)
                                 .foregroundStyle(PhoneStyle.signal)
+                                .accessibilityIdentifier("album-save")
                         }
                         .overlay(alignment: .bottom) {
                             if let request = library.saveRequest(for: album.tracks, scope: "album:" + album.id),
@@ -470,6 +475,7 @@ struct PhoneRoot: View {
             }
             .buttonStyle(.plain)
             .accessibilityLabel("\(library.current?.title ?? "")の再生中画面を開く")
+            .accessibilityIdentifier("mini-player-open")
             .accessibilityValue(library.current?.artist ?? "")
             Button { library.togglePlayback() } label: {
                 RegenIcon(name: !library.loading && library.playing ? "filled-pause" : "filled-play", size: 28)

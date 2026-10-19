@@ -56,6 +56,7 @@ continue to use the existing conflict-resolution flow.
 | Signed endpoint discovery | [Rendezvous setup and protocol](docs/peer-rendezvous.md), [Cloudflare directory](rendezvous/src/index.ts), [headless publisher](headless/src/rendezvous.rs) |
 | Device identity and direct/relay connectivity experiment | [Connectivity probe](headless/connectivity-probe/README.md). Isolated from deployed services; independent-network verification is pending |
 | Xcode Cloud and distribution for both platforms | [project.yml](apps/ios/project.yml), [ci_post_clone.sh](apps/ios/ci_scripts/ci_post_clone.sh). Generate the Xcode project from YAML |
+| Automated regression checks and reproducible Simulators | [Verification workflow](.github/workflows/verification.yml), [Simulator runner and results](apps/ios/README.md#verification), [headless verification](headless/README.md#verification) |
 | UI and icon design | [DESIGN.md](DESIGN.md), which distinguishes UI colors from icon colors |
 | Earlier UI prototype | [Apple MVP operation model](https://github.com/asonas/syncstr/tree/be9fd4d9f06fca3676ec0426dbfe4b6606aae0ea/prototypes/apple-mvp-operation-model), [decision #5](https://github.com/asonas/syncstr/issues/5). The prototype is preserved on a separate branch, outside main |
 | Interpreting design decisions | [Domain docs](docs/agents/domain.md) |
