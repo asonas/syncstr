@@ -24,11 +24,32 @@ Implementation rules:
 - Keep the 704-by-72-point macOS player envelope, 40-point artwork, 32-point transport targets, and 20/24-point transport icons. Give the artwork and text group 232 points including its 8-point internal gap; use 16-point horizontal outer padding and gaps between groups. Keep title and artist 4 points apart. Distinguish these control dimensions from spacing tokens.
 - Inspect the actual app with content behind the glass, both empty and playing states, long track names, narrow windows, focus and pointer states. A successful build or the presence of `glassEffect` does not establish visual correctness.
 
+## Appearance
+
+macOS, iPhone, and iPad offer System, Light, and Dark in Settings. Default to
+System and persist the choice on the device. Apply it to library windows,
+Settings, and presented playback screens, including native controls and materials.
+
+The [mobile appearance comparison](https://www.figma.com/design/KtfBubkg9KiK5LuLHIm8Qt?node-id=135-325)
+and [macOS light reference](https://www.figma.com/design/KtfBubkg9KiK5LuLHIm8Qt?node-id=139-1754)
+define the light palette. The shared `Appearance.xcassets` supplies adaptive
+content, sidebar, control, primary/secondary text, separator, and accent roles.
+Light uses white content, `#F5F6F8` sidebar surfaces, `#EDEFF3` control surfaces,
+`#202126` text, `#5C6069` secondary text, and `#2A65D1` action text/icons. Dark
+retains the existing palette. Keep `#1253FF` for filled Play and current-track
+backgrounds, with white text and icons in both appearances. Native glass uses
+semantic foreground styles and system materials.
+
+These appearance rules override the dark-only surface examples in the later web
+reference. Album artwork is library content and does not change with appearance.
+Outline artwork inside its rounded bounds with a single physical pixel of the
+adaptive separator color so white artwork remains distinct from light content.
+
 ## iPhone UI Guidance
 
 The [iOS Music-inspired exploration](https://www.figma.com/design/KtfBubkg9KiK5LuLHIm8Qt?node-id=18-3) defines information hierarchy and alignment. Preserve the existing UI colors and use the spacing scale below, without adding a separate iOS spacing scale.
 
-- Use native navigation, tabs, the tab bottom accessory, sheets, and sliders. Let the system provide Liquid Glass for navigation and controls; keep content on Graphite. Do not cover the mini-player accessory with an opaque background.
+- Use native navigation, tabs, the tab bottom accessory, sheets, and sliders. Let the system provide Liquid Glass for navigation and controls; keep content on the adaptive content surface. Do not cover the mini-player accessory with an opaque background.
 - Use system typography with Dynamic Type. Inter and Noto Sans JP in Figma are preview substitutes. Allow long titles to wrap and use one album column at accessibility text sizes.
 - In the full player, inset artwork 20 points from each edge. Inset metadata and seeking 32 points from the leading edge and 20 from the trailing edge. Align the visible trailing edge of the original Regen dots SVG with artwork and seeking, accounting for its 3-point transparent inset separately from its 44-point hit target.
 - Group title and artist with 4-point spacing and equal text size, emphasizing the title with weight. Use 20 points between artwork, metadata, and seeking; use 32 points before and between transport controls. Transport targets are 64 points with 36-point skip icons and a 48-point play/pause icon.

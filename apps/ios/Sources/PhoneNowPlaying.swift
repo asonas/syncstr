@@ -16,6 +16,7 @@ struct RegenIcon: View {
 
 struct PhoneArtwork: View {
     let url: URL?
+    @Environment(\.displayScale) private var displayScale
 
     var body: some View {
         MusicImage(url: url) { image in
@@ -24,13 +25,17 @@ struct PhoneArtwork: View {
             PhoneStyle.carbon.overlay {
                 GeometryReader { geometry in
                     RegenIcon(name: "music", size: min(48, geometry.size.width * 0.5))
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(PhoneStyle.secondary)
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
             }
         }
         .aspectRatio(1, contentMode: .fit)
         .clipShape(RoundedRectangle(cornerRadius: 4))
+        .overlay {
+            RoundedRectangle(cornerRadius: 4)
+                .strokeBorder(AppearanceColors.separator, lineWidth: 1 / displayScale)
+        }
         .accessibilityHidden(true)
     }
 }
@@ -54,7 +59,7 @@ struct PhoneNowPlaying: View {
                             VStack(alignment: .leading, spacing: 4) {
                                 Text(track.title).fontWeight(.bold)
                                 Text(track.artist ?? "アーティスト不明")
-                                    .foregroundStyle(.secondary)
+                                    .foregroundStyle(PhoneStyle.secondary)
                             }
                             .font(.system(size: metadataSize))
                             .frame(maxWidth: .infinity, alignment: .leading)
@@ -106,7 +111,7 @@ struct PhoneNowPlaying: View {
                                 Spacer()
                                 Text("−\(time(max(0, library.duration - library.position)))")
                             }
-                            .font(.caption).monospacedDigit().foregroundStyle(.secondary)
+                            .font(.caption).monospacedDigit().foregroundStyle(PhoneStyle.secondary)
                         }
                         .padding(.leading, 32)
                         .padding(.trailing, 20)

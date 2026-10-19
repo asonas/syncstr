@@ -8,7 +8,7 @@ struct PhoneTrackRowSurface<Content: View>: View {
     var body: some View {
         content(hovered)
             .frame(minHeight: 48)
-            .background(selected ? PhoneStyle.button : hovered ? PhoneStyle.carbon : .clear)
+            .background(selected ? PhoneStyle.button : hovered ? AppearanceColors.control : .clear)
             .onHover { hovered = $0 }
             .accessibilityAddTraits(selected ? .isSelected : [])
     }

@@ -48,6 +48,8 @@ targets:
       - path: ../macos/Licenses
         buildPhase: resources
       - path: ../macos/SettingsView.swift
+      - path: ../macos/Appearance.swift
+      - path: ../macos/Appearance.xcassets
       - path: ../macos/Assets.xcassets
     dependencies:
       - sdk: iTunesLibrary.framework
@@ -82,6 +84,8 @@ targets:
     platform: iOS
     sources:
       - path: Sources
+      - path: ../macos/Appearance.swift
+      - path: ../macos/Appearance.xcassets
       - path: Licenses
         buildPhase: resources
       - path: ../macos/LocalCatalog.swift

@@ -1,10 +1,11 @@
 import SwiftUI
 
 enum PhoneStyle {
-    static let carbon = Color(red: 18 / 255, green: 18 / 255, blue: 20 / 255)
-    static let graphite = Color(red: 35 / 255, green: 36 / 255, blue: 38 / 255)
-    static let signal = Color(red: 82 / 255, green: 143 / 255, blue: 1)
-    static let button = Color(red: 18 / 255, green: 83 / 255, blue: 1)
+    static let carbon = AppearanceColors.sidebar
+    static let graphite = AppearanceColors.content
+    static let signal = AppearanceColors.accent
+    static let button = AppearanceColors.action
+    static let secondary = AppearanceColors.secondary
 }
 
 enum PhoneTab: Hashable { case library, search, settings }
@@ -210,9 +211,9 @@ struct PhoneRoot: View {
                 NavigationLink { albumDetail(album) } label: {
                     VStack(alignment: .leading, spacing: 4) {
                         PhoneArtwork(url: album.coverArt.flatMap { library.artworkURLs[$0] })
-                        Text(album.title).font(.subheadline.bold()).foregroundStyle(.primary)
+                        Text(album.title).font(.subheadline.bold()).foregroundStyle(AppearanceColors.primary)
                             .lineLimit(dynamicTypeSize.isAccessibilitySize ? nil : 2)
-                        Text(album.artist).font(.subheadline).foregroundStyle(.secondary)
+                        Text(album.artist).font(.subheadline).foregroundStyle(PhoneStyle.secondary)
                             .lineLimit(dynamicTypeSize.isAccessibilitySize ? nil : 1)
                     }
                 }
@@ -238,8 +239,8 @@ struct PhoneRoot: View {
                         VStack(alignment: wide ? .leading : .center, spacing: 4) {
                             Text(album.title).font(.title3.bold())
                             Text(album.detailArtist ?? album.artist).font(.body)
-                                .foregroundStyle(album.detailArtist == "V.A." ? .secondary : PhoneStyle.signal)
-                            Text("\(album.tracks.count)曲").font(.caption).foregroundStyle(.secondary)
+                                .foregroundStyle(album.detailArtist == "V.A." ? PhoneStyle.secondary : PhoneStyle.signal)
+                            Text("\(album.tracks.count)曲").font(.caption).foregroundStyle(PhoneStyle.secondary)
                         }
                         .multilineTextAlignment(wide ? .leading : .center)
                         HStack(spacing: 20) {
@@ -258,6 +259,7 @@ struct PhoneRoot: View {
                             .disabled(album.tracks.isEmpty)
                             .accessibilityLabel("再生")
                             OfflineSaveControls(library: library, tracks: album.tracks, scope: "album:" + album.id, iconOnly: true)
+                                .foregroundStyle(PhoneStyle.signal)
                         }
                     }
                 }
@@ -326,15 +328,15 @@ struct PhoneRoot: View {
                                     ProgressView().tint(.white).accessibilityLabel(library.playbackLoadingLabel)
                                 } else if current || hovered {
                                     RegenIcon(name: "filled-play").foregroundStyle(accented ? .white : PhoneStyle.signal)
-                                } else { Text("\(index)").font(.subheadline).foregroundStyle(.secondary) }
+                                } else { Text("\(index)").font(.subheadline).foregroundStyle(PhoneStyle.secondary) }
                             }
                             .frame(width: 24)
                         }
                         VStack(alignment: .leading, spacing: 4) {
                             Text(track.title).font(.callout)
-                                .foregroundStyle(accented ? .white : current ? PhoneStyle.signal : .primary)
+                                .foregroundStyle(accented ? .white : current ? PhoneStyle.signal : AppearanceColors.primary)
                             Text(track.artist ?? "アーティスト不明")
-                                .font(.subheadline).foregroundStyle(accented ? Color.white : .secondary)
+                                .font(.subheadline).foregroundStyle(accented ? Color.white : PhoneStyle.secondary)
                         }
                         Spacer(minLength: 8)
                         if index == nil && library.current?.id == track.id {
@@ -346,7 +348,7 @@ struct PhoneRoot: View {
                             }
                         }
                         if index == nil, let duration = track.duration {
-                            Text(time(duration)).font(.caption).monospacedDigit().foregroundStyle(.secondary)
+                            Text(time(duration)).font(.caption).monospacedDigit().foregroundStyle(PhoneStyle.secondary)
                         }
                     }
                     .padding(.vertical, 8)
@@ -357,6 +359,7 @@ struct PhoneRoot: View {
                 .accessibilityValue(library.current?.id == track.id ? (library.loading ? library.playbackLoadingLabel : library.playing ? "再生中" : "選択中") : "")
                 OfflineSaveControls(library: library, tracks: [track], scope: "track:" + track.id, compact: true)
                     .buttonStyle(.borderless)
+                    .foregroundStyle(accented ? Color.white : PhoneStyle.signal)
                     .tint(accented ? .white : PhoneStyle.signal)
             }
         }
@@ -401,6 +404,7 @@ struct PhoneRoot: View {
 
     private var settings: some View {
         Form {
+            Section { AppearanceSettings() }
             Section { PlaybackDiagnosticSettings(recorder: library.diagnostics) }
             Section { PlaybackStorageSettings(library: library) }
             Section("ライブラリと接続") { PeerSetupView(transfer: library.transfer) }

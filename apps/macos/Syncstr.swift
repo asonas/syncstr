@@ -2,12 +2,13 @@ import SwiftUI
 import UniformTypeIdentifiers
 
 enum Studio {
-    static let carbon = Color(red: 18 / 255, green: 18 / 255, blue: 20 / 255)
-    static let graphite = Color(red: 35 / 255, green: 36 / 255, blue: 38 / 255)
-    static let iron = Color(red: 69 / 255, green: 70 / 255, blue: 77 / 255)
-    static let fog = Color(red: 166 / 255, green: 168 / 255, blue: 173 / 255)
-    static let signal = Color(red: 82 / 255, green: 143 / 255, blue: 1)
-    static let button = Color(red: 18 / 255, green: 83 / 255, blue: 1)
+    static let carbon = AppearanceColors.sidebar
+    static let graphite = AppearanceColors.content
+    static let iron = AppearanceColors.separator
+    static let control = AppearanceColors.control
+    static let fog = AppearanceColors.secondary
+    static let signal = AppearanceColors.accent
+    static let button = AppearanceColors.action
 }
 
 struct StudioButton: ButtonStyle {
@@ -19,7 +20,7 @@ struct StudioButton: ButtonStyle {
             .font(.system(size: 14, weight: .medium))
             .padding(.horizontal, 20)
             .frame(minHeight: 44)
-            .foregroundStyle(enabled ? Color.white : Studio.fog)
+            .foregroundStyle(enabled ? (primary ? Color.white : AppearanceColors.primary) : Studio.fog)
             .background(primary && enabled ? Studio.button : Studio.carbon)
             .clipShape(RoundedRectangle(cornerRadius: 8))
             .overlay {
@@ -78,7 +79,7 @@ struct LibraryView: View {
                     Text(message).textSelection(.enabled)
                     Spacer(minLength: 0)
                 }
-                .foregroundStyle(.white)
+                .foregroundStyle(AppearanceColors.primary)
                 .padding(16)
                 .background(Studio.graphite)
                 .accessibilityElement(children: .combine)
@@ -86,10 +87,9 @@ struct LibraryView: View {
         }
         .font(.system(size: 14))
         .tracking(-0.21)
-        .foregroundStyle(.white)
+        .foregroundStyle(AppearanceColors.primary)
         .background(Studio.graphite)
         .tint(Studio.signal)
-        .preferredColorScheme(.dark)
         .frame(minWidth: 640, minHeight: 560)
         .navigationTitle("")
         .focusedSceneObject(library)
@@ -168,7 +168,7 @@ struct LibraryView: View {
                         .frame(maxWidth: .infinity, minHeight: 32, alignment: .leading)
                         .padding(.horizontal, 8)
                         .background(library.destination == destination && !library.showingNowPlaying ? Studio.graphite : Color.clear)
-                        .foregroundStyle(library.destination == destination && !library.showingNowPlaying ? Studio.signal : Color.white)
+                        .foregroundStyle(library.destination == destination && !library.showingNowPlaying ? Studio.signal : AppearanceColors.primary)
                         .clipShape(RoundedRectangle(cornerRadius: 4))
                         .contentShape(Rectangle())
                 }.buttonStyle(.plain)
@@ -251,7 +251,7 @@ struct LibraryView: View {
                             }
                             .frame(maxWidth: .infinity, minHeight: 60, alignment: .topLeading)
                         }
-                        .background(selectedAlbums.contains(album.id) ? Studio.iron : Color.clear,
+                        .background(selectedAlbums.contains(album.id) ? Studio.control : Color.clear,
                                     in: RoundedRectangle(cornerRadius: 8))
                         .overlay {
                             RoundedRectangle(cornerRadius: 8)
@@ -387,7 +387,7 @@ struct LibraryView: View {
                             Button { library.selectedArtist = artist } label: {
                                 HStack(spacing: 8) {
                                     MacIcon("users").foregroundStyle(Studio.fog)
-                                        .frame(width: 32, height: 32).background(Studio.iron, in: Circle())
+                                        .frame(width: 32, height: 32).background(Studio.control, in: Circle())
                                     Text(artist).lineLimit(1)
                                     Spacer(minLength: 0)
                                 }
@@ -395,6 +395,7 @@ struct LibraryView: View {
                                 .background(library.selectedArtist == artist ? Studio.button : Color.clear,
                                             in: RoundedRectangle(cornerRadius: 8))
                                 .contentShape(Rectangle())
+                                .foregroundStyle(library.selectedArtist == artist ? Color.white : AppearanceColors.primary)
                             }.buttonStyle(.plain)
                                 .accessibilityAddTraits(library.selectedArtist == artist ? .isSelected : [])
                                 .help(artist)
@@ -564,10 +565,10 @@ struct LibraryView: View {
             .accessibilityLabel("\(track.title)のその他の操作")
         }
         .font(.system(size: 14))
-        .foregroundStyle(selected && dense ? Studio.signal : Color.white)
+        .foregroundStyle(accentSelection ? Color.white : selected && dense ? Studio.signal : AppearanceColors.primary)
         .padding(.horizontal, 8)
-        .background(selected ? (dense ? Studio.iron : Studio.button)
-                    : hoveredTrack == track.id ? (dense ? Studio.carbon : Studio.iron)
+        .background(selected ? (dense ? Studio.control : Studio.button)
+                    : hoveredTrack == track.id ? Studio.control
                     : striped ? Studio.carbon : Color.clear,
                     in: RoundedRectangle(cornerRadius: 4))
         .onHover { hoveredTrack = $0 ? track.id : nil }
@@ -588,6 +589,7 @@ struct LibraryView: View {
             }
                 .frame(width: 128, height: 36)
                 .background(Studio.button, in: RoundedRectangle(cornerRadius: 8))
+                .foregroundStyle(.white)
                 .contentShape(Rectangle())
         }.buttonStyle(.plain).disabled(tracks.isEmpty)
     }
@@ -783,6 +785,7 @@ private struct MacIcon: View {
 
 private struct Artwork: View {
     let url: URL?
+    @Environment(\.displayScale) private var displayScale
 
     var body: some View {
         GeometryReader { geometry in
@@ -799,6 +802,10 @@ private struct Artwork: View {
         .aspectRatio(1, contentMode: .fit)
         .clipped()
         .clipShape(RoundedRectangle(cornerRadius: 4))
+        .overlay {
+            RoundedRectangle(cornerRadius: 4)
+                .strokeBorder(AppearanceColors.separator, lineWidth: 1 / displayScale)
+        }
         .accessibilityHidden(true)
     }
 }
@@ -816,11 +823,12 @@ struct SyncstrApp: App {
     var body: some Scene {
         WindowGroup("Syncstr") {
             LibraryView(library: library).onAppear { _ = playback }
+                .modifier(AppAppearance())
         }
             .defaultSize(width: 1080, height: 740)
             .windowStyle(.hiddenTitleBar)
             .windowToolbarStyle(.unifiedCompact)
             .commands { PlaybackCommands() }
-        Settings { SettingsView(library: library) }
+        Settings { SettingsView(library: library).modifier(AppAppearance()) }
     }
 }

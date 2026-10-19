@@ -6,12 +6,14 @@ struct SettingsView: View {
 
     var body: some View {
         ScrollView { VStack(alignment: .leading, spacing: 16) {
+            AppearanceSettings()
+            Divider()
             Text("音楽の追加").font(.headline)
             AddMusicButton(library: library)
             if library.transfer.clusterRegistration == nil {
                 LocalFolderButton(library: library)
                 Text("登録せずにこの端末で再生できます。ライブラリホストには設定されません。")
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(Studio.fog)
             }
             if let message = library.message { Text(message).textSelection(.enabled) }
             Divider()
@@ -25,11 +27,11 @@ struct SettingsView: View {
                 Button("従来の端末間転送") { showingLegacy = true }
                     .disabled(library.transfer.clusterRegistration != nil)
                 Text("音楽フォルダを使う旧方式です。共有ライブラリへの参加と日常の保存操作は上の設定から行えます。")
-                    .font(.caption).foregroundStyle(.secondary)
+                    .font(.caption).foregroundStyle(Studio.fog)
             }
         }.padding(24) }
         .frame(width: 520, height: 680)
-        .background(Studio.graphite).preferredColorScheme(.dark)
+        .background(Studio.graphite)
         .navigationTitle("設定")
         .sheet(isPresented: $showingLegacy) {
             VStack {

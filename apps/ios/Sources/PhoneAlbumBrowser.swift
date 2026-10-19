@@ -87,14 +87,14 @@ struct PhoneAlbumBrowser<Detail: View>: View {
                                 .padding(8)
                         }
                     }
-                Text(album.title).font(.subheadline.bold()).foregroundStyle(.primary)
+                Text(album.title).font(.subheadline.bold()).foregroundStyle(AppearanceColors.primary)
                     .lineLimit(dynamicTypeSize.isAccessibilitySize ? nil : 2)
-                Text(album.artist).font(.subheadline).foregroundStyle(.secondary)
+                Text(album.artist).font(.subheadline).foregroundStyle(PhoneStyle.secondary)
                     .lineLimit(dynamicTypeSize.isAccessibilitySize ? nil : 1)
             }
             .padding(4)
             .background(
-                selected.contains(album.id) ? PhoneStyle.carbon : Color.clear, in: RoundedRectangle(cornerRadius: 8)
+                selected.contains(album.id) ? AppearanceColors.control : Color.clear, in: RoundedRectangle(cornerRadius: 8)
             )
             .overlay {
                 RoundedRectangle(cornerRadius: 8).strokeBorder(

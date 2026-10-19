@@ -5,16 +5,21 @@ struct SyncstrApp: App {
     @Environment(\.scenePhase) private var scenePhase
     @StateObject private var library: Library
     @StateObject private var playback: PhonePlayback
+    private let appearanceDefaults: UserDefaults
 
     init() {
         let library: Library
 #if DEBUG
         if ProcessInfo.processInfo.arguments.contains("--ui-fixture") {
+            let defaults = UserDefaults(suiteName: "as.ason.syncstr.ui-fixture")!
+            if ProcessInfo.processInfo.arguments.contains("--reset-appearance") { defaults.removeObject(forKey: "appearance") }
+            appearanceDefaults = defaults
             do { library = try MobileUITestFixture.makeLibrary() }
             catch { fatalError("Cannot create UI test fixture: \(error)") }
-        } else { library = Library() }
+        } else { library = Library(); appearanceDefaults = .standard }
 #else
         library = Library()
+        appearanceDefaults = .standard
 #endif
         _library = StateObject(wrappedValue: library)
         _playback = StateObject(wrappedValue: PhonePlayback(library: library))
@@ -24,7 +29,8 @@ struct SyncstrApp: App {
         WindowGroup {
             PhoneRoot(library: library)
                 .focusedSceneObject(library)
-                .preferredColorScheme(.dark)
+                .modifier(AppAppearance())
+                .defaultAppStorage(appearanceDefaults)
                 .tint(PhoneStyle.signal)
                 .task {
                     _ = playback
