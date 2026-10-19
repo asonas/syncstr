@@ -41,6 +41,7 @@ final class Library: ObservableObject {
     @Published var tracks: [Track] = [] { didSet { if !applyingPreparedCatalog { rebuildAlbums() } } }
     private var applyingPreparedCatalog = false
     private(set) var albums: [Album] = []
+    private(set) var recentlyAddedAlbums: [Album] = []
     private(set) var hiddenAlbums: [Album] = []
     private(set) var catalogTracks: [Track] = []
     private var albumsByID: [String: Album] = [:]
@@ -198,12 +199,22 @@ final class Library: ObservableObject {
         hiddenAlbums = allAlbums.filter { isAlbumHidden($0.id) }
         let hiddenIDs = Set(hiddenAlbums.map(\.id))
         albums = allAlbums.filter { !hiddenIDs.contains($0.id) }
+        let dates: [(album: Album, addedAt: Int64)] = albums.map { album in
+            (album, album.tracks.compactMap(\.addedAt).max() ?? 0)
+        }
+        let recent = dates.sorted { left, right in
+            if left.addedAt != right.addedAt { return left.addedAt > right.addedAt }
+            return left.album.id < right.album.id
+        }
+        recentlyAddedAlbums = recent.map(\.album)
         catalogTracks = tracks.filter { !hiddenIDs.contains($0.albumKey) }
         tracksByArtist = Dictionary(grouping: catalogTracks) { $0.artist ?? "アーティスト不明" }
         artistNames = tracksByArtist.keys.sorted { $0.localizedStandardCompare($1) == .orderedAscending }
         albumsByArtist = [:]
         for album in albums {
-            for artist in Set(album.tracks.map { $0.artist ?? "アーティスト不明" }) {
+            var credits = Set(album.tracks.map { $0.artist ?? "アーティスト不明" })
+            if let artist = album.detailArtist, artist != "V.A." { credits.insert(artist) }
+            for artist in credits {
                 albumsByArtist[artist, default: []].append(album)
             }
         }
@@ -615,6 +626,14 @@ final class Library: ObservableObject {
         catch { message = error.localizedDescription }
     }
 #endif
+
+    func startAlbum(_ tracks: [Track], shuffled: Bool = false) {
+        guard connected, !tracks.isEmpty else { return }
+        self.shuffled = shuffled
+        orderedQueue = tracks
+        queue = shuffled ? tracks.shuffled() : tracks
+        if let first = queue.first { select(first, autoplay: true) }
+    }
 
     func play(_ track: Track, in tracks: [Track]? = nil) {
         guard connected else { return }
@@ -1063,7 +1082,13 @@ final class Library: ObservableObject {
             var catalog = localCatalog ?? LocalCatalog(id: UUID().uuidString, name: "マイライブラリ", entries: [])
             let prepared = try await UploadedMusic.prepare(files, organization: catalog.organization ?? AlbumOrganization(), sourceID: catalog.id)
             catalog.organization = prepared.organization
-            for (original, entry) in zip(files, prepared.entries) {
+            for (original, preparedEntry) in zip(files, prepared.entries) {
+                var entry = preparedEntry
+                if let previous = catalog.entries.first(where: { $0.sha256 == entry.sha256 }) {
+                    entry.track.addedAt = previous.track.addedAt
+                } else {
+                    entry.track.addedAt = Int64(Date().timeIntervalSince1970 * 1000)
+                }
                 let scoped = original.startAccessingSecurityScopedResource()
                 defer { if scoped { original.stopAccessingSecurityScopedResource() } }
                 let temporary = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)

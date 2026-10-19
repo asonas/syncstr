@@ -8,6 +8,40 @@ import Testing
 @MainActor
 struct LibraryPresentationTests {
     @Test
+    func recentlyAddedUsesSharedDatesAndStableLegacyOrderAfterReopening() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = LocalMusicStore(root: root)
+        let entries = [
+            Track(id: "first", title: "Song", artist: "Artist", album: "Z", addedAt: 100),
+            Track(id: "second", title: "Song", artist: "Artist", album: "A", addedAt: 200),
+            Track(id: "legacy", title: "Song", artist: "Artist", album: "Legacy")
+        ].enumerated().map { index, track in
+            var track = track
+            track.suffix = "mp3"
+            track.size = 4
+            return LocalEntry(track: track, sha256: String(repeating: String(index + 1), count: 64), artwork: nil)
+        }
+        let catalog = LocalCatalog(id: "fixture", name: "Fixture", entries: entries)
+        try store.save(catalog)
+        let library = Library(localStore: store)
+        defer { library.closeLibrary() }
+        try library.openLocal(catalog)
+        #expect(library.recentlyAddedAlbums.map(\.title) == ["A", "Z", "Legacy"])
+        library.albumSortDescending = true
+        #expect(library.recentlyAddedAlbums.map(\.title) == ["A", "Z", "Legacy"])
+        let reopened = Library(localStore: store)
+        defer { reopened.closeLibrary() }
+        let saved = try store.load()
+        try reopened.openLocal(try #require(saved))
+        #expect(reopened.recentlyAddedAlbums.map(\.id) == library.recentlyAddedAlbums.map(\.id))
+        #expect(reopened.tracks.first(where: { $0.id == "legacy" })?.addedAt == nil)
+        let album = try #require(reopened.albums.first(where: { $0.title == "Z" }))
+        reopened.tracks.append(Track(id: "new", title: "New song", artist: "Artist", album: "Z", albumId: album.id, addedAt: 300))
+        #expect(reopened.recentlyAddedAlbums.map(\.title) == ["Z", "A", "Legacy"])
+    }
+
+    @Test
     func albumDetailsAbbreviateMultipleArtistsWithoutChangingCredits() {
         let tracks = [
             Track(id: "one", title: "First", artist: "Artist A", album: "Collection", albumId: "collection"),

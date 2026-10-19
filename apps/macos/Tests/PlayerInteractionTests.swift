@@ -22,6 +22,22 @@ final class PlayerInteractionTests: XCTestCase {
         return library
     }
 
+    func testAlbumPlaybackReplacesQueueAndNormalPlayClearsShuffle() throws {
+        let library = try library()
+        defer { library.closeLibrary() }
+        let album = Array(library.tracks.prefix(3))
+        library.startAlbum(album, shuffled: true)
+        XCTAssertTrue(library.shuffled)
+        XCTAssertEqual(Set(library.queue.map(\.id)), Set(album.map(\.id)))
+        XCTAssertEqual(library.queue.count, album.count)
+        XCTAssertEqual(library.current?.id, library.queue.first?.id)
+        library.pause()
+        library.startAlbum(album)
+        XCTAssertFalse(library.shuffled)
+        XCTAssertEqual(library.queue.map(\.id), album.map(\.id))
+        XCTAssertEqual(library.current?.id, album.first?.id)
+    }
+
     func testPausedNavigationThresholdAndStableSourceQueue() throws {
         let library = try library()
         let source = library.tracks

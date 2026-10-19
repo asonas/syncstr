@@ -243,12 +243,14 @@ impl crate::store::Store {
             if let Some(previous) = previous {
                 let previous: crate::model::Entry = serde_json::from_slice(&previous)?;
                 if update_metadata {
+                    entry.track.added_at = previous.track.added_at;
                     entry.track.id = previous.track.id;
                     entry.track.cover_art = entry.artwork.as_ref().map(|_| entry.track.id.clone());
                 } else {
                     entry = previous;
                 }
             } else {
+                entry.track.added_at = Some(crate::model::addition_time());
                 entry.track.id = uuid::Uuid::new_v4().to_string();
                 entry.track.cover_art = entry.artwork.as_ref().map(|_| entry.track.id.clone());
             }

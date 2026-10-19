@@ -273,3 +273,10 @@ schemes:
         Syncstr: all
     test:
       targets: [SyncstrTests]
+  SyncstrUITests:
+    build:
+      targets:
+        Syncstr: all
+        SyncstrUITests: [test]
+    test:
+      targets: [SyncstrUITests]

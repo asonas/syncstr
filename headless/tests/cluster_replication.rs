@@ -64,18 +64,22 @@ async fn client_restore_requires_confirmation_and_keeps_concurrent_deletion() ->
     let store = syncstr_headless::store::Store::open(&root.path().join("data"))?;
     store.create_cluster(identity.id().to_string()).await?;
     let bytes = b"restore fixture";
-    let entry = crate::fixture(bytes);
+    let mut entry = crate::fixture(bytes);
+    entry.track.added_at = Some(1);
     let source = root.path().join("source.mp3");
     std::fs::write(&source, bytes)?;
     let mut organization = syncstr_headless::organization::Organization::default();
     organization.import(&entry);
     store.import_cluster_file(&identity, entry.clone(), Some(organization.clone()), &source, false).await?;
     let imported = store.cluster_selected_change(&entry.sha256).await?.unwrap();
+    let added_at = store.catalog().await?.entries[0].track.added_at;
+    assert!(added_at.is_some_and(|value| value > 1));
     let mut edited = organization.clone();
     edited.albums[0].title = "Edited without uploading audio".into();
     let revision = store.receive_cluster_metadata(&identity, entry.clone(), edited.clone(), vec![imported.id.clone()]).await?;
     assert_eq!(store.receive_cluster_metadata(&identity, entry.clone(), edited, vec![imported.id]).await?, revision);
     assert_eq!(store.cluster_changes().await?.len(), 2);
+    assert_eq!(store.catalog().await?.entries[0].track.added_at, added_at);
     let removed = store.publish_cluster_change(&identity, entry.sha256.clone(), syncstr_headless::cluster_changes::Action::Delete).await?;
     assert!(store.receive_cluster_metadata(&identity, entry.clone(), organization.clone(), vec![removed.id.clone()]).await.is_err());
     let stage = || -> anyhow::Result<tempfile::NamedTempFile> {
@@ -87,6 +91,7 @@ async fn client_restore_requires_confirmation_and_keeps_concurrent_deletion() ->
     assert!(store.receive_cluster_import(&identity, entry.clone(), organization.clone(), vec![removed.id.clone()], false, stage()?).await.is_err());
     assert!(store.cluster_selected_change(&entry.sha256).await?.is_none());
     store.receive_cluster_import(&identity, entry.clone(), organization.clone(), vec![removed.id.clone()], true, stage()?).await?;
+    assert_eq!(store.catalog().await?.entries[0].track.added_at, added_at);
     assert!(matches!(store.cluster_selected_change(&entry.sha256).await?.unwrap().action, syncstr_headless::cluster_changes::Action::Restore { .. }));
     store.publish_cluster_change(&identity, entry.sha256.clone(), syncstr_headless::cluster_changes::Action::Delete).await?;
     assert!(store.receive_cluster_import(&identity, entry.clone(), organization, vec![removed.id], true, stage()?).await.is_err());

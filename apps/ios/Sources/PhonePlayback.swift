@@ -3,6 +3,9 @@ import Combine
 import MediaPlayer
 #if os(macOS)
 import CoreAudio
+import AppKit
+#else
+import UIKit
 #endif
 
 @MainActor
@@ -12,6 +15,10 @@ final class PhonePlayback: ObservableObject {
     private var changes: AnyCancellable?
     private var interruption: AnyCancellable?
     private var routeChange: AnyCancellable?
+    private var artworkTask: Task<Void, Never>?
+    private var artworkURL: URL?
+    private var artworkTrackID: String?
+    private var artwork: MPMediaItemArtwork?
 #if os(macOS)
     private var output: MacPlaybackOutput?
 #endif
@@ -97,10 +104,35 @@ final class PhonePlayback: ObservableObject {
         commands.previousTrackCommand.isEnabled = library.canGoPrevious
         commands.changePlaybackPositionCommand.isEnabled = library.canSeek
         guard let track = library.current else {
+            artworkTask?.cancel()
+            artworkTask = nil
+            artworkURL = nil
+            artworkTrackID = nil
+            artwork = nil
             MPNowPlayingInfoCenter.default().nowPlayingInfo = nil
             return
         }
-        MPNowPlayingInfoCenter.default().nowPlayingInfo = [
+        let url = track.coverArt.flatMap { library.artworkURLs[$0] }
+        if artworkURL != url || artworkTrackID != track.id {
+            artworkTask?.cancel()
+            artworkURL = url
+            artworkTrackID = track.id
+            artwork = nil
+            if let url {
+                artworkTask = Task { [weak self] in
+                    guard let data = try? await Self.artworkData(url), !Task.isCancelled else { return }
+#if os(macOS)
+                    guard let image = NSImage(data: data) else { return }
+#else
+                    guard let image = UIImage(data: data) else { return }
+#endif
+                    guard let self, self.artworkURL == url, self.library.current?.id == track.id else { return }
+                    self.artwork = MPMediaItemArtwork(boundsSize: image.size) { _ in image }
+                    self.update()
+                }
+            }
+        }
+        var info: [String: Any] = [
             MPMediaItemPropertyTitle: track.title,
             MPMediaItemPropertyArtist: track.artist ?? "アーティスト不明",
             MPMediaItemPropertyAlbumTitle: track.album ?? "",
@@ -108,9 +140,21 @@ final class PhonePlayback: ObservableObject {
             MPNowPlayingInfoPropertyElapsedPlaybackTime: library.position,
             MPNowPlayingInfoPropertyPlaybackRate: library.playing ? 1.0 : 0.0
         ]
+        if let artwork { info[MPMediaItemPropertyArtwork] = artwork }
+        MPNowPlayingInfoCenter.default().nowPlayingInfo = info
 #if os(macOS)
         MPNowPlayingInfoCenter.default().playbackState = library.playing ? .playing : .paused
 #endif
+    }
+
+    @concurrent
+    private static func artworkData(_ url: URL) async throws -> Data {
+        if url.isFileURL { return try Data(contentsOf: url) }
+        let (data, response) = try await URLSession.shared.data(from: url)
+        if let response = response as? HTTPURLResponse, !(200..<300).contains(response.statusCode) {
+            throw URLError(.badServerResponse)
+        }
+        return data
     }
 }
 

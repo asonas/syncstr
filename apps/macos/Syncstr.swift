@@ -364,7 +364,12 @@ struct LibraryView: View {
                             }
                             Text("\(album.tracks.count)曲").font(.system(size: 12)).foregroundStyle(Studio.fog)
                             Spacer(minLength: 20)
-                            HStack(alignment: .top, spacing: 16) {
+                            HStack(alignment: .center, spacing: 16) {
+                                Button { library.startAlbum(album.tracks, shuffled: true) } label: {
+                                    Image(systemName: "shuffle").frame(width: 36, height: 36)
+                                }
+                                .buttonStyle(.plain).foregroundStyle(Studio.signal)
+                                .accessibilityLabel("アルバムをシャッフル再生")
                                 playButton(album.tracks)
                                 OfflineSaveControls(library: library, tracks: album.tracks,
                                                     scope: "album:" + album.id, iconOnly: true)
@@ -582,7 +587,7 @@ struct LibraryView: View {
     }
 
     private func playButton(_ tracks: [Track]) -> some View {
-        return Button { library.togglePlayback(in: tracks) } label: {
+        return Button { library.startAlbum(tracks) } label: {
             HStack(spacing: 8) {
                 MacIcon("filled-play", size: 16)
                 Text("再生")

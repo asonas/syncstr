@@ -350,6 +350,7 @@ struct LocalMusicStore {
 
     static func valid(_ entry: LocalEntry) -> Bool {
         entry.sha256.count == 64 && entry.sha256.allSatisfy { "0123456789abcdef".contains($0) }
+            && (entry.track.addedAt.map { $0 >= 0 } ?? true)
             && entry.track.size != nil && entry.track.size! > 0
             && entry.track.size! <= 20 * 1024 * 1024 * 1024
             && !entry.track.id.isEmpty && entry.track.id.utf8.count <= 1024
@@ -502,6 +503,11 @@ struct LocalFolder {
             stableFiles[stableID] = files[entry.track.id]
             var updated = entry
             updated.track.id = stableID
+            if let previous = oldEntries[stableID] {
+                updated.track.addedAt = previous.track.addedAt
+            } else {
+                updated.track.addedAt = Int64(Date().timeIntervalSince1970 * 1000)
+            }
             if updated.track.coverArt != nil { updated.track.coverArt = stableID }
             return updated
         }

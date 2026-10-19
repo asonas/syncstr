@@ -28,21 +28,21 @@ final class LibraryFlowTests: XCTestCase {
     }
 
     @MainActor
-    func testArtistListScrollPerformance() {
+    func testArtistAlbumListScrollPerformance() {
         let app = launchFixture()
         if app.buttons["選択"].waitForExistence(timeout: 3), app.navigationBars.buttons["ライブラリ"].exists {
             app.navigationBars.buttons["ライブラリ"].tap()
         }
         app.descendants(matching: .any)["アーティスト"].firstMatch.tap()
         app.buttons["Fixture Ensemble"].tap()
-        XCTAssertTrue(app.buttons["track-fixture-0"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "Album ")).firstMatch.waitForExistence(timeout: 5))
         let options = XCTMeasureOptions()
         options.iterationCount = 3
         measure(metrics: [XCTOSSignpostMetric.scrollDecelerationMetric], options: options) {
             app.swipeUp()
             app.swipeDown()
         }
-        attach(app, "Artist tracks")
+        attach(app, "Artist albums")
     }
 
     @MainActor

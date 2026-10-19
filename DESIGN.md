@@ -59,6 +59,20 @@ The [iOS Music-inspired exploration](https://www.figma.com/design/KtfBubkg9KiK5L
 
 ### iPhone and iPad Library Operations
 
+The [library experience review](https://www.figma.com/design/KtfBubkg9KiK5LuLHIm8Qt?node-id=147-471)
+defines the current album actions and player states. Center Play on iPhone,
+with equal 44-point targets for Shuffle on the left and Save on the right.
+Shuffle uses the native SF Symbol as a narrow exception to the Regen-only rule.
+On wide iPad and macOS details, align this action group's bottom with the artwork
+bottom and its leading edge with the title. Preserve the action width across
+save states. Track save state is an icon with actions and reasons in its menu;
+album-wide cancellation is named explicitly.
+
+The library landing content and Recently Added destination use shared addition
+order. Native tab minimization moves the iPhone player accessory into the bottom
+row on downward scrolling. Artist links open album-based artist details centered
+once on the origin album, with normal back navigation.
+
 - Use native navigation and search controls. On iPad, keep library categories in a `NavigationSplitView` sidebar and allow the system to collapse it for narrow windows. Keep navigation identity stable while resizing. iPhone keeps its library, search, and settings tabs.
 - Adapt album grid columns to the available width, using one column at accessibility text sizes. Album details use side-by-side artwork and metadata only when the content is wide enough; otherwise center them vertically.
 - Place title/artist sort and selection actions at the trailing edge of the album navigation bar. A normal tap opens details. Selection mode and Command-click support multiple albums; batch hide/restore acts on the selection. Sorting, visibility, and search do not change the playback queue.

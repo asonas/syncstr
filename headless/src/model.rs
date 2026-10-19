@@ -1,6 +1,14 @@
 pub const MAX_AUDIO: u64 = 20 * 1024 * 1024 * 1024;
 pub const MAX_METADATA: usize = 1024 * 1024;
 
+pub fn addition_time() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis()
+        .min(i64::MAX as u128) as i64
+}
+
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Track {
@@ -23,6 +31,8 @@ pub struct Track {
     pub disc_number: Option<i64>,
     pub suffix: String,
     pub size: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub added_at: Option<i64>,
 }
 
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -45,6 +55,7 @@ pub struct Entry {
 
 impl crate::model::Entry {
     pub fn validate(&self) -> anyhow::Result<()> {
+        anyhow::ensure!(self.track.added_at.is_none_or(|value| value >= 0), "invalid addition time");
         anyhow::ensure!(
             self.sha256.len() == 64
                 && self

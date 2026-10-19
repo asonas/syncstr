@@ -83,11 +83,14 @@ The same YAML defines the `SyncstrMac` scheme. See the [macOS distribution guide
 ## Implemented behavior
 
 - The library combines artist, album, and track navigation with an adaptive album grid. Album details place artwork and metadata above or beside Play and the ordered track list. Accessibility text sizes use a single album column.
+- The library landing page and **Recently Added** show albums in shared addition order. A newly added member track moves its album forward; metadata edits, downloads, and restores preserve the original track addition time. Undated legacy albums follow dated additions in stable album-ID order. The accepting host assigns shared Unix-millisecond dates. Update participating Rust hosts and clients before importing dated records; historical signed records remain valid.
+- Album Shuffle starts a shuffled album queue; Play starts the album in disc/track order. Artist names with a catalog destination open artist albums, centered on the originating album.
 - Search covers tracks, albums, and artists.
 - Selecting a track plays the originating list in order. The native glass mini-player opens Now Playing as a sheet, with pause/resume, previous/next, seeking, and a track save menu.
-- A cloud/download icon marks an unsaved track, a spinner marks downloading, and a check marks a saved track. Tap the cloud to download; tap the title to play. A spinner next to the title indicates playback preparation.
+- Track save actions use a fixed-width menu: dots for unsaved tracks, progress for pending saves, a check for saved tracks, and an alert for failure. The menu exposes waiting reasons, retry, removal, and explicitly named album-wide cancellation. Tap the title to play. Playback preparation has a separate spinner next to the title.
+- On iPhone, downward scrolling minimizes the native tab bar and moves the mini-player into the bottom row. Upward scrolling restores it. iPad retains its floating player.
 - Playback uses verified received files. The catalog and audio survive restarts without a network. Choosing another Mac or removing a pairing retains audio files.
-- Lock-screen and Control Center integration expose track information, playback position, pause/resume, previous/next, and seeking.
+- Lock-screen and Control Center integration expose artwork, track information, playback position, pause/resume, previous/next, and seeking. Artwork loads asynchronously and is cleared when the selected track has no artwork.
 - Settings provide pairing controls and Mac selection. Received audio remains on the phone when changing connections.
 - Playback activates the audio session's playback category. Background audio is declared; screen locking, audio-route changes, and interruptions require physical-device verification.
 

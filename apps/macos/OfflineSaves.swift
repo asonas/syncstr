@@ -251,6 +251,45 @@ struct OfflineSaveControls: View {
     private var pending: Bool { request.map { [.waiting, .wifi, .saving].contains($0.state) } ?? false }
 
     var body: some View {
+        if compact || iconOnly {
+            Menu {
+                Text(saveStatus)
+                if let request, let error = request.error { Text(error) }
+                if pending, let request {
+                    Button(request.entries.count > tracks.count ? "アルバム全体の保存を中止" : "保存を中止") {
+                        library.transfer.cancelSave(request)
+                    }
+                } else if saved < tracks.count {
+                    Button(request?.state == .failed ? "保存を再試行" : "この端末に保存") {
+                        Task { await library.transfer.requestSave(tracks, scope: scope) }
+                    }
+                }
+                if !pending && tracks.contains(where: library.canRemoveLocalCopy) {
+                    Button("この端末の保存を解除", role: .destructive) { library.localCopiesToRemove = tracks }
+                }
+            } label: {
+                Group {
+                    if pending && saved < tracks.count {
+                        ProgressView().controlSize(.small)
+                    } else {
+                        Image(saved == tracks.count && !tracks.isEmpty ? "regen-circle-check" : request?.state == .failed ? "regen-circle-alert" : compact ? "regen-dots" : "regen-cloud-download")
+                            .resizable().renderingMode(.template).scaledToFit().frame(width: 20, height: 20)
+                    }
+                }
+#if os(iOS)
+                .frame(width: 44, height: 44)
+#else
+                .frame(width: 36, height: 36)
+#endif
+                .contentShape(Rectangle())
+            }
+            .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
+            .fixedSize()
+            .accessibilityLabel(compact ? "\(tracks.first?.title ?? "")の保存操作" : "アルバムの保存操作")
+            .accessibilityValue(saveStatus)
+            .help(saveStatus)
+        } else {
         VStack(alignment: .leading, spacing: 4) {
             if pending, let request {
                 Text(request.state == .wifi ? "Wi-Fi接続待ち" : request.state == .saving ? "保存中" : "接続待ち")
@@ -291,6 +330,18 @@ struct OfflineSaveControls: View {
         .frame(maxWidth: compact ? 120 : nil, alignment: .leading)
         .accessibilityElement(children: .contain)
         .accessibilityLabel(compact ? "\(tracks.first?.title ?? "")の保存" : "オフライン保存")
+        }
+    }
+
+    private var saveStatus: String {
+        if saved == tracks.count && !tracks.isEmpty { return "保存済み" }
+        switch request?.state {
+        case .wifi: return "Wi-Fi接続待ち"
+        case .waiting: return "接続待ち"
+        case .saving: return "保存中・\(saved)/\(tracks.count)曲を保存済み"
+        case .failed: return "保存できませんでした"
+        default: return saved > 0 ? "\(saved)/\(tracks.count)曲を保存済み" : "未保存"
+        }
     }
 }
 

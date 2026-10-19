@@ -121,6 +121,7 @@ impl crate::client::Client {
                 artist,
                 album,
                 album_id: None,
+                added_at: None,
                 cover_art: None,
                 duration: None,
                 track: None,

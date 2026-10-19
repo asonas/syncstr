@@ -175,13 +175,14 @@ impl crate::store::Store {
     pub async fn receive_cluster_metadata(
         &self,
         identity: &crate::peer::Identity,
-        entry: crate::model::Entry,
+        mut entry: crate::model::Entry,
         organization: crate::organization::Organization,
         parents: Vec<String>,
     ) -> anyhow::Result<String> {
         entry.validate()?;
         let organization = organization.for_object(&entry.sha256)?;
         let records = self.cluster_active_changes().await?;
+        entry.track.added_at = original_addition_time(&records, &entry.sha256);
         anyhow::ensure!(!parents.is_empty() && parents.len() <= 64, "metadata needs observed object history");
         for id in &parents {
             let mut parent = records.iter().find(|record| record.id == *id && record.object == entry.sha256)
@@ -256,7 +257,7 @@ impl crate::store::Store {
     pub async fn receive_cluster_import(
         &self,
         identity: &crate::peer::Identity,
-        entry: crate::model::Entry,
+        mut entry: crate::model::Entry,
         organization: crate::organization::Organization,
         parents: Vec<String>,
         restore: bool,
@@ -265,6 +266,11 @@ impl crate::store::Store {
         crate::cluster_replica::verify_file(temporary.path().to_owned(), entry.clone()).await?;
         let organization = organization.for_object(&entry.sha256)?;
         let records = self.cluster_active_changes().await?;
+        // Addition time belongs to the library host, not the uploading device.
+        entry.track.added_at = original_addition_time(&records, &entry.sha256);
+        if !records.iter().any(|record| record.object == entry.sha256) {
+            entry.track.added_at = Some(crate::model::addition_time());
+        }
         anyhow::ensure!(parents.len() <= 64, "too many import parents");
         let mut observed_deletion = false;
         for id in &parents {
@@ -323,6 +329,9 @@ impl crate::store::Store {
             .await?
             .iter()
             .any(|state| state.object == entry.sha256);
+        entry.track.added_at = if known {
+            original_addition_time(&self.cluster_changes().await?, &entry.sha256)
+        } else { Some(crate::model::addition_time()) };
         let mut organization = organization;
         if known && !restore {
             let selected = self
@@ -714,3 +723,14 @@ impl std::fmt::Display for crate::cluster_replica::AlbumMetadataConflict {
 }
 
 impl std::error::Error for crate::cluster_replica::AlbumMetadataConflict {}
+
+fn original_addition_time(records: &[crate::cluster_changes::Change], object: &str) -> Option<i64> {
+    records.iter().filter(|record| record.object == object).filter_map(|record| {
+        match &record.action {
+            crate::cluster_changes::Action::Import { entry, .. }
+            | crate::cluster_changes::Action::Restore { entry, .. }
+            | crate::cluster_changes::Action::Edit { entry, .. } => entry.track.added_at,
+            _ => None,
+        }
+    }).min()
+}

@@ -10,13 +10,32 @@ enum PhoneStyle {
 
 enum PhoneTab: Hashable { case library, search, settings }
 
+private struct PhonePlayerAccessory<Content: View>: View {
+    @Environment(\.tabViewBottomAccessoryPlacement) private var placement
+    @ViewBuilder var content: (Bool) -> Content
+
+    var body: some View { content(placement == .inline) }
+}
+
+private struct PhoneArtistButton: View {
+    let name: String
+    let destination: () -> AnyView
+    @State private var showing = false
+
+    var body: some View {
+        Button(name) { showing = true }
+            .font(.body).foregroundStyle(PhoneStyle.signal).buttonStyle(.plain)
+            .navigationDestination(isPresented: $showing, destination: destination)
+    }
+}
+
 private enum TabletSection: String, CaseIterable, Identifiable {
-    case albums = "アルバム", artists = "アーティスト", songs = "曲"
+    case recent = "最近追加した項目", albums = "アルバム", artists = "アーティスト", songs = "曲"
     case hidden = "非表示にしたアルバム", search = "検索", settings = "設定"
     var id: Self { self }
     var icon: String {
         switch self {
-        case .albums, .hidden: "layers"
+        case .recent, .albums, .hidden: "layers"
         case .artists: "users"
         case .songs: "music"
         case .search: "search"
@@ -28,7 +47,7 @@ private enum TabletSection: String, CaseIterable, Identifiable {
 struct PhoneRoot: View {
     @ObservedObject var library: Library
     @State private var tab = PhoneTab.library
-    @State private var tabletSection: TabletSection? = .albums
+    @State private var tabletSection: TabletSection? = .recent
     @FocusState private var searchFocused: Bool
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @Environment(\.scenePhase) private var scenePhase
@@ -47,12 +66,15 @@ struct PhoneRoot: View {
                         tabletNavigation
                             .safeAreaInset(edge: .bottom) {
                                 if library.current != nil {
-                                    miniPlayer.padding(8).frame(maxWidth: 704)
+                                    miniPlayer().padding(8).frame(maxWidth: 704)
                                         .glassEffect(.regular, in: Capsule()).padding(20)
                                 }
                             }
                     } else {
-                        tabs.tabViewBottomAccessory(isEnabled: library.current != nil) { miniPlayer }
+                        tabs.tabBarMinimizeBehavior(.onScrollDown)
+                            .tabViewBottomAccessory(isEnabled: library.current != nil) {
+                                PhonePlayerAccessory { compact in miniPlayer(compact: compact) }
+                            }
                     }
                 }
             }
@@ -86,7 +108,7 @@ struct PhoneRoot: View {
             }
         }
         .onChange(of: library.connected) { _, connected in
-            if connected { tab = .library; tabletSection = .albums }
+            if connected { tab = .library; tabletSection = .recent }
         }
     }
 
@@ -102,7 +124,8 @@ struct PhoneRoot: View {
         } detail: {
             NavigationStack {
                 Group {
-                    switch tabletSection ?? .albums {
+                    switch tabletSection ?? .recent {
+                    case .recent: recentAlbums
                     case .albums:
                         if library.connected { PhoneAlbumBrowser(library: library, detail: albumDetail) }
                         else { catalog }
@@ -120,7 +143,7 @@ struct PhoneRoot: View {
     private var artistList: some View {
         List(library.artistNames, id: \.self) { artist in
             NavigationLink(artist) {
-                songList(library.tracks(for: artist)).navigationTitle(artist)
+                artistDetail(artist)
             }
         }
         .scrollContentBackground(.hidden)
@@ -128,17 +151,47 @@ struct PhoneRoot: View {
         .navigationTitle("アーティスト")
     }
 
+    private func artistDetail(_ artist: String, origin: String? = nil) -> some View {
+        GeometryReader { geometry in
+            ScrollViewReader { proxy in
+                ScrollView {
+                    LazyVStack(spacing: 32) {
+                        ForEach(library.albums(for: artist)) { album in
+                            NavigationLink { AnyView(albumDetail(album)) } label: {
+                                HStack(spacing: 20) {
+                                    PhoneArtwork(url: album.coverArt.flatMap { library.artworkURLs[$0] })
+                                        .frame(width: dynamicTypeSize.isAccessibilitySize ? 80 : 128)
+                                    VStack(alignment: .leading, spacing: 4) {
+                                        Text(album.title).font(.headline).foregroundStyle(AppearanceColors.primary)
+                                        Text("\(album.tracks.count)曲").font(.caption).foregroundStyle(.secondary)
+                                    }
+                                    Spacer(minLength: 0)
+                                }
+                                .contentShape(Rectangle())
+                            }
+                            .buttonStyle(.plain)
+                            .id(album.id)
+                        }
+                    }
+                    .padding(.horizontal, 20)
+                    .padding(.vertical, origin == nil ? 20 : geometry.size.height / 2)
+                }
+                .task(id: origin) {
+                    if let origin { proxy.scrollTo(origin, anchor: .center) }
+                }
+            }
+        }
+        .background(PhoneStyle.graphite)
+        .navigationTitle(artist)
+    }
+
     private var tabs: some View {
         TabView(selection: $tab) {
-            NavigationStack { catalog }
-                .tabItem { Label("ライブラリ", image: "regen-layers") }
-                .tag(PhoneTab.library)
-            NavigationStack { search }
-                .tabItem { Label("検索", image: "regen-search") }
-                .tag(PhoneTab.search)
-            NavigationStack { settings }
-                .tabItem { Label("設定", image: "regen-settings") }
-                .tag(PhoneTab.settings)
+            Tab("ライブラリ", image: "regen-layers", value: PhoneTab.library) { NavigationStack { catalog } }
+            Tab("設定", image: "regen-settings", value: PhoneTab.settings) { NavigationStack { settings } }
+            Tab(value: PhoneTab.search, role: .search) { NavigationStack { search } } label: {
+                Label("検索", image: "regen-search")
+            }
         }
     }
 
@@ -146,6 +199,7 @@ struct PhoneRoot: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
                 VStack(spacing: 0) {
+                    NavigationLink { recentAlbums } label: { categoryLabel("最近追加した項目", icon: "layers") }
                     NavigationLink {
                         artistList
                     } label: { categoryLabel("アーティスト", icon: "users") }
@@ -161,7 +215,7 @@ struct PhoneRoot: View {
                 }
                 .buttonStyle(.plain)
                 VStack(alignment: .leading, spacing: 8) {
-                    Text("アルバム").font(.title3.bold())
+                    Text("最近追加した項目").font(.title3.bold())
                     if !library.connected {
                         Text("ライブラリに参加するか、この端末に音楽を追加して聴き始められます。")
                         NavigationLink("既存のライブラリに参加") {
@@ -176,7 +230,7 @@ struct PhoneRoot: View {
                         Text("音楽はまだありません。音楽ファイルを追加できます。")
                         AddMusicButton(library: library)
                     }
-                    albumGrid
+                    albumGrid(library.recentlyAddedAlbums, sorted: false)
                 }
             }
             .padding(.horizontal, 20)
@@ -205,9 +259,17 @@ struct PhoneRoot: View {
 
     private var albumGrid: some View { albumGrid(library.albums) }
 
-    private func albumGrid(_ albums: [Album]) -> some View {
+    private var recentAlbums: some View {
+        ScrollView {
+            albumGrid(library.recentlyAddedAlbums, sorted: false).padding(20)
+        }
+        .background(PhoneStyle.graphite)
+        .navigationTitle("最近追加した項目")
+    }
+
+    private func albumGrid(_ albums: [Album], sorted: Bool = true) -> some View {
         LazyVGrid(columns: dynamicTypeSize.isAccessibilitySize ? [GridItem(.flexible())] : [GridItem(.adaptive(minimum: 160), spacing: 20)], spacing: 32) {
-            ForEach(library.sortedAlbums(albums)) { album in
+            ForEach(sorted ? library.sortedAlbums(albums) : albums) { album in
                 NavigationLink { albumDetail(album) } label: {
                     VStack(alignment: .leading, spacing: 4) {
                         PhoneArtwork(url: album.coverArt.flatMap { library.artworkURLs[$0] })
@@ -231,27 +293,37 @@ struct PhoneRoot: View {
         return GeometryReader { geometry in
             List {
                 let wide = geometry.size.width >= 700 && !dynamicTypeSize.isAccessibilitySize
-                let layout = wide ? AnyLayout(HStackLayout(alignment: .center, spacing: 32)) : AnyLayout(VStackLayout(spacing: 20))
+                let layout = wide ? AnyLayout(HStackLayout(alignment: .top, spacing: 32)) : AnyLayout(VStackLayout(spacing: 20))
+                let artworkSize = max(0, min(geometry.size.width - 80, dynamicTypeSize.isAccessibilitySize ? 120 : 320))
                 layout {
                     PhoneArtwork(url: album.coverArt.flatMap { library.artworkURLs[$0] })
-                        .frame(width: max(0, min(geometry.size.width - 80, dynamicTypeSize.isAccessibilitySize ? 120 : 320)))
+                        .frame(width: artworkSize)
                     VStack(alignment: wide ? .leading : .center, spacing: 20) {
                         VStack(alignment: wide ? .leading : .center, spacing: 4) {
                             Text(album.title).font(.title3.bold())
-                            Text(album.detailArtist ?? album.artist).font(.body)
-                                .foregroundStyle(album.detailArtist == "V.A." ? PhoneStyle.secondary : PhoneStyle.signal)
+                            if let artist = album.detailArtist, artist != "V.A.", !library.albums(for: artist).isEmpty {
+                                PhoneArtistButton(name: artist) { AnyView(artistDetail(artist, origin: album.id)) }
+                            } else {
+                                Text(album.detailArtist ?? album.artist).font(.body).foregroundStyle(PhoneStyle.secondary)
+                            }
                             Text("\(album.tracks.count)曲").font(.caption).foregroundStyle(PhoneStyle.secondary)
                         }
                         .multilineTextAlignment(wide ? .leading : .center)
+                        if wide { Spacer(minLength: 20) }
                         HStack(spacing: 20) {
+                            Button { library.startAlbum(album.tracks, shuffled: true) } label: {
+                                Image(systemName: "shuffle").font(.system(size: 24)).frame(width: 44, height: 44)
+                            }
+                            .buttonStyle(.plain).foregroundStyle(PhoneStyle.signal)
+                            .accessibilityLabel("アルバムをシャッフル再生")
                             Button {
-                                library.togglePlayback(in: album.tracks)
+                                library.startAlbum(album.tracks)
                             } label: {
                                 HStack(spacing: 8) {
                                     RegenIcon(name: "filled-play")
                                     Text("再生")
                                 }
-                                .frame(minWidth: 160, minHeight: 44)
+                                .frame(width: 176).frame(minHeight: 44)
                                 .background(PhoneStyle.button, in: RoundedRectangle(cornerRadius: 8))
                                 .foregroundStyle(.white)
                             }
@@ -261,7 +333,15 @@ struct PhoneRoot: View {
                             OfflineSaveControls(library: library, tracks: album.tracks, scope: "album:" + album.id, iconOnly: true)
                                 .foregroundStyle(PhoneStyle.signal)
                         }
+                        .overlay(alignment: .bottom) {
+                            if let request = library.saveRequest(for: album.tracks, scope: "album:" + album.id),
+                               [.waiting, .wifi, .saving].contains(request.state) {
+                                Text("\(album.tracks.filter { library.localFiles[$0.id] != nil }.count)/\(album.tracks.count)曲を保存済み")
+                                    .font(.caption).foregroundStyle(.secondary).offset(y: 20)
+                            }
+                        }
                     }
+                    .frame(minHeight: wide ? artworkSize : nil, alignment: .top)
                 }
                 .frame(maxWidth: .infinity)
                 .padding(.top, 8)
@@ -370,14 +450,14 @@ struct PhoneRoot: View {
         }
     }
 
-    private var miniPlayer: some View {
+    private func miniPlayer(compact: Bool = false) -> some View {
         HStack(spacing: 8) {
             Button { library.showingNowPlaying = true } label: {
                 HStack(spacing: 8) {
                     artwork(library.current?.coverArt, size: 28)
                     VStack(alignment: .leading, spacing: 0) {
                         Text(library.current?.title ?? "").fontWeight(.semibold).lineLimit(1)
-                        if dynamicTypeSize <= .xLarge {
+                        if !compact && dynamicTypeSize <= .xLarge {
                             Text(library.loading ? library.playbackLoadingLabel : library.playbackFailure != nil ? "再生できません。詳細を確認" : library.current?.artist ?? "").foregroundStyle(.secondary).lineLimit(1)
                         }
                     }
@@ -399,7 +479,7 @@ struct PhoneRoot: View {
             .disabled(library.current == nil || library.loading)
             .accessibilityLabel(library.loading ? "再生" : library.playbackAction)
         }
-        .padding(.horizontal, 16)
+        .padding(.horizontal, compact ? 8 : 16)
     }
 
     private var settings: some View {
