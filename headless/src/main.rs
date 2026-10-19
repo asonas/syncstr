@@ -636,12 +636,16 @@ async fn run(cli: crate::Cli) -> anyhow::Result<()> {
             let store = syncstr_headless::store::Store::open(&data)?;
             let (endpoint, _lock) = identity.cluster_endpoint(&[]).await?;
             let discovery = syncstr_headless::cluster_discovery::Discovery::start(&endpoint)?;
+            let mut candidates = 0;
+            let mut phase = "waiting for the pinned host via mDNS";
             let result = tokio::time::timeout(std::time::Duration::from_secs(30), async {
                 loop {
                     let address = discovery.next().await?;
+                    candidates += 1;
                     if address.id.to_string() != invite.host {
                         continue;
                     }
+                    phase = "enrolling with the discovered pinned host";
                     break syncstr_headless::cluster_net::enroll(
                         &identity, &endpoint, address, &invite, &store,
                     )
@@ -650,7 +654,9 @@ async fn run(cli: crate::Cli) -> anyhow::Result<()> {
             })
             .await;
             endpoint.close().await;
-            result??;
+            result.map_err(|_| anyhow::anyhow!(
+                "LAN enrollment timed out after 30 seconds: {phase}; resolved candidates: {candidates}"
+            ))??;
             println!("Joined cluster {}", invite.cluster);
         }
         #[cfg(feature = "p2p")]

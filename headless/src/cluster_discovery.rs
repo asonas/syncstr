@@ -34,6 +34,9 @@ impl crate::cluster_discovery::Discovery {
                     ip.port(),
                     &[("id", id.as_str()), ("version", "1")][..],
                 )?)?;
+                eprintln!("Cluster LAN discovery: IPv4 advertisement registered");
+            } else {
+                eprintln!("Cluster LAN discovery: no IPv4 address available to advertise");
             }
             daemon
                 .browse(crate::cluster_discovery::SERVICE)

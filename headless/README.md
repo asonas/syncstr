@@ -87,11 +87,29 @@ To back up the node, stop it and copy both `data` and `identity`. To replace an 
 
 The [Verification workflow](../.github/workflows/verification.yml) runs the P2P
 library tests, `cluster_changes`, `cluster_client`, `cluster_remote`,
-`cluster_replication`, `contracts`, and `node`, followed by library Clippy.
-This is a focused regression gate, not the full suite below. LAN-discovery
-subprocess tests in `cli_process` remain outside that gate because a discovery
-timeout also reproduced on the baseline. Run them explicitly when changing LAN
-discovery; their failures are not converted into successful checks.
+`cluster_replication`, `contracts`, `node`, and ordinary `cli_process` tests,
+followed by library Clippy. This is a focused regression gate, not the full suite
+below.
+
+Real multicast discovery and host-restart replication live in `lan_process`.
+Run them serially on a network permitting mDNS when changing LAN discovery:
+
+```sh
+cargo test --locked --features p2p --test lan_process -- --test-threads=1 --nocapture
+```
+
+The manual [LAN verification workflow](../.github/workflows/lan-verification.yml)
+runs these checks on Linux and macOS and retains its log for seven days, including
+failed runs. It does not run on every pull request. A local discovery timeout also
+reproduced on the baseline; separation does not resolve that failure or convert it
+into a successful check. A hosted-runner pass is not proof of discovery between
+physical devices on the listener's network.
+
+Enrollment timeouts identify the current phase and number of resolved candidates.
+Failed LAN subprocess tests include bounded server stdout/stderr and process
+status; replica timeouts name the expected object and destination. Test identity,
+invitation, and database files remain temporary and are not uploaded as artifacts.
+The full P2P suite still includes `lan_process`; no test is marked ignored.
 
 ```sh
 cargo fmt --all -- --check
