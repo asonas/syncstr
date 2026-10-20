@@ -47,6 +47,7 @@ continue to use the existing conflict-resolution flow.
 | Headless NAS node and CLI | [Headless guide](headless/README.md), [HTTPS API](headless/src/api.rs), [node catalog](headless/src/store.rs) |
 | Music/iTunes owned-library migration | [Windows handoff](docs/music-library-migration-windows-handoff.md), [Windows-to-NAS MVP plan](docs/music-library-migration-plan.md), [source metadata precedence](docs/adr/0004-preserve-source-library-metadata-during-migration.md); implementation pending |
 | Cluster enrollment and LAN replication | [Implementation plan](docs/cluster-implementation-plan.md), [M2 protocol and CLI](docs/cluster-lan-sync-m2.md), [membership](headless/src/enrollment.rs), [reconciliation](headless/src/cluster_sync.rs) |
+| Signed cluster-record compatibility | [Addition-time contract](docs/validation/signed-addition-time.md), [shared signed fixture](headless/fixtures/cluster-signed.json) |
 | Optional user-operated remote access | [M4 implementation and limits](docs/cluster-remote-m4.md), [relay deployment package](headless/remote-access/README.md), [relay admission and health](headless/src/relay.rs) |
 | Android LAN playback client | [Android build and setup](apps/android/README.md), [M5 verification](docs/cluster-android-m5.md), [UI-development handoff](docs/android-ui-development-handoff.md), [Rust playback boundary](headless/src/cluster_client.rs) |
 | Remote Android development | [Agreed setup plan and acceptance checklist](docs/android-remote-development-plan.md), [syncstr-android-dev skill](.agents/skills/syncstr-android-dev/SKILL.md); Linux build, local device loop and remote skill discovery verified |
@@ -57,7 +58,7 @@ continue to use the existing conflict-resolution flow.
 | Device identity and direct/relay connectivity experiment | [Connectivity probe](headless/connectivity-probe/README.md). Isolated from deployed services; independent-network verification is pending |
 | Xcode Cloud and distribution for both platforms | [project.yml](apps/ios/project.yml), [ci_post_clone.sh](apps/ios/ci_scripts/ci_post_clone.sh). Generate the Xcode project from YAML |
 | Automated regression checks and reproducible Simulators | [Verification workflow](.github/workflows/verification.yml), [Simulator runner and results](apps/ios/README.md#verification), [headless verification](headless/README.md#verification) |
-| UI and icon design | [DESIGN.md](DESIGN.md), which distinguishes UI colors from icon colors |
+| UI and icon design | [DESIGN.md](DESIGN.md), which distinguishes UI colors from icon colors; [current, prototype, reference, and archive index](docs/design-status.md) |
 | Earlier UI prototype | [Apple MVP operation model](https://github.com/asonas/syncstr/tree/be9fd4d9f06fca3676ec0426dbfe4b6606aae0ea/prototypes/apple-mvp-operation-model), [decision #5](https://github.com/asonas/syncstr/issues/5). The prototype is preserved on a separate branch, outside main |
 | Interpreting design decisions | [Domain docs](docs/agents/domain.md) |
 

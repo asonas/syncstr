@@ -1,12 +1,15 @@
 # iPhone library experience
 
-Status: implemented in the feature worktree; verification results are recorded
+Status: integrated into main in `927aef7`; verification results are recorded
 below. Implementation baseline: `81f0dd1`, including adaptive appearances.
 The main journeys concern iPhone. The reviewed album action layout also applies
 to iPad and macOS. Shared playback, catalog, and save changes require cross-platform
 regression checks.
 
 ## Review artifacts
+
+Use the [design-status index](design-status.md) to distinguish the current review
+from prototypes, earlier references, and archived layouts.
 
 - [Five editable screens](https://www.figma.com/design/KtfBubkg9KiK5LuLHIm8Qt?node-id=147-471): before saving, saving, recently added, compact player, and artist detail.
 - [Motion exploration](https://www.figma.com/design/KtfBubkg9KiK5LuLHIm8Qt?node-id=147-2841): expanded player moves into the bottom row while narrowing.

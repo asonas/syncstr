@@ -2,6 +2,10 @@
 
 ## How to Use This Document
 
+Use the [design-status index](docs/design-status.md) to find the current library
+review. Prototype motion, earlier layout references, and archived alternatives
+have separate roles; their presence does not supersede the current review.
+
 For layout, wording, dimensions, and state presentation, prioritize the platform guidance below. Brand and icon decisions and the later Splice web reference have different scopes. Do not directly map web pixel values or page structures onto macOS point values or window layouts.
 
 ## Apple Platforms: Liquid Glass
