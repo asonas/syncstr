@@ -111,6 +111,10 @@ status; replica timeouts name the expected object and destination. Test identity
 invitation, and database files remain temporary and are not uploaded as artifacts.
 The full P2P suite still includes `lan_process`; no test is marked ignored.
 
+For a macOS timeout with no resolved candidates, see the
+[LAN investigation](../docs/validation/lan-discovery.md). Check the launching
+application's Local Network access before treating the timeout as a protocol bug.
+
 ```sh
 cargo fmt --all -- --check
 cargo test --locked
