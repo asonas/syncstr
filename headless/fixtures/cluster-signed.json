@@ -1,4 +1,66 @@
 {
+  "addedAtChange": {
+    "change": {
+      "action": {
+        "entry": {
+          "artwork": "AQID",
+          "sha256": "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
+          "track": {
+            "addedAt": 1700000000123,
+            "album": "Fixture Album",
+            "albumId": "fixture-album",
+            "artist": "Fixture Artist",
+            "coverArt": "fixture-track",
+            "discNumber": 1,
+            "duration": 1.0,
+            "id": "fixture-track",
+            "size": 3,
+            "suffix": "wav",
+            "title": "音楽 / \"fixture\"",
+            "track": 2
+          }
+        },
+        "kind": "import",
+        "organization": {
+          "albums": [
+            {
+              "id": "fixture-album",
+              "releases": [],
+              "title": "Fixture Album"
+            }
+          ],
+          "aliases": {},
+          "choices": [],
+          "preferred": {},
+          "tracks": [
+            {
+              "discNumber": 1,
+              "id": "fixture-track",
+              "imported": {
+                "artist": "Fixture Artist",
+                "compilationValues": [],
+                "title": "Fixture Album"
+              },
+              "importedAlbumID": "fixture-album",
+              "sha256": "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
+              "title": "音楽 / \"fixture\"",
+              "trackNumber": 2
+            }
+          ]
+        }
+      },
+      "author": "ea4a6c63e29c520abef5507b132ec5f9954776aebebe7b92421eea691446d22c",
+      "cluster": "fce348e4-9b87-40b0-a2ba-8af14a0a32d3",
+      "grant": "63befc93565a6aa850431481741c028dff77956aecd9869ba172243bfa6e58ca",
+      "id": "12b17dc41d49e64dbcc8eec6d900518623bac93c31ba73656132e5e5cd8dcf90",
+      "object": "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
+      "parents": [],
+      "previous": [],
+      "signature": "31ae37e725ded5678c51bf947beed4c20745f8670989d94c40efd313a3b3f8b788eb8fa6ce6e7e6ce213dcec657747a5c37afd6f0fa1f65a99ca142277f99d06",
+      "version": 1
+    },
+    "signingPayload": "syncstr-cluster-change-v1\n[1,\"fce348e4-9b87-40b0-a2ba-8af14a0a32d3\",\"ea4a6c63e29c520abef5507b132ec5f9954776aebebe7b92421eea691446d22c\",\"63befc93565a6aa850431481741c028dff77956aecd9869ba172243bfa6e58ca\",[],\"ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad\",[],{\"kind\":\"import\",\"entry\":{\"track\":{\"id\":\"fixture-track\",\"title\":\"音楽 / \\\"fixture\\\"\",\"artist\":\"Fixture Artist\",\"album\":\"Fixture Album\",\"albumId\":\"fixture-album\",\"coverArt\":\"fixture-track\",\"duration\":1.0,\"track\":2,\"discNumber\":1,\"suffix\":\"wav\",\"size\":3,\"addedAt\":1700000000123},\"sha256\":\"ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad\",\"artwork\":\"AQID\"},\"organization\":{\"albums\":[{\"id\":\"fixture-album\",\"title\":\"Fixture Album\",\"releases\":[]}],\"tracks\":[{\"id\":\"fixture-track\",\"sha256\":\"ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad\",\"imported\":{\"title\":\"Fixture Album\",\"artist\":\"Fixture Artist\",\"compilationValues\":[]},\"importedAlbumID\":\"fixture-album\",\"title\":\"音楽 / \\\"fixture\\\"\",\"discNumber\":1,\"trackNumber\":2}],\"aliases\":{},\"choices\":[],\"preferred\":{}}}]"
+  },
   "change": {
     "action": {
       "entry": {

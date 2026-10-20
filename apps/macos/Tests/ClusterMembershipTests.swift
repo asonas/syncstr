@@ -2,6 +2,7 @@ import Foundation
 import XCTest
 import CryptoKit
 import SQLite3
+import Testing
 #if os(macOS)
 import AudioTags
 #endif
@@ -156,6 +157,11 @@ final class ClusterMembershipTests: XCTestCase {
         struct Signature: Decodable { let id: String; let signature: String }
         let change: Signature
         let signingPayload: String
+        struct SignedFixture: Decodable {
+            let change: Signature
+            let signingPayload: String
+        }
+        let addedAtChange: SignedFixture
     }
 
     private func fixture() throws -> Fixture {
@@ -374,5 +380,47 @@ final class ClusterMembershipTests: XCTestCase {
         XCTAssertThrowsError(try database.authenticateClusterPeer(fixture.membership.root, membership: fixture.membership))
         XCTAssertThrowsError(try database.enrollCluster(invitation: invitation, grantID: grant.id, membership: fixture.membership, ownID: fixture.client, name: "Stale invitation"))
         XCTAssertEqual(try CatalogDatabase(url).clusterRegistration()?.membership.revocations.count, 1)
+    }
+}
+
+struct SignedAdditionCompatibilityTests {
+    @Test(arguments: [false, true])
+    func additionTimeSurvivesSignedReplayAndRestart(hasAdditionTime: Bool) throws {
+        let url = try #require(Bundle(for: ClusterMembershipTests.self).url(forResource: "cluster-signed", withExtension: "json"))
+        let fixture = try JSONDecoder().decode(ClusterMembershipTests.Fixture.self, from: Data(contentsOf: url))
+        let signature = hasAdditionTime ? fixture.addedAtChange.change : fixture.change
+        let payload = hasAdditionTime ? fixture.addedAtChange.signingPayload : fixture.signingPayload
+        let signed = ClusterSignedChange(id: signature.id, signature: signature.signature, payload: payload)
+        let expected: Int64? = hasAdditionTime ? 1_700_000_000_123 : nil
+        #expect(try signed.decode(membership: fixture.membership).action.entry?.track.addedAt == expected)
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let databaseURL = root.appendingPathComponent("catalog.sqlite")
+        let grant = try fixture.membership.authorize(fixture.client)
+        do {
+            let database = try CatalogDatabase(databaseURL)
+            try database.enrollCluster(invitation: ClusterInvitation(version: 1, cluster: grant.cluster, host: grant.issuer,
+                secret: String(repeating: "a", count: 64), expires: 1600), grantID: grant.id,
+                membership: fixture.membership, ownID: fixture.client, name: "Fixture")
+            try database.receiveClusterPage(peer: fixture.host, sequence: 1, signed: signed)
+        }
+        let reopened = try CatalogDatabase(databaseURL)
+        try reopened.receiveClusterPage(peer: fixture.host, sequence: 1, signed: signed)
+        #expect(try reopened.clusterChanges().map(\.id) == [signed.id])
+        let retained = try reopened.clusterCatalog().entries
+        #expect(retained.count == 1)
+        #expect(try #require(retained.first).track.addedAt == expected)
+        let tampered = hasAdditionTime
+            ? payload.replacingOccurrences(of: "\"addedAt\":1700000000123", with: "\"addedAt\":1700000000124")
+            : payload.replacingOccurrences(of: "\"size\":3", with: "\"size\":3,\"addedAt\":1")
+        try #require(tampered != payload)
+        #expect(throws: (any Error).self) {
+            try reopened.receiveClusterPage(peer: fixture.host, sequence: 2,
+                signed: ClusterSignedChange(id: signed.id, signature: signed.signature, payload: tampered))
+        }
+        #expect(try reopened.clusterCursor(fixture.host) == 1)
+        #expect(try reopened.clusterCatalog().entries.count == 1)
+        #expect(try reopened.clusterCatalog().entries.first?.track.addedAt == expected)
     }
 }

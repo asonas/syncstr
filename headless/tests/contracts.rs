@@ -107,3 +107,69 @@ fn cluster_persistence_fixture_matches_native_identities_locations_and_pending_s
     assert_eq!(serde_json::to_value(capabilities)?, fixture["capabilities"]);
     Ok(())
 }
+#[cfg(feature = "p2p")]
+#[tokio::test]
+async fn signed_addition_time_survives_replay_and_restart() -> anyhow::Result<()> {
+    let fixture: serde_json::Value =
+        serde_json::from_slice(include_bytes!("../fixtures/cluster-signed.json"))?;
+    let proof: syncstr_headless::enrollment::Proof =
+        serde_json::from_value(fixture["membership"].clone())?;
+    for (case, expected) in [
+        (&fixture, None),
+        (&fixture["addedAtChange"], Some(1_700_000_000_123)),
+    ] {
+        let root = tempfile::tempdir()?;
+        let client =
+            syncstr_headless::peer::Identity::from_secret(&root.path().join("identity"), [9; 32])?;
+        let grant = proof
+            .grants
+            .iter()
+            .find(|grant| grant.member == client.id().to_string())
+            .unwrap();
+        let change: syncstr_headless::cluster_changes::Change =
+            serde_json::from_value(case["change"].clone())?;
+        assert_eq!(
+            String::from_utf8(change.signing_bytes()?)?,
+            case["signingPayload"].as_str().unwrap()
+        );
+        let path = root.path().join("data");
+        let store = syncstr_headless::store::Store::open(&path)?;
+        store
+            .join_cluster(
+                &client,
+                grant.issuer.parse()?,
+                grant.id.clone(),
+                proof.clone(),
+            )
+            .await?;
+        let mut tampered = change.clone();
+        let syncstr_headless::cluster_changes::Action::Import { entry, .. } = &mut tampered.action
+        else {
+            unreachable!()
+        };
+        entry.track.added_at = Some(1);
+        assert!(
+            store
+                .apply_cluster_changes(change.author.clone(), vec![tampered])
+                .await
+                .is_err()
+        );
+        store
+            .apply_cluster_changes(change.author.clone(), vec![change.clone()])
+            .await?;
+        store
+            .project_cluster_metadata(change.object.clone())
+            .await?;
+        drop(store);
+        let reopened = syncstr_headless::store::Store::open(&path)?;
+        reopened
+            .apply_cluster_changes(change.author.clone(), vec![change.clone()])
+            .await?;
+        assert_eq!(reopened.cluster_changes().await?, vec![change]);
+        assert_eq!(
+            reopened.catalog().await?.entries[0].track.added_at,
+            expected
+        );
+    }
+    Ok(())
+}
