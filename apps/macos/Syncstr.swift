@@ -147,7 +147,7 @@ struct LibraryView: View {
                     Button(albumVisibilityLabel) { changeAlbumVisibility(selectedAlbums) }
                         .disabled(selectedAlbums.contains(where: library.isSavingAlbumVisibility))
                 }
-                albumSortMenu
+                if library.destination != .recentlyAdded { albumSortMenu }
             }
             LibrarySearchField(text: $library.search, placeholder: "\(library.destination.rawValue)を検索")
                 .frame(minWidth: 120, idealWidth: 240, maxWidth: 240)
@@ -162,7 +162,7 @@ struct LibraryView: View {
             ForEach(LibraryDestination.allCases, id: \.self) { destination in
                 Button { library.navigate(destination); library.search = "" } label: {
                     HStack(spacing: 8) {
-                        MacIcon((destination == .albums || destination == .hiddenAlbums) ? "layers" : destination == .artists ? "users" : "music")
+                        MacIcon((destination == .recentlyAdded || destination == .albums || destination == .hiddenAlbums) ? "layers" : destination == .artists ? "users" : "music")
                         Text(destination.rawValue)
                     }
                         .frame(maxWidth: .infinity, minHeight: 32, alignment: .leading)
@@ -223,7 +223,7 @@ struct LibraryView: View {
             albumDetail(album)
         } else {
             switch library.destination {
-            case .albums, .hiddenAlbums: albums
+            case .recentlyAdded, .albums, .hiddenAlbums: albums
             case .artists: artists
             case .songs: songs
             }
@@ -299,7 +299,7 @@ struct LibraryView: View {
     }
 
     private var showingAlbumGrid: Bool {
-        !library.showingNowPlaying && (library.destination == .albums || library.destination == .hiddenAlbums)
+        !library.showingNowPlaying && (library.destination == .recentlyAdded || library.destination == .albums || library.destination == .hiddenAlbums)
             && (library.selectedAlbum == nil || !library.search.isEmpty)
     }
 
@@ -353,6 +353,7 @@ struct LibraryView: View {
                         Artwork(url: artworkURL(album.coverArt)).frame(width: wide ? 272 : 200, height: wide ? 272 : 200)
                         VStack(alignment: .leading, spacing: 4) {
                             Text(album.title).font(.system(size: 28, weight: .semibold))
+                                .textSelection(.enabled)
                                 .padding(.top, wide ? 48 : 0)
                                 .fixedSize(horizontal: false, vertical: true).accessibilityAddTraits(.isHeader)
                             if album.detailArtist == "V.A." {

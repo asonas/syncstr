@@ -28,8 +28,19 @@ struct LibraryPresentationTests {
         defer { library.closeLibrary() }
         try library.openLocal(catalog)
         #expect(library.recentlyAddedAlbums.map(\.title) == ["A", "Z", "Legacy"])
+        library.navigate(.recentlyAdded)
+        #expect(library.visibleAlbums.map(\.title) == ["A", "Z", "Legacy"])
         library.albumSortDescending = true
         #expect(library.recentlyAddedAlbums.map(\.title) == ["A", "Z", "Legacy"])
+        #expect(library.visibleAlbums.map(\.title) == ["A", "Z", "Legacy"])
+        library.search = "Z"
+        #expect(library.visibleAlbums.map(\.title) == ["Z"])
+        library.search = "Artist"
+        #expect(library.visibleAlbums.map(\.title) == ["A", "Z", "Legacy"])
+        library.search = ""
+        library.navigate(.albums)
+        #expect(library.albumSortDescending)
+        #expect(library.visibleAlbums.map(\.title) == ["Z", "Legacy", "A"])
         let reopened = Library(localStore: store)
         defer { reopened.closeLibrary() }
         let saved = try store.load()
@@ -84,6 +95,8 @@ struct LibraryPresentationTests {
         #expect(library.visibleAlbums.map(\.title) == ["Third"])
         #expect(Set(library.hiddenAlbums.map(\.title)) == ["First", "Second"])
         #expect(library.queue.count == 3)
+        library.navigate(.recentlyAdded)
+        #expect(library.visibleAlbums.map(\.title) == ["Third"])
 
         let reopened = Library(localStore: store)
         defer { reopened.closeLibrary() }
@@ -95,6 +108,8 @@ struct LibraryPresentationTests {
         #expect(reopened.visibleAlbums.isEmpty)
         reopened.navigate(.albums)
         #expect(reopened.visibleAlbums.map(\.title) == ["First", "Second", "Third"])
+        reopened.navigate(.recentlyAdded)
+        #expect(Set(reopened.visibleAlbums.map(\.title)) == ["First", "Second", "Third"])
     }
 
     @Test

@@ -37,7 +37,14 @@ A per-user lock prevents concurrent launches through the script. If an abnormal 
 
 ## Playback
 
-The library opens on albums. Use the sidebar to switch between albums, artists, and tracks, or to refresh the library. The title-bar search filters the current section. Open an album and select a track to play it; the mini-player opens the Now Playing view in the same window.
+The library opens on albums. Use the sidebar to switch between Recently Added,
+albums, artists, and tracks, or to refresh the library. Recently Added displays
+visible albums by their newest member track's shared addition time, newest first.
+Undated legacy albums follow dated additions in stable album-ID order. Search
+preserves this order; the ordinary Albums sort settings are independent. Opening
+an album and returning centers it in the list. The title-bar search filters the
+current section. Open an album and select a track to play it; the mini-player
+opens the Now Playing view in the same window.
 
 Click an album to select it, Command-click to add or remove albums from the selection, and double-click or press Return to open a selected album. Escape clears the selection. The toolbar and album context menu can hide selected albums together; **Hidden Albums** offers the corresponding batch restore action. Visibility changes use the existing cluster synchronization.
 

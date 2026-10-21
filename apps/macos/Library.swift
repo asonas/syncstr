@@ -15,6 +15,7 @@ struct Album: Identifiable {
 enum AlbumSortField { case title, artist }
 
 enum LibraryDestination: String, CaseIterable {
+    case recentlyAdded = "最近追加した項目"
     case albums = "アルバム"
     case artists = "アーティスト"
     case songs = "曲"
@@ -22,6 +23,7 @@ enum LibraryDestination: String, CaseIterable {
 
     var symbol: String {
         switch self {
+        case .recentlyAdded: "clock"
         case .albums: "square.stack"
         case .artists: "person.2"
         case .songs: "music.note.list"
@@ -284,10 +286,15 @@ final class Library: ObservableObject {
     func tracks(for artist: String) -> [Track] { tracksByArtist[artist] ?? [] }
 
     var visibleAlbums: [Album] {
-        let albums = destination == .hiddenAlbums ? hiddenAlbums : self.albums
+        let albums: [Album]
+        switch destination {
+        case .recentlyAdded: albums = recentlyAddedAlbums
+        case .hiddenAlbums: albums = hiddenAlbums
+        default: albums = self.albums
+        }
         let filtered = albums.filter { search.isEmpty || $0.title.localizedStandardContains(search)
             || $0.artist.localizedStandardContains(search) }
-        return sortedAlbums(filtered)
+        return destination == .recentlyAdded ? filtered : sortedAlbums(filtered)
     }
 
     func sortedAlbums(_ albums: [Album]) -> [Album] {
