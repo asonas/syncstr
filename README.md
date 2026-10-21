@@ -46,6 +46,7 @@ continue to use the existing conflict-resolution flow.
 | Folder settings | [SettingsView.swift](apps/macos/SettingsView.swift) |
 | Headless NAS node and CLI | [Headless guide](headless/README.md), [HTTPS API](headless/src/api.rs), [node catalog](headless/src/store.rs) |
 | Music/iTunes owned-library migration | [Windows handoff](docs/music-library-migration-windows-handoff.md), [Windows-to-NAS MVP plan](docs/music-library-migration-plan.md), [source metadata precedence](docs/adr/0004-preserve-source-library-metadata-during-migration.md); implementation pending |
+| Shared playlists and playlist XML migration | [Implementation plan](docs/playlist-implementation-plan.md): agreed offline editing, staged XML import, smart-rule compatibility, and delivery gates; implementation pending |
 | Cluster enrollment and LAN replication | [Implementation plan](docs/cluster-implementation-plan.md), [M2 protocol and CLI](docs/cluster-lan-sync-m2.md), [membership](headless/src/enrollment.rs), [reconciliation](headless/src/cluster_sync.rs) |
 | Signed cluster-record compatibility | [Addition-time contract](docs/validation/signed-addition-time.md), [shared signed fixture](headless/fixtures/cluster-signed.json) |
 | Optional user-operated remote access | [M4 implementation and limits](docs/cluster-remote-m4.md), [relay deployment package](headless/remote-access/README.md), [relay admission and health](headless/src/relay.rs) |
