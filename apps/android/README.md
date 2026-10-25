@@ -20,7 +20,7 @@ its distribution checksum. Install the SDK packages
 `ndk;28.2.13676358`, then provision the development key below.
 
 ```sh
-mise install java@temurin-21.0.12+101.0.LTS gradle@8.13 android-sdk@23.0
+mise install java@temurin-21.0.13+9.0.LTS gradle@8.13 android-sdk@23.0
 mise exec -- rustup target add aarch64-linux-android
 mise exec android-sdk@23.0 -- sh apps/android/build-development.sh
 ```
@@ -86,7 +86,7 @@ needs to be recovered:
 ```sh
 umask 077
 mkdir -p "$HOME/.local/share/syncstr/android-dev"
-mise exec java@temurin-21.0.12+101.0.LTS -- keytool -genkeypair \
+mise exec java@temurin-21.0.13+9.0.LTS -- keytool -genkeypair \
   -keystore "$HOME/.local/share/syncstr/android-dev/development.keystore" \
   -storetype PKCS12 -storepass android -keypass android \
   -alias androiddebugkey -keyalg RSA -keysize 2048 -validity 10000 \
