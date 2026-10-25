@@ -80,7 +80,7 @@ impl crate::client::Client {
         let response =
             crate::client::Client::response(self.request(reqwest::Method::GET, "v4/catalog")?)
                 .await?;
-        crate::client::Client::json(response, 256 * 1024 * 1024).await
+        crate::client::Client::json(response, 1024 * 1024 * 1024).await
     }
 
     pub async fn upload(
