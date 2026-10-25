@@ -1,0 +1,8 @@
+FROM rust:1.99.0-bookworm AS build
+WORKDIR /src
+COPY Cargo.toml Cargo.lock ./
+COPY src ./src
+COPY examples/migration_batch.rs ./examples/migration_batch.rs
+RUN CARGO_BUILD_JOBS=3 cargo build --release --locked --features p2p --example migration_batch
+FROM local/syncstr-emudhra:library-final
+COPY --from=build /src/target/release/examples/migration_batch /usr/local/bin/migration-batch
