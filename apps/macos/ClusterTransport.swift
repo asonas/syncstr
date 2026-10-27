@@ -4,6 +4,32 @@ import Darwin
 
 @MainActor
 final class ClusterNetwork {
+    func playlistExchange(_ request: PlaylistRequest? = nil) async throws -> PlaylistResponse? {
+        let files = store
+        let database = try await CatalogStorage.shared.perform { try files.database() }
+        var failure: Error = LocalMusicError.clusterUnavailable
+        var successful = false
+        for address in try await addresses(database: database) {
+            do {
+                let current = try await ClusterSession.connect(address: address, secrets: secrets, database: database, playlists: true)
+                defer { current.close() }
+                let response: PlaylistResponse?
+                if let request { response = try await current.playlistRequest(request) }
+                else { response = nil }
+                if let response, response.status == "rejected" { throw PlaylistImportError.rejected(response.reason ?? "取り込みを確認してください。") }
+                try await current.reconcilePlaylists(database: database)
+                successful = true
+                if response != nil { return response }
+            } catch {
+                try Task.checkCancellation()
+                failure = error
+                if error is PlaylistImportError { throw error }
+            }
+        }
+        if successful { return nil }
+        throw failure
+    }
+
     private let discovery = ClusterDiscovery()
     private let store: LocalMusicStore
     private let secrets: CredentialStore
@@ -291,6 +317,26 @@ final class ClusterNetwork {
 
 @TransportActor
 final class ClusterSession {
+    func playlistRequest(_ request: PlaylistRequest) async throws -> PlaylistResponse {
+        let stream = try await connection.openBi()
+        try await send(request, stream: stream)
+        try await stream.send().finish()
+        return try await receive(PlaylistResponse.self, stream: stream)
+    }
+
+    func reconcilePlaylists(database: CatalogDatabase) async throws {
+        var after = try database.playlistCursor(peer)
+        for _ in 0..<10000 {
+            let page = try await playlistRequest(PlaylistRequest(operation: "page", after: after))
+            guard page.status == "page", let next = page.next else { throw LocalMusicError.invalidData }
+            guard let record = page.record else { return }
+            guard next > after else { throw LocalMusicError.invalidData }
+            try database.receivePlaylist(peer: peer, sequence: next, record: record)
+            after = next
+        }
+        throw LocalMusicError.invalidData
+    }
+
     private struct Hello: Codable { let capabilities: ClusterCapabilities; let proof: ClusterMembership }
     private struct EnrollmentRequest: Encodable { let version = 1; let secret: String }
     private struct EnrollmentResponse: Decodable { let status: String; let grant: String?; let proof: ClusterMembership? }
@@ -388,10 +434,10 @@ final class ClusterSession {
             ownID: await PeerMusicConnection.publicID(secrets: secrets), name: name)
     }
 
-    static func connect(address: IrohLib.EndpointAddr, secrets: CredentialStore, database: CatalogDatabase, diagnostic: PlaybackDiagnosticContext? = nil) async throws -> ClusterSession {
+    static func connect(address: IrohLib.EndpointAddr, secrets: CredentialStore, database: CatalogDatabase, diagnostic: PlaybackDiagnosticContext? = nil, playlists: Bool = false) async throws -> ClusterSession {
         guard let registration = try database.clusterRegistration() else { throw LocalMusicError.unauthorized }
         diagnostic?.record("connection", "start", fields: ["path": "unknown", "reason": "not_established", "reused": "false"])
-        let session = try await open(address: address, alpn: "syncstr/cluster/3", secrets: secrets)
+        let session = try await open(address: address, alpn: playlists ? "syncstr/playlists/1" : "syncstr/cluster/3", secrets: secrets)
         diagnostic?.record("connection", "established", outcome: "succeeded", fields: ["peer_id": session.peer, "identity_match": "true", "path": session.selectedPath ?? "unknown"])
         diagnostic?.record("authentication", "start")
         do {

@@ -82,6 +82,9 @@ pub async fn serve(
                     let _permit = permit;
                     let result = tokio::time::timeout(std::time::Duration::from_secs(300), async {
                         let connection = incoming.await?;
+                        if connection.alpn() == crate::playlist_sync::ALPN {
+                            return crate::playlist_sync::serve_connection(&identity, &store, connection).await;
+                        }
                         if connection.alpn() == crate::cluster_sync::ALPN {
                             return crate::cluster_sync::serve_connection(&identity, &store, connection).await;
                         }

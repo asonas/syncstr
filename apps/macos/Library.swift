@@ -20,6 +20,7 @@ enum LibraryDestination: String, CaseIterable {
     case artists = "アーティスト"
     case songs = "曲"
     case hiddenAlbums = "非表示にしたアルバム"
+    case playlists = "すべてのプレイリスト"
 
     var symbol: String {
         switch self {
@@ -28,6 +29,7 @@ enum LibraryDestination: String, CaseIterable {
         case .artists: "person.2"
         case .songs: "music.note.list"
         case .hiddenAlbums: "eye.slash"
+        case .playlists: "music.note.list"
         }
     }
 }
@@ -40,7 +42,43 @@ enum PlaybackRepeat: String, CaseIterable, Codable {
 
 @MainActor
 final class Library: ObservableObject {
+    @Published private(set) var playlists: [PlaylistDocument] = []
+    @Published private(set) var playlistConflicts: Set<String> = []
+    @Published var playlistMessage: String?
+    @Published private(set) var refreshingPlaylists = false
+
+    func loadPlaylists() async {
+        let files = localStore
+        let generation = catalogGeneration
+        do {
+            let saved = try await CatalogStorage.shared.perform { try files.database().playlistDocuments() }
+            guard generation == catalogGeneration else { return }
+            playlists = saved.documents
+            playlistConflicts = saved.conflicts
+        } catch { if generation == catalogGeneration { playlistMessage = error.localizedDescription } }
+    }
+
+    func refreshPlaylists() async {
+        guard !refreshingPlaylists else { return }
+        refreshingPlaylists = true
+        defer { refreshingPlaylists = false }
+        await loadPlaylists()
+        do {
+            try await transfer.synchronizePlaylists()
+            playlistMessage = nil
+            await loadPlaylists()
+        } catch {
+            playlistMessage = "プレイリストを同期できませんでした。接続先がプレイリストに対応しているか確認してください。\(error.localizedDescription)"
+        }
+    }
+
+    func playlistTrack(_ item: PlaylistItem) -> Track? {
+        guard let hash = item.sha256, let id = item.trackId, let catalog = localCatalog else { return nil }
+        let canonical = catalog.organization?.canonicalTrack(id) ?? id
+        return playlistTracksByIdentity[canonical + ":" + hash]
+    }
     @Published var tracks: [Track] = [] { didSet { if !applyingPreparedCatalog { rebuildAlbums() } } }
+    private var playlistTracksByIdentity: [String: Track] = [:]
     private var applyingPreparedCatalog = false
     private(set) var albums: [Album] = []
     private(set) var recentlyAddedAlbums: [Album] = []
@@ -69,6 +107,7 @@ final class Library: ObservableObject {
     @Published var position = 0.0
     @Published var duration = 0.0
     @Published var queue: [Track] = []
+    private var queueSelection: Int?
     @Published private(set) var shuffled = false
     @Published var repeatMode = PlaybackRepeat.off { didSet { persistPlayback() } }
     @Published private(set) var volume = 1.0
@@ -124,6 +163,7 @@ final class Library: ObservableObject {
     @Published private(set) var playbackFailure: String?
 
     private struct PlaybackSnapshot: Codable {
+        var queueSelection: Int? = nil
         let library: String
         let current: Track
         let position: Double
@@ -334,7 +374,10 @@ final class Library: ObservableObject {
         }
     }
 
-    var currentIndex: Int? { queue.firstIndex { $0.id == current?.id } }
+    var currentIndex: Int? {
+        if let queueSelection, queue.indices.contains(queueSelection), queue[queueSelection].id == current?.id { return queueSelection }
+        return queue.firstIndex { $0.id == current?.id }
+    }
     var canGoPrevious: Bool { currentIndex != nil }
     var canGoNext: Bool { currentIndex.map { $0 + 1 < queue.count || repeatMode == .all } ?? false }
     var canSeek: Bool { player?.currentItem?.status == .readyToPlay && !loading && duration > 0 }
@@ -417,6 +460,14 @@ final class Library: ObservableObject {
         applyingPreparedCatalog = true
         tracks = prepared.tracks
         applyingPreparedCatalog = false
+        let tracksByID = Dictionary(tracks.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        playlistTracksByIdentity = [:]
+        for entry in catalog.entries {
+            let canonical = catalog.organization?.canonicalTrack(entry.track.id) ?? entry.track.id
+            if let track = tracksByID[canonical] ?? tracksByID[entry.track.id] {
+                playlistTracksByIdentity[canonical + ":" + entry.sha256] = track
+            }
+        }
         applyAlbums(prepared.albums)
         artworkURLs = prepared.artworkURLs
         connected = true
@@ -639,7 +690,7 @@ final class Library: ObservableObject {
         self.shuffled = shuffled
         orderedQueue = tracks
         queue = shuffled ? tracks.shuffled() : tracks
-        if let first = queue.first { select(first, autoplay: true) }
+        if let first = queue.first { select(first, autoplay: true, queueIndex: 0) }
     }
 
     func play(_ track: Track, in tracks: [Track]? = nil) {
@@ -654,10 +705,19 @@ final class Library: ObservableObject {
             persistPlayback()
             return
         }
-        select(track, autoplay: true)
+        select(track, autoplay: true, queueIndex: queue.firstIndex { $0.id == track.id })
     }
 
-    private func select(_ track: Track, autoplay: Bool, at start: Double = 0) {
+    func playPlaylist(_ tracks: [Track], at index: Int) {
+        guard connected, tracks.indices.contains(index) else { return }
+        shuffled = false
+        orderedQueue = tracks
+        queue = tracks
+        select(tracks[index], autoplay: true, queueIndex: index)
+    }
+
+    private func select(_ track: Track, autoplay: Bool, at start: Double = 0, queueIndex: Int? = nil) {
+        queueSelection = queueIndex ?? (current?.id == track.id ? currentIndex : queue.firstIndex { $0.id == track.id })
         stop()
         current = track
         duration = max(0, track.duration ?? 0)
@@ -846,7 +906,7 @@ final class Library: ObservableObject {
                         var nextRound = orderedQueue.shuffled()
                         if nextRound.count > 1, nextRound.first?.id == current?.id { nextRound.swapAt(0, 1) }
                         queue = nextRound
-                        if let first = queue.first { select(first, autoplay: true) }
+                        if let first = queue.first { select(first, autoplay: true, queueIndex: 0) }
                     } else { advance(autoplay: true) }
                 } else {
                     let end = duration
@@ -876,7 +936,10 @@ final class Library: ObservableObject {
         if position >= 3 || (index == 0 && repeatMode != .all) {
             if canSeek { seek(to: 0) }
             else if let current { select(current, autoplay: autoplay) }
-        } else { select(queue[index > 0 ? index - 1 : queue.count - 1], autoplay: autoplay) }
+        } else {
+            let previous = index > 0 ? index - 1 : queue.count - 1
+            select(queue[previous], autoplay: autoplay, queueIndex: previous)
+        }
     }
 
     func next() {
@@ -885,7 +948,8 @@ final class Library: ObservableObject {
 
     private func advance(autoplay: Bool) {
         guard canGoNext, let index = currentIndex else { return }
-        select(queue[(index + 1) % queue.count], autoplay: autoplay)
+        let next = (index + 1) % queue.count
+        select(queue[next], autoplay: autoplay, queueIndex: next)
     }
 
     func setShuffle(_ enabled: Bool) {
@@ -895,7 +959,12 @@ final class Library: ObservableObject {
             if let index = currentIndex {
                 queue = Array(queue.prefix(index + 1)) + queue.dropFirst(index + 1).shuffled()
             } else { queue = orderedQueue.shuffled() }
-        } else { queue = orderedQueue }
+        } else {
+            let occurrence = currentIndex.map { index in queue.prefix(index + 1).filter { $0.id == current?.id }.count - 1 } ?? 0
+            queue = orderedQueue
+            let indices = queue.indices.filter { queue[$0].id == current?.id }
+            queueSelection = indices.indices.contains(occurrence) ? indices[occurrence] : nil
+        }
         persistPlayback()
     }
 
@@ -987,7 +1056,7 @@ final class Library: ObservableObject {
     func persistPlayback() {
         guard !restoringPlayback, let id = localCatalog?.id, let current else { return }
         do {
-            let snapshot = PlaybackSnapshot(library: id, current: current, position: position, duration: duration,
+            let snapshot = PlaybackSnapshot(queueSelection: currentIndex, library: id, current: current, position: position, duration: duration,
                 queue: queue, orderedQueue: orderedQueue, shuffled: shuffled, repeatMode: repeatMode)
             try JSONEncoder().encode(snapshot).write(to: localStore.root.appendingPathComponent("playback.json"), options: .atomic)
             lastPersistedSecond = position.rounded(.down)
@@ -1011,12 +1080,17 @@ final class Library: ObservableObject {
             shuffled = saved.shuffled
             repeatMode = saved.repeatMode
             current = latest[saved.current.id] ?? saved.current
+            queueSelection = saved.queueSelection
             duration = saved.duration
             position = saved.duration > 0 ? min(saved.position, saved.duration) : saved.position
         } catch { message = "前回の再生状態を復元できませんでした。\(error.localizedDescription)" }
     }
 
     func closeLibrary() {
+        playlists = []
+        playlistConflicts = []
+        playlistTracksByIdentity = [:]
+        playlistMessage = nil
         catalogGeneration = UUID()
         visibilityGeneration = UUID()
         visibilityRequests = [:]

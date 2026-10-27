@@ -32,12 +32,13 @@ private struct PhoneArtistButton: View {
 private enum TabletSection: String, CaseIterable, Identifiable {
     case recent = "最近追加した項目", albums = "アルバム", artists = "アーティスト", songs = "曲"
     case hidden = "非表示にしたアルバム", search = "検索", settings = "設定"
+    case playlists = "すべてのプレイリスト"
     var id: Self { self }
     var icon: String {
         switch self {
         case .recent, .albums, .hidden: "layers"
         case .artists: "users"
-        case .songs: "music"
+        case .songs, .playlists: "music"
         case .search: "search"
         case .settings: "settings"
         }
@@ -114,9 +115,15 @@ struct PhoneRoot: View {
 
     private var tabletNavigation: some View {
         NavigationSplitView {
-            List(TabletSection.allCases, selection: $tabletSection) { section in
-                Label { Text(section.rawValue) } icon: { RegenIcon(name: section.icon) }
-                    .tag(section)
+            List(selection: $tabletSection) {
+                Section("ライブラリ") {
+                    ForEach(TabletSection.allCases.filter { $0 != .playlists }) { section in
+                        Label { Text(section.rawValue) } icon: { RegenIcon(name: section.icon) }.tag(section)
+                    }
+                }
+                Section("プレイリスト") {
+                    Label { Text(TabletSection.playlists.rawValue) } icon: { RegenIcon(name: "music") }.tag(TabletSection.playlists)
+                }
             }
             .navigationTitle("ライブラリ")
             .navigationSplitViewColumnWidth(min: 200, ideal: 240, max: 300)
@@ -134,6 +141,7 @@ struct PhoneRoot: View {
                     case .songs: songList(library.catalogTracks).navigationTitle("曲")
                     case .search: search
                     case .settings: settings
+                    case .playlists: PlaylistBrowser(library: library)
                     }
                 }.id(tabletSection)
             }
@@ -199,6 +207,7 @@ struct PhoneRoot: View {
     private var catalog: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
+                Text("ライブラリ").font(.headline)
                 VStack(spacing: 0) {
                     NavigationLink { recentAlbums } label: { categoryLabel("最近追加した項目", icon: "layers") }
                     NavigationLink {
@@ -215,6 +224,8 @@ struct PhoneRoot: View {
                     } label: { categoryLabel("非表示にしたアルバム", icon: "layers") }
                 }
                 .buttonStyle(.plain)
+                Text("プレイリスト").font(.headline)
+                NavigationLink { PlaylistBrowser(library: library) } label: { categoryLabel("すべてのプレイリスト", icon: "music") }.buttonStyle(.plain)
                 VStack(alignment: .leading, spacing: 8) {
                     Text("最近追加した項目").font(.title3.bold())
                     if !library.connected {

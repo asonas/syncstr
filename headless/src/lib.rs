@@ -30,3 +30,7 @@ pub mod relay;
 #[cfg(feature = "p2p")]
 pub mod rendezvous;
 pub mod store;
+#[cfg(feature = "p2p")]
+pub mod playlists;
+#[cfg(feature = "p2p")]
+pub mod playlist_sync;

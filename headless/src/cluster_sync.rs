@@ -53,6 +53,12 @@ pub async fn run_lan(
                     let result = async {
                         let session = crate::cluster_sync::Session::connect(&endpoint, address.clone(), &store).await?;
                         session.reconcile(&store).await?;
+                        match crate::playlist_sync::Session::connect(&endpoint, address.clone(), &store).await {
+                            Ok(playlists) => {
+                                if let Err(error) = playlists.reconcile(&store).await { eprintln!("Playlist synchronization deferred: {error}"); }
+                            }
+                            Err(error) => eprintln!("Playlist protocol unavailable: {error}"),
+                        }
                         store.reconcile_cluster_organization(&identity).await?;
                         for state in store.cluster_object_states().await? {
                             if state.conflicted() { continue; }
@@ -75,9 +81,9 @@ pub async fn run_lan(
 
 #[derive(serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
-struct Hello {
-    capabilities: crate::cluster::Capabilities,
-    proof: crate::enrollment::Proof,
+pub(crate) struct Hello {
+    pub(crate) capabilities: crate::cluster::Capabilities,
+    pub(crate) proof: crate::enrollment::Proof,
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -110,7 +116,7 @@ enum Response {
     Edited { object: String, revision: String },
 }
 
-async fn authorized(store: &crate::store::Store, member: &str, host: bool) -> anyhow::Result<()> {
+pub(crate) async fn authorized(store: &crate::store::Store, member: &str, host: bool) -> anyhow::Result<()> {
     let proof = store.cluster_membership_proof().await?;
     anyhow::ensure!(
         proof.grants.iter().any(|grant| grant.member == member
@@ -121,7 +127,7 @@ async fn authorized(store: &crate::store::Store, member: &str, host: bool) -> an
     Ok(())
 }
 
-async fn hello(store: &crate::store::Store) -> anyhow::Result<crate::cluster_sync::Hello> {
+pub(crate) async fn hello(store: &crate::store::Store) -> anyhow::Result<crate::cluster_sync::Hello> {
     Ok(crate::cluster_sync::Hello {
         capabilities: crate::cluster::Capabilities {
             version: 1,

@@ -1,8 +1,9 @@
 # Shared playlists and Music XML migration
 
-Status: implementation plan. Product scope and offline behavior were agreed on
-2026-10-21. Storage and protocol details below are proposals requiring the
-Phase 1 contract checks. Application implementation has not started.
+Status: implementation plan with a server-catalog review tool. Product scope and
+offline behavior were agreed on 2026-10-21. Storage and protocol details below
+are proposals requiring the Phase 1 contract checks. Playlist persistence,
+destination import, and application presentation have not been implemented.
 
 ## Agreed scope
 
@@ -12,6 +13,9 @@ Phase 1 contract checks. Application implementation has not started.
   import is not the default.
 - Playlists belong to the shared library and synchronize across devices.
   macOS, iPhone, and iPad can create and edit them.
+- Use the existing server catalog as the migration destination. A device's
+  downloaded or cached subset is not the matching baseline. Existing audio is
+  reused; playlist restoration does not acquire or copy it again.
 - Save edits locally while offline and synchronize after reconnecting.
 - Preserve independent additions from different devices. Retain concurrent
   renames and conflicting moves for explicit resolution; wall-clock timestamps
@@ -142,6 +146,70 @@ fingerprint. A changed export requires a refreshed preview before execution.
 
 This tool depends on playlist persistence and the destination import boundary.
 The recovered audit tool remains read-only and is not relabeled as an importer.
+
+The initial preparation commands are implemented in
+[`tools/playlist-audit`](../tools/playlist-audit/README.md#server-catalog-review).
+They export a consistent server metadata snapshot read-only, list selectable
+playlists, and offer metadata candidates for explicit review in CSV files.
+Unique metadata candidates are not verified file matches and are not accepted
+automatically. Prepared data retains the server library and cluster identities,
+logical track IDs, content hashes, source fingerprint, unsupported smart blobs,
+and unresolved occurrences. This preparation output is not itself an import
+request; the native app reads the original XML and obtains a fresh server catalog.
+
+The initial native import path is implemented in `apps/macos/Playlists.swift`
+and `PlaylistViews.swift`, with host persistence in `headless/src/playlists.rs`
+and the authenticated `syncstr/playlists/1` protocol in `playlist_sync.rs`.
+Accepted records are signed by a library host, stored transactionally, and
+replicated separately from audio. Native clients verify signatures before
+persisting their cache and cursor together. Host-to-host reconciliation and the
+Rust playback client also retain these records. Older peers can continue using
+the audio protocol; playlist migration requires an upgraded host.
+
+In the Apple apps, open **Playlists → All playlists → Import from XML**, choose
+lists (initially none), then explicitly accept metadata candidates. Unresolved
+occurrences retain their source position. Parent folders, duplicate occurrences,
+and opaque smart definitions are preserved. No source audio is read or uploaded.
+The host verifies every accepted logical-track ID and content hash against its
+current catalog before committing the whole selection. Repeating the identical
+import is a no-op. Different content for an existing source playlist is rejected
+instead of overwriting it. Competing host records remain stored and are flagged
+in the Apple UI, which disables playback of that conflicted list.
+
+This initial slice does not implement playlist editing, rule execution, conflict
+resolution, or reconciliation of a changed XML export. The review draft is kept
+in the open sheet, not in a durable offline edit queue. The server acknowledgment
+is required before success is shown; retrying the same selection is safe. Cached
+lists remain available offline, while the migration itself requires a host.
+Android and Windows retain synchronized records through the shared Rust client;
+their playlist presentation is not included in this slice. A revoked author
+causes signature authorization to fail closed rather than silently discarding
+the affected records. Historical-author recovery is a separate follow-up.
+
+Do not write directly into a running server database. Deployment and a selected
+production import are separate steps from local build and fixture verification.
+
+### Verification of the initial import slice
+
+- Rust integration tests cover atomic selection, stale destination references,
+  idempotent retries, overwrite rejection, retained unresolved occurrences,
+  signature tampering, authenticated transfer, and restart persistence.
+  Existing cluster-client and replica tests also pass (nine tests together).
+- Native XML tests cover explicit selection and candidate acceptance, ambiguous
+  candidates, minimum folder ancestry, smart bytes, and repeated/missing tracks.
+- The native/Rust interoperability test obtains a server catalog, imports a
+  snapshot containing resolved and unresolved occurrences, retries it, and
+  verifies the signed cache after reopening SQLite without downloading audio.
+- Playback interaction tests cover selecting the last occurrence of a repeated
+  track and navigating backward/forward without jumping to its first occurrence.
+- The macOS suite passes (96 XCTest cases, two environment-specific skips, and
+  31 Swift Testing cases). Focused checks after the final changes also pass.
+  macOS and iOS Simulator builds pass; the audit/review Python suite has 11
+  passing tests. Rust Clippy passes with warnings denied.
+- Production rollout, real-device playback, and visual inspection of migration
+  states in narrow/wide windows, appearance modes, and accessibility settings
+  remain unverified. The initial browser is a grouped native list; the full
+  Figma grid and editing/context-menu interactions remain Phase 4 work.
 
 Start with a read-only inventory and preview. The XML references audio; this
 feature must not imply it transfers audio automatically. Use the existing

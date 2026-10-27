@@ -109,6 +109,8 @@ impl crate::store::Store {
         crate::cluster_changes::migrate(&transaction)?;
         #[cfg(feature = "p2p")]
         crate::cluster_replica::migrate(&transaction)?;
+        #[cfg(feature = "p2p")]
+        crate::playlists::migrate(&transaction)?;
         transaction.commit()?;
         // The exclusive directory lock excludes uploads while abandoned staging files are removed.
         for file in std::fs::read_dir(root.join("staging"))? {

@@ -283,6 +283,21 @@ final class LocalTransfer: ObservableObject {
     private var automaticAudioOperation = false
     private var clusterRetry: Task<Void, Never>?
     private lazy var clusterNetwork = ClusterNetwork(store: store, secrets: peerSecrets)
+    func synchronizePlaylists() async throws {
+        _ = try await clusterNetwork.playlistExchange()
+    }
+
+    func playlistMatchingCatalog() async throws -> PlaylistMatchingCatalog {
+        guard let response = try await clusterNetwork.playlistExchange(PlaylistRequest(operation: "catalog")),
+              response.status == "catalog", let cluster = response.cluster, let entries = response.entries else { throw LocalMusicError.invalidData }
+        return PlaylistMatchingCatalog(cluster: cluster, entries: entries)
+    }
+
+    func importPlaylists(_ documents: [PlaylistDocument], cluster: String) async throws -> Int {
+        guard let response = try await clusterNetwork.playlistExchange(PlaylistRequest(operation: "import", cluster: cluster, documents: documents)),
+              response.status == "imported", let added = response.added else { throw LocalMusicError.invalidData }
+        return added
+    }
     lazy var playbackCache = PlaybackCache(root: store.root.appendingPathComponent("playback-cache"))
     private var recoveredClusterJobs = false
     var peerConnected: Bool { connected && client is PeerMusicConnection }

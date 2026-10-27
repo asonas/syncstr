@@ -44,10 +44,12 @@ targets:
       - path: ../macos/AlbumArtwork.swift
       - path: ../macos/ArtworkAcquisition.swift
       - path: ../macos/Track.swift
+      - path: ../macos/Playlists.swift
       - path: ../macos/CredentialStore.swift
       - path: ../macos/Licenses
         buildPhase: resources
       - path: ../macos/SettingsView.swift
+      - path: ../macos/PlaylistViews.swift
       - path: ../macos/Appearance.swift
       - path: ../macos/Appearance.xcassets
       - path: ../macos/Assets.xcassets
@@ -84,6 +86,7 @@ targets:
     platform: iOS
     sources:
       - path: Sources
+      - path: ../macos/PlaylistViews.swift
       - path: ../macos/Appearance.swift
       - path: ../macos/Appearance.xcassets
       - path: Licenses
@@ -109,6 +112,7 @@ targets:
       - path: ../macos/AlbumArtwork.swift
       - path: ../macos/ArtworkAcquisition.swift
       - path: ../macos/Track.swift
+      - path: ../macos/Playlists.swift
       - path: ../macos/CredentialStore.swift
     dependencies:
       - package: IrohLib
@@ -218,6 +222,7 @@ targets:
       - path: ../macos/AlbumArtwork.swift
       - path: ../macos/ArtworkAcquisition.swift
       - path: ../macos/Track.swift
+      - path: ../macos/Playlists.swift
       - path: ../macos/CredentialStore.swift
     dependencies:
       - sdk: iTunesLibrary.framework
@@ -249,6 +254,7 @@ targets:
       - path: ../macos/AlbumArtwork.swift
       - path: ../macos/ArtworkAcquisition.swift
       - path: ../macos/Track.swift
+      - path: ../macos/Playlists.swift
       - path: ../macos/CredentialStore.swift
     dependencies:
       - sdk: iTunesLibrary.framework

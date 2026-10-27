@@ -78,7 +78,7 @@ impl crate::cluster_client::PlaybackClient {
             .await?;
         let result = async {
             let session =
-                crate::cluster_sync::Session::connect(&endpoint, address, &self.store).await?;
+                crate::cluster_sync::Session::connect(&endpoint, address.clone(), &self.store).await?;
             session.reconcile(&self.store).await?;
             for edit in self.pending_metadata().await? {
                 session.edit_metadata(edit.entry.clone(), edit.organization.clone(), edit.parents.clone()).await?;
@@ -88,6 +88,10 @@ impl crate::cluster_client::PlaybackClient {
                 }).await?;
             }
             session.reconcile(&self.store).await?;
+            match crate::playlist_sync::Session::connect(&endpoint, address, &self.store).await {
+                Ok(playlists) => playlists.reconcile(&self.store).await?,
+                Err(error) => eprintln!("Playlist protocol unavailable: {error}"),
+            }
             self.catalog().await
         }
         .await;

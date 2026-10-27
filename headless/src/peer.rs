@@ -545,6 +545,7 @@ impl crate::peer::Identity {
             .alpns(vec![
                 crate::cluster_net::ENROLLMENT_ALPN.to_vec(),
                 crate::cluster_sync::ALPN.to_vec(),
+                crate::playlist_sync::ALPN.to_vec(),
             ])
             .relay_mode(match relay {
                 Some(url) => iroh::RelayMode::Custom(iroh::RelayMap::from_iter([url])),

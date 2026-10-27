@@ -90,6 +90,27 @@ final class ClusterTransferTests: XCTestCase {
             let states = try database.clusterObjectStates()
             XCTAssertEqual(states.map(\.object), [entry.sha256])
             let selected = try XCTUnwrap(states.first?.selected(in: database.clusterChanges())?.action.entry)
+            let playlists = try await ClusterSession.connect(address: address, secrets: secrets, database: database, playlists: true)
+            defer { playlists.close() }
+            let matching = try await playlists.playlistRequest(PlaylistRequest(operation: "catalog"))
+            XCTAssertEqual(matching.cluster, invitation.cluster)
+            let match = try XCTUnwrap(matching.entries?.first { $0.sha256 == entry.sha256 })
+            let items = (0..<3).map { position in
+                PlaylistItem(id: "mix:\(position)", sourceTrack: position == 1 ? "missing" : "song",
+                    title: "Original title", artist: nil, album: nil,
+                    trackId: position == 1 ? nil : match.track.id, sha256: position == 1 ? nil : match.sha256)
+            }
+            let playlist = PlaylistDocument(id: "source:mix", sourceLibrary: "source", sourcePlaylist: "mix",
+                sourceFingerprint: String(repeating: "a", count: 64), name: "Fixture mix", kind: "snapshot", parent: nil,
+                definition: ["Smart Info": "AQID"], items: items)
+            let accepted = try await playlists.playlistRequest(PlaylistRequest(operation: "import", cluster: invitation.cluster, documents: [playlist]))
+            XCTAssertEqual(accepted.status, "imported")
+            XCTAssertEqual(accepted.added, 1)
+            let retried = try await playlists.playlistRequest(PlaylistRequest(operation: "import", cluster: invitation.cluster, documents: [playlist]))
+            XCTAssertEqual(retried.added, 0)
+            try await playlists.reconcilePlaylists(database: database)
+            XCTAssertEqual(try CatalogDatabase(databaseURL).playlistDocuments().documents, [playlist])
+            XCTAssertFalse(store.hasFile(selected))
             let cache = LocalMusicStore(root: root.appendingPathComponent("playback-cache"))
             try await session.download(selected, store: cache, database: database, cacheOnly: true) { _ in }
             XCTAssertEqual(try LocalMusicStore.digest(file: cache.fileURL(selected)), entry.sha256)

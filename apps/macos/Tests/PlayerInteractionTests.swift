@@ -22,6 +22,24 @@ final class PlayerInteractionTests: XCTestCase {
         return library
     }
 
+    func testPlaylistPlaybackUsesTheSelectedOccurrenceOfARepeatedTrack() throws {
+        let library = try library()
+        defer { library.closeLibrary() }
+        let repeated = [library.tracks[0], library.tracks[1], library.tracks[0]]
+        library.playPlaylist(repeated, at: 2)
+        XCTAssertEqual(library.currentIndex, 2)
+        XCTAssertFalse(library.canGoNext)
+        library.previous()
+        XCTAssertEqual(library.currentIndex, 1)
+        XCTAssertEqual(library.current?.id, repeated[1].id)
+        library.next()
+        XCTAssertEqual(library.currentIndex, 2)
+        library.setShuffle(true)
+        library.setShuffle(false)
+        XCTAssertEqual(library.currentIndex, 2)
+        XCTAssertEqual(library.queue.map(\.id), repeated.map(\.id))
+    }
+
     func testAlbumPlaybackReplacesQueueAndNormalPlayClearsShuffle() throws {
         let library = try library()
         defer { library.closeLibrary() }

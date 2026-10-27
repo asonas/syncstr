@@ -159,7 +159,11 @@ struct LibraryView: View {
 
     private var sidebar: some View {
         VStack(alignment: .leading, spacing: 4) {
+            Text("ライブラリ").font(.caption).foregroundStyle(.secondary).padding(.horizontal, 8)
             ForEach(LibraryDestination.allCases, id: \.self) { destination in
+                if destination == .playlists {
+                    Text("プレイリスト").font(.caption).foregroundStyle(.secondary).padding(.horizontal, 8).padding(.top, 16)
+                }
                 Button { library.navigate(destination); library.search = "" } label: {
                     HStack(spacing: 8) {
                         MacIcon((destination == .recentlyAdded || destination == .albums || destination == .hiddenAlbums) ? "layers" : destination == .artists ? "users" : "music")
@@ -205,7 +209,7 @@ struct LibraryView: View {
     @ViewBuilder
     private var content: some View {
         VStack(spacing: 0) {
-            contentHeader
+            if library.destination != .playlists || library.showingNowPlaying { contentHeader }
             ZStack {
                 libraryContent
                     .opacity(library.showingNowPlaying ? 0 : 1)
@@ -226,6 +230,7 @@ struct LibraryView: View {
             case .recentlyAdded, .albums, .hiddenAlbums: albums
             case .artists: artists
             case .songs: songs
+            case .playlists: NavigationStack { PlaylistBrowser(library: library) }
             }
         }
     }
