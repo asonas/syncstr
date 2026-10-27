@@ -799,7 +799,7 @@ final class LocalTransfer: ObservableObject {
                     guard message.kind == "entry", let entry = message.entry, LocalMusicStore.valid(entry),
                           ids.insert(entry.track.id).inserted else { throw LocalMusicError.invalidData }
                     metadataBytes += try JSONEncoder().encode(entry).count
-                    guard entries.count < 100000, metadataBytes <= 256 * 1024 * 1024 else { throw LocalMusicError.invalidData }
+                    guard entries.count < 100000, metadataBytes <= 1024 * 1024 * 1024 else { throw LocalMusicError.invalidData }
                     entries.append(entry)
                 }
                 guard generation == attempt, !Task.isCancelled else { channel.close(); return }
@@ -1204,7 +1204,7 @@ final class LocalTransfer: ObservableObject {
                     if message.kind == "ready" { break }
                     guard message.kind == "entry", let entry = message.entry, LocalMusicStore.valid(entry) else { throw LocalMusicError.invalidData }
                     metadataBytes += try JSONEncoder().encode(entry).count
-                    guard entries.count < 100000, metadataBytes <= 256 * 1024 * 1024 else { throw LocalMusicError.invalidData }
+                    guard entries.count < 100000, metadataBytes <= 1024 * 1024 * 1024 else { throw LocalMusicError.invalidData }
                     entries.append(entry)
                 }
                 try Task.checkCancellation()
