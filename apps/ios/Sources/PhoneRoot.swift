@@ -242,7 +242,7 @@ struct PhoneRoot: View {
                         Text("音楽はまだありません。音楽ファイルを追加できます。")
                         AddMusicButton(library: library)
                     }
-                    albumGrid(library.recentlyAddedAlbums, sorted: false)
+                    recentAlbumGrid
                 }
             }
             .padding(.horizontal, 20)
@@ -273,31 +273,52 @@ struct PhoneRoot: View {
 
     private var recentAlbums: some View {
         ScrollView {
-            albumGrid(library.recentlyAddedAlbums, sorted: false).padding(20)
+            recentAlbumGrid.padding(20)
         }
         .background(PhoneStyle.graphite)
         .navigationTitle("最近追加した項目")
     }
 
+    private var recentAlbumGrid: some View {
+        LazyVGrid(columns: dynamicTypeSize.isAccessibilitySize ? [GridItem(.flexible())] : [GridItem(.adaptive(minimum: 160), spacing: 20)], alignment: .leading, spacing: 32) {
+            ForEach(library.recentlyAddedSections) { section in
+                Section {
+                    albumGridItems(section.albums)
+                } header: {
+                    Group {
+                        if let month = section.month {
+                            Text(month, format: .dateTime.year().month(.wide))
+                        } else { Text("追加日不明") }
+                    }.font(.headline).frame(maxWidth: .infinity, alignment: .leading)
+                        .accessibilityAddTraits(.isHeader)
+                }
+            }
+        }
+    }
+
     private func albumGrid(_ albums: [Album], sorted: Bool = true) -> some View {
         LazyVGrid(columns: dynamicTypeSize.isAccessibilitySize ? [GridItem(.flexible())] : [GridItem(.adaptive(minimum: 160), spacing: 20)], spacing: 32) {
-            ForEach(sorted ? library.sortedAlbums(albums) : albums) { album in
-                NavigationLink { albumDetail(album) } label: {
-                    VStack(alignment: .leading, spacing: 4) {
-                        PhoneArtwork(url: album.coverArt.flatMap { library.artworkURLs[$0] })
-                        Text(album.title).font(.subheadline.bold()).foregroundStyle(AppearanceColors.primary)
-                            .lineLimit(dynamicTypeSize.isAccessibilitySize ? nil : 2)
-                        Text(album.artist).font(.subheadline).foregroundStyle(PhoneStyle.secondary)
-                            .lineLimit(dynamicTypeSize.isAccessibilitySize ? nil : 1)
-                    }
+            albumGridItems(sorted ? library.sortedAlbums(albums) : albums)
+        }
+    }
+
+    private func albumGridItems(_ albums: [Album]) -> some View {
+        ForEach(albums) { album in
+            NavigationLink { albumDetail(album) } label: {
+                VStack(alignment: .leading, spacing: 4) {
+                    PhoneArtwork(url: album.coverArt.flatMap { library.artworkURLs[$0] })
+                    Text(album.title).font(.subheadline.bold()).foregroundStyle(AppearanceColors.primary)
+                        .lineLimit(dynamicTypeSize.isAccessibilitySize ? nil : 2)
+                    Text(album.artist).font(.subheadline).foregroundStyle(PhoneStyle.secondary)
+                        .lineLimit(dynamicTypeSize.isAccessibilitySize ? nil : 1)
                 }
-                .buttonStyle(.plain)
-                .accessibilityIdentifier("album-\(album.id)")
-                .contextMenu {
-                    Button(library.albumVisibilityLabel(album.id)) {
-                        library.setAlbumHidden(album.id, hidden: !library.isAlbumHidden(album.id))
-                    }.disabled(library.isSavingAlbumVisibility(album.id))
-                }
+            }
+            .buttonStyle(.plain)
+            .accessibilityIdentifier("album-\(album.id)")
+            .contextMenu {
+                Button(library.albumVisibilityLabel(album.id)) {
+                    library.setAlbumHidden(album.id, hidden: !library.isAlbumHidden(album.id))
+                }.disabled(library.isSavingAlbumVisibility(album.id))
             }
         }
     }

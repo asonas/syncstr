@@ -8,6 +8,47 @@ import Testing
 @MainActor
 struct LibraryPresentationTests {
     @Test
+    func recentSectionsSeparateMonthsAndKeepMissingDatesLast() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let library = Library(localStore: LocalMusicStore(root: root))
+        defer { library.closeLibrary() }
+        library.tracks = [
+            Track(id: "older-member", title: "Older member", artist: nil, album: "Spring", albumId: "spring", addedAt: 1_736_942_400_000),
+            Track(id: "newer-member", title: "Newer member", artist: nil, album: "Spring", albumId: "spring", addedAt: 1_768_478_400_000),
+            Track(id: "same-month", title: "Same month", artist: nil, album: "January", albumId: "january", addedAt: 1_768_392_000_000),
+            Track(id: "last-year", title: "Last year", artist: nil, album: "December", albumId: "december", addedAt: 1_765_800_000_000),
+            Track(id: "unknown", title: "Unknown", artist: nil, albumId: "unknown")
+        ]
+        let sections = library.recentlyAddedSections
+        #expect(sections.count == 3)
+        #expect(sections[0].albums.map(\.id) == ["spring", "january"])
+        #expect(sections[1].albums.map(\.id) == ["december"])
+        #expect(sections[2].month == nil)
+        #expect(sections[2].albums.map(\.id) == ["unknown"])
+        #expect(Calendar.current.component(.month, from: try #require(sections[0].month)) == 1)
+        #expect(Calendar.current.component(.year, from: try #require(sections[0].month)) == 2026)
+        library.search = "January"
+        #expect(library.visibleRecentlyAddedSections.count == 1)
+        #expect(library.visibleRecentlyAddedSections[0].albums.map(\.id) == ["january"])
+    }
+
+    @Test
+    func unnamedAlbumsUseTrackTitlesWithoutChangingMetadataOrIdentity() {
+        let tracks = [
+            Track(id: "one", title: "First song", artist: nil, album: nil, albumId: "one"),
+            Track(id: "two", title: "Second song", artist: nil, album: " \n", albumId: "two"),
+            Track(id: "named", title: "Song", artist: "Artist", album: "Named album", albumId: "named")
+        ]
+        let albums = Library.preparedAlbums(tracks, organization: nil)
+        #expect(albums.map(\.title) == ["First song", "Named album", "Second song"])
+        #expect(Set(albums.map(\.id)) == ["one", "two", "named"])
+        #expect(albums.first?.artist == "アーティスト不明")
+        #expect(albums.first?.tracks == [tracks[0]])
+        #expect(Track(id: "empty", title: " ", artist: nil).albumDisplayTitle == "アルバム未設定")
+    }
+
+    @Test
     func recentlyAddedUsesSharedDatesAndStableLegacyOrderAfterReopening() throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }

@@ -64,7 +64,7 @@ struct LibraryCheck {
         let unsetLibrary = Library()
         unsetLibrary.tracks = unset
         try require(unsetLibrary.albums.count == 2)
-        try require(unsetLibrary.albums.allSatisfy { $0.title == "アルバム未設定" })
+        try require(unsetLibrary.albums.map(\.title) == ["First", "Second"])
         try require(unsetLibrary.tracks == unset)
         let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)

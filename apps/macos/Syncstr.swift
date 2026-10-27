@@ -239,47 +239,21 @@ struct LibraryView: View {
         ScrollView {
             LazyVGrid(columns: [GridItem(.adaptive(minimum: 180), spacing: 20, alignment: .top)],
                       alignment: .leading, spacing: 32) {
-                ForEach(library.visibleAlbums) { album in
-                    Button {
-                        if (NSApp.currentEvent?.modifierFlags ?? NSEvent.modifierFlags).contains(.command) {
-                            if !selectedAlbums.insert(album.id).inserted { selectedAlbums.remove(album.id) }
-                            albumGridFocused = true
-                        } else {
-                            openAlbum(album.id)
-                        }
-                    } label: {
-                        VStack(alignment: .leading, spacing: 8) {
-                            Artwork(url: artworkURL(album.coverArt))
-                            VStack(alignment: .leading, spacing: 4) {
-                                Text(album.title).font(.system(size: 14)).lineLimit(2)
-                                Text(album.artist).font(.system(size: 12)).foregroundStyle(Studio.fog).lineLimit(1)
+                if library.destination == .recentlyAdded {
+                    ForEach(library.visibleRecentlyAddedSections) { section in
+                        Section {
+                            albumGridItems(section.albums)
+                        } header: {
+                            Group {
+                                if let month = section.month {
+                                    Text(month, format: .dateTime.year().month(.wide))
+                                } else { Text("追加日不明") }
                             }
-                            .frame(maxWidth: .infinity, minHeight: 60, alignment: .topLeading)
+                            .font(.headline).frame(maxWidth: .infinity, alignment: .leading)
+                            .accessibilityAddTraits(.isHeader)
                         }
-                        .background(selectedAlbums.contains(album.id) ? Studio.control : Color.clear,
-                                    in: RoundedRectangle(cornerRadius: 8))
-                        .overlay {
-                            RoundedRectangle(cornerRadius: 8)
-                                .strokeBorder(selectedAlbums.contains(album.id) ? Studio.signal : Color.clear, lineWidth: 3)
-                        }
-                        .contentShape(Rectangle())
                     }
-                    .buttonStyle(.plain)
-                    .id(album.id)
-                    .help("\(album.title)\n\(album.artist)")
-                    .accessibilityLabel("\(album.title)、\(album.artist)")
-                    .accessibilityAddTraits(selectedAlbums.contains(album.id) ? .isSelected : [])
-                    .accessibilityAction(named: Text("アルバムを開く")) { openAlbum(album.id) }
-                    .contextMenu {
-                        let targets: Set<String> = selectedAlbums.contains(album.id) ? selectedAlbums : [album.id]
-                        let saving = targets.contains(where: library.isSavingAlbumVisibility)
-                        let action = library.destination == .hiddenAlbums ? "非表示を解除する" : "非表示にする"
-                        Button(saving ? "保存しています…" : targets.count > 1 ? "選択した\(targets.count)枚を\(action)" : action) {
-                            changeAlbumVisibility(targets)
-                        }.disabled(saving)
-                        Button("アルバムを開く") { openAlbum(album.id) }
-                    }
-                }
+                } else { albumGridItems(library.visibleAlbums) }
             }.scrollTargetLayout().padding(32)
             if library.visibleAlbums.isEmpty {
                 Text(library.search.isEmpty ? "アルバムがありません。" : "一致するアルバムがありません。")
@@ -301,6 +275,50 @@ struct LibraryView: View {
             return .handled
         }
         .safeAreaPadding(.bottom, 120)
+    }
+
+    private func albumGridItems(_ albums: [Album]) -> some View {
+        ForEach(albums) { album in
+            Button {
+                if (NSApp.currentEvent?.modifierFlags ?? NSEvent.modifierFlags).contains(.command) {
+                    if !selectedAlbums.insert(album.id).inserted { selectedAlbums.remove(album.id) }
+                    albumGridFocused = true
+                } else {
+                    openAlbum(album.id)
+                }
+            } label: {
+                VStack(alignment: .leading, spacing: 8) {
+                    Artwork(url: artworkURL(album.coverArt))
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(album.title).font(.system(size: 14)).lineLimit(2)
+                        Text(album.artist).font(.system(size: 12)).foregroundStyle(Studio.fog).lineLimit(1)
+                    }
+                    .frame(maxWidth: .infinity, minHeight: 60, alignment: .topLeading)
+                }
+                .background(selectedAlbums.contains(album.id) ? Studio.control : Color.clear,
+                            in: RoundedRectangle(cornerRadius: 8))
+                .overlay {
+                    RoundedRectangle(cornerRadius: 8)
+                        .strokeBorder(selectedAlbums.contains(album.id) ? Studio.signal : Color.clear, lineWidth: 3)
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .id(album.id)
+            .help("\(album.title)\n\(album.artist)")
+            .accessibilityLabel("\(album.title)、\(album.artist)")
+            .accessibilityAddTraits(selectedAlbums.contains(album.id) ? .isSelected : [])
+            .accessibilityAction(named: Text("アルバムを開く")) { openAlbum(album.id) }
+            .contextMenu {
+                let targets: Set<String> = selectedAlbums.contains(album.id) ? selectedAlbums : [album.id]
+                let saving = targets.contains(where: library.isSavingAlbumVisibility)
+                let action = library.destination == .hiddenAlbums ? "非表示を解除する" : "非表示にする"
+                Button(saving ? "保存しています…" : targets.count > 1 ? "選択した\(targets.count)枚を\(action)" : action) {
+                    changeAlbumVisibility(targets)
+                }.disabled(saving)
+                Button("アルバムを開く") { openAlbum(album.id) }
+            }
+        }
     }
 
     private var showingAlbumGrid: Bool {

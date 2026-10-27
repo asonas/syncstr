@@ -9,8 +9,8 @@ audio or library metadata is changed, and no downloads are requested.
 Reviewed tracks without an album name retain the empty source metadata. Each
 gets a stable album membership ID derived from its source track ID, preventing
 unrelated unnamed tracks from becoming one album. Audio keeps the existing
-hash-based object path. The shared Apple client presents missing or empty album
-names as `アルバム未設定` without storing that label as source metadata. Missing
+hash-based object path. The shared Apple client uses the track title to display
+missing or empty album names without storing that label as source metadata. Missing
 artwork remains a reported partial result.
 
 `init-test` creates a fresh independent library. `bind-existing` explicitly binds

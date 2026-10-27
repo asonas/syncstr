@@ -14,6 +14,12 @@ struct Album: Identifiable {
 
 enum AlbumSortField { case title, artist }
 
+struct RecentAlbumSection: Identifiable {
+    let month: Date?
+    var albums: [Album]
+    var id: Date? { month }
+}
+
 enum LibraryDestination: String, CaseIterable {
     case recentlyAdded = "最近追加した項目"
     case albums = "アルバム"
@@ -97,6 +103,7 @@ final class Library: ObservableObject {
     private var applyingPreparedCatalog = false
     private(set) var albums: [Album] = []
     private(set) var recentlyAddedAlbums: [Album] = []
+    private(set) var recentlyAddedSections: [RecentAlbumSection] = []
     private(set) var hiddenAlbums: [Album] = []
     private(set) var catalogTracks: [Track] = []
     private var albumsByID: [String: Album] = [:]
@@ -256,14 +263,26 @@ final class Library: ObservableObject {
         hiddenAlbums = allAlbums.filter { isAlbumHidden($0.id) }
         let hiddenIDs = Set(hiddenAlbums.map(\.id))
         albums = allAlbums.filter { !hiddenIDs.contains($0.id) }
-        let dates: [(album: Album, addedAt: Int64)] = albums.map { album in
-            (album, album.tracks.compactMap(\.addedAt).max() ?? 0)
+        let dates: [(album: Album, addedAt: Int64?)] = albums.map { album in
+            (album, album.tracks.compactMap(\.addedAt).max())
         }
         let recent = dates.sorted { left, right in
-            if left.addedAt != right.addedAt { return left.addedAt > right.addedAt }
+            if left.addedAt != right.addedAt { return (left.addedAt ?? 0) > (right.addedAt ?? 0) }
             return left.album.id < right.album.id
         }
         recentlyAddedAlbums = recent.map(\.album)
+        recentlyAddedSections = []
+        let calendar = Calendar.current
+        for item in recent {
+            let month = item.addedAt.flatMap {
+                calendar.dateInterval(of: .month, for: Date(timeIntervalSince1970: Double($0) / 1000))?.start
+            }
+            if recentlyAddedSections.last?.month == month, !recentlyAddedSections.isEmpty {
+                recentlyAddedSections[recentlyAddedSections.count - 1].albums.append(item.album)
+            } else {
+                recentlyAddedSections.append(RecentAlbumSection(month: month, albums: [item.album]))
+            }
+        }
         catalogTracks = tracks.filter { !hiddenIDs.contains($0.albumKey) }
         tracksByArtist = Dictionary(grouping: catalogTracks) { $0.artist ?? "アーティスト不明" }
         artistNames = tracksByArtist.keys.sorted { $0.localizedStandardCompare($1) == .orderedAscending }
@@ -339,6 +358,14 @@ final class Library: ObservableObject {
     func album(id: String) -> Album? { albumsByID[id] }
     func albums(for artist: String) -> [Album] { albumsByArtist[artist] ?? [] }
     func tracks(for artist: String) -> [Track] { tracksByArtist[artist] ?? [] }
+
+    var visibleRecentlyAddedSections: [RecentAlbumSection] {
+        recentlyAddedSections.compactMap { section in
+            let albums = section.albums.filter { search.isEmpty || $0.title.localizedStandardContains(search)
+                || $0.artist.localizedStandardContains(search) }
+            return albums.isEmpty ? nil : RecentAlbumSection(month: section.month, albums: albums)
+        }
+    }
 
     var visibleAlbums: [Album] {
         let albums: [Album]

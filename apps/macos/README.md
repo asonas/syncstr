@@ -40,7 +40,9 @@ A per-user lock prevents concurrent launches through the script. If an abnormal 
 The library opens on albums. Use the sidebar to switch between Recently Added,
 albums, artists, and tracks, or to refresh the library. Recently Added displays
 visible albums by their newest member track's shared addition time, newest first.
-Undated legacy albums follow dated additions in stable album-ID order. Search
+Albums are grouped by calendar month. Undated legacy albums appear in an unknown-
+date section after dated additions, in stable album-ID order. Missing album
+names use the track title for display without changing source metadata. Search
 preserves this order; the ordinary Albums sort settings are independent. Opening
 an album and returning centers it in the list. The title-bar search filters the
 current section. Open an album and select a track to play it; the mini-player
