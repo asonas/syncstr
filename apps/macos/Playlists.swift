@@ -141,7 +141,7 @@ struct PlaylistDraft {
             let album = source["Album"] as? String
             let fields = key(title, artist, album)
             var candidates: [LocalEntry] = []
-            if fields.allSatisfy({ !$0.isEmpty }), let duration = source["Total Time"] as? Double {
+            if !fields[0].isEmpty, !fields[1].isEmpty, let duration = source["Total Time"] as? Double {
                 candidates = (index[fields] ?? []).filter { entry in
                     guard let seconds = entry.track.duration, abs(seconds * 1000 - duration) <= 2000 else { return false }
                     if let number = source["Track Number"] as? Int, entry.track.track != number { return false }
