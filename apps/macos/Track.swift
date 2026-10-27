@@ -15,4 +15,10 @@ struct Track: Codable, Identifiable, Equatable {
     var addedAt: Int64? = nil
 
     var albumKey: String { albumId ?? "\(artist ?? "")\u{1f}\(album ?? "")" }
+    var albumDisplayTitle: String {
+        guard let album, !album.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return "アルバム未設定"
+        }
+        return album
+    }
 }

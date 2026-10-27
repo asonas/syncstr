@@ -164,7 +164,7 @@ final class Library: ObservableObject {
         let records = Dictionary(uniqueKeysWithValues: (organization?.tracks ?? []).map { ($0.id, $0) })
         let images = organization.map(AlbumArtworkLookup.init)
         return Dictionary(grouping: tracks, by: \.albumKey).map { key, tracks in
-            Album(id: key, title: tracks.first?.album ?? "アルバム名不明",
+            Album(id: key, title: tracks.first?.albumDisplayTitle ?? "アルバム未設定",
                   artist: organization?.artistCredit(for: tracks.sorted {
                       ($0.discNumber ?? 1, $0.track ?? 0, $0.id) < ($1.discNumber ?? 1, $1.track ?? 0, $1.id)
                   }, records: records) ?? tracks.first?.artist ?? "アーティスト不明",

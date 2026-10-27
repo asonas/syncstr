@@ -59,6 +59,13 @@ struct LibraryCheck {
     @MainActor
     static func main() async throws {
         try stableAlbumOrder()
+        let unset = [Track(id: "unset-a", title: "First", artist: nil, album: nil, albumId: "unset-a"),
+                     Track(id: "unset-b", title: "Second", artist: nil, album: "", albumId: "unset-b")]
+        let unsetLibrary = Library()
+        unsetLibrary.tracks = unset
+        try require(unsetLibrary.albums.count == 2)
+        try require(unsetLibrary.albums.allSatisfy { $0.title == "アルバム未設定" })
+        try require(unsetLibrary.tracks == unset)
         let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: folder) }

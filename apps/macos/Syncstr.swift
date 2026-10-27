@@ -541,7 +541,7 @@ struct LibraryView: View {
                             .frame(maxWidth: showAlbum ? .infinity : nil, alignment: .leading)
                     }
                     if showAlbum {
-                        Text(track.album ?? "アルバム名不明").foregroundStyle(secondary)
+                        Text(track.albumDisplayTitle).foregroundStyle(secondary)
                             .lineLimit(1).frame(maxWidth: .infinity, alignment: .leading)
                     }
                     Text(time(track.duration ?? 0)).monospacedDigit().foregroundStyle(secondary)
