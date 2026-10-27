@@ -426,7 +426,7 @@ struct LibraryView: View {
         let tracks = albums.flatMap { $0.tracks.filter { ($0.artist ?? "アーティスト不明") == artist } }
         return GeometryReader { geometry in
             ScrollView {
-                VStack(alignment: .leading, spacing: 32) {
+                LazyVStack(alignment: .leading, spacing: 32) {
                     VStack(alignment: .leading, spacing: 8) {
                         Text(artist).font(.system(size: 28, weight: .semibold)).accessibilityAddTraits(.isHeader)
                         Text("\(albums.count)枚のアルバム、\(tracks.count)曲")
@@ -451,7 +451,10 @@ struct LibraryView: View {
                                         playButton(album.tracks.filter { ($0.artist ?? "アーティスト不明") == artist })
                                     }
                                 }
-                                trackRows(album.tracks.filter { ($0.artist ?? "アーティスト不明") == artist }, showArtist: false)
+                                // Virtualize albums, keeping each visible album's height stable.
+                                VStack(spacing: 0) {
+                                    trackRowContents(album.tracks.filter { ($0.artist ?? "アーティスト不明") == artist }, showArtist: false)
+                                }
                             }.frame(maxWidth: .infinity, alignment: .leading)
                         }
                     }
@@ -498,15 +501,19 @@ struct LibraryView: View {
 
     private func trackRows(_ tracks: [Track], showArtist: Bool = true, preservingQueue: Bool = false) -> some View {
         LazyVStack(spacing: 0) {
-            ForEach(Array(tracks.enumerated()), id: \.element.id) { index, track in
-                trackRow(track, index: index, tracks: preservingQueue ? nil : tracks, showArtist: showArtist)
-                    .contextMenu {
-                        Button(library.albumVisibilityLabel(track.albumKey)) {
-                            library.setAlbumHidden(track.albumKey, hidden: !library.isAlbumHidden(track.albumKey))
-                        }.disabled(library.isSavingAlbumVisibility(track.albumKey))
-                    }
-                    .overlay(alignment: .bottom) { rule }
-            }
+            trackRowContents(tracks, showArtist: showArtist, preservingQueue: preservingQueue)
+        }
+    }
+
+    private func trackRowContents(_ tracks: [Track], showArtist: Bool, preservingQueue: Bool = false) -> some View {
+        ForEach(Array(tracks.enumerated()), id: \.element.id) { index, track in
+            trackRow(track, index: index, tracks: preservingQueue ? nil : tracks, showArtist: showArtist)
+                .contextMenu {
+                    Button(library.albumVisibilityLabel(track.albumKey)) {
+                        library.setAlbumHidden(track.albumKey, hidden: !library.isAlbumHidden(track.albumKey))
+                    }.disabled(library.isSavingAlbumVisibility(track.albumKey))
+                }
+                .overlay(alignment: .bottom) { rule }
         }
     }
 
@@ -741,7 +748,7 @@ private struct LibrarySearchField: NSViewRepresentable {
     func makeCoordinator() -> Coordinator { Coordinator(text: $text) }
 
     func makeNSView(context: Context) -> NSSearchField {
-        let field = NSSearchField()
+        let field = ClickFocusedSearchField()
         if #available(macOS 26.0, *) {
             field.controlSize = .extraLarge
         } else {
@@ -763,6 +770,10 @@ private struct LibrarySearchField: NSViewRepresentable {
         if field.stringValue != text { field.stringValue = text }
     }
 
+    static func dismantleNSView(_ field: NSSearchField, coordinator: Coordinator) {
+        (field as? ClickFocusedSearchField)?.removeClickMonitor()
+    }
+
     func sizeThatFits(_ proposal: ProposedViewSize, nsView: NSSearchField, context: Context) -> CGSize? {
         CGSize(width: proposal.width ?? 280, height: nsView.intrinsicContentSize.height)
     }
@@ -771,6 +782,37 @@ private struct LibrarySearchField: NSViewRepresentable {
         var text: Binding<String>
         init(text: Binding<String>) { self.text = text }
         @objc func search(_ field: NSSearchField) { text.wrappedValue = field.stringValue }
+    }
+}
+
+private final class ClickFocusedSearchField: NSSearchField {
+    private var handlingClick = false
+    private var clickMonitor: Any?
+
+    override var acceptsFirstResponder: Bool { handlingClick }
+
+    override func mouseDown(with event: NSEvent) {
+        handlingClick = true
+        defer { handlingClick = false }
+        super.mouseDown(with: event)
+    }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        removeClickMonitor()
+        guard window != nil else { return }
+        clickMonitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] event in
+            guard let self, let window = self.window, event.window === window,
+                  self.currentEditor() != nil,
+                  !self.bounds.contains(self.convert(event.locationInWindow, from: nil)) else { return event }
+            window.makeFirstResponder(nil)
+            return event
+        }
+    }
+
+    func removeClickMonitor() {
+        if let clickMonitor { NSEvent.removeMonitor(clickMonitor) }
+        clickMonitor = nil
     }
 }
 
