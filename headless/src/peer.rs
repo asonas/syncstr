@@ -233,6 +233,9 @@ pub async fn serve(
                             connection.close(1u32.into(), b"peer not paired");
                             anyhow::bail!("peer not paired");
                         }
+                        if connection.alpn() == crate::playlist_sync::ALPN {
+                            return crate::playlist_sync::serve_connection(&identity, &store, connection).await;
+                        }
                         crate::peer::serve_connection(&identity, connection, store).await
                     }).await;
                     if !matches!(result, Ok(Ok(()))) { eprintln!("P2P connection ended: {result:?}"); }
@@ -484,7 +487,7 @@ impl crate::peer::Identity {
         fs2::FileExt::try_lock_exclusive(&lock)?;
         let builder = iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
             .secret_key(self.key.clone())
-            .alpns(vec![crate::peer::ALPN.to_vec()])
+            .alpns(vec![crate::peer::ALPN.to_vec(), crate::playlist_sync::ALPN.to_vec()])
             .relay_mode(if mode != crate::peer::Mode::Direct {
                 iroh::RelayMode::Default
             } else {

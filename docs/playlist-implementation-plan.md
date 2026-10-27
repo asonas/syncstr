@@ -166,6 +166,15 @@ persisting their cache and cursor together. Host-to-host reconciliation and the
 Rust playback client also retain these records. Older peers can continue using
 the audio protocol; playlist migration requires an upgraded host.
 
+Existing P2P registrations can also use this protocol on the same paired-peer
+endpoint. The host checks its allowlist for every request; cluster revocations
+still reject a known member even when a pairing file remains. This does not
+enroll the client into the cluster or change its audio connection. Native clients
+pin the host's membership proof to the authenticated peer and cached library,
+verify signed records, and retain that proof for offline display. Both the Apple
+client and the headless `serve` runtime need this paired-playlist support; an
+older runtime cannot enable it through an app refresh alone.
+
 In the Apple apps, open **Playlists → All playlists → Import from XML**, choose
 lists (initially none), then explicitly accept metadata candidates. Unresolved
 occurrences retain their source position. Parent folders, duplicate occurrences,

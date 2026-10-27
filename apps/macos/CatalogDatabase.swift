@@ -8,6 +8,26 @@ struct CatalogSnapshot {
 }
 
 extension CatalogDatabase {
+    func rememberPlaylistAuthority(peer: String, membership: ClusterMembership) throws {
+        _ = try membership.authorize(peer, host: true)
+        guard let library = try rows("SELECT id FROM catalog WHERE singleton = 1").first?[0] else { throw LocalMusicError.invalidData }
+        try transaction {
+            var effective = membership
+            if let previous = try rows("SELECT peer, payload FROM playlist_authorities WHERE library_id = ?", [library]).first {
+                guard previous[0] == peer, let payload = previous[1] else { throw LocalMusicError.unauthorized }
+                effective = try JSONDecoder().decode(ClusterMembership.self, from: Data(payload.utf8)).merging(membership, presenter: peer)
+            }
+            try execute("INSERT OR REPLACE INTO playlist_authorities VALUES (?, ?, ?)",
+                [library, peer, String(decoding: try JSONEncoder().encode(effective), as: UTF8.self)])
+        }
+    }
+
+    private func playlistAuthority() throws -> (peer: String, membership: ClusterMembership)? {
+        guard let row = try rows("SELECT peer, payload FROM playlist_authorities WHERE library_id = (SELECT id FROM catalog WHERE singleton = 1)").first,
+              let peer = row[0], let payload = row[1] else { return nil }
+        return (peer, try JSONDecoder().decode(ClusterMembership.self, from: Data(payload.utf8)))
+    }
+
     func playlistCursor(_ peer: String) throws -> Int64 {
         guard let row = try rows("SELECT sequence FROM playlist_cursors WHERE peer = ?", [peer]).first,
               let value = row[0], let sequence = Int64(value) else { return 0 }
@@ -16,10 +36,15 @@ extension CatalogDatabase {
 
     func receivePlaylist(peer: String, sequence: Int64, record: PlaylistRecord) throws {
         try transaction {
-            guard sequence > 0, let registration = try clusterRegistration() else { throw LocalMusicError.unauthorized }
-            _ = try registration.membership.authorize(peer, host: true)
-            let body = try record.decode(membership: registration.membership)
-            let grant = try registration.membership.verify(registration.localGrant)
+            guard sequence > 0 else { throw LocalMusicError.invalidData }
+            let membership: ClusterMembership
+            if let registration = try clusterRegistration() { membership = registration.membership }
+            else {
+                guard let authority = try playlistAuthority(), authority.peer == peer else { throw LocalMusicError.unauthorized }
+                membership = authority.membership
+            }
+            let grant = try membership.authorize(peer, host: true)
+            let body = try record.decode(membership: membership)
             guard body.cluster == grant.cluster else { throw LocalMusicError.unauthorized }
             try execute("INSERT OR IGNORE INTO playlist_records VALUES (?, ?, ?)",
                 [record.id, body.document.id, String(decoding: try JSONEncoder().encode(record), as: UTF8.self)])
@@ -28,13 +53,20 @@ extension CatalogDatabase {
     }
 
     func playlistDocuments() throws -> (documents: [PlaylistDocument], conflicts: Set<String>) {
-        guard let registration = try clusterRegistration() else { return ([], []) }
-        let cluster = try registration.membership.verify(registration.localGrant).cluster
+        let membership: ClusterMembership
+        let cluster: String
+        if let registration = try clusterRegistration() {
+            membership = registration.membership
+            cluster = try membership.verify(registration.localGrant).cluster
+        } else if let authority = try playlistAuthority() {
+            membership = authority.membership
+            cluster = try membership.authorize(authority.peer, host: true).cluster
+        } else { return ([], []) }
         var documents: [String: PlaylistDocument] = [:]
         var conflicts: Set<String> = []
         for row in try rows("SELECT payload FROM playlist_records ORDER BY id") {
             guard let json = row[0] else { throw LocalMusicError.invalidData }
-            let body = try JSONDecoder().decode(PlaylistRecord.self, from: Data(json.utf8)).decode(membership: registration.membership)
+            let body = try JSONDecoder().decode(PlaylistRecord.self, from: Data(json.utf8)).decode(membership: membership)
             guard body.cluster == cluster else { continue }
             if let previous = documents[body.document.id] {
                 if previous != body.document { conflicts.insert(body.document.id) }
@@ -333,7 +365,7 @@ final class CatalogDatabase {
                 let required: Set<String> = ["catalog", "entries", "received_files", "organization", "artwork_assets",
                     "cluster_schema", "cluster_identity", "cluster_peers", "cluster_objects", "cluster_locations",
                     "cluster_pending_changes", "cluster_jobs", "cluster_registration", "cluster_signed_changes",
-                    "cluster_peer_cursors", "cluster_track_ids", "cluster_import_batches", "cluster_transfer_settings", "cluster_metadata_queue", "playlist_records", "playlist_cursors"]
+                    "cluster_peer_cursors", "cluster_track_ids", "cluster_import_batches", "cluster_transfer_settings", "cluster_metadata_queue", "playlist_records", "playlist_cursors", "playlist_authorities"]
                 let existing = Set(try rows("SELECT name FROM sqlite_master WHERE type = 'table'").compactMap { $0[0] })
                 if required.isSubset(of: existing), try rows("SELECT version FROM cluster_schema WHERE singleton = 1").first?.first == "1" { return }
             }
@@ -349,6 +381,7 @@ final class CatalogDatabase {
                 try migrateClusterMembership()
                 try execute("CREATE TABLE IF NOT EXISTS playlist_records (id TEXT PRIMARY KEY, playlist_id TEXT NOT NULL, payload TEXT NOT NULL)")
                 try execute("CREATE TABLE IF NOT EXISTS playlist_cursors (peer TEXT PRIMARY KEY, sequence INTEGER NOT NULL)")
+                try execute("CREATE TABLE IF NOT EXISTS playlist_authorities (library_id TEXT PRIMARY KEY, peer TEXT NOT NULL, payload TEXT NOT NULL)")
                 try execute("PRAGMA user_version = 4")
             }
         } catch {

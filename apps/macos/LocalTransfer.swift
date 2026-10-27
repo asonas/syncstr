@@ -283,18 +283,37 @@ final class LocalTransfer: ObservableObject {
     private var automaticAudioOperation = false
     private var clusterRetry: Task<Void, Never>?
     private lazy var clusterNetwork = ClusterNetwork(store: store, secrets: peerSecrets)
+    var canSyncPlaylists: Bool { clusterRegistration != nil || peerName != nil }
+
+    private func exchangePlaylists(_ request: PlaylistRequest? = nil) async throws -> PlaylistResponse? {
+        if clusterRegistration != nil { return try await clusterNetwork.playlistExchange(request) }
+        guard let saved = try await peerPairing.load(), let bytes = Data(base64Encoded: saved.key) else { throw LocalMusicError.clusterUnavailable }
+        let address = try JSONDecoder().decode(PeerAddress.self, from: bytes)
+        let files = store
+        let database = try await CatalogStorage.shared.perform { try files.database() }
+        let session = try await ClusterSession.connectLegacyPlaylists(address: address, expected: saved.libraryID, secrets: peerSecrets, database: database)
+        defer { session.close() }
+        let response: PlaylistResponse?
+        if let request {
+            response = try await session.playlistRequest(request)
+            if response?.status == "rejected" { throw PlaylistImportError.rejected(response?.reason ?? "取り込みを確認してください。") }
+        } else { response = nil }
+        try await session.reconcilePlaylists(database: database)
+        return response
+    }
+
     func synchronizePlaylists() async throws {
-        _ = try await clusterNetwork.playlistExchange()
+        _ = try await exchangePlaylists()
     }
 
     func playlistMatchingCatalog() async throws -> PlaylistMatchingCatalog {
-        guard let response = try await clusterNetwork.playlistExchange(PlaylistRequest(operation: "catalog")),
+        guard let response = try await exchangePlaylists(PlaylistRequest(operation: "catalog")),
               response.status == "catalog", let cluster = response.cluster, let entries = response.entries else { throw LocalMusicError.invalidData }
         return PlaylistMatchingCatalog(cluster: cluster, entries: entries)
     }
 
     func importPlaylists(_ documents: [PlaylistDocument], cluster: String) async throws -> Int {
-        guard let response = try await clusterNetwork.playlistExchange(PlaylistRequest(operation: "import", cluster: cluster, documents: documents)),
+        guard let response = try await exchangePlaylists(PlaylistRequest(operation: "import", cluster: cluster, documents: documents)),
               response.status == "imported", let added = response.added else { throw LocalMusicError.invalidData }
         return added
     }

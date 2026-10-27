@@ -434,6 +434,21 @@ final class ClusterSession {
             ownID: await PeerMusicConnection.publicID(secrets: secrets), name: name)
     }
 
+    static func connectLegacyPlaylists(address: PeerAddress, expected: String, secrets: CredentialStore, database: CatalogDatabase) async throws -> ClusterSession {
+        let resolved = try await address.resolved(secrets: secrets)
+        let session = try await open(address: resolved.endpoint(expected: expected), alpn: "syncstr/playlists/1", secrets: secrets)
+        do {
+            let stream = try await session.connection.openBi()
+            struct LegacyHello: Encodable { let capabilities = ClusterCapabilities(version: 1) }
+            try await session.send(LegacyHello(), stream: stream)
+            try await stream.send().finish()
+            let hello = try await session.receive(Hello.self, stream: stream)
+            guard hello.capabilities.allowsAutomaticWriter else { throw LocalMusicError.incompatiblePeer }
+            try database.rememberPlaylistAuthority(peer: session.peer, membership: hello.proof)
+            return session
+        } catch { session.close(); throw error }
+    }
+
     static func connect(address: IrohLib.EndpointAddr, secrets: CredentialStore, database: CatalogDatabase, diagnostic: PlaybackDiagnosticContext? = nil, playlists: Bool = false) async throws -> ClusterSession {
         guard let registration = try database.clusterRegistration() else { throw LocalMusicError.unauthorized }
         diagnostic?.record("connection", "start", fields: ["path": "unknown", "reason": "not_established", "reused": "false"])

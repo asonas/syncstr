@@ -1,5 +1,11 @@
 pub const ALPN: &[u8] = b"syncstr/playlists/1";
 
+#[derive(serde::Deserialize)]
+struct Hello {
+    capabilities: crate::cluster::Capabilities,
+    proof: Option<crate::enrollment::Proof>,
+}
+
 #[derive(serde::Serialize, serde::Deserialize)]
 #[serde(tag = "operation", rename_all = "kebab-case", deny_unknown_fields)]
 pub enum Request {
@@ -39,17 +45,42 @@ pub(crate) async fn serve_connection(
 ) -> anyhow::Result<()> {
     let peer = connection.remote_id().to_string();
     let (mut output, mut input) = connection.accept_bi().await?;
-    let hello: crate::cluster_sync::Hello =
+    let hello: crate::playlist_sync::Hello =
         crate::cluster_net::receive(&mut input, 4 * 1024 * 1024).await?;
-    store
-        .authenticate_cluster_peer(peer.clone(), hello.proof)
-        .await?;
-    crate::cluster_sync::authorized(store, &peer, false).await?;
+    anyhow::ensure!(
+        hello.capabilities.version == 1,
+        "unsupported playlist client"
+    );
+    let legacy = hello.proof.is_none();
+    if let Some(proof) = hello.proof {
+        store.authenticate_cluster_peer(peer.clone(), proof).await?;
+    }
+    if legacy {
+        anyhow::ensure!(
+            identity.is_paired(connection.remote_id()),
+            "peer not paired"
+        );
+        store.local_cluster_grant(identity).await?;
+        let proof = store.cluster_membership_proof().await?;
+        if proof.grants.iter().any(|grant| grant.member == peer) {
+            crate::cluster_sync::authorized(store, &peer, false).await?;
+        }
+    } else {
+        crate::cluster_sync::authorized(store, &peer, false).await?;
+    }
     crate::cluster_sync::authorized(store, &identity.id().to_string(), true).await?;
     crate::cluster_net::send(&mut output, &crate::cluster_sync::hello(store).await?).await?;
     output.finish()?;
     while let Ok((mut output, mut input)) = connection.accept_bi().await {
-        crate::cluster_sync::authorized(store, &peer, false).await?;
+        if legacy {
+            anyhow::ensure!(identity.is_paired(connection.remote_id()), "peer revoked");
+            let proof = store.cluster_membership_proof().await?;
+            if proof.grants.iter().any(|grant| grant.member == peer) {
+                crate::cluster_sync::authorized(store, &peer, false).await?;
+            }
+        } else {
+            crate::cluster_sync::authorized(store, &peer, false).await?;
+        }
         crate::cluster_sync::authorized(store, &identity.id().to_string(), true).await?;
         let request: crate::playlist_sync::Request =
             crate::cluster_net::receive(&mut input, 32 * 1024 * 1024).await?;

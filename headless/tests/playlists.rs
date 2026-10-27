@@ -38,7 +38,12 @@ async fn selective_import_is_atomic_idempotent_and_rejects_overwrites() -> anyho
     let mut stale = original.clone();
     stale.items[0].track_id = Some("absent-track".into());
     stale.items[0].sha256 = Some("b".repeat(64));
-    assert!(store.import_playlists(&host, cluster.clone(), vec![stale]).await.is_err());
+    assert!(
+        store
+            .import_playlists(&host, cluster.clone(), vec![stale])
+            .await
+            .is_err()
+    );
     assert!(store.playlist_records().await?.is_empty());
     assert_eq!(
         store
@@ -167,6 +172,29 @@ async fn authenticated_protocol_restores_playlists_without_downloading_audio() -
         syncstr_headless::playlist_sync::Response::Rejected { .. }
     ));
     drop(session);
+    host.pair(client.id())?;
+    store
+        .revoke_cluster_member(&host, client.id().to_string())
+        .await?;
+    let fallback = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        let connection = client_endpoint
+            .connect(endpoint.addr(), syncstr_headless::playlist_sync::ALPN)
+            .await?;
+        let (mut output, mut input) = connection.open_bi().await?;
+        let payload = serde_json::to_vec(&serde_json::json!({"capabilities": {"version": 1}}))?;
+        output
+            .write_all(&(payload.len() as u32).to_be_bytes())
+            .await?;
+        output.write_all(&payload).await?;
+        output.finish()?;
+        input.read_exact(&mut [0u8; 4]).await?;
+        anyhow::Ok(())
+    })
+    .await?;
+    assert!(
+        fallback.is_err(),
+        "legacy pairing must not bypass a cluster revocation"
+    );
     client_endpoint.close().await;
     endpoint.close().await;
     serving.abort();

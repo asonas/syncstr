@@ -116,6 +116,7 @@ final class PeerTransferTests: XCTestCase {
         }
         await transfer.restorePeer()
         _ = try run(["peer-pair", "--state", peer.path, "--peer", transfer.peerID])
+        _ = try run(["cluster-init", "--data", data.path, "--peer-state", peer.path])
         let process = Process()
         process.executableURL = binary
         process.arguments = ["serve", "--data", data.path, "--identity", identity.path, "--listen", "127.0.0.1:0",
@@ -182,6 +183,18 @@ final class PeerTransferTests: XCTestCase {
         transfer.copy(catalog.entries.map(\.track))
         try await wait { !transfer.busy }
         let entry = try XCTUnwrap(catalog.entries.first)
+        let matching = try await transfer.playlistMatchingCatalog()
+        let candidate = try XCTUnwrap(matching.entries.first { $0.sha256 == entry.sha256 })
+        let playlist = PlaylistDocument(id: "source:mix", sourceLibrary: "source", sourcePlaylist: "mix",
+            sourceFingerprint: String(repeating: "a", count: 64), name: "Paired fixture", kind: "manual", parent: nil,
+            definition: [:], items: [PlaylistItem(id: "occurrence", sourceTrack: "original", title: "Fixture",
+                artist: nil, album: nil, trackId: candidate.track.id, sha256: candidate.sha256)])
+        let imported = try await transfer.importPlaylists([playlist], cluster: matching.cluster)
+        XCTAssertEqual(imported, 1)
+        try await transfer.synchronizePlaylists()
+        let playlistDatabase = try CatalogDatabase(files.root.appendingPathComponent("catalog.sqlite"))
+        XCTAssertNil(try playlistDatabase.clusterRegistration())
+        XCTAssertEqual(try playlistDatabase.playlistDocuments().documents, [playlist])
         XCTAssertEqual(try Data(contentsOf: files.fileURL(entry)), payload)
         var stale = entry
         stale.track = Track(id: entry.track.id, title: "12345", artist: nil, suffix: entry.track.suffix, size: entry.track.size)
@@ -245,6 +258,11 @@ final class PeerTransferTests: XCTestCase {
         await transfer.reconnectPeer()
         try await wait { !transfer.busy }
         XCTAssertFalse(transfer.connected)
+        do {
+            try await transfer.synchronizePlaylists()
+            XCTFail("A revoked peer must not fetch playlists")
+        } catch { }
+        XCTAssertEqual(try playlistDatabase.playlistDocuments().documents, [playlist])
         await transfer.forgetPeer()
         XCTAssertTrue(files.hasFile(entry))
         try await secrets.remove()

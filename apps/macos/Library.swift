@@ -63,12 +63,27 @@ final class Library: ObservableObject {
         refreshingPlaylists = true
         defer { refreshingPlaylists = false }
         await loadPlaylists()
+        guard transfer.canSyncPlaylists else {
+            playlistMessage = "設定でライブラリの接続先を登録してください。"
+            return
+        }
         do {
             try await transfer.synchronizePlaylists()
+            transfer.connectionEvent("playlist_sync", outcome: "succeeded")
             playlistMessage = nil
             await loadPlaylists()
+        } catch is CancellationError {
+            return
         } catch {
-            playlistMessage = "プレイリストを同期できませんでした。接続先がプレイリストに対応しているか確認してください。\(error.localizedDescription)"
+            transfer.connectionEvent("playlist_sync", outcome: "failed", error: error)
+            switch error {
+            case LocalMusicError.unauthorized:
+                playlistMessage = "プレイリストへのアクセスを確認できませんでした。設定の接続先を確認してください。"
+            case LocalMusicError.incompatiblePeer:
+                playlistMessage = "接続先をプレイリスト対応版に更新して、もう一度お試しください。"
+            default:
+                playlistMessage = "プレイリストを同期できませんでした。通信状態と接続先の更新状況を確認して、もう一度お試しください。"
+            }
         }
     }
 

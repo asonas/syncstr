@@ -8,11 +8,55 @@ struct PlaylistBrowser: View {
 
     private var children: [PlaylistDocument] { library.playlists.filter { $0.parent == parent } }
 
+    private var title: String { parent == nil ? "すべてのプレイリスト" : library.playlists.first { $0.id == parent }?.name ?? "フォルダ" }
+
     var body: some View {
-        List {
+        VStack(alignment: .leading, spacing: 0) {
+            #if os(macOS)
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: 20) {
+                    Text(title).font(.title2.bold()).fixedSize().accessibilityAddTraits(.isHeader)
+                    Spacer(minLength: 20)
+                    actions
+                }
+                VStack(alignment: .leading, spacing: 16) {
+                    Text(title).font(.title2.bold()).accessibilityAddTraits(.isHeader)
+                    HStack { actions; Spacer(minLength: 0) }
+                }
+            }.padding(.horizontal, 32).padding(.vertical, 20)
+            #endif
             if let message = library.playlistMessage {
-                Section { Text(message).foregroundStyle(.secondary) }
+                Text(message).font(.callout).foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.horizontal, 32).padding(.bottom, 16)
             }
+            content
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .background(AppearanceColors.content)
+        #if os(iOS)
+        .navigationTitle(title)
+        .toolbar { ToolbarItemGroup(placement: .primaryAction) { actions } }
+        #endif
+        .sheet(isPresented: $importing) { PlaylistMigrationView(library: library) }
+        .task {
+            await library.refreshPlaylists()
+            while !Task.isCancelled {
+                do { try await Task.sleep(for: .seconds(30)) } catch { return }
+                await library.refreshPlaylists()
+            }
+        }
+    }
+
+    @ViewBuilder private var actions: some View {
+        Button("XMLから移行") { importing = true }.disabled(!library.transfer.canSyncPlaylists)
+        Button("更新") { Task { await library.refreshPlaylists() } }
+            .disabled(library.refreshingPlaylists || !library.transfer.canSyncPlaylists)
+    }
+
+    private var content: some View {
+        List {
             if children.isEmpty {
                 Text(library.refreshingPlaylists ? "プレイリストを同期中…" : "プレイリストはありません")
                     .foregroundStyle(.secondary)
@@ -46,19 +90,6 @@ struct PlaylistBrowser: View {
         }
         .scrollContentBackground(.hidden)
         .background(AppearanceColors.content)
-        .navigationTitle(parent == nil ? "すべてのプレイリスト" : library.playlists.first { $0.id == parent }?.name ?? "フォルダ")
-        .toolbar {
-            Button("XMLから移行") { importing = true }.disabled(library.transfer.clusterRegistration == nil)
-            Button("更新") { Task { await library.refreshPlaylists() } }.disabled(library.refreshingPlaylists)
-        }
-        .sheet(isPresented: $importing) { PlaylistMigrationView(library: library) }
-        .task {
-            await library.refreshPlaylists()
-            while !Task.isCancelled {
-                do { try await Task.sleep(for: .seconds(30)) } catch { return }
-                await library.refreshPlaylists()
-            }
-        }
     }
 }
 
