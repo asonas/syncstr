@@ -4,6 +4,7 @@ WORKDIR /src
 ARG SYNCSTR_FEATURES=""
 COPY Cargo.toml Cargo.lock ./
 COPY src ./src
+COPY examples ./examples
 COPY scripts ./scripts
 RUN --mount=type=cache,id=syncstr-rust-registry,target=/usr/local/cargo/registry \
     --mount=type=cache,id=syncstr-rust-target-amd64,target=/src/target \
