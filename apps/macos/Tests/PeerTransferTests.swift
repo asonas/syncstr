@@ -189,8 +189,17 @@ final class PeerTransferTests: XCTestCase {
             sourceFingerprint: String(repeating: "a", count: 64), name: "Paired fixture", kind: "manual", parent: nil,
             definition: [:], items: [PlaylistItem(id: "occurrence", sourceTrack: "original", title: "Fixture",
                 artist: nil, album: nil, trackId: candidate.track.id, sha256: candidate.sha256)])
-        let imported = try await transfer.importPlaylists([playlist], cluster: matching.cluster)
+        var unresolved = playlist
+        unresolved.items = [PlaylistItem(id: "occurrence", sourceTrack: "original", title: "Fixture", artist: nil, album: nil, trackId: nil, sha256: nil)]
+        let imported = try await transfer.importPlaylists([unresolved], cluster: matching.cluster)
         XCTAssertEqual(imported, 1)
+        let preview = try await transfer.playlistReconciliationPreview()
+        XCTAssertEqual(preview.snapshots.map(\.document), [unresolved])
+        let update = try PlaylistReconciliation(documents: [playlist], snapshots: preview.snapshots)
+        let updated = try await transfer.reconcilePlaylists(update, cluster: matching.cluster)
+        XCTAssertEqual(updated, 1)
+        let retried = try await transfer.reconcilePlaylists(update, cluster: matching.cluster)
+        XCTAssertEqual(retried, 0)
         try await transfer.synchronizePlaylists()
         let playlistDatabase = try CatalogDatabase(files.root.appendingPathComponent("catalog.sqlite"))
         XCTAssertNil(try playlistDatabase.clusterRegistration())

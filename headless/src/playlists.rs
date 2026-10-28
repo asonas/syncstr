@@ -109,6 +109,8 @@ pub struct Body {
     pub author: String,
     pub grant: String,
     pub document: crate::playlists::Document,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub parents: Vec<String>,
 }
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
@@ -135,7 +137,8 @@ impl crate::playlists::Signed {
             .ok_or_else(|| anyhow::anyhow!("invalid playlist payload"))?;
         let body: crate::playlists::Body = serde_json::from_str(json)?;
         anyhow::ensure!(
-            body.version == 1
+            ((body.version == 1 && body.parents.is_empty())
+                || (body.version == 2 && !body.parents.is_empty()))
                 && self.id == hex::encode(sha2::Sha256::digest(self.payload.as_bytes())),
             "invalid playlist record identity"
         );
@@ -154,6 +157,89 @@ impl crate::playlists::Signed {
         body.document.validate()?;
         Ok(body)
     }
+}
+
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
+pub struct Snapshot {
+    pub document: crate::playlists::Document,
+    pub revisions: Vec<String>,
+}
+
+pub fn project(
+    records: &[crate::playlists::Signed],
+    proof: &crate::enrollment::Proof,
+) -> anyhow::Result<std::collections::BTreeMap<String, crate::playlists::Snapshot>> {
+    let bodies = records
+        .iter()
+        .map(|record| Ok((record.id.clone(), record.decode(proof)?)))
+        .collect::<anyhow::Result<std::collections::BTreeMap<_, _>>>()?;
+    let mut superseded = std::collections::HashSet::new();
+    for body in bodies.values() {
+        for parent in &body.parents {
+            let previous = bodies
+                .get(parent)
+                .ok_or_else(|| anyhow::anyhow!("incomplete playlist history"))?;
+            anyhow::ensure!(
+                previous.cluster == body.cluster && previous.document.id == body.document.id,
+                "invalid playlist revision parent"
+            );
+            anyhow::ensure!(
+                crate::playlists::reconciled(&body.document, &previous.document)? == body.document,
+                "invalid playlist revision"
+            );
+            superseded.insert(parent);
+        }
+    }
+    let mut result: std::collections::BTreeMap<String, crate::playlists::Snapshot> =
+        std::collections::BTreeMap::new();
+    for (id, body) in &bodies {
+        if superseded.contains(id) {
+            continue;
+        }
+        let snapshot =
+            result
+                .entry(body.document.id.clone())
+                .or_insert_with(|| crate::playlists::Snapshot {
+                    document: body.document.clone(),
+                    revisions: Vec::new(),
+                });
+        anyhow::ensure!(
+            snapshot.document == body.document,
+            "playlist conflict requires resolution"
+        );
+        snapshot.revisions.push(id.clone());
+    }
+    Ok(result)
+}
+
+fn reconciled(
+    incoming: &crate::playlists::Document,
+    previous: &crate::playlists::Document,
+) -> anyhow::Result<crate::playlists::Document> {
+    let mut structure = incoming.clone();
+    let mut merged = incoming.clone();
+    anyhow::ensure!(
+        incoming.items.len() == previous.items.len(),
+        "playlist source changed; use the original XML"
+    );
+    for ((item, original), result) in structure
+        .items
+        .iter_mut()
+        .zip(&previous.items)
+        .zip(&mut merged.items)
+    {
+        item.track_id.clone_from(&original.track_id);
+        item.sha256.clone_from(&original.sha256);
+        if result.track_id.is_none() {
+            result.track_id.clone_from(&original.track_id);
+            result.sha256.clone_from(&original.sha256);
+        }
+    }
+    anyhow::ensure!(
+        structure == *previous,
+        "playlist source changed; use the original XML"
+    );
+    Ok(merged)
 }
 
 pub(crate) fn migrate(connection: &rusqlite::Connection) -> anyhow::Result<()> {
@@ -183,6 +269,28 @@ impl crate::store::Store {
         cluster: String,
         documents: Vec<crate::playlists::Document>,
     ) -> anyhow::Result<usize> {
+        self.save_playlists(identity, cluster, documents, None)
+            .await
+    }
+
+    pub async fn reconcile_playlists(
+        &self,
+        identity: &crate::peer::Identity,
+        cluster: String,
+        documents: Vec<crate::playlists::Document>,
+        expected: std::collections::BTreeMap<String, Vec<String>>,
+    ) -> anyhow::Result<usize> {
+        self.save_playlists(identity, cluster, documents, Some(expected))
+            .await
+    }
+
+    async fn save_playlists(
+        &self,
+        identity: &crate::peer::Identity,
+        cluster: String,
+        documents: Vec<crate::playlists::Document>,
+        expected: Option<std::collections::BTreeMap<String, Vec<String>>>,
+    ) -> anyhow::Result<usize> {
         use sha2::Digest as _;
         anyhow::ensure!(
             !documents.is_empty() && documents.len() <= 1000,
@@ -190,15 +298,46 @@ impl crate::store::Store {
         );
         let authority = self.local_cluster_grant(identity).await?;
         anyhow::ensure!(cluster == authority.cluster, "wrong destination library");
+        let records = self.playlist_records().await?;
+        let proof = self.cluster_membership_proof().await?;
+        if let Some(expected) = &expected {
+            anyhow::ensure!(
+                expected.len() == documents.len(),
+                "invalid playlist preview"
+            );
+        }
         let mut signed = Vec::new();
-        for document in documents {
+        for mut document in documents {
             document.validate()?;
+            let parents = match &expected {
+                Some(expected) => expected
+                    .get(&document.id)
+                    .ok_or_else(|| anyhow::anyhow!("missing playlist preview"))?
+                    .clone(),
+                None => Vec::new(),
+            };
+            anyhow::ensure!(
+                parents.windows(2).all(|pair| pair[0] < pair[1]),
+                "invalid playlist preview"
+            );
+            for parent in &parents {
+                let previous = records
+                    .iter()
+                    .find(|record| &record.id == parent)
+                    .ok_or_else(|| {
+                        anyhow::anyhow!("playlist preview is stale; refresh the preview")
+                    })?
+                    .decode(&proof)?;
+                anyhow::ensure!(previous.cluster == cluster, "wrong playlist library");
+                document = crate::playlists::reconciled(&document, &previous.document)?;
+            }
             let body = crate::playlists::Body {
-                version: 1,
+                version: if parents.is_empty() { 1 } else { 2 },
                 cluster: cluster.clone(),
                 author: authority.member.clone(),
                 grant: authority.id.clone(),
                 document,
+                parents,
             };
             let payload = format!(
                 "{}{}",
@@ -214,16 +353,16 @@ impl crate::store::Store {
         self.run(move |connection, _| {
             let transaction = connection.transaction()?;
             let proof = crate::enrollment::read_proof(&transaction)?;
-            let mut existing = std::collections::BTreeMap::new();
-            for record in crate::playlists::records(&transaction)? {
-                let body = record.decode(&proof)?;
-                if let Some(previous) = existing.insert(body.document.id.clone(), body.document.clone()) {
-                    anyhow::ensure!(previous == body.document, "playlist conflict requires resolution");
-                }
-            }
+            let records = crate::playlists::records(&transaction)?;
+            let snapshots = crate::playlists::project(&records, &proof)?;
+            let existing: std::collections::BTreeMap<_, _> = snapshots.iter().map(|(id, snapshot)| (id.clone(), snapshot.document.clone())).collect();
             let mut incoming = std::collections::BTreeMap::new();
             for record in &signed {
                 let body = record.decode(&proof)?;
+                if expected.is_some() && !records.iter().any(|saved| saved.id == record.id) {
+                    let current = snapshots.get(&body.document.id).map(|snapshot| snapshot.revisions.as_slice()).unwrap_or_default();
+                    anyhow::ensure!(current == body.parents, "playlist preview is stale; refresh the preview");
+                }
                 anyhow::ensure!(incoming.insert(body.document.id.clone(), body.document).is_none(), "duplicate playlist selection");
             }
             let organization = crate::store::read_organization(&transaction)?;
@@ -236,7 +375,7 @@ impl crate::store::Store {
                 }
             }
             for document in incoming.values() {
-                if let Some(previous) = existing.get(&document.id) {
+                if let Some(previous) = existing.get(&document.id).filter(|_| expected.is_none()) {
                     anyhow::ensure!(previous == document, "playlist already exists with different content; explicit reconciliation required");
                 }
                 for item in &document.items {
@@ -256,7 +395,8 @@ impl crate::store::Store {
             let mut added = 0;
             for record in signed {
                 let body = record.decode(&proof)?;
-                if existing.contains_key(&body.document.id) { continue; }
+                if records.iter().any(|saved| saved.id == record.id)
+                    || existing.get(&body.document.id) == Some(&body.document) { continue; }
                 transaction.execute("INSERT INTO playlist_records VALUES (?, ?, ?)", rusqlite::params![record.id, body.document.id, serde_json::to_vec(&record)?])?;
                 added += 1;
             }

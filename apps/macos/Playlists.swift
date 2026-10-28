@@ -3,7 +3,14 @@ import Foundation
 enum PlaylistImportError: LocalizedError {
     case rejected(String)
     var errorDescription: String? {
-        switch self { case .rejected(let reason): "プレイリストを取り込めませんでした。\(reason)" }
+        switch self {
+        case .rejected(let reason):
+            switch reason {
+            case "playlist preview is stale; refresh the preview": "別の端末でプレイリストが更新されました。XMLを読み直し、最新の照合結果を確認してください。"
+            case "playlist source changed; use the original XML": "登録済みのプレイリストとXMLの構成が異なります。最初に移行したXMLを選んでください。"
+            default: "プレイリストを取り込めませんでした。\(reason)"
+            }
+        }
     }
 }
 
@@ -12,6 +19,7 @@ struct PlaylistRequest: Encodable {
     var after: Int64? = nil
     var cluster: String? = nil
     var documents: [PlaylistDocument]? = nil
+    var expected: [String: [String]]? = nil
 }
 
 struct PlaylistResponse: Decodable {
@@ -22,6 +30,7 @@ struct PlaylistResponse: Decodable {
     let record: PlaylistRecord?
     let added: Int?
     let reason: String?
+    let playlists: [PlaylistSnapshot]?
 }
 
 struct PlaylistItem: Codable, Equatable, Identifiable {
@@ -43,7 +52,19 @@ struct PlaylistDocument: Codable, Equatable, Identifiable {
     let kind: String
     let parent: String?
     let definition: [String: String]
-    let items: [PlaylistItem]
+    var items: [PlaylistItem]
+
+    func reconciling(_ previous: PlaylistDocument) throws -> PlaylistDocument {
+        guard items.count == previous.items.count else { throw PlaylistImportError.rejected("playlist source changed; use the original XML") }
+        var structure = self
+        structure.items = zip(items, previous.items).map { item, old in
+            PlaylistItem(id: item.id, sourceTrack: item.sourceTrack, title: item.title, artist: item.artist, album: item.album, trackId: old.trackId, sha256: old.sha256)
+        }
+        guard structure == previous else { throw PlaylistImportError.rejected("playlist source changed; use the original XML") }
+        var result = self
+        result.items = zip(items, previous.items).map { $0.trackId == nil ? $1 : $0 }
+        return result
+    }
 
     func validate() throws {
         func identity(_ value: String) -> Bool {
@@ -73,6 +94,7 @@ struct PlaylistRecord: Codable, Equatable {
         let author: String
         let grant: String
         let document: PlaylistDocument
+        var parents: [String]? = nil
     }
     let id: String
     let payload: String
@@ -82,12 +104,59 @@ struct PlaylistRecord: Codable, Equatable {
         let prefix = "syncstr-playlist-v1\n"
         guard payload.hasPrefix(prefix), payload.utf8.count <= 8 * 1024 * 1024 + 4096 else { throw LocalMusicError.invalidData }
         let body = try JSONDecoder().decode(Body.self, from: Data(payload.dropFirst(prefix.count).utf8))
-        guard body.version == 1 else { throw LocalMusicError.incompatiblePeer }
+        guard (body.version == 1 && (body.parents ?? []).isEmpty) || (body.version == 2 && !(body.parents ?? []).isEmpty) else { throw LocalMusicError.incompatiblePeer }
         try ClusterCrypto.verify(id: id, author: body.author, signature: signature, payload: Data(payload.utf8))
         let authority = try membership.verify(body.grant)
         guard authority.host, authority.member == body.author, authority.cluster == body.cluster else { throw LocalMusicError.unauthorized }
         try body.document.validate()
         return body
+    }
+}
+
+struct PlaylistSnapshot: Codable {
+    let document: PlaylistDocument
+    let revisions: [String]
+}
+
+struct PlaylistReconciliation {
+    let documents: [PlaylistDocument]
+    let expected: [String: [String]]
+    let previousResolved: Int
+    let updatedCount: Int
+    let replacements: [String]
+
+    init(documents: [PlaylistDocument], snapshots: [PlaylistSnapshot], entries: [LocalEntry] = []) throws {
+        let existing = Dictionary(uniqueKeysWithValues: snapshots.map { ($0.document.id, $0) })
+        func audioDescription(_ item: PlaylistItem) -> String {
+            guard let entry = entries.first(where: { $0.track.id == item.trackId && $0.sha256 == item.sha256 }) else { return "音源（\((item.sha256 ?? "").prefix(8))）" }
+            return "\(entry.track.title)・\(Int(entry.track.duration ?? 0))秒・\(entry.track.suffix ?? "")・\(ByteCountFormatter.string(fromByteCount: Int64(entry.track.size ?? 0), countStyle: .file))"
+        }
+        var merged: [PlaylistDocument] = []
+        var expected: [String: [String]] = [:]
+        var previousResolved = 0
+        var updatedCount = 0
+        var replacements: [String] = []
+        for document in documents {
+            if let snapshot = existing[document.id] {
+                let previous = snapshot.document
+                let result = try document.reconciling(previous)
+                merged.append(result)
+                expected[document.id] = snapshot.revisions
+                if document.kind != "folder" { updatedCount += 1 }
+                previousResolved += previous.items.filter { $0.trackId != nil }.count
+                for (old, new) in zip(previous.items, result.items) where old.trackId != nil && (old.trackId != new.trackId || old.sha256 != new.sha256) {
+                    replacements.append("\(document.name)：\(new.title)\n変更前：\(audioDescription(old))\n変更後：\(audioDescription(new))")
+                }
+            } else {
+                merged.append(document)
+                expected[document.id] = []
+            }
+        }
+        self.documents = merged
+        self.expected = expected
+        self.previousResolved = previousResolved
+        self.updatedCount = updatedCount
+        self.replacements = replacements
     }
 }
 

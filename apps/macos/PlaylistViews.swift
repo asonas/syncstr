@@ -204,6 +204,13 @@ struct PlaylistMigrationView: View {
     @State private var errorMessage: String?
     @State private var completed: Int?
     @State private var search = ""
+    @State private var snapshots: [PlaylistSnapshot] = []
+    @State private var matchingEntries: [LocalEntry] = []
+    @State private var confirmingReplacement = false
+
+    private func reconciliation(_ draft: PlaylistDraft) throws -> PlaylistReconciliation {
+        try PlaylistReconciliation(documents: draft.documents(selected: selected, accepted: accepted), snapshots: snapshots, entries: matchingEntries)
+    }
 
     private var selectedSongs: [PlaylistDraft.Song] {
         guard let draft else { return [] }
@@ -216,6 +223,7 @@ struct PlaylistMigrationView: View {
             VStack(spacing: 16) {
                 if busy { ProgressView("サーバーと通信中…") }
                 if let errorMessage { Text(errorMessage).foregroundStyle(.secondary).textSelection(.enabled).padding(.horizontal, 20) }
+                if draft != nil && errorMessage != nil { Button("XMLを読み直す") { choosing = true } }
                 if let completed {
                     Text("\(completed)件を取り込みました。各端末でプレイリストを更新すると表示されます。")
                         .padding(32)
@@ -233,6 +241,12 @@ struct PlaylistMigrationView: View {
             .navigationTitle("プレイリストを移行")
             .toolbar { ToolbarItem(placement: .cancellationAction) { Button(completed == nil ? "キャンセル" : "閉じる") { dismiss() }.disabled(busy) } }
             .disabled(busy)
+            .confirmationDialog("採用済みの音源を変更しますか？", isPresented: $confirmingReplacement, titleVisibility: .visible) {
+                Button("音源を変更して更新") { if let draft { Task { await importSelection(draft) } } }
+                Button("キャンセル", role: .cancel) {}
+            } message: {
+                Text("確認画面に表示した変更を適用します。プレイリストの曲順と未選択の照合結果は保持されます。")
+            }
             .fileImporter(isPresented: $choosing, allowedContentTypes: [.xml], allowsMultipleSelection: false) { result in
                 switch result {
                 case .success(let urls): if let url = urls.first { Task { await read(url) } }
@@ -272,24 +286,40 @@ struct PlaylistMigrationView: View {
 
     private func review(_ draft: PlaylistDraft) -> some View {
         let items = draft.playlists.filter { selected.contains($0.id) }.flatMap(\.items)
-        let resolved = items.filter { accepted[$0] != nil }.count
+        let result = Result { try reconciliation(draft) }
+        let preview = try? result.get()
+        let resolved = preview?.documents.flatMap(\.items).filter { $0.trackId != nil }.count ?? 0
+        let existingTracks = Set(snapshots.filter { $0.document.sourceLibrary == draft.sourceLibrary && selected.contains($0.document.sourcePlaylist) }
+            .flatMap { $0.document.items }.filter { $0.trackId != nil }.map(\.sourceTrack))
         return VStack(alignment: .leading, spacing: 16) {
             VStack(alignment: .leading, spacing: 8) {
                 Text("\(selected.count)プレイリスト・\(items.count)曲中\(resolved)曲を照合済み")
-                Text("候補は曲名・アーティスト・アルバム・曲番号・長さで照合しています。未解決の曲は元の位置に残ります。")
+                if let preview, preview.updatedCount > 0 {
+                    Text("登録済み\(preview.previousResolved)曲 → 更新後\(resolved)曲・\(preview.updatedCount)プレイリストを更新")
+                }
+                if case .failure(let error) = result { Text(error.localizedDescription).foregroundStyle(.secondary) }
+                Text("候補は曲名・アーティスト・アルバム・曲番号・長さで照合しています。未選択の曲は登録済みの照合結果を保持し、未解決の曲は元の位置に残ります。")
                     .font(.caption).foregroundStyle(.secondary)
                 HStack {
                     Button("戻る") { reviewing = false; search = "" }
                     Button("一意の候補を採用") {
-                        for song in selectedSongs where song.candidates.count == 1 {
+                        for song in selectedSongs where song.candidates.count == 1 && !existingTracks.contains(song.persistentID ?? song.id) {
                             let entry = song.candidates[0]
                             accepted[song.id] = entry.track.id + ":" + entry.sha256
                         }
                     }
                     Spacer()
                 }
-                Button("\(selected.count)プレイリストを移行") { Task { await importSelection(draft) } }
+                if let preview, !preview.replacements.isEmpty {
+                    Text("採用済み音源の変更：\(preview.replacements.count)曲").font(.headline)
+                    ScrollView { Text(preview.replacements.joined(separator: "\n")).textSelection(.enabled) }.frame(maxHeight: 100)
+                }
+                Button((preview?.updatedCount ?? 0) > 0 ? "プレイリストを更新" : "\(selected.count)プレイリストを移行") {
+                    if let preview, !preview.replacements.isEmpty { confirmingReplacement = true }
+                    else { Task { await importSelection(draft) } }
+                }
                     .buttonStyle(.borderedProminent)
+                    .disabled(preview == nil)
             }.padding(.horizontal, 20)
             List(selectedSongs.filter { search.isEmpty || $0.title.localizedStandardContains(search) || ($0.artist?.localizedStandardContains(search) ?? false) }) { song in
                 VStack(alignment: .leading, spacing: 4) {
@@ -298,7 +328,7 @@ struct PlaylistMigrationView: View {
                     if song.candidates.isEmpty { Text("照合候補なし").font(.caption).foregroundStyle(.secondary) }
                     else {
                         Picker("照合候補", selection: Binding(get: { accepted[song.id] ?? "" }, set: { accepted[song.id] = $0.isEmpty ? nil : $0 })) {
-                            Text("未解決のまま残す").tag("")
+                            Text(existingTracks.contains(song.persistentID ?? song.id) ? "登録済みの音源を保持" : "未解決のまま残す").tag("")
                             ForEach(Array(song.candidates.enumerated()), id: \.offset) { _, entry in
                                 Text("\(entry.track.title)・\(Int(entry.track.duration ?? 0))秒・\(entry.track.suffix ?? "")・\(ByteCountFormatter.string(fromByteCount: Int64(entry.track.size ?? 0), countStyle: .file))")
                                     .tag(entry.track.id + ":" + entry.sha256)
@@ -315,13 +345,16 @@ struct PlaylistMigrationView: View {
         let scoped = url.startAccessingSecurityScopedResource()
         defer { if scoped { url.stopAccessingSecurityScopedResource() }; busy = false }
         do {
-            let catalog = try await library.transfer.playlistMatchingCatalog()
+            let response = try await library.transfer.playlistReconciliationPreview()
             draft = try await CatalogStorage.shared.perform {
                 let handle = try FileHandle(forReadingFrom: url)
                 defer { try? handle.close() }
                 guard let data = try handle.read(upToCount: 32 * 1024 * 1024 + 1) else { throw LocalMusicError.invalidData }
-                return try PlaylistDraft.parse(data, catalog: catalog)
+                return try PlaylistDraft.parse(data, catalog: response.catalog)
             }
+            snapshots = response.snapshots
+            matchingEntries = response.catalog.entries
+            accepted = [:]; selected = []; reviewing = false; search = ""
         } catch { errorMessage = "XMLを読み込めませんでした。接続先の更新とXMLファイルを確認してください。\(error.localizedDescription)" }
     }
 
@@ -329,8 +362,8 @@ struct PlaylistMigrationView: View {
         busy = true; errorMessage = nil
         defer { busy = false }
         do {
-            let documents = try draft.documents(selected: selected, accepted: accepted)
-            _ = try await library.transfer.importPlaylists(documents, cluster: draft.cluster)
+            let preview = try reconciliation(draft)
+            _ = try await library.transfer.reconcilePlaylists(preview, cluster: draft.cluster)
             await library.loadPlaylists()
             completed = selected.count
         } catch { errorMessage = error.localizedDescription }

@@ -317,6 +317,19 @@ final class LocalTransfer: ObservableObject {
               response.status == "imported", let added = response.added else { throw LocalMusicError.invalidData }
         return added
     }
+
+    func playlistReconciliationPreview() async throws -> (catalog: PlaylistMatchingCatalog, snapshots: [PlaylistSnapshot]) {
+        guard let response = try await exchangePlaylists(PlaylistRequest(operation: "preview")),
+              response.status == "preview", let cluster = response.cluster, let entries = response.entries,
+              let snapshots = response.playlists else { throw LocalMusicError.incompatiblePeer }
+        return (PlaylistMatchingCatalog(cluster: cluster, entries: entries), snapshots)
+    }
+
+    func reconcilePlaylists(_ preview: PlaylistReconciliation, cluster: String) async throws -> Int {
+        guard let response = try await exchangePlaylists(PlaylistRequest(operation: "reconcile", cluster: cluster, documents: preview.documents, expected: preview.expected)),
+              response.status == "imported", let added = response.added else { throw LocalMusicError.invalidData }
+        return added
+    }
     lazy var playbackCache = PlaybackCache(root: store.root.appendingPathComponent("playback-cache"))
     private var recoveredClusterJobs = false
     var peerConnected: Bool { connected && client is PeerMusicConnection }

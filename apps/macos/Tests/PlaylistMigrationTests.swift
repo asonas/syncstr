@@ -5,6 +5,26 @@ import Testing
 #endif
 
 struct PlaylistMigrationTests {
+    @Test func reconciliationKeepsExistingMappingsAndReportsExplicitReplacements() throws {
+        let entry = LocalEntry(track: Track(id: "destination", title: "Song", artist: "Artist", album: "Album", duration: 120, track: 1), sha256: String(repeating: "a", count: 64), artwork: nil)
+        let alternative = LocalEntry(track: Track(id: "alternative", title: "Song", artist: "Artist", album: "Album", duration: 120, track: 1), sha256: String(repeating: "b", count: 64), artwork: nil)
+        let draft = try PlaylistDraft.parse(source(), catalog: PlaylistMatchingCatalog(cluster: "shared", entries: [entry, alternative]))
+        let originals = try draft.documents(selected: ["mix"], accepted: ["1": "destination:" + entry.sha256])
+        let snapshots = originals.map { PlaylistSnapshot(document: $0, revisions: ["revision-" + $0.id]) }
+        let unchanged = try PlaylistReconciliation(documents: draft.documents(selected: ["mix"], accepted: [:]), snapshots: snapshots)
+        #expect(unchanged.documents == originals)
+        #expect(unchanged.previousResolved == 2)
+        #expect(unchanged.updatedCount == 1)
+        #expect(unchanged.replacements.isEmpty)
+        #expect(unchanged.expected["source:mix"] == ["revision-source:mix"])
+        let changed = try PlaylistReconciliation(documents: draft.documents(selected: ["mix"], accepted: ["1": "alternative:" + alternative.sha256]), snapshots: snapshots)
+        #expect(changed.documents[1].items.map(\.trackId) == ["alternative", nil, "alternative"])
+        #expect(changed.replacements.count == 2)
+        var reordered = originals[1]
+        reordered.items.swapAt(0, 1)
+        #expect(throws: (any Error).self) { try PlaylistReconciliation(documents: [reordered], snapshots: snapshots) }
+    }
+
     private func source() throws -> Data {
         try PropertyListSerialization.data(fromPropertyList: [
             "Library Persistent ID": "source",

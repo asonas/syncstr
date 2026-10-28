@@ -62,15 +62,28 @@ extension CatalogDatabase {
             membership = authority.membership
             cluster = try membership.authorize(authority.peer, host: true).cluster
         } else { return ([], []) }
-        var documents: [String: PlaylistDocument] = [:]
+        var bodies: [String: PlaylistRecord.Body] = [:]
         var conflicts: Set<String> = []
         for row in try rows("SELECT payload FROM playlist_records ORDER BY id") {
             guard let json = row[0] else { throw LocalMusicError.invalidData }
-            let body = try JSONDecoder().decode(PlaylistRecord.self, from: Data(json.utf8)).decode(membership: membership)
+            let record = try JSONDecoder().decode(PlaylistRecord.self, from: Data(json.utf8))
+            let body = try record.decode(membership: membership)
             guard body.cluster == cluster else { continue }
-            if let previous = documents[body.document.id] {
-                if previous != body.document { conflicts.insert(body.document.id) }
-            } else { documents[body.document.id] = body.document }
+            bodies[record.id] = body
+        }
+        var superseded: Set<String> = []
+        for body in bodies.values {
+            for parent in body.parents ?? [] {
+                guard let previous = bodies[parent], previous.document.id == body.document.id,
+                      try body.document.reconciling(previous.document) == body.document else { throw LocalMusicError.invalidData }
+                superseded.insert(parent)
+            }
+        }
+        var documents: [String: PlaylistDocument] = [:]
+        for id in bodies.keys.sorted() where !superseded.contains(id) {
+            guard let body = bodies[id] else { continue }
+            if let previous = documents[body.document.id], previous != body.document { conflicts.insert(body.document.id) }
+            else { documents[body.document.id] = body.document }
         }
         return (documents.values.sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }, conflicts)
     }

@@ -10,12 +10,18 @@ struct Hello {
 #[serde(tag = "operation", rename_all = "kebab-case", deny_unknown_fields)]
 pub enum Request {
     Catalog,
+    Preview,
     Page {
         after: i64,
     },
     Import {
         cluster: String,
         documents: Vec<crate::playlists::Document>,
+    },
+    Reconcile {
+        cluster: String,
+        documents: Vec<crate::playlists::Document>,
+        expected: std::collections::BTreeMap<String, Vec<String>>,
     },
 }
 
@@ -25,6 +31,11 @@ pub enum Response {
     Catalog {
         cluster: String,
         entries: Vec<crate::model::Entry>,
+    },
+    Preview {
+        cluster: String,
+        entries: Vec<crate::model::Entry>,
+        playlists: Vec<crate::playlists::Snapshot>,
     },
     Page {
         next: i64,
@@ -85,7 +96,7 @@ pub(crate) async fn serve_connection(
         let request: crate::playlist_sync::Request =
             crate::cluster_net::receive(&mut input, 32 * 1024 * 1024).await?;
         let response = match request {
-            crate::playlist_sync::Request::Catalog => {
+            crate::playlist_sync::Request::Catalog | crate::playlist_sync::Request::Preview => {
                 let cluster = store.local_cluster_grant(identity).await?.cluster;
                 let catalog = store.catalog().await?;
                 let entries = catalog
@@ -98,7 +109,23 @@ pub(crate) async fn serve_connection(
                         entry
                     })
                     .collect();
-                crate::playlist_sync::Response::Catalog { cluster, entries }
+                if matches!(request, crate::playlist_sync::Request::Preview) {
+                    match crate::playlists::project(
+                        &store.playlist_records().await?,
+                        &store.cluster_membership_proof().await?,
+                    ) {
+                        Ok(snapshots) => crate::playlist_sync::Response::Preview {
+                            cluster,
+                            entries,
+                            playlists: snapshots.into_values().collect(),
+                        },
+                        Err(error) => crate::playlist_sync::Response::Rejected {
+                            reason: error.to_string(),
+                        },
+                    }
+                } else {
+                    crate::playlist_sync::Response::Catalog { cluster, entries }
+                }
             }
             crate::playlist_sync::Request::Page { after } => {
                 let (next, record) = store
@@ -109,6 +136,21 @@ pub(crate) async fn serve_connection(
             }
             crate::playlist_sync::Request::Import { cluster, documents } => {
                 match store.import_playlists(identity, cluster, documents).await {
+                    Ok(added) => crate::playlist_sync::Response::Imported { added },
+                    Err(error) => crate::playlist_sync::Response::Rejected {
+                        reason: error.to_string(),
+                    },
+                }
+            }
+            crate::playlist_sync::Request::Reconcile {
+                cluster,
+                documents,
+                expected,
+            } => {
+                match store
+                    .reconcile_playlists(identity, cluster, documents, expected)
+                    .await
+                {
                     Ok(added) => crate::playlist_sync::Response::Imported { added },
                     Err(error) => crate::playlist_sync::Response::Rejected {
                         reason: error.to_string(),
