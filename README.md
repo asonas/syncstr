@@ -13,7 +13,7 @@ An opt-in headless P2P node also supports catalog browsing, original-file upload
 - **macOS:** album, artist, and track browsing; search; continuous playback; seeking; and folder selection.
 - **iPhone:** library browsing, search, local import, playback, track/album offline saves, background audio, and lock-screen controls. The saved library opens without a connection.
 
-Start with the [macOS guide](apps/macos/README.md) or [iPhone guide](apps/ios/README.md) for build and verification steps. [Issue #11](https://github.com/asonas/syncstr/issues/11) records implementation milestones; [open issues](https://github.com/asonas/syncstr/issues) track follow-up work. Record local builds, distribution, and device verification separately.
+Start with the [macOS guide](apps/macos/README.md) or [iPhone guide](apps/ios/README.md) for build and verification steps. [Issue #11](https://github.com/asonas/syncstr/issues/11) records implementation milestones; the [Syncstr project in Linear](docs/agents/issue-tracker.md) tracks follow-up work. Record local builds, distribution, and device verification separately.
 
 ## Hidden albums
 

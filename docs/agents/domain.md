@@ -9,7 +9,8 @@ Use the [README map](../../README.md#code-and-documentation-map) to find the rel
 - [Design specification](../design-spec.md): UI principles and the long-term service specification.
 - [Design decisions](../decisions.md): initial rationale and unresolved questions. Check applicability against [deferred work](../../README.md#long-term-design-and-deferred-work).
 - [DESIGN.md](../../DESIGN.md): UI and icon appearance.
-- [GitHub issues](https://github.com/asonas/syncstr/issues): subsequent scope changes and verification results. Follow successor issues when consulting an older decision.
+- The Syncstr project in [Linear](issue-tracker.md): subsequent scope changes and verification results.
+- [GitHub issues](https://github.com/asonas/syncstr/issues): historical scope changes and verification results. Follow successor tickets when consulting an older decision.
 
 Use the terminology in the relevant document and source code. If a proposed change contradicts a decision, identify its decision ID or issue and explain the conflict.
 

@@ -8,7 +8,7 @@ Write documentation in English. Use relative paths and fictional values in publi
 - Before changing UI layout, wording, dimensions, or state presentation, read the macOS guidance in [DESIGN.md](DESIGN.md).
 - When reviewing changes, read [CODING_STANDARDS.md](CODING_STANDARDS.md) and verify the affected interactions and display states.
 
-- Issues and specs: [GitHub issue conventions](docs/agents/issue-tracker.md).
+- Issues and specs: [Linear issue conventions](docs/agents/issue-tracker.md).
 - Triage: [default labels](docs/agents/triage-labels.md).
 - Design terminology and decisions: [domain docs](docs/agents/domain.md).
 
