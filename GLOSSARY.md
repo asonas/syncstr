@@ -4,6 +4,19 @@ Terms for organizing owned music and making it available across a listener's dev
 
 ## Language
 
+**Library Track**:
+A separately retained track in a listener's library, independent of its title or audio encoding. Separate source registrations remain separate library tracks, even when their audio is identical; different releases and versions remain distinct.
+_Avoid_: Audio file or song title as a synonym for track identity
+
+**Audio Copy**:
+One file containing audio associated with a library track. A track may have multiple encodings or copies; sharing identical file content does not merge separate library tracks.
+
+**Source Track Reference**:
+A reference to a track registration within a particular source library. It distinguishes separate registrations without depending on filenames or matching titles.
+
+**Track Correspondence**:
+A retained, evidenced relationship between a source track registration and a Syncstr library track. It can be reused when importing playlists or revisiting an earlier import.
+
 **Album**:
 One released or distributed edition of a collection of tracks. Different editions are distinct albums; multiple discs belonging to the same release form one album.
 _Avoid_: Album title as a synonym for album identity
