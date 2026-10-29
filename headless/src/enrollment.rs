@@ -228,7 +228,7 @@ pub struct Revocation {
 }
 
 impl crate::enrollment::Revocation {
-    fn signing_bytes(&self) -> anyhow::Result<Vec<u8>> {
+    pub(crate) fn signing_bytes(&self) -> anyhow::Result<Vec<u8>> {
         Ok(format!(
             "syncstr-membership-revocation-v1\n{}",
             serde_json::to_string(&(

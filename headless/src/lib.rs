@@ -31,6 +31,12 @@ pub mod relay;
 pub mod rendezvous;
 pub mod store;
 #[cfg(feature = "p2p")]
+pub mod shared_audio;
+#[cfg(feature = "p2p")]
+pub mod shared_audio_api;
+#[cfg(feature = "p2p")]
+pub mod shared_audio_net;
+#[cfg(feature = "p2p")]
 pub mod playlists;
 #[cfg(feature = "p2p")]
 pub mod playlist_sync;

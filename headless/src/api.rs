@@ -328,7 +328,7 @@ async fn download(
     Ok(response)
 }
 
-fn range(value: &str, size: u64) -> Option<(u64, u64)> {
+pub(crate) fn range(value: &str, size: u64) -> Option<(u64, u64)> {
     let (start, end) = value.strip_prefix("bytes=")?.split_once('-')?;
     if start.is_empty() {
         let suffix: u64 = end.parse().ok()?;
