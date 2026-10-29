@@ -96,3 +96,52 @@ Preparation does not import playlists into Syncstr. Shared playlist storage,
 authenticated server acceptance, repeat-import handling, and client replication
 are subsequent implementation work. Neither command modifies the server or XML.
 Keep review files and prepared output private; they contain real library data.
+
+## Source registration inventory
+
+`inventory.py` implements the read-only evidence collection slice of the
+[source identity handoff](../../docs/source-track-identity-windows-handoff.md).
+It keeps one row per XML registration, even when paths, titles or bytes match.
+It is separate from the existing audit and playlist preparation commands.
+
+Create a private output directory outside the repository and media first. Start
+with a small file limit; every XML registration and playlist occurrence remains
+in the report, but only the first N resolved file locations are inspected.
+
+```powershell
+mise exec -- python tools/playlist-audit/inventory.py inventory --library '../input/Library.xml' --file-limit 64 --output '../private-audit/inventory-sample.json'
+mise exec -- python tools/playlist-audit/inventory.py review --inventory '../private-audit/inventory-sample.json' --catalog '../private-audit/server-catalog.json' --output '../private-audit/correspondence-sample.json'
+```
+
+Obtain `server-catalog.json` freshly using the read-only exporter described
+above. After checking the sample and resource use, omit `--file-limit` for a
+full scan and use new filenames. Repeat `--library` for distinct libraries.
+Duplicate library IDs are reported as invalid, including copied XML exports.
+
+If a local root moved, explicitly pass `--root-map 'D:\OldMedia=E:\Media'`.
+Both paths must be absolute; the destination must exist on a local fixed drive.
+Overlapping source roots are rejected. No automatic path search is performed.
+The tool refuses network shares, cloud recall/offline placeholders, symbolic
+links and all Windows reparse points, including junctions. Protection evidence
+does not prevent opaque hashing of a safely local file, and hashing does not
+establish ownership eligibility or playability.
+
+Each hash streams in 1 MiB blocks. Progress contains counts only. Input bounds
+are 32 MiB per XML, 64 MiB for a catalog and 256 MiB for an inventory consumed by
+review. Completed reports are published through an atomic, non-replacing hard
+link on the output filesystem. Choose a filesystem supporting hard links
+(NTFS on Windows). A failed run publishes no final report; a forced process
+termination can leave a `.partial` file, which is not a completed manifest.
+Existing reports are never overwritten. A rerun reads the source files again.
+
+All correspondence decisions remain `null`. Exact byte matches retain every
+matching catalog entry and canonical aliases. Separate registrations sharing
+a candidate are flagged for the later logical-track design; they are never
+merged or automatically mapped. Metadata suggestions use the existing review
+criteria, including its rejection of cyclic/dangling aliases and competing
+hashes for one canonical destination identity.
+
+See the [version-1 format](inventory-format.md) for field meanings and the
+[Windows validation record](../../docs/validation/source-track-identity-windows.md)
+for coverage and remaining design questions. These reports are private evidence,
+not an upload, import API or shared correspondence registry.
