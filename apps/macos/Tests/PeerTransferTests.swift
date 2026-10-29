@@ -44,6 +44,19 @@ final class PeerTransferTests: XCTestCase {
         XCTAssertThrowsError(try PeerAddress.parse("https://example.com"))
     }
 
+    private func timedPlaylistFixture<T>(_ operation: String, body: () async throws -> T) async rethrows -> T {
+        let start = ContinuousClock.now
+        var succeeded = false
+        defer {
+            let elapsed = start.duration(to: .now).components
+            let milliseconds = Double(elapsed.seconds) * 1000 + Double(elapsed.attoseconds) / 1e15
+            print("PLAYLIST_FIXTURE operation=\(operation) elapsed_ms=\(milliseconds) outcome=\(succeeded ? "success" : "failure")")
+        }
+        let result = try await body()
+        succeeded = true
+        return result
+    }
+
     private func wait(_ condition: () -> Bool) async throws {
         for _ in 0..<400 {
             if condition() { return }
@@ -193,14 +206,37 @@ final class PeerTransferTests: XCTestCase {
         unresolved.items = [PlaylistItem(id: "occurrence", sourceTrack: "original", title: "Fixture", artist: nil, album: nil, trackId: nil, sha256: nil)]
         let imported = try await transfer.importPlaylists([unresolved], cluster: matching.cluster)
         XCTAssertEqual(imported, 1)
-        let preview = try await transfer.playlistReconciliationPreview()
+        let preview = try await timedPlaylistFixture("preview") {
+            try await transfer.playlistReconciliationPreview()
+        }
         XCTAssertEqual(preview.snapshots.map(\.document), [unresolved])
         let update = try PlaylistReconciliation(documents: [playlist], snapshots: preview.snapshots)
-        let updated = try await transfer.reconcilePlaylists(update, cluster: matching.cluster)
+        let updated = try await timedPlaylistFixture("update") {
+            try await transfer.reconcilePlaylists(update, cluster: matching.cluster)
+        }
         XCTAssertEqual(updated, 1)
-        let retried = try await transfer.reconcilePlaylists(update, cluster: matching.cluster)
+        let retried = try await timedPlaylistFixture("exact-retry") {
+            try await transfer.reconcilePlaylists(update, cluster: matching.cluster)
+        }
         XCTAssertEqual(retried, 0)
-        try await transfer.synchronizePlaylists()
+        let staleUpdate = try PlaylistReconciliation(documents: [unresolved], snapshots: preview.snapshots)
+        do {
+            _ = try await timedPlaylistFixture("stale-update") {
+                try await transfer.reconcilePlaylists(staleUpdate, cluster: matching.cluster)
+            }
+            XCTFail("A stale update must not succeed")
+        } catch PlaylistImportError.rejected(let reason) {
+            XCTAssertEqual(reason, "playlist preview is stale; refresh the preview")
+        }
+        for _ in 0..<3 {
+            let repeated = try await timedPlaylistFixture("preview-current-cursor") {
+                try await transfer.playlistReconciliationPreview()
+            }
+            XCTAssertEqual(repeated.snapshots.map(\.document), [playlist])
+            try await timedPlaylistFixture("history-current-cursor") {
+                try await transfer.synchronizePlaylists()
+            }
+        }
         let playlistDatabase = try CatalogDatabase(files.root.appendingPathComponent("catalog.sqlite"))
         XCTAssertNil(try playlistDatabase.clusterRegistration())
         XCTAssertEqual(try playlistDatabase.playlistDocuments().documents, [playlist])
