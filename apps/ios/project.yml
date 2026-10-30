@@ -30,6 +30,7 @@ targets:
       - path: ../macos/ClusterChanges.swift
       - path: ../macos/ClusterDiscovery.swift
       - path: ../macos/ClusterTransport.swift
+      - path: ../macos/SharedAudio.swift
       - path: ../macos/LocalTransfer.swift
       - path: ../macos/PeerTransfer.swift
       - path: ../macos/PeerSetup.swift
@@ -98,6 +99,7 @@ targets:
       - path: ../macos/ClusterChanges.swift
       - path: ../macos/ClusterDiscovery.swift
       - path: ../macos/ClusterTransport.swift
+      - path: ../macos/SharedAudio.swift
       - path: ../macos/LocalTransfer.swift
       - path: ../macos/PeerTransfer.swift
       - path: ../macos/PeerSetup.swift
@@ -163,6 +165,7 @@ targets:
       - path: Tests
       - path: ../macos/Tests/PlayerInteractionTests.swift
       - path: ../macos/Tests/OfflineSaveTests.swift
+      - path: ../macos/Tests/SharedAudioTests.swift
       - path: ../macos/Tests/SavePreparationTests.swift
       - path: ../macos/Tests/LibraryPresentationTests.swift
       - path: ../macos/Tests/AlbumOrganizationTests.swift
@@ -215,6 +218,7 @@ targets:
       - path: ../macos/ClusterChanges.swift
       - path: ../macos/ClusterDiscovery.swift
       - path: ../macos/ClusterTransport.swift
+      - path: ../macos/SharedAudio.swift
       - path: ../macos/LocalTransfer.swift
       - path: ../macos/PeerTransfer.swift
       - path: ../macos/AlbumOrganization.swift
@@ -247,6 +251,7 @@ targets:
       - path: ../macos/ClusterChanges.swift
       - path: ../macos/ClusterDiscovery.swift
       - path: ../macos/ClusterTransport.swift
+      - path: ../macos/SharedAudio.swift
       - path: ../macos/LocalTransfer.swift
       - path: ../macos/PeerTransfer.swift
       - path: ../macos/AlbumOrganization.swift

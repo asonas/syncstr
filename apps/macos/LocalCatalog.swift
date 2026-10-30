@@ -42,9 +42,9 @@ actor CatalogStorage {
         return database
     }
 
-    func entry(store: LocalMusicStore, track: String) throws -> (library: String, entry: LocalEntry)? {
+    func entry(store: LocalMusicStore, track: String, hash: String? = nil) throws -> (library: String, entry: LocalEntry)? {
         try Task.checkCancellation()
-        let result = try database(store).playbackEntry(track)
+        let result = try database(store).playbackEntry(track, hash: hash)
         try Task.checkCancellation()
         return result
     }
@@ -89,9 +89,10 @@ struct PreparedLocalCatalog {
         for asset in catalog.organization?.artwork?.assets.keys.map({ $0 }) ?? [] { artworkURLs[asset] = store.artworkURL(asset: asset) }
         self.artworkURLs = artworkURLs
         var files: [String: URL] = [:]
+        let pins = catalog.logicalAudio == true ? try store.database().savedAudioPins() : []
         for entry in catalog.entries {
             try Task.checkCancellation()
-            if store.hasFile(entry) { files[entry.track.id] = store.fileURL(entry) }
+            if store.hasFile(entry), catalog.logicalAudio != true || pins.contains(entry.saveIdentity) { files[entry.track.id] = store.fileURL(entry) }
         }
         self.files = files
     }
@@ -205,8 +206,10 @@ struct LocalCatalog: Codable {
     var name: String
     var entries: [LocalEntry]
     var organization: AlbumOrganization? = nil
+    var logicalAudio: Bool? = nil
 
     mutating func organize(folders: [String: String] = [:]) {
+        guard logicalAudio != true else { return }
         var organization = organization ?? AlbumOrganization()
         organization.importEntries(entries, folders: folders, sourceID: id)
         organization.retainLegacyArtwork(entries)
@@ -340,7 +343,7 @@ struct LocalMusicStore {
         }
         for entry in catalog.entries {
             try Task.checkCancellation()
-            guard Self.valid(entry) else { throw LocalMusicError.invalidData }
+            guard Self.valid(entry) || catalog.logicalAudio == true else { throw LocalMusicError.invalidData }
             if let artwork = entry.artwork {
                 let url = artworkURL(entry)
                 if (try? Data(contentsOf: url)) != artwork { try artwork.write(to: url, options: .atomic) }
@@ -360,7 +363,7 @@ struct LocalMusicStore {
     }
 
     func fileURL(_ entry: LocalEntry) -> URL {
-        root.appendingPathComponent(entry.sha256).appendingPathExtension(entry.track.suffix ?? "audio")
+        root.appendingPathComponent(entry.sha256).appendingPathExtension(entry.track.audioHash == nil ? entry.track.suffix ?? "audio" : "audio")
     }
 
     func artworkURL(_ entry: LocalEntry) -> URL {
@@ -369,8 +372,14 @@ struct LocalMusicStore {
 
     func artworkURL(asset: String) -> URL { root.appendingPathComponent(asset + ".jpg") }
 
+    func hasSavedFile(_ entry: LocalEntry) -> Bool {
+        guard hasFile(entry) else { return false }
+        guard entry.track.audioHash != nil else { return true }
+        return (try? database().hasAudioPin(entry)) == true
+    }
+
     func hasFile(_ entry: LocalEntry) -> Bool {
-        guard Self.valid(entry), let attributes = try? FileManager.default.attributesOfItem(atPath: fileURL(entry).path),
+        guard entry.track.unavailable != true, Self.valid(entry), let attributes = try? FileManager.default.attributesOfItem(atPath: fileURL(entry).path),
               let size = attributes[.size] as? NSNumber else { return false }
         return size.uint64Value == entry.track.size
     }

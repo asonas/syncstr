@@ -100,13 +100,13 @@ struct PlaylistRecord: Codable, Equatable {
     let payload: String
     let signature: String
 
-    func decode(membership: ClusterMembership) throws -> Body {
+    func decode(membership: ClusterMembership, previouslyAccepted: Bool = false) throws -> Body {
         let prefix = "syncstr-playlist-v1\n"
         guard payload.hasPrefix(prefix), payload.utf8.count <= 8 * 1024 * 1024 + 4096 else { throw LocalMusicError.invalidData }
         let body = try JSONDecoder().decode(Body.self, from: Data(payload.dropFirst(prefix.count).utf8))
         guard (body.version == 1 && (body.parents ?? []).isEmpty) || (body.version == 2 && !(body.parents ?? []).isEmpty) else { throw LocalMusicError.incompatiblePeer }
         try ClusterCrypto.verify(id: id, author: body.author, signature: signature, payload: Data(payload.utf8))
-        let authority = try membership.verify(body.grant)
+        let authority = try previouslyAccepted ? membership.chain(body.grant)[0] : membership.verify(body.grant)
         guard authority.host, authority.member == body.author, authority.cluster == body.cluster else { throw LocalMusicError.unauthorized }
         try body.document.validate()
         return body

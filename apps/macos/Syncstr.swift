@@ -887,7 +887,13 @@ struct SyncstrApp: App {
     @StateObject private var playback: PhonePlayback
 
     init() {
+#if DEBUG
+        let library: Library
+        do { library = try SharedAudioUIFixture.library() ?? Library() }
+        catch { fatalError("Cannot open isolated v5 fixture: \(error)") }
+#else
         let library = Library()
+#endif
         _library = StateObject(wrappedValue: library)
         _playback = StateObject(wrappedValue: PhonePlayback(library: library))
     }

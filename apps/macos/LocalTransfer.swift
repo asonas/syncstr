@@ -562,6 +562,10 @@ final class LocalTransfer: ObservableObject {
                 connected = true
                 connectionEvent("connect_cluster", outcome: "succeeded", fields: ["reason": "catalog_synchronized"], operationID: attempt)
                 status = "ライブラリを更新しました。音源を選んでこの端末に保存できます。"
+                if let shared = try await CatalogStorage.shared.perform({ try database.sharedAudioSnapshot() }),
+                   !shared.catalog.conflicts.isEmpty || !shared.catalog.incomplete.isEmpty {
+                    status = "ライブラリに競合または未受信の変更があります。該当する曲は再生できません。保存先で変更を確認してください。"
+                }
                 for batch in clusterBatches where permitsAutomaticAudio && batch.items.contains(where: { $0.state == .queued }) {
                     try Task.checkCancellation()
                     try await sendClusterBatch(batch, database: database, attempt: attempt)
@@ -770,6 +774,21 @@ final class LocalTransfer: ObservableObject {
         let database = try store.database()
         if let registration = try database.clusterRegistration(),
            try registration.membership.verify(registration.localGrant).host { throw LocalMusicError.unauthorized }
+        if try database.sharedAudioSnapshot() != nil {
+            let retained = try database.removeAudioPin(entry)
+            let pending = saveRequests.contains { request in
+                request.state != .cancelled && request.entries.contains { $0.track.id != entry.track.id && $0.sha256 == entry.sha256 }
+            }
+            if !retained && !pending {
+                for file in [store.fileURL(entry), playbackCache.store.fileURL(entry)] {
+                    if file != playbackCache.protectedURL, FileManager.default.fileExists(atPath: file.path) {
+                        try FileManager.default.removeItem(at: file)
+                    }
+                }
+            }
+            onSaved?()
+            return
+        }
         let batches = try database.clusterBatches()
         guard !batches.flatMap(\.items).contains(where: { $0.entry?.sha256 == entry.sha256 && $0.state != .stored }) else {
             throw LocalMusicError.clusterNeedsAttention
@@ -1268,10 +1287,11 @@ final class LocalTransfer: ObservableObject {
         let entry: LocalEntry
         let libraryID: String
         do {
-            guard let source = try await CatalogStorage.shared.entry(store: store, track: track.id) else { throw LocalMusicError.invalidData }
+            guard let source = try await CatalogStorage.shared.entry(store: store, track: track.id, hash: track.audioHash) else { throw LocalMusicError.invalidData }
             entry = source.entry
             libraryID = source.library
         } catch { diagnostic?.failure("resolution", error); throw error }
+        if store.hasFile(entry), try LocalMusicStore.digest(file: store.fileURL(entry)) == entry.sha256 { return store.fileURL(entry) }
         diagnostic?.record("resolution", "catalog_entry", fields: ["track_id": entry.track.id, "sha256": entry.sha256, "expected_size": String(entry.track.size ?? 0)])
         if let cached = try await playbackCache.fileInBackground(entry, diagnostic: diagnostic) {
             diagnostic?.record("selection", "mode", fields: ["mode": "local", "reason": "cache_hit"])
@@ -1296,7 +1316,7 @@ final class LocalTransfer: ObservableObject {
         let network = ClusterNetwork(store: store, secrets: peerSecrets)
         return try await withTaskCancellationHandler {
             defer { network.stop() }
-            try await network.download(object: entry.sha256, cache: playbackCache.store, diagnostic: diagnostic) { fraction in
+            try await network.download(object: entry.sha256, track: entry.track.id, cache: playbackCache.store, diagnostic: diagnostic) { fraction in
                 progress(.receiving(UInt64(fraction * Double(entry.track.size ?? 0)), entry.track.size ?? 0))
             }
             try Task.checkCancellation()
