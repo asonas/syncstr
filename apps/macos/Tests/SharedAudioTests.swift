@@ -44,6 +44,44 @@ struct SharedAudioTests {
                 "pins": ["A": [hash, other], "B": [hash, other]], "conflicts": conflict ? ["track:A"] : [], "incomplete": []
             ], "playlists": [], "playlist_history": []])
         }
+
+        func changedSnapshot(_ change: (inout [String: Any]) -> Void) throws -> Data {
+            var root = try #require(JSONSerialization.jsonObject(with: snapshot()) as? [String: Any])
+            var catalog = try #require(root["catalog"] as? [String: Any])
+            change(&catalog)
+            root["catalog"] = catalog
+            return try JSONSerialization.data(withJSONObject: root)
+        }
+    }
+
+    @Test func truncatedRefreshCannotForgetKnownLogicalIDs() throws {
+        let f = try Fixture()
+        defer { try? FileManager.default.removeItem(at: f.store.root) }
+        try f.database.receiveSharedAudio(f.snapshot(), peer: f.host)
+        let truncated = try f.changedSnapshot { catalog in
+            var tracks = catalog["tracks"] as! [String: Any]
+            tracks.removeValue(forKey: "A")
+            catalog["tracks"] = tracks
+        }
+        #expect(throws: (any Error).self) { try f.database.receiveSharedAudio(truncated, peer: f.host) }
+        #expect(try f.database.clusterCatalog().entries.map(\.track.id) == ["A", "B", "missing"])
+    }
+
+    @Test func knownAudioDoesNotRequireInventingMetadata() throws {
+        let f = try Fixture()
+        defer { try? FileManager.default.removeItem(at: f.store.root) }
+        let data = try f.changedSnapshot { catalog in
+            var tracks = catalog["tracks"] as! [String: Any]
+            var track = tracks["A"] as! [String: Any]
+            track["metadata"] = [:] as [String: String]
+            tracks["A"] = track
+            catalog["tracks"] = tracks
+        }
+        try f.database.receiveSharedAudio(data, peer: f.host)
+        let entry = try #require(f.database.playbackEntry("A", hash: f.hash)?.entry)
+        #expect(entry.track.title == "")
+        #expect(entry.track.suffix == nil)
+        #expect(entry.sha256 == f.hash)
     }
 
     @Test func logicalRowsAndExactBindingsSurviveRefreshAndRestart() throws {

@@ -39,6 +39,7 @@ extension CatalogDatabase {
               ClusterIdentity.isLowercaseHex256(catalog.baseline) else { throw LocalMusicError.incompatiblePeer }
         if let previous = try sharedAudioSnapshot()?.catalog {
             guard previous.baseline == catalog.baseline, previous.library == catalog.library,
+                  Set(previous.tracks.keys).isSubset(of: Set(catalog.tracks.keys)),
                   previous.addresses.allSatisfy({ catalog.addresses[$0.key] == $0.value }),
                   previous.pins.allSatisfy({ $0.value.isSubset(of: catalog.pins[$0.key, default: []]) }) else { throw LocalMusicError.incompatiblePeer }
         }

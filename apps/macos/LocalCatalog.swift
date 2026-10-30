@@ -359,7 +359,7 @@ struct LocalMusicStore {
             && !entry.track.id.isEmpty && entry.track.id.utf8.count <= 1024
             && (entry.track.coverArt == nil || entry.track.coverArt == entry.track.id)
             && (entry.artwork?.count ?? 0) <= 512 * 1024
-            && ["mp3", "m4a", "aac", "flac", "wav", "aiff", "aif", "alac"].contains(entry.track.suffix ?? "")
+            && (entry.track.audioHash == entry.sha256 || ["mp3", "m4a", "aac", "flac", "wav", "aiff", "aif", "alac"].contains(entry.track.suffix ?? ""))
     }
 
     func fileURL(_ entry: LocalEntry) -> URL {
