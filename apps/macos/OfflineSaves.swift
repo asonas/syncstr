@@ -79,7 +79,13 @@ extension LocalTransfer {
         let ids = Set(tracks.map(\.id))
         var updated = saveRequests
         for index in updated.indices where updated[index].entries.contains(where: { ids.contains($0.track.id) }) {
-            updated[index].state = .cancelled
+            let remaining = updated[index].entries.filter { !ids.contains($0.track.id) }
+            if remaining.isEmpty {
+                updated[index].state = .cancelled
+            } else {
+                updated[index].entries = remaining
+                updated[index].completed.formIntersection(remaining.map(\.sha256))
+            }
         }
         try persistSaves(updated)
         for (scope, preparation) in preparingSaves where !preparation.tracks.isDisjoint(with: ids) {

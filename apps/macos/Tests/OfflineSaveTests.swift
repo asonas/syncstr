@@ -177,6 +177,49 @@ final class OfflineSaveTests: XCTestCase {
         XCTAssertEqual(restored.saveRequests.first?.state, .cancelled)
     }
 
+    func testRemovingOneTrackKeepsOtherAlbumSaveIntentAfterRestart() async throws {
+        let (store, entries) = try fixture()
+        let transfer = LocalTransfer(store: store)
+        defer { transfer.stopSaveWorker() }
+        try cache(entries[0], transfer: transfer, number: 1)
+        await transfer.requestSave(entries.map(\.track), scope: "album:fixture")
+        try await settled(transfer)
+        try transfer.cancelSaves(containing: [entries[1].track])
+        let restored = LocalTransfer(store: store)
+        defer { restored.stopSaveWorker() }
+        let request = try XCTUnwrap(restored.saveRequests.first)
+        XCTAssertEqual(request.entries.map { $0.track.id }, ["track-1", "track-3"])
+        XCTAssertEqual(request.completed, [entries[0].sha256])
+        XCTAssertEqual(request.state, .waiting)
+        try cache(entries[2], transfer: restored, number: 3)
+        restored.resumeSaves()
+        try await settled(restored)
+        XCTAssertEqual(restored.saveRequests.first?.state, .complete)
+        XCTAssertTrue(store.hasFile(entries[0]))
+        XCTAssertFalse(store.hasFile(entries[1]))
+        XCTAssertTrue(store.hasFile(entries[2]))
+    }
+
+    func testRemovingOneRegistrationKeepsSharedHashCompletionForOtherRegistration() async throws {
+        let (store, entries) = try fixture()
+        var other = entries[0]
+        other.track.id = "other-registration"
+        try store.save(LocalCatalog(id: "fixture", name: "Library", entries: [entries[0], other, entries[1]]))
+        let transfer = LocalTransfer(store: store)
+        defer { transfer.stopSaveWorker() }
+        try cache(entries[0], transfer: transfer, number: 1)
+        await transfer.requestSave([entries[0].track, other.track, entries[1].track], scope: "album:fixture")
+        try await settled(transfer)
+        try transfer.cancelSaves(containing: [entries[0].track])
+        let restored = LocalTransfer(store: store)
+        defer { restored.stopSaveWorker() }
+        let request = try XCTUnwrap(restored.saveRequests.first)
+        XCTAssertEqual(request.entries.map { $0.track.id }, [other.track.id, entries[1].track.id])
+        XCTAssertEqual(request.completed, [entries[0].sha256])
+        XCTAssertEqual(request.state, .waiting)
+        XCTAssertEqual(try LocalMusicStore.digest(file: store.fileURL(other)), other.sha256)
+    }
+
     func testWaitingAlbumStillProtectsLaterCachedTracks() async throws {
         let (store, entries) = try fixture()
         let transfer = LocalTransfer(store: store)
