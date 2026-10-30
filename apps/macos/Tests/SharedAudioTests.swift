@@ -124,6 +124,53 @@ struct SharedAudioTests {
         #expect(!f.store.hasSavedFile(a) && f.store.hasSavedFile(b))
     }
 
+    @Test func savingCachedAudioSharesStorageAndSurvivesCacheEviction() async throws {
+        let f = try Fixture()
+        defer { try? FileManager.default.removeItem(at: f.store.root) }
+        try f.database.receiveSharedAudio(f.snapshot(), peer: f.host)
+        let entries = try ["A", "B"].map { try #require(f.database.playbackEntry($0)?.entry) }
+        let transfer = LocalTransfer(store: f.store)
+        defer { transfer.stopSaveWorker() }
+        try transfer.playbackCache.store.prepare()
+        let cached = transfer.playbackCache.store.fileURL(entries[0])
+        try Data("abc".utf8).write(to: cached)
+        await transfer.requestSave(entries.map(\.track), scope: "album")
+        for _ in 0..<200 {
+            if transfer.saveRequests.first?.state == .complete { break }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        #expect(transfer.saveRequests.first?.state == .complete)
+        let cachedAttributes = try FileManager.default.attributesOfItem(atPath: cached.path)
+        let savedAttributes = try FileManager.default.attributesOfItem(atPath: f.store.fileURL(entries[0]).path)
+        #expect(cachedAttributes[.systemFileNumber] as? NSNumber == savedAttributes[.systemFileNumber] as? NSNumber)
+        try transfer.playbackCache.setLimit(1)
+        var incoming = entries[0]
+        incoming.track.size = 1_000_000_000
+        try transfer.playbackCache.makeRoom(for: incoming)
+        #expect(!FileManager.default.fileExists(atPath: cached.path))
+        #expect(f.store.hasSavedFile(entries[0]) && f.store.hasSavedFile(entries[1]))
+        #expect(try await transfer.playbackFile(entries[1].track) == f.store.fileURL(entries[1]))
+    }
+
+    @Test func refreshingCatalogKeepsAliasQueue() throws {
+        let f = try Fixture()
+        defer { try? FileManager.default.removeItem(at: f.store.root) }
+        try f.database.receiveSharedAudio(f.snapshot(), peer: f.host)
+        let service = UUID().uuidString
+        let library = Library(localStore: f.store, pairingSecrets: CredentialStore(service: service + ".pair"),
+            peerSecrets: CredentialStore(service: service + ".id"), peerPairing: CredentialStore(service: service + ".peer"))
+        try library.openLocal(f.database.clusterCatalog())
+        let alias = try #require(f.database.playbackEntry("old-A", hash: f.hash)?.entry.track)
+        library.current = alias
+        library.queue = [alias, alias]
+        library.pause()
+        try f.database.receiveSharedAudio(f.snapshot(preferred: LocalMusicStore.digest(Data("def".utf8))), peer: f.host)
+        try library.openLocal(f.database.clusterCatalog())
+        #expect(library.current?.audioHash == f.hash)
+        #expect(library.queue.map(\.audioHash) == [f.hash, f.hash])
+        #expect(library.playbackFailure == nil)
+    }
+
 #if os(macOS)
     nonisolated private static var repository: URL {
         URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()

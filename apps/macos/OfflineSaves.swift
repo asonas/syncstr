@@ -251,8 +251,9 @@ extension LocalTransfer {
     private func protectCachedFile(_ url: URL, entry: LocalEntry) async throws {
         let temporary = store.root.appendingPathComponent(".offline-save-" + UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: temporary) }
-        try FileManager.default.copyItem(at: url, to: temporary)
-        try store.importFile(temporary, entry: entry)
+        if entry.track.audioHash != nil { try FileManager.default.linkItem(at: url, to: temporary) }
+        else { try FileManager.default.copyItem(at: url, to: temporary) }
+        try store.importFile(temporary, entry: entry, recordReceipt: entry.track.audioHash == nil)
         if clusterRegistration != nil {
             try await ClusterNetwork(store: store, secrets: peerSecrets).recoverDownloadedFile(entry)
         }

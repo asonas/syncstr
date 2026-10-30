@@ -528,7 +528,8 @@ final class Library: ObservableObject {
         else if let selectedAlbum { self.selectedAlbum = catalog.organization?.canonical(selectedAlbum) }
         applyLocalFiles(prepared.files)
         restorePlayback()
-        if let current, !tracks.contains(where: { $0.id == current.id }) {
+        if let current, !tracks.contains(where: { $0.id == current.id }),
+           (try? sharedAudioCatalog?.entry(current.id, hash: current.audioHash))?.track.unavailable != false {
             pause()
             playbackFailure = "この曲はライブラリから削除されているため再生できません。別の曲を選んでください。"
         }
