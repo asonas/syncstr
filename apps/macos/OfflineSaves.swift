@@ -51,9 +51,10 @@ extension LocalTransfer {
             let entries: [LocalEntry]
             if catalog.logicalAudio == true {
                 let database = try store.database()
+                let addresses = try database.sharedAudioSnapshot()?.catalog.addresses ?? [:]
                 var included: Set<String> = []
                 entries = try tracks.map { track in
-                    guard let entry = try database.playbackEntry(track.id, hash: track.audioHash)?.entry else { throw LocalMusicError.invalidData }
+                    guard let entry = try database.playbackEntry(addresses[track.id] ?? track.id, hash: track.audioHash)?.entry else { throw LocalMusicError.invalidData }
                     return entry
                 }.filter { included.insert($0.saveIdentity).inserted }
             } else { entries = catalog.entries.filter { ids.contains($0.track.id) } }
@@ -88,7 +89,8 @@ extension LocalTransfer {
     }
 
     func cancelSaves(containing tracks: [Track]) throws {
-        let ids = Set(tracks.map(\.id))
+        let addresses = try store.database().sharedAudioSnapshot()?.catalog.addresses ?? [:]
+        let ids = Set(tracks.map { addresses[$0.id] ?? $0.id })
         var updated = saveRequests
         for index in updated.indices where updated[index].entries.contains(where: { ids.contains($0.track.id) }) {
             let remaining = updated[index].entries.filter { !ids.contains($0.track.id) }

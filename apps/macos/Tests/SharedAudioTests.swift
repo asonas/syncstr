@@ -190,6 +190,23 @@ struct SharedAudioTests {
         #expect(try await transfer.playbackFile(entries[1].track) == f.store.fileURL(entries[1]))
     }
 
+    @Test func savingAnAliasKeepsOneLogicalIntentAndCancelsByCanonicalID() async throws {
+        let f = try Fixture()
+        defer { try? FileManager.default.removeItem(at: f.store.root) }
+        try f.database.receiveSharedAudio(f.snapshot(), peer: f.host)
+        let a = try #require(f.database.playbackEntry("A")?.entry.track)
+        let alias = try #require(f.database.playbackEntry("old-A")?.entry.track)
+        let b = try #require(f.database.playbackEntry("B")?.entry.track)
+        let transfer = LocalTransfer(store: f.store)
+        transfer.setSavesBackgrounded(true)
+        defer { transfer.stopSaveWorker() }
+        await transfer.requestSave([alias, a, b], scope: "playlist")
+        #expect(transfer.saveRequests.first?.entries.map(\.track.id) == ["A", "B"])
+        try transfer.cancelSaves(containing: [alias])
+        #expect(transfer.saveRequests.first?.entries.map(\.track.id) == ["B"])
+        #expect(transfer.saveRequests.first?.state == .waiting)
+    }
+
     @Test func refreshingCatalogKeepsAliasQueue() throws {
         let f = try Fixture()
         defer { try? FileManager.default.removeItem(at: f.store.root) }
@@ -209,18 +226,37 @@ struct SharedAudioTests {
         #expect(library.playbackFailure == nil)
     }
 
+    @Test func selectingAnotherEncodingDoesNotReuseOldAcquisition() throws {
+        let f = try Fixture()
+        defer { try? FileManager.default.removeItem(at: f.store.root) }
+        try f.database.receiveSharedAudio(f.snapshot(), peer: f.host)
+        let library = Library(localStore: f.store)
+        defer { library.closeLibrary() }
+        try library.openLocal(f.database.clusterCatalog())
+        let old = try #require(f.database.playbackEntry("A", hash: f.hash)?.entry.track)
+        let updated = try #require(f.database.playbackEntry("A", hash: LocalMusicStore.digest(Data("def".utf8)))?.entry.track)
+        library.play(old)
+        #expect(library.loading)
+        library.play(updated, in: [updated])
+        #expect(library.current?.audioHash == updated.audioHash)
+    }
+
 #if os(macOS)
     nonisolated private static var repository: URL {
         URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
     }
 
-    @Test(.enabled(if: FileManager.default.isExecutableFile(atPath: repository.appendingPathComponent("headless/target/debug/examples/shared_audio_fixture").path)
-        && FileManager.default.isExecutableFile(atPath: repository.appendingPathComponent("headless/target/debug/syncstr-headless").path),
+    nonisolated private static var binaries: URL {
+        ProcessInfo.processInfo.environment["SYNCSTR_V5_TEST_BIN_DIR"].map { URL(fileURLWithPath: $0) }
+            ?? repository.appendingPathComponent("headless/target/debug")
+    }
+
+    @Test(.enabled(if: FileManager.default.isExecutableFile(atPath: binaries.appendingPathComponent("examples/shared_audio_fixture").path)
+        && FileManager.default.isExecutableFile(atPath: binaries.appendingPathComponent("syncstr-headless").path),
         "Requires the p2p headless binary and shared_audio_fixture example"))
     func realV5ServerAuthenticatesAndDownloadsExactPlaylistBindings() async throws {
-        let repository = Self.repository
-        let binary = repository.appendingPathComponent("headless/target/debug/syncstr-headless")
-        let generator = repository.appendingPathComponent("headless/target/debug/examples/shared_audio_fixture")
+        let binary = Self.binaries.appendingPathComponent("syncstr-headless")
+        let generator = Self.binaries.appendingPathComponent("examples/shared_audio_fixture")
         guard FileManager.default.isExecutableFile(atPath: binary.path), FileManager.default.isExecutableFile(atPath: generator.path) else {
             Issue.record("Build the p2p headless binary and shared_audio_fixture example before this integration test")
             return
@@ -278,6 +314,70 @@ struct SharedAudioTests {
         #expect(try LocalMusicStore.digest(file: store.fileURL(entry)) == item.sha256)
         let data = try Data(contentsOf: root.appendingPathComponent("snapshot.json"))
         #expect(try JSONDecoder().decode(SharedAudioSnapshot.self, from: data).playlist_history.map(\.payload) == snapshot.playlist_history.map(\.payload))
+        session.close()
+        server.terminate()
+        server.waitUntilExit()
+        #expect(try LocalMusicStore(root: store.root).load()?.entries.count == 3)
+
+        let updater = Self.binaries.appendingPathComponent("examples/shared_audio_fixture_update")
+        try #require(FileManager.default.isExecutableFile(atPath: updater.path), "Build shared_audio_fixture_update")
+        let update = Process()
+        update.executableURL = updater
+        update.arguments = [root.path, "update"]
+        try update.run()
+        update.waitUntilExit()
+        try #require(update.terminationStatus == 0)
+        try FileManager.default.removeItem(at: addressURL)
+        let restarted = Process()
+        restarted.executableURL = binary
+        restarted.arguments = server.arguments
+        restarted.standardOutput = FileHandle.nullDevice
+        try restarted.run()
+        defer { if restarted.isRunning { restarted.terminate(); restarted.waitUntilExit() } }
+        for _ in 0..<200 {
+            if FileManager.default.fileExists(atPath: addressURL.path) { break }
+            try await Task.sleep(for: .milliseconds(50))
+        }
+        let nextEndpoint = try JSONDecoder().decode(Endpoint.self, from: Data(contentsOf: addressURL))
+        let nextAddress = PeerAddress(version: 1, id: nextEndpoint.id, addresses: nextEndpoint.addrs.compactMap { $0["Ip"] }, relay: nil)
+        let reconnected = try await ClusterSession.connect(address: nextAddress.endpoint(expected: nextAddress.id), secrets: secrets, database: database)
+        defer { reconnected.close() }
+        try await reconnected.reconcile(database: database)
+        #expect(try database.playlistDocuments().documents.first == playlist)
+        let latest = try #require(database.playbackEntry(trackID)?.entry)
+        #expect(latest.sha256 != hash)
+        #expect(latest.track.title == "Updated fixture tone")
+        #expect(latest.track.album == "Changed Album")
+        #expect(try database.clusterCatalog().entries.filter { ["TRACK-A", "TRACK-B"].contains($0.track.title) }.count == 2)
+        try await reconnected.downloadSharedAudio(entry, store: store) { _ in }
+        #expect(try LocalMusicStore.digest(file: store.fileURL(entry)) == hash)
+        reconnected.close()
+        restarted.terminate()
+        restarted.waitUntilExit()
+        let revoke = Process()
+        revoke.executableURL = updater
+        revoke.arguments = [root.path, "revoke"]
+        try revoke.run()
+        revoke.waitUntilExit()
+        try #require(revoke.terminationStatus == 0)
+        try FileManager.default.removeItem(at: addressURL)
+        let revokedServer = Process()
+        revokedServer.executableURL = binary
+        revokedServer.arguments = server.arguments
+        revokedServer.standardOutput = FileHandle.nullDevice
+        try revokedServer.run()
+        defer { revokedServer.terminate(); revokedServer.waitUntilExit() }
+        for _ in 0..<200 {
+            if FileManager.default.fileExists(atPath: addressURL.path) { break }
+            try await Task.sleep(for: .milliseconds(50))
+        }
+        let revokedEndpoint = try JSONDecoder().decode(Endpoint.self, from: Data(contentsOf: addressURL))
+        let revokedAddress = PeerAddress(version: 1, id: revokedEndpoint.id, addresses: revokedEndpoint.addrs.compactMap { $0["Ip"] }, relay: nil)
+        await #expect(throws: (any Error).self) {
+            let rejected = try await ClusterSession.connect(address: revokedAddress.endpoint(expected: revokedAddress.id), secrets: secrets, database: database)
+            rejected.close()
+        }
+        #expect(try database.playlistDocuments().documents.first == playlist)
     }
 #endif
 }

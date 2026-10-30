@@ -755,7 +755,7 @@ final class Library: ObservableObject {
             queue = shuffled ? [track] + tracks.filter { $0.id != track.id }.shuffled() : tracks
         }
         if !queue.contains(where: { $0.id == track.id }) { queue = [track]; orderedQueue = [track] }
-        if loading, current?.id == track.id {
+        if loading, current?.id == track.id, current?.audioHash == track.audioHash {
             diagnostic?.record("request", "reuse_acquisition", fields: ["reason": "same_track_selected"])
             persistPlayback()
             return
