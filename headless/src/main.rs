@@ -21,6 +21,33 @@ async fn wait_for_shutdown() {
 
 #[derive(clap::Subcommand)]
 enum Command {
+    #[cfg(feature = "p2p")]
+    SharedAudioInspect {
+        #[arg(long)]
+        data: std::path::PathBuf,
+    },
+    #[cfg(feature = "p2p")]
+    SharedAudioActivate {
+        #[arg(long)]
+        data: std::path::PathBuf,
+        #[arg(long)]
+        expected_baseline: String,
+    },
+    #[cfg(feature = "p2p")]
+    SharedAudioServe {
+        #[arg(long)]
+        data: std::path::PathBuf,
+        #[arg(long)]
+        identity: std::path::PathBuf,
+        #[arg(long)]
+        peer_state: std::path::PathBuf,
+        #[arg(long, default_value = "127.0.0.1:0")]
+        peer_listen: Vec<std::net::SocketAddr>,
+        #[arg(long)]
+        peer_address_out: Option<std::path::PathBuf>,
+        #[arg(long, default_value = "127.0.0.1:8443")]
+        listen: std::net::SocketAddr,
+    },
     Init {
         #[arg(long, default_value = "identity")]
         identity: std::path::PathBuf,
@@ -265,6 +292,71 @@ async fn main() {
 
 async fn run(cli: crate::Cli) -> anyhow::Result<()> {
     match cli.command {
+        #[cfg(feature = "p2p")]
+        crate::Command::SharedAudioInspect { data } => {
+            println!("{}", syncstr_headless::shared_audio::Store::inspect(&data)?);
+        }
+        #[cfg(feature = "p2p")]
+        crate::Command::SharedAudioActivate {
+            data,
+            expected_baseline,
+        } => {
+            let store = syncstr_headless::shared_audio::Store::activate(&data, &expected_baseline)?;
+            let catalog = store.catalog()?;
+            println!("{}", serde_json::json!({"schema": 5, "baseline": catalog.baseline, "tracks": catalog.tracks.len()}));
+        }
+        #[cfg(feature = "p2p")]
+        crate::Command::SharedAudioServe {
+            data,
+            identity,
+            peer_state,
+            peer_listen,
+            peer_address_out,
+            listen,
+        } => {
+            let store = syncstr_headless::shared_audio::Store::open(&data)?;
+            let signer = std::sync::Arc::new(syncstr_headless::peer::Identity::open(&peer_state)?);
+            let (endpoint, _endpoint_lock) = signer.cluster_endpoint(&peer_listen).await?;
+            if let Some(path) = peer_address_out {
+                std::fs::write(path, serde_json::to_vec_pretty(&endpoint.addr())?)?;
+            }
+            let discovery = syncstr_headless::cluster_discovery::Discovery::start(&endpoint)?;
+            let (discovered, discoveries) = tokio::sync::mpsc::channel(256);
+            let mut cluster_tasks = tokio::task::JoinSet::new();
+            cluster_tasks.spawn(syncstr_headless::shared_audio_net::serve(
+                endpoint.clone(), store.clone(), signer.id().to_string(),
+            ));
+            cluster_tasks.spawn(async move {
+                while let Ok(address) = discovery.next().await {
+                    discovered.send(address).await?;
+                }
+                anyhow::Ok(())
+            });
+            cluster_tasks.spawn(syncstr_headless::shared_audio_net::synchronize(
+                endpoint.clone(), store.clone(), discoveries,
+            ));
+            let token = syncstr_headless::identity::token(&identity.join("token"))?;
+            let tls = syncstr_headless::identity::tls(&identity).await?;
+            let listener = std::net::TcpListener::bind(listen)?;
+            listener.set_nonblocking(true)?;
+            let handle = axum_server::Handle::new();
+            let shutdown = handle.clone();
+            tokio::spawn(async move {
+                wait_for_shutdown().await;
+                shutdown.graceful_shutdown(Some(std::time::Duration::from_secs(30)));
+            });
+            let server = axum_server::from_tcp_rustls(listener, tls)?
+                .handle(handle)
+                .serve(syncstr_headless::shared_audio_api::router(store, signer, &token).into_make_service());
+            tokio::select! {
+                result = server => result?,
+                result = cluster_tasks.join_next() => {
+                    result.ok_or_else(|| anyhow::anyhow!("shared cluster service stopped"))???;
+                }
+            }
+            cluster_tasks.abort_all();
+            endpoint.close().await;
+        }
         crate::Command::Init { identity, host } => {
             syncstr_headless::identity::initialize(&identity, &host)?;
             println!(

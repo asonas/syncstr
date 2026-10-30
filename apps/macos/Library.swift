@@ -95,10 +95,17 @@ final class Library: ObservableObject {
 
     func playlistTrack(_ item: PlaylistItem) -> Track? {
         guard let hash = item.sha256, let id = item.trackId, let catalog = localCatalog else { return nil }
+        if catalog.logicalAudio == true {
+            guard let shared = sharedAudioCatalog,
+                  let entry = try? shared.entry(id, hash: hash), entry.track.unavailable != true else { return nil }
+            return entry.track
+        }
         let canonical = catalog.organization?.canonicalTrack(id) ?? id
         return playlistTracksByIdentity[canonical + ":" + hash]
     }
     @Published var tracks: [Track] = [] { didSet { if !applyingPreparedCatalog { rebuildAlbums() } } }
+    private var sharedAudioCatalog: SharedAudioSnapshot.Catalog?
+    private var savedAudioPins: Set<String> = []
     private var playlistTracksByIdentity: [String: Track] = [:]
     private var applyingPreparedCatalog = false
     private(set) var albums: [Album] = []
@@ -497,6 +504,7 @@ final class Library: ObservableObject {
             orderedQueue = []
         }
         localCatalog = catalog
+        sharedAudioCatalog = try localStore.database().sharedAudioSnapshot()?.catalog
         transfer.diagnosticLibraryID = catalog.id
         transfer.connectionEvent("library_selected")
         applyingPreparedCatalog = true
@@ -520,7 +528,8 @@ final class Library: ObservableObject {
         else if let selectedAlbum { self.selectedAlbum = catalog.organization?.canonical(selectedAlbum) }
         applyLocalFiles(prepared.files)
         restorePlayback()
-        if let current, !tracks.contains(where: { $0.id == current.id }) {
+        if let current, !tracks.contains(where: { $0.id == current.id }),
+           (try? sharedAudioCatalog?.entry(current.id, hash: current.audioHash))?.track.unavailable != false {
             pause()
             playbackFailure = "この曲はライブラリから削除されているため再生できません。別の曲を選んでください。"
         }
@@ -587,11 +596,15 @@ final class Library: ObservableObject {
 
     func refreshLocalFiles() {
         guard let localCatalog else { return }
-        applyLocalFiles(Dictionary(uniqueKeysWithValues: localCatalog.entries.filter { localStore.hasFile($0) }
+        savedAudioPins = (try? localStore.database().savedAudioPins()) ?? []
+        applyLocalFiles(Dictionary(uniqueKeysWithValues: localCatalog.entries.filter {
+            localStore.hasFile($0) && (localCatalog.logicalAudio != true || savedAudioPins.contains($0.saveIdentity))
+        }
             .map { ($0.track.id, localStore.fileURL($0)) }))
     }
 
     private func applyLocalFiles(_ files: [String: URL]) {
+        if sharedAudioCatalog != nil { savedAudioPins = (try? localStore.database().savedAudioPins()) ?? [] }
         managedTracks = Set(files.keys)
         localFiles = files
 #if os(macOS)
@@ -742,7 +755,7 @@ final class Library: ObservableObject {
             queue = shuffled ? [track] + tracks.filter { $0.id != track.id }.shuffled() : tracks
         }
         if !queue.contains(where: { $0.id == track.id }) { queue = [track]; orderedQueue = [track] }
-        if loading, current?.id == track.id {
+        if loading, current?.id == track.id, current?.audioHash == track.audioHash {
             diagnostic?.record("request", "reuse_acquisition", fields: ["reason": "same_track_selected"])
             persistPlayback()
             return
@@ -789,7 +802,8 @@ final class Library: ObservableObject {
         }
         let trace = diagnostic
         trace?.record("request", "resume", fields: ["already_playing": String(playing)])
-        guard tracks.contains(where: { $0.id == current.id }) else {
+        guard tracks.contains(where: { $0.id == current.id }) ||
+                (current.audioHash != nil && (try? sharedAudioCatalog?.entry(current.id, hash: current.audioHash))?.track.unavailable == false) else {
             trace?.record("request", "rejected", outcome: "failed", fields: ["reason": "track_removed"], terminal: true)
             diagnosticFailed = true
             failedDiagnosticID = trace?.id
@@ -823,7 +837,7 @@ final class Library: ObservableObject {
             player.play()
             return
         }
-        if let url = localFiles[current.id] {
+        if let url = localFiles[current.id], current.audioHash == nil || localCatalog?.entries.first(where: { $0.track.id == current.id })?.sha256 == current.audioHash {
             var role = "saved_copy"
             #if os(macOS)
             if localFolder?.files[current.id] != nil { role = "original_folder" }
@@ -1117,11 +1131,11 @@ final class Library: ObservableObject {
             restoringPlayback = true
             defer { restoringPlayback = false }
             let latest = Dictionary(uniqueKeysWithValues: tracks.map { ($0.id, $0) })
-            queue = saved.queue.map { latest[$0.id] ?? $0 }
-            orderedQueue = saved.orderedQueue.map { latest[$0.id] ?? $0 }
+            queue = saved.queue.map { ($0.audioHash == nil ? latest[$0.id] : nil) ?? $0 }
+            orderedQueue = saved.orderedQueue.map { ($0.audioHash == nil ? latest[$0.id] : nil) ?? $0 }
             shuffled = saved.shuffled
             repeatMode = saved.repeatMode
-            current = latest[saved.current.id] ?? saved.current
+            current = (saved.current.audioHash == nil ? latest[saved.current.id] : nil) ?? saved.current
             queueSelection = saved.queueSelection
             duration = saved.duration
             position = saved.duration > 0 ? min(saved.position, saved.duration) : saved.position
@@ -1167,7 +1181,12 @@ final class Library: ObservableObject {
     }
 
     func hasManagedCopy(_ track: Track) -> Bool {
-        managedTracks.contains(track.id)
+        if let hash = track.audioHash {
+            guard let sharedAudioCatalog, let entry = try? sharedAudioCatalog.entry(track.id, hash: hash) else { return false }
+            let canonical = sharedAudioCatalog.addresses[track.id] ?? track.id
+            return savedAudioPins.contains(canonical + ":" + hash) && localStore.hasFile(entry)
+        }
+        return managedTracks.contains(track.id)
     }
 
     func canRemoveLocalCopy(_ track: Track) -> Bool {
@@ -1184,7 +1203,7 @@ final class Library: ObservableObject {
             try transfer.cancelSaves(containing: tracks)
             if let current, tracks.contains(where: { $0.id == current.id }) { stop() }
             for track in tracks {
-                guard let entry = localCatalog?.entries.first(where: { $0.track.id == track.id }) else { throw LocalMusicError.invalidData }
+                guard let entry = try localStore.database().playbackEntry(track.id, hash: track.audioHash)?.entry else { throw LocalMusicError.invalidData }
                 try transfer.removeClusterCopy(entry)
             }
             refreshLocalFiles()

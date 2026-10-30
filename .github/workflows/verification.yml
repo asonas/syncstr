@@ -29,6 +29,7 @@ jobs:
           cargo +1.99.1 test --locked --features p2p --lib
           --test cluster_changes --test cluster_client --test cluster_remote
           --test cluster_replication --test contracts --test node --test cli_process
+          --test shared_audio --test playlists
       - name: Clippy
         run: cargo +1.99.1 clippy --locked --features p2p --lib -- -D warnings
   simulator:

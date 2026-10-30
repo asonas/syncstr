@@ -50,3 +50,7 @@ strip = true
 [[example]]
 name = "migration_batch"
 required-features = ["p2p"]
+
+[[example]]
+name = "shared_audio_fixture"
+required-features = ["p2p"]

@@ -10,7 +10,11 @@ struct SyncstrApp: App {
     init() {
         let library: Library
 #if DEBUG
-        if ProcessInfo.processInfo.arguments.contains("--ui-fixture") {
+        if ProcessInfo.processInfo.arguments.contains("--v5-fixture") {
+            do { library = try SharedAudioUIFixture.library()! }
+            catch { fatalError("Cannot open isolated v5 fixture: \(error)") }
+            appearanceDefaults = UserDefaults(suiteName: "syncstr-v5-ui")!
+        } else if ProcessInfo.processInfo.arguments.contains("--ui-fixture") {
             let defaults = UserDefaults(suiteName: "as.ason.syncstr.ui-fixture")!
             if ProcessInfo.processInfo.arguments.contains("--reset-appearance") { defaults.removeObject(forKey: "appearance") }
             appearanceDefaults = defaults

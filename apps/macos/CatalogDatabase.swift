@@ -1,6 +1,67 @@
 import Foundation
 import SQLite3
 
+extension CatalogDatabase {
+    func savedAudioPins() throws -> Set<String> {
+        Set(try rows("SELECT track, hash FROM shared_audio_saves").compactMap { row in
+            guard let track = row[0], let hash = row[1] else { return nil }
+            return track + ":" + hash
+        })
+    }
+
+    func saveAudioPin(_ entry: LocalEntry) throws {
+        try execute("INSERT OR REPLACE INTO shared_audio_saves VALUES (?, ?)", [try sharedAudioSnapshot()?.catalog.addresses[entry.track.id] ?? entry.track.id, entry.sha256])
+    }
+
+    func hasAudioPin(_ entry: LocalEntry) throws -> Bool {
+        try !rows("SELECT track FROM shared_audio_saves WHERE track = ? AND hash = ?", [try sharedAudioSnapshot()?.catalog.addresses[entry.track.id] ?? entry.track.id, entry.sha256]).isEmpty
+    }
+
+    func removeAudioPin(_ entry: LocalEntry) throws -> Bool {
+        try transaction {
+            try execute("DELETE FROM shared_audio_saves WHERE track = ? AND hash = ?", [try sharedAudioSnapshot()?.catalog.addresses[entry.track.id] ?? entry.track.id, entry.sha256])
+            return try !rows("SELECT track FROM shared_audio_saves WHERE hash = ?", [entry.sha256]).isEmpty
+        }
+    }
+
+    func sharedAudioSnapshot() throws -> SharedAudioSnapshot? {
+        guard let payload = try rows("SELECT payload FROM shared_audio_snapshot WHERE singleton = 1").first?[0] else { return nil }
+        return try JSONDecoder().decode(SharedAudioSnapshot.self, from: Data(payload.utf8))
+    }
+
+    func receiveSharedAudio(_ data: Data, peer: String) throws {
+        let snapshot = try JSONDecoder().decode(SharedAudioSnapshot.self, from: data)
+        let catalog = snapshot.catalog
+        guard let registration = try clusterRegistration() else { throw LocalMusicError.unauthorized }
+        let authority = try registration.membership.authorize(peer, host: true)
+        _ = try registration.membership.verify(registration.localGrant)
+        guard catalog.version == 1, catalog.cluster == authority.cluster,
+              ClusterIdentity.isLowercaseHex256(catalog.baseline) else { throw LocalMusicError.incompatiblePeer }
+        if let previous = try sharedAudioSnapshot()?.catalog {
+            guard previous.baseline == catalog.baseline, previous.library == catalog.library,
+                  Set(previous.tracks.keys).isSubset(of: Set(catalog.tracks.keys)),
+                  previous.addresses.allSatisfy({ catalog.addresses[$0.key] == $0.value }),
+                  previous.pins.allSatisfy({ $0.value.isSubset(of: catalog.pins[$0.key, default: []]) }) else { throw LocalMusicError.incompatiblePeer }
+        }
+        _ = try catalog.localCatalog(name: registration.name)
+        for (hash, object) in catalog.objects {
+            guard hash == object.sha256, ClusterIdentity.isLowercaseHex256(hash),
+                  object.bytes.map({ $0 > 0 && $0 <= 20 * 1024 * 1024 * 1024 }) ?? true else { throw LocalMusicError.invalidData }
+        }
+        let accepted = Set(try rows("SELECT id FROM playlist_records").compactMap { $0[0] })
+        for record in snapshot.playlist_history { _ = try record.decode(membership: registration.membership, previouslyAccepted: accepted.contains(record.id)) }
+        try transaction {
+            for record in snapshot.playlist_history {
+                let body = try record.decode(membership: registration.membership, previouslyAccepted: accepted.contains(record.id))
+                guard body.cluster == catalog.cluster else { throw LocalMusicError.unauthorized }
+                try execute("INSERT OR IGNORE INTO playlist_records VALUES (?, ?, ?)",
+                    [record.id, body.document.id, String(decoding: try JSONEncoder().encode(record), as: UTF8.self)])
+            }
+            try execute("INSERT OR REPLACE INTO shared_audio_snapshot VALUES (1, ?)", [String(decoding: data, as: UTF8.self)])
+        }
+    }
+}
+
 struct CatalogSnapshot {
     var catalog: LocalCatalog
     var sourceRoot: URL?
@@ -67,7 +128,7 @@ extension CatalogDatabase {
         for row in try rows("SELECT payload FROM playlist_records ORDER BY id") {
             guard let json = row[0] else { throw LocalMusicError.invalidData }
             let record = try JSONDecoder().decode(PlaylistRecord.self, from: Data(json.utf8))
-            let body = try record.decode(membership: membership)
+            let body = try record.decode(membership: membership, previouslyAccepted: sharedAudioSnapshot() != nil)
             guard body.cluster == cluster else { continue }
             bodies[record.id] = body
         }
@@ -91,6 +152,8 @@ extension CatalogDatabase {
 
 extension CatalogDatabase {
     private func migrateClusterMembership() throws {
+        try execute("CREATE TABLE IF NOT EXISTS shared_audio_saves (track TEXT NOT NULL, hash TEXT NOT NULL, PRIMARY KEY(track, hash))")
+        try execute("CREATE TABLE IF NOT EXISTS shared_audio_snapshot (singleton INTEGER PRIMARY KEY CHECK(singleton = 1), payload TEXT NOT NULL)")
         try execute("CREATE TABLE IF NOT EXISTS cluster_registration (singleton INTEGER PRIMARY KEY CHECK(singleton = 1), payload TEXT NOT NULL)")
         try execute("CREATE TABLE IF NOT EXISTS cluster_signed_changes (id TEXT PRIMARY KEY, payload TEXT NOT NULL, accepted INTEGER NOT NULL CHECK(accepted IN (0, 1)))")
         try execute("CREATE TABLE IF NOT EXISTS cluster_peer_cursors (peer TEXT PRIMARY KEY, sequence INTEGER NOT NULL)")
@@ -306,7 +369,8 @@ extension CatalogDatabase {
     }
 
     func clusterCatalog() throws -> LocalCatalog {
-        try transaction {
+        if let shared = try sharedAudioSnapshot() { return try shared.catalog.localCatalog(name: clusterRegistration()?.name ?? "Library") }
+        return try transaction {
             guard let registration = try clusterRegistration() else { throw LocalMusicError.unauthorized }
             let grant = try registration.membership.verify(registration.localGrant)
             let previous = try readSnapshot()?.catalog
@@ -375,7 +439,7 @@ final class CatalogDatabase {
             let version = try rows("PRAGMA user_version").first?.first ?? nil
             guard ["0", "1", "2", "3", "4"].contains(version) else { throw LocalMusicError.invalidData }
             if version == "4" {
-                let required: Set<String> = ["catalog", "entries", "received_files", "organization", "artwork_assets",
+                let required: Set<String> = ["shared_audio_snapshot", "shared_audio_saves", "catalog", "entries", "received_files", "organization", "artwork_assets",
                     "cluster_schema", "cluster_identity", "cluster_peers", "cluster_objects", "cluster_locations",
                     "cluster_pending_changes", "cluster_jobs", "cluster_registration", "cluster_signed_changes",
                     "cluster_peer_cursors", "cluster_track_ids", "cluster_import_batches", "cluster_transfer_settings", "cluster_metadata_queue", "playlist_records", "playlist_cursors", "playlist_authorities"]
@@ -389,6 +453,8 @@ final class CatalogDatabase {
                 try execute("CREATE TABLE IF NOT EXISTS received_files (relative_path TEXT PRIMARY KEY, sha256 TEXT NOT NULL)")
                 try execute("CREATE TABLE IF NOT EXISTS organization (singleton INTEGER PRIMARY KEY CHECK(singleton = 1), payload TEXT NOT NULL)")
                 try execute("CREATE TABLE IF NOT EXISTS artwork_assets (id TEXT PRIMARY KEY, payload TEXT NOT NULL)")
+                try execute("CREATE TABLE IF NOT EXISTS shared_audio_snapshot (singleton INTEGER PRIMARY KEY CHECK(singleton = 1), payload TEXT NOT NULL)")
+                try execute("CREATE TABLE IF NOT EXISTS shared_audio_saves (track TEXT NOT NULL, hash TEXT NOT NULL, PRIMARY KEY(track, hash))")
                 if version != "4" { _ = try readSnapshot() }
                 try migrateCluster()
                 try migrateClusterMembership()
@@ -469,10 +535,15 @@ final class CatalogDatabase {
     }
 
     func containsCatalog() throws -> Bool {
-        try rows("SELECT EXISTS(SELECT 1 FROM catalog WHERE singleton = 1)").first?.first == "1"
+        try rows("SELECT EXISTS(SELECT 1 FROM catalog WHERE singleton = 1) OR EXISTS(SELECT 1 FROM shared_audio_snapshot)").first?.first == "1"
     }
 
-    func playbackEntry(_ id: String) throws -> (library: String, entry: LocalEntry)? {
+    func playbackEntry(_ id: String, hash: String? = nil) throws -> (library: String, entry: LocalEntry)? {
+        if let shared = try sharedAudioSnapshot() {
+            let entry = try shared.catalog.entry(id, hash: hash)
+            guard entry.track.unavailable != true, LocalMusicStore.valid(entry) else { throw LocalMusicError.clusterNeedsAttention }
+            return (shared.catalog.library, entry)
+        }
         guard let row = try rows("SELECT catalog.id, entries.payload FROM catalog JOIN entries ON entries.id = ? WHERE catalog.singleton = 1", [id]).first,
               let library = row[0], let payload = row[1] else { return nil }
         let entry = try JSONDecoder().decode(LocalEntry.self, from: Data(payload.utf8))
@@ -482,6 +553,9 @@ final class CatalogDatabase {
 
 
     private func readSnapshot() throws -> CatalogSnapshot? {
+        if let shared = try sharedAudioSnapshot() {
+            return CatalogSnapshot(catalog: try shared.catalog.localCatalog(name: clusterRegistration()?.name ?? "Library"), sourceRoot: nil, sourcePaths: [:])
+        }
         guard let header = try rows("SELECT id, name, source_root FROM catalog WHERE singleton = 1").first,
               let id = header[0], let name = header[1] else { return nil }
         var entries: [LocalEntry] = []
@@ -518,6 +592,10 @@ final class CatalogDatabase {
 
     func save(_ catalog: LocalCatalog, sourceRoot: URL? = nil, sourcePaths: [String: String]? = nil,
               received: [LocalEntry] = [], clusterEdits: Bool = false) throws {
+        if try sharedAudioSnapshot() != nil {
+            guard catalog.logicalAudio == true else { throw LocalMusicError.incompatiblePeer }
+            return
+        }
         guard Set(catalog.entries.map { $0.track.id }).count == catalog.entries.count,
               catalog.entries.allSatisfy(LocalMusicStore.valid) else { throw LocalMusicError.invalidData }
         try transaction {
