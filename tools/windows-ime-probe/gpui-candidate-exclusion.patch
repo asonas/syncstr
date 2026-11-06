@@ -1,0 +1,119 @@
+diff --git a/crates/gpui_windows/src/events.rs b/crates/gpui_windows/src/events.rs
+index 4dd0c38..51d28e3 100644
+--- a/crates/gpui_windows/src/events.rs
++++ b/crates/gpui_windows/src/events.rs
+@@ -1,3 +1,4 @@
++// Modified for Syncstr: preserve caret bounds for IME candidate exclusion (ASO-56).
+ use std::{cell::Cell, rc::Rc, sync::atomic::Ordering};
+
+ use anyhow::Context as _;
+@@ -642,30 +643,37 @@ impl WindowsWindowInner {
+         if handled { Some(0) } else { Some(1) }
+     }
+
+-    fn retrieve_caret_position(&self) -> Option<POINT> {
+-        self.with_input_handler_and_scale_factor(|input_handler, scale_factor| {
++    fn retrieve_caret_bounds(&self) -> Option<Bounds<Pixels>> {
++        self.with_input_handler(|input_handler| {
+             let caret_range = input_handler.selected_text_range(false)?;
+-            let caret_position = input_handler.bounds_for_range(caret_range.range)?;
+-            Some(POINT {
+-                // logical to physical
+-                x: (caret_position.origin.x.as_f32() * scale_factor) as i32,
+-                y: (caret_position.origin.y.as_f32() * scale_factor) as i32
+-                    + ((caret_position.size.height.as_f32() * scale_factor) as i32 / 2),
+-            })
+-        })
++            input_handler.bounds_for_range(caret_range.range)
++        })?
+     }
+
+     fn handle_ime_position(&self, handle: HWND) -> Option<isize> {
+-        if let Some(caret_position) = self.retrieve_caret_position() {
+-            self.update_ime_position(handle, caret_position);
++        if let Some(bounds) = self.retrieve_caret_bounds() {
++            self.update_ime_position(handle, bounds);
+         }
+         Some(0)
+     }
+
+-    pub(crate) fn update_ime_position(&self, handle: HWND, caret_position: POINT) {
++    pub(crate) fn update_ime_position(&self, handle: HWND, bounds: Bounds<Pixels>) {
+         let Some(ctx) = ImeContext::get(handle) else {
+             return;
+         };
++        let scale = self.state.scale_factor.get();
++        let left = (bounds.left().as_f32() * scale).floor() as i32;
++        let top = (bounds.top().as_f32() * scale).floor() as i32;
++        let area = RECT {
++            left,
++            top,
++            right: ((bounds.right().as_f32() * scale).ceil() as i32).max(left + 1),
++            bottom: ((bounds.bottom().as_f32() * scale).ceil() as i32).max(top + 1),
++        };
++        let caret_position = POINT {
++            x: left,
++            y: top + (area.bottom - top) / 2,
++        };
+         unsafe {
+             ImmSetCompositionWindow(
+                 *ctx,
+@@ -681,8 +689,12 @@ impl WindowsWindowInner {
+             ImmSetCandidateWindow(
+                 *ctx,
+                 &CANDIDATEFORM {
+-                    dwStyle: CFS_CANDIDATEPOS,
+-                    ptCurrentPos: caret_position,
++                    dwStyle: CFS_EXCLUDE,
++                    ptCurrentPos: POINT {
++                        x: left,
++                        y: area.bottom,
++                    },
++                    rcArea: area,
+                     ..Default::default()
+                 },
+             )
+@@ -1475,18 +1487,6 @@ impl WindowsWindowInner {
+         self.state.input_handler.set(Some(input_handler));
+         Some(result)
+     }
+-
+-    fn with_input_handler_and_scale_factor<F, R>(&self, f: F) -> Option<R>
+-    where
+-        F: FnOnce(&mut PlatformInputHandler, f32) -> Option<R>,
+-    {
+-        let mut input_handler = self.state.input_handler.take()?;
+-        let scale_factor = self.state.scale_factor.get();
+-
+-        let result = f(&mut input_handler, scale_factor);
+-        self.state.input_handler.set(Some(input_handler));
+-        result
+-    }
+ }
+
+ struct ImeContext {
+diff --git a/crates/gpui_windows/src/window.rs b/crates/gpui_windows/src/window.rs
+index 5d8415a..30fe942 100644
+--- a/crates/gpui_windows/src/window.rs
++++ b/crates/gpui_windows/src/window.rs
+@@ -1,3 +1,4 @@
++// Modified for Syncstr: preserve caret bounds for IME candidate exclusion (ASO-56).
+ #![deny(unsafe_op_in_unsafe_fn)]
+
+ use std::{
+@@ -1064,14 +1065,7 @@ impl PlatformWindow for WindowsWindow {
+     }
+
+     fn update_ime_position(&self, bounds: Bounds<Pixels>) {
+-        let scale_factor = self.state.scale_factor.get();
+-        let caret_position = POINT {
+-            x: (bounds.origin.x.as_f32() * scale_factor) as i32,
+-            y: (bounds.origin.y.as_f32() * scale_factor) as i32
+-                + ((bounds.size.height.as_f32() * scale_factor) as i32 / 2),
+-        };
+-
+-        self.0.update_ime_position(self.0.hwnd, caret_position);
++        self.0.update_ime_position(self.0.hwnd, bounds);
+     }
+
+     fn play_system_bell(&self) {
