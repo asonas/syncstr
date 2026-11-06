@@ -97,6 +97,7 @@ jobs:
     runs-on: xcode-27
     timeout-minutes: 30
     env:
+      # Both legacy and v5 Apple interoperability tests require this binary.
       TEST_RUNNER_SYNCSTR_V5_TEST_BIN_DIR: ${{ github.workspace }}/.build/v5-rust/debug
     steps:
       - uses: actions/checkout@v7

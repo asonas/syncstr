@@ -635,6 +635,26 @@ pub struct Address {
 }
 
 impl crate::peer::Address {
+    pub fn endpoint(&self) -> anyhow::Result<iroh::EndpointAddr> {
+        anyhow::ensure!(
+            self.version == 1 && self.addresses.len() <= 32,
+            "invalid peer address"
+        );
+        anyhow::ensure!(self.directory.is_none(), "cluster addresses must be explicit");
+        anyhow::ensure!(
+            !self.addresses.is_empty() || self.relay.is_some(),
+            "no reachable address"
+        );
+        let mut address = iroh::EndpointAddr::new(self.id);
+        for ip in &self.addresses {
+            address = address.with_ip_addr(*ip);
+        }
+        if let Some(relay) = &self.relay {
+            address = address.with_relay_url(crate::cluster_remote::validate_url(relay)?);
+        }
+        Ok(address)
+    }
+
     pub fn read(path: &std::path::Path, expected: iroh::EndpointId) -> anyhow::Result<Self> {
         use std::io::Read as _;
         let mut bytes = Vec::new();

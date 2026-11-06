@@ -85,6 +85,25 @@ To back up the node, stop it and copy both `data` and `identity`. To replace an 
 
 ## Verification
 
+The macOS legacy interoperability test uses explicit loopback endpoints rather
+than mDNS. `cluster-serve --peer-listen 127.0.0.1:0 --peer-address-out host.json
+--no-discovery` publishes an atomic address file. `cluster-join --host-address
+host.json --peer-listen 127.0.0.1:0` pins enrollment to the host ID in the
+invitation. A second host uses `--no-discovery --peer-address ID=host.json` to
+replicate from the specified member; normal membership checks still apply.
+Without these options, cluster enrollment and discovery keep their LAN behavior.
+The legacy service advertises enrollment, cluster v3, and playlist protocols;
+`shared-audio-serve` supplies v5.
+
+`ClusterTransferTests.testNativeEnrollmentReconciliationAndVerifiedDownloadSurviveRestart`
+uses `SYNCSTR_HEADLESS_TEST_BINARY`, then the binary in
+`SYNCSTR_V5_TEST_BIN_DIR`, then the local default build. A missing explicitly
+configured binary fails the test rather than skipping it. The macOS CI job
+already forwards `SYNCSTR_V5_TEST_BIN_DIR` to its test runner, covering legacy
+upload, conflict resolution, album titles, metadata, and visibility edits, as
+well as replication and download. Real multicast discovery remains in the
+separate LAN checks below.
+
 The [Verification workflow](../.github/workflows/verification.yml) runs the P2P
 library tests, `cluster_changes`, `cluster_client`, `cluster_remote`,
 `cluster_replication`, `contracts`, `node`, and ordinary `cli_process` tests,
