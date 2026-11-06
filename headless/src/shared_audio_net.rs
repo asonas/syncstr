@@ -42,6 +42,13 @@ pub struct MutationRequest {
     pub confirmed: Vec<serde_json::Value>,
 }
 
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct EditTrack {
+    pub track: String,
+    pub metadata: std::collections::BTreeMap<String, serde_json::Value>,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum MutationRejection {
@@ -101,7 +108,7 @@ impl crate::shared_audio::Store {
     fn mutation_reply(
         &self,
         peer: &str,
-        own: &str,
+        signer: &crate::peer::Identity,
         request: String,
         incoming: &[u8],
     ) -> crate::shared_audio_net::MutationReply {
@@ -115,9 +122,17 @@ impl crate::shared_audio::Store {
                 };
             }
         };
-        if crate::shared_audio_net::authorize(&proof, peer, false).is_err()
-            || crate::shared_audio_net::authorize(&proof, own, true).is_err()
-        {
+        if crate::shared_audio_net::authorize(&proof, peer, false).is_err() {
+            return MutationReply::Rejected {
+                request,
+                reason: if proof.grants.iter().any(|g| g.member == peer) {
+                    MutationRejection::Revoked
+                } else {
+                    MutationRejection::Unauthorized
+                },
+            };
+        }
+        if crate::shared_audio_net::authorize(&proof, &signer.id().to_string(), true).is_err() {
             return MutationReply::Rejected {
                 request,
                 reason: MutationRejection::Unauthorized,
@@ -150,6 +165,9 @@ impl crate::shared_audio::Store {
                 request,
                 reason: MutationRejection::BaselineMismatch,
             },
+            Ok(_) if mutation.operation == "edit-track" => {
+                self.edit_track_member(signer, peer, mutation, &proof)
+            }
             Ok(_) => MutationReply::Unsupported {
                 request,
                 operation: mutation.operation,
@@ -278,19 +296,23 @@ impl crate::shared_audio::Store {
 pub async fn serve(
     endpoint: iroh::Endpoint,
     store: crate::shared_audio::Store,
-    own: String,
+    signer: std::sync::Arc<crate::peer::Identity>,
 ) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        endpoint.id() == signer.id(),
+        "host signer identity mismatch"
+    );
     let mut connections = tokio::task::JoinSet::new();
     loop {
         tokio::select! {
             incoming = endpoint.accept() => {
                 let Some(incoming) = incoming else { break; };
                 if connections.len() >= 64 { incoming.refuse(); continue; }
-                let store = store.clone(); let own = own.clone();
+                let store = store.clone(); let signer = signer.clone();
                 connections.spawn(async move {
                     let connection = incoming.await?;
                     anyhow::ensure!(connection.alpn() == crate::shared_audio_net::ALPN, "v5 upgrade required");
-                    tokio::time::timeout(std::time::Duration::from_secs(7200), crate::shared_audio_net::serve_connection(connection, store, own)).await?
+                    tokio::time::timeout(std::time::Duration::from_secs(7200), crate::shared_audio_net::serve_connection(connection, store, signer)).await?
                 });
             }
             result = connections.join_next(), if !connections.is_empty() => {
@@ -304,8 +326,9 @@ pub async fn serve(
 async fn serve_connection(
     connection: iroh::endpoint::Connection,
     store: crate::shared_audio::Store,
-    own: String,
+    signer: std::sync::Arc<crate::peer::Identity>,
 ) -> anyhow::Result<()> {
+    let own = signer.id().to_string();
     let peer = connection.remote_id().to_string();
     let (mut output, mut input) = connection.accept_bi().await?;
     let hello: crate::shared_audio_net::Hello =
@@ -323,7 +346,7 @@ async fn serve_connection(
         &crate::shared_audio_net::Hello {
             version: 5,
             proof,
-            supported_operations: vec![],
+            supported_operations: vec!["edit-track".into()],
         },
     )
     .await?;
@@ -347,7 +370,13 @@ async fn serve_connection(
                 .and_then(|r| r.as_str())
                 .unwrap_or_default()
                 .to_owned();
-            let reply = store.mutation_reply(&peer, &own, request, &payload);
+            let check = store.clone();
+            let presenter = peer.clone();
+            let signer = signer.clone();
+            let reply = tokio::task::spawn_blocking(move || {
+                check.mutation_reply(&presenter, &signer, request, &payload)
+            })
+            .await?;
             let unauthorized = matches!(
                 &reply,
                 crate::shared_audio_net::MutationReply::Rejected {
@@ -557,6 +586,28 @@ impl crate::shared_audio_net::Session {
             crate::cluster_net::receive(&mut input, 64 * 1024 * 1024),
         )
         .await?
+    }
+
+    pub async fn edit_track(
+        &self,
+        mutation: crate::shared_audio_net::MutationRequest,
+    ) -> anyhow::Result<crate::shared_audio_net::MutationReply> {
+        anyhow::ensure!(
+            mutation.operation == "edit-track",
+            "expected edit-track operation"
+        );
+        if !self
+            .supported_operations
+            .iter()
+            .any(|op| op == "edit-track")
+        {
+            return Ok(crate::shared_audio_net::MutationReply::Unsupported {
+                request: mutation.request,
+                operation: mutation.operation,
+            });
+        }
+        self.request(crate::shared_audio_net::Request::Mutation { mutation })
+            .await
     }
 
     pub async fn download(
