@@ -161,8 +161,11 @@ impl crate::playlists::Signed {
 
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct Snapshot {
+    // During a conflict, this document is for display only; no head is authoritative.
     pub document: crate::playlists::Document,
     pub revisions: Vec<String>,
+    #[serde(default)]
+    pub conflicted: bool,
 }
 
 pub fn project(
@@ -202,11 +205,9 @@ pub fn project(
                 .or_insert_with(|| crate::playlists::Snapshot {
                     document: body.document.clone(),
                     revisions: Vec::new(),
+                    conflicted: false,
                 });
-        anyhow::ensure!(
-            snapshot.document == body.document,
-            "playlist conflict requires resolution"
-        );
+        snapshot.conflicted |= snapshot.document != body.document;
         snapshot.revisions.push(id.clone());
     }
     Ok(result)
@@ -359,6 +360,7 @@ impl crate::store::Store {
             let mut incoming = std::collections::BTreeMap::new();
             for record in &signed {
                 let body = record.decode(&proof)?;
+                anyhow::ensure!(snapshots.get(&body.document.id).is_none_or(|snapshot| !snapshot.conflicted), "playlist conflict requires resolution");
                 if expected.is_some() && !records.iter().any(|saved| saved.id == record.id) {
                     let current = snapshots.get(&body.document.id).map(|snapshot| snapshot.revisions.as_slice()).unwrap_or_default();
                     anyhow::ensure!(current == body.parents, "playlist preview is stale; refresh the preview");

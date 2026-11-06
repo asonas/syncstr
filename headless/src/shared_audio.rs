@@ -574,11 +574,15 @@ impl crate::shared_audio::Store {
                     payload,
                 };
                 signed.decode(&proof)?;
+                let previous = before.get(&body.document.id);
+                anyhow::ensure!(
+                    previous.is_none_or(|snapshot| !snapshot.conflicted),
+                    "playlist conflict requires resolution"
+                );
                 if records.iter().any(|r| r.id == signed.id) {
                     result.push(signed);
                     continue;
                 }
-                let previous = before.get(&body.document.id);
                 anyhow::ensure!(
                     previous.map(|p| &p.revisions).cloned().unwrap_or_default() == body.parents,
                     "stale playlist preview"
@@ -621,7 +625,7 @@ impl crate::shared_audio::Store {
                 "unexpected playlist head"
             );
             let snapshots = crate::playlists::project(&records, &proof)?;
-            for snapshot in snapshots.values() {
+            for snapshot in snapshots.values().filter(|snapshot| !snapshot.conflicted) {
                 let mut parent = snapshot.document.parent.as_ref();
                 let mut ancestors = std::collections::BTreeSet::from([&snapshot.document.id]);
                 while let Some(id) = parent {
@@ -629,6 +633,10 @@ impl crate::shared_audio::Store {
                     let folder = snapshots
                         .get(id)
                         .ok_or_else(|| anyhow::anyhow!("missing playlist folder"))?;
+                    // A conflicted ancestor has no authoritative structure to validate.
+                    if folder.conflicted {
+                        break;
+                    }
                     anyhow::ensure!(folder.document.kind == "folder", "parent is not a folder");
                     parent = folder.document.parent.as_ref();
                 }
