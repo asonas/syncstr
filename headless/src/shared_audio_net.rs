@@ -4,6 +4,8 @@ pub const ALPN: &[u8] = b"syncstr/cluster/5";
 pub struct Hello {
     pub version: u8,
     pub proof: crate::enrollment::Proof,
+    #[serde(default)]
+    pub supported_operations: Vec<String>,
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -22,6 +24,58 @@ pub enum Request {
     Audio {
         track: String,
         hash: String,
+    },
+    Mutation {
+        mutation: crate::shared_audio_net::MutationRequest,
+    },
+}
+
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MutationRequest {
+    pub request: String,
+    pub cluster: String,
+    pub baseline: String,
+    pub operation: String,
+    pub expected: std::collections::BTreeMap<String, Vec<String>>,
+    pub payload: serde_json::Value,
+    pub confirmed: Vec<serde_json::Value>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum MutationRejection {
+    Invalid,
+    Unauthorized,
+    Revoked,
+    ClusterMismatch,
+    BaselineMismatch,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "status", rename_all = "kebab-case", deny_unknown_fields)]
+pub enum MutationReply {
+    Accepted {
+        request: String,
+        record: String,
+        host: String,
+        heads: std::collections::BTreeMap<String, Vec<String>>,
+    },
+    NeedsReview {
+        request: String,
+        current: std::collections::BTreeMap<String, Vec<String>>,
+    },
+    Rejected {
+        request: String,
+        reason: crate::shared_audio_net::MutationRejection,
+    },
+    Deferred {
+        request: String,
+        reason: String,
+    },
+    Unsupported {
+        request: String,
+        operation: String,
     },
 }
 
@@ -44,6 +98,65 @@ pub fn authorize(proof: &crate::enrollment::Proof, member: &str, host: bool) -> 
 }
 
 impl crate::shared_audio::Store {
+    fn mutation_reply(
+        &self,
+        peer: &str,
+        own: &str,
+        request: String,
+        incoming: &[u8],
+    ) -> crate::shared_audio_net::MutationReply {
+        use crate::shared_audio_net::{MutationRejection, MutationReply, Request};
+        let proof = match self.membership() {
+            Ok(proof) => proof,
+            Err(_) => {
+                return MutationReply::Deferred {
+                    request,
+                    reason: "store-unavailable".into(),
+                };
+            }
+        };
+        if crate::shared_audio_net::authorize(&proof, peer, false).is_err()
+            || crate::shared_audio_net::authorize(&proof, own, true).is_err()
+        {
+            return MutationReply::Rejected {
+                request,
+                reason: MutationRejection::Unauthorized,
+            };
+        }
+        let Ok(Request::Mutation { mutation }) = serde_json::from_slice(incoming) else {
+            return MutationReply::Rejected {
+                request,
+                reason: MutationRejection::Invalid,
+            };
+        };
+        // Read the activation identity without projecting possibly incomplete history.
+        let identity = self.run(|connection, _| {
+            Ok(connection.query_row(
+                "SELECT id, fingerprint FROM cluster_identity CROSS JOIN shared_baseline WHERE cluster_identity.singleton=1 AND shared_baseline.singleton=1",
+                [],
+                |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)),
+            )?)
+        });
+        match identity {
+            Err(_) => MutationReply::Deferred {
+                request,
+                reason: "store-unavailable".into(),
+            },
+            Ok((cluster, _)) if mutation.cluster != cluster => MutationReply::Rejected {
+                request,
+                reason: MutationRejection::ClusterMismatch,
+            },
+            Ok((_, baseline)) if mutation.baseline != baseline => MutationReply::Rejected {
+                request,
+                reason: MutationRejection::BaselineMismatch,
+            },
+            Ok(_) => MutationReply::Unsupported {
+                request,
+                operation: mutation.operation,
+            },
+        }
+    }
+
     pub fn revoke_member(
         &self,
         signer: &crate::peer::Identity,
@@ -207,13 +320,52 @@ async fn serve_connection(
     .await??;
     crate::cluster_net::send(
         &mut output,
-        &crate::shared_audio_net::Hello { version: 5, proof },
+        &crate::shared_audio_net::Hello {
+            version: 5,
+            proof,
+            supported_operations: vec![],
+        },
     )
     .await?;
     output.finish()?;
     while let Ok((mut output, mut input)) = connection.accept_bi().await {
-        let request: crate::shared_audio_net::Request =
-            crate::cluster_net::receive(&mut input, 64 * 1024 * 1024).await?;
+        // Keep the original JSON so strict decoding still rejects duplicate request fields.
+        let mut size = [0; 4];
+        input.read_exact(&mut size).await?;
+        let size = u32::from_be_bytes(size) as usize;
+        anyhow::ensure!(
+            size > 0 && size <= crate::cluster_net::MAX_FRAME,
+            "invalid cluster frame length"
+        );
+        let mut payload = vec![0; size];
+        input.read_exact(&mut payload).await?;
+        let incoming: serde_json::Value = serde_json::from_slice(&payload)?;
+        if incoming.get("operation").and_then(|v| v.as_str()) == Some("mutation") {
+            let request = incoming
+                .get("mutation")
+                .and_then(|m| m.get("request"))
+                .and_then(|r| r.as_str())
+                .unwrap_or_default()
+                .to_owned();
+            let reply = store.mutation_reply(&peer, &own, request, &payload);
+            let unauthorized = matches!(
+                &reply,
+                crate::shared_audio_net::MutationReply::Rejected {
+                    reason: crate::shared_audio_net::MutationRejection::Unauthorized
+                        | crate::shared_audio_net::MutationRejection::Revoked,
+                    ..
+                }
+            );
+            crate::cluster_net::send(&mut output, &reply).await?;
+            output.finish()?;
+            if unauthorized {
+                output.stopped().await?;
+                connection.close(0u32.into(), b"unauthorized v5 member");
+                return Ok(());
+            }
+            continue;
+        }
+        let request: crate::shared_audio_net::Request = serde_json::from_slice(&payload)?;
         let proof = store.membership()?;
         crate::shared_audio_net::authorize(&proof, &peer, false)?;
         crate::shared_audio_net::authorize(&proof, &own, true)?;
@@ -254,6 +406,7 @@ async fn serve_connection(
                     output.write_all(&buffer[..count]).await?;
                 }
             }
+            crate::shared_audio_net::Request::Mutation { .. } => unreachable!(),
         }
         output.finish()?;
     }
@@ -263,6 +416,7 @@ async fn serve_connection(
 pub struct Session {
     connection: iroh::endpoint::Connection,
     pub proof: crate::enrollment::Proof,
+    pub supported_operations: Vec<String>,
 }
 
 impl crate::shared_audio_net::Session {
@@ -338,6 +492,7 @@ impl crate::shared_audio_net::Session {
             &crate::shared_audio_net::Hello {
                 version: 5,
                 proof: proof.clone(),
+                supported_operations: vec![],
             },
         )
         .await?;
@@ -386,6 +541,7 @@ impl crate::shared_audio_net::Session {
         Ok(Self {
             connection,
             proof: combined,
+            supported_operations: hello.supported_operations,
         })
     }
 
