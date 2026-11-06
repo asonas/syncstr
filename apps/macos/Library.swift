@@ -1215,9 +1215,9 @@ final class Library: ObservableObject {
         return true
     }
 
-    func removeLocalCopies() {
+    func removeLocalCopies(_ confirmedTracks: [Track]) {
         do {
-            let tracks = localCopiesToRemove.filter(canRemoveLocalCopy)
+            let tracks = confirmedTracks.filter(canRemoveLocalCopy)
             try transfer.cancelSaves(containing: tracks)
             if let current, tracks.contains(where: { $0.id == current.id }) { stop() }
             for track in tracks {
