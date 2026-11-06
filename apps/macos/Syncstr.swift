@@ -73,6 +73,11 @@ struct LibraryView: View {
                     }
                 }.padding(32).frame(maxWidth: .infinity, maxHeight: .infinity)
             }
+            if let notice = library.catalogNotice {
+                Text(notice).font(.callout).frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(16).background(Studio.graphite)
+                    .accessibilityIdentifier("library-status-notice")
+            }
             if let message = library.message ?? (showingUploadStatus ? library.transfer.status : nil) {
                 HStack(alignment: .top, spacing: 8) {
                     MacIcon("circle-alert").accessibilityHidden(true)
@@ -887,7 +892,13 @@ struct SyncstrApp: App {
     @StateObject private var playback: PhonePlayback
 
     init() {
+#if DEBUG
+        let library: Library
+        do { library = try SharedAudioUIFixture.library() ?? Library() }
+        catch { fatalError("Cannot open isolated v5 fixture: \(error)") }
+#else
         let library = Library()
+#endif
         _library = StateObject(wrappedValue: library)
         _playback = StateObject(wrappedValue: PhonePlayback(library: library))
     }

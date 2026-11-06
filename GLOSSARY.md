@@ -11,6 +11,9 @@ _Avoid_: Audio file or song title as a synonym for track identity
 **Audio Copy**:
 One file containing audio associated with a library track. A track may have multiple encodings or copies; sharing identical file content does not merge separate library tracks.
 
+**Shared Audio**:
+Identical audio-file content used by more than one library track. Each track retains its own identity, metadata and album membership.
+
 **Source Track Reference**:
 A reference to a track registration within a particular source library. It distinguishes separate registrations without depending on filenames or matching titles.
 

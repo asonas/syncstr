@@ -52,9 +52,15 @@ struct PhoneRoot: View {
     @FocusState private var searchFocused: Bool
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @Environment(\.scenePhase) private var scenePhase
+    @Environment(\.verticalSizeClass) private var verticalSizeClass
 
     var body: some View {
         VStack(spacing: 0) {
+            if let notice = library.catalogNotice {
+                Text(notice).font(.callout).frame(maxWidth: .infinity, alignment: .leading)
+                    .padding().background(PhoneStyle.carbon)
+                    .accessibilityIdentifier("library-status-notice")
+            }
             if library.restoringSession {
                 VStack(spacing: 16) {
                     ProgressView()
@@ -399,6 +405,11 @@ struct PhoneRoot: View {
         .navigationBarTitleDisplayMode(.inline)
     }
 
+    private var searchPlacement: SearchFieldPlacement {
+        UIDevice.current.userInterfaceIdiom == .phone && verticalSizeClass == .compact
+            ? .navigationBarDrawer(displayMode: .always) : .automatic
+    }
+
     private var search: some View {
         Group {
             if library.search.isEmpty {
@@ -414,7 +425,7 @@ struct PhoneRoot: View {
             }
         }
         .navigationTitle("検索")
-        .searchable(text: $library.search, prompt: "曲、アルバム、アーティスト")
+        .searchable(text: $library.search, placement: searchPlacement, prompt: "曲、アルバム、アーティスト")
         .searchFocused($searchFocused)
         .scrollDismissesKeyboard(.interactively)
         .simultaneousGesture(TapGesture().onEnded { searchFocused = false })

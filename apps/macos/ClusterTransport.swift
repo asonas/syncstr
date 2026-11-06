@@ -52,6 +52,7 @@ final class ClusterNetwork {
     @TransportActor
     private static func recoverDownloadedFile(_ entry: LocalEntry, store: LocalMusicStore) throws {
         let database = try store.database()
+        if try database.sharedAudioSnapshot() != nil { return }
         guard let registration = try database.clusterRegistration() else { return }
         let member = try registration.membership.verify(registration.localGrant).member
         let jobs = try database.clusterJobs().filter { $0.sha256 == entry.sha256 && $0.destination == member && $0.state == .queued }
@@ -134,6 +135,7 @@ final class ClusterNetwork {
                 session = current
                 defer { current.close(); session = nil }
                 try await current.reconcile(database: database)
+                if await current.sharedAudio { successful = true; lastPath = current.selectedPath; continue }
                 let missing = try await CatalogStorage.shared.perform { try database.clusterCatalog().organization?.tracks.filter { $0.imported.tagValues == nil } ?? [] }
                 let records = try await CatalogStorage.shared.perform { try database.clusterChanges() }
                 let live = try await CatalogStorage.shared.perform { Set(try database.clusterObjectStates().filter {
@@ -153,12 +155,13 @@ final class ClusterNetwork {
             }
         }
         guard successful else { throw failure }
-        let catalog = try await UploadedMusic.recoverClusterEvidence(try await CatalogStorage.shared.perform { try database.clusterCatalog() }, store: store)
-        try await CatalogStorage.shared.perform { try files.save(catalog, clusterEdits: true) }
+        var catalog = try await CatalogStorage.shared.perform { try database.clusterCatalog() }
+        if catalog.logicalAudio != true { catalog = try await UploadedMusic.recoverClusterEvidence(catalog, store: store) }
+        try await CatalogStorage.shared.perform { [catalog] in try files.save(catalog, clusterEdits: true) }
         return catalog
     }
 
-    func download(object: String, cache: LocalMusicStore? = nil, diagnostic: PlaybackDiagnosticContext? = nil, progress: @escaping @MainActor (Double) -> Void) async throws {
+    func download(object: String, track: String? = nil, cache: LocalMusicStore? = nil, diagnostic: PlaybackDiagnosticContext? = nil, progress: @escaping @MainActor (Double) -> Void) async throws {
         let files = store
         let database = try await CatalogStorage.shared.perform { try files.database() }
         var failure: Error = LocalMusicError.clusterUnavailable
@@ -184,13 +187,22 @@ final class ClusterNetwork {
                 stage = "resolution"
                 trace?.record(stage, "local_catalog", fields: ["sha256": object, "evidence": "local_synchronized_catalog"])
                 let peer = current.peer
+                if await current.sharedAudio {
+                    guard let track else { throw LocalMusicError.invalidData }
+                    let entry = try await CatalogStorage.shared.perform {
+                        guard let entry = try database.playbackEntry(track, hash: object)?.entry else { throw LocalMusicError.invalidData }
+                        return entry
+                    }
+                    try await current.downloadSharedAudio(entry, store: cache ?? store, progress: progress)
+                    return
+                }
                 let entry = try await CatalogStorage.shared.perform { try database.clusterDownloadEntry(object: object, peer: peer) }
                 trace?.record(stage, "authorized", outcome: "succeeded", fields: ["track_id": entry.track.id, "sha256": entry.sha256])
                 stage = "transfer"
                 try await current.download(entry, store: cache ?? store, database: database, cacheOnly: cache != nil, diagnostic: trace, progress: progress)
                 lastPath = current.selectedPath
                 if cache != nil { return }
-                let catalog = try await UploadedMusic.recoverClusterEvidence(try await CatalogStorage.shared.perform { try database.clusterCatalog() }, store: store)
+                let catalog = try await CatalogStorage.shared.perform { try database.clusterCatalog() }
                 try await CatalogStorage.shared.perform { try files.save(catalog, clusterEdits: true) }
                 return
             } catch let error as IrohLib.IrohError {
@@ -318,6 +330,7 @@ final class ClusterNetwork {
 @TransportActor
 final class ClusterSession {
     func playlistRequest(_ request: PlaylistRequest) async throws -> PlaylistResponse {
+        guard !sharedAudio else { throw LocalMusicError.incompatiblePeer }
         let stream = try await connection.openBi()
         try await send(request, stream: stream)
         try await stream.send().finish()
@@ -325,6 +338,7 @@ final class ClusterSession {
     }
 
     func reconcilePlaylists(database: CatalogDatabase) async throws {
+        if sharedAudio { try await reconcile(database: database); return }
         var after = try database.playlistCursor(peer)
         for _ in 0..<10000 {
             let page = try await playlistRequest(PlaylistRequest(operation: "page", after: after))
@@ -365,6 +379,7 @@ final class ClusterSession {
         enum CodingKeys: String, CodingKey { case status, next, change, entry, object, revision; case signingPayload = "signing_payload" }
     }
 
+    private(set) var sharedAudio = false
     nonisolated private let endpoint: IrohLib.Endpoint
     nonisolated private let connection: IrohLib.Connection
     nonisolated let peer: String
@@ -410,6 +425,10 @@ final class ClusterSession {
     }
 
     private func receive<T: Decodable>(_ type: T.Type, stream: IrohLib.BiStream) async throws -> T {
+        try JSONDecoder().decode(type, from: await receiveData(stream: stream))
+    }
+
+    private func receiveData(stream: IrohLib.BiStream, limit: Int = 64 * 1024 * 1024) async throws -> Data {
         let timeout = Task {
             do { try await Task.sleep(for: .seconds(120)) } catch { return }
             close()
@@ -417,8 +436,8 @@ final class ClusterSession {
         defer { timeout.cancel() }
         let header = try await stream.recv().readExact(size: 4)
         let count = header.reduce(0) { ($0 << 8) | Int($1) }
-        guard count > 0, count <= 64 * 1024 * 1024 else { throw LocalMusicError.invalidData }
-        return try JSONDecoder().decode(type, from: await stream.recv().readExact(size: UInt32(count)))
+        guard count > 0, count <= limit else { throw LocalMusicError.invalidData }
+        return try await stream.recv().readExact(size: UInt32(count))
     }
 
     static func enroll(invitation: ClusterInvitation, address: IrohLib.EndpointAddr, secrets: CredentialStore, database: CatalogDatabase, name: String) async throws {
@@ -452,7 +471,27 @@ final class ClusterSession {
     static func connect(address: IrohLib.EndpointAddr, secrets: CredentialStore, database: CatalogDatabase, diagnostic: PlaybackDiagnosticContext? = nil, playlists: Bool = false) async throws -> ClusterSession {
         guard let registration = try database.clusterRegistration() else { throw LocalMusicError.unauthorized }
         diagnostic?.record("connection", "start", fields: ["path": "unknown", "reason": "not_established", "reused": "false"])
-        let session = try await open(address: address, alpn: playlists ? "syncstr/playlists/1" : "syncstr/cluster/3", secrets: secrets)
+        let session: ClusterSession
+        do {
+            session = try await open(address: address, alpn: "syncstr/cluster/5", secrets: secrets)
+            session.sharedAudio = true
+        } catch {
+            try Task.checkCancellation()
+            guard try database.sharedAudioSnapshot() == nil else { throw error }
+            session = try await open(address: address, alpn: playlists ? "syncstr/playlists/1" : "syncstr/cluster/3", secrets: secrets)
+        }
+        if session.sharedAudio {
+            do {
+                struct HelloV5: Codable { let version: Int; let proof: ClusterMembership }
+                let stream = try await session.connection.openBi()
+                try await session.send(HelloV5(version: 5, proof: registration.membership), stream: stream)
+                try await stream.send().finish()
+                let hello = try JSONDecoder().decode(HelloV5.self, from: await session.receiveData(stream: stream, limit: 4 * 1024 * 1024))
+                guard hello.version == 5 else { throw LocalMusicError.incompatiblePeer }
+                try database.authenticateClusterPeer(session.peer, membership: hello.proof)
+                return session
+            } catch { session.close(); throw error }
+        }
         diagnostic?.record("connection", "established", outcome: "succeeded", fields: ["peer_id": session.peer, "identity_match": "true", "path": session.selectedPath ?? "unknown"])
         diagnostic?.record("authentication", "start")
         do {
@@ -468,6 +507,15 @@ final class ClusterSession {
     }
 
     func reconcile(database: CatalogDatabase) async throws {
+        if sharedAudio {
+            let stream = try await connection.openBi()
+            try await send(Request(operation: "catalog"), stream: stream)
+            try await stream.send().finish()
+            let data = try await receiveData(stream: stream)
+            guard try await stream.recv().readToEnd(sizeLimit: 1).isEmpty else { throw LocalMusicError.invalidData }
+            try database.receiveSharedAudio(data, peer: peer)
+            return
+        }
         var after = try database.clusterCursor(peer)
         for _ in 0..<1024 {
             let stream = try await connection.openBi()
@@ -544,6 +592,33 @@ final class ClusterSession {
         guard response.status == "edited", response.object == edit.entry.sha256,
               let revision = response.revision, ClusterIdentity.isLowercaseHex256(revision) else { throw LocalMusicError.invalidData }
         return revision
+    }
+
+    func downloadSharedAudio(_ entry: LocalEntry, store: LocalMusicStore, progress: @escaping @MainActor (Double) -> Void) async throws {
+        guard LocalMusicStore.valid(entry), let size = entry.track.size else { throw LocalMusicError.invalidData }
+        struct AudioRequest: Encodable { let operation = "audio"; let track: String; let hash: String }
+        let download = PlaybackDownload(store: store)
+        let timeout = Task {
+            do { try await Task.sleep(for: .seconds(240)) } catch { return }
+            close()
+        }
+        defer { timeout.cancel() }
+        do {
+            let stream = try await connection.openBi()
+            try await send(AudioRequest(track: entry.track.id, hash: entry.sha256), stream: stream)
+            try await stream.send().finish()
+            guard try await receive(UInt64.self, stream: stream) == size else { throw LocalMusicError.invalidData }
+            var received: UInt64 = 0
+            while received < size {
+                try Task.checkCancellation()
+                let bytes = try await stream.recv().readExact(size: UInt32(min(65536, size - received)))
+                try await download.append(bytes)
+                received += UInt64(bytes.count)
+                await progress(Double(received) / Double(size))
+            }
+            guard try await stream.recv().readToEnd(sizeLimit: 1).isEmpty else { throw LocalMusicError.invalidData }
+            _ = try await download.finish(entry, diagnostic: nil, durable: true)
+        } catch { await download.discard(); throw error }
     }
 
     func download(_ entry: LocalEntry, store: LocalMusicStore, database: CatalogDatabase, cacheOnly: Bool = false, diagnostic: PlaybackDiagnosticContext? = nil, progress: @escaping @MainActor (Double) -> Void) async throws {

@@ -212,7 +212,7 @@ pub fn project(
     Ok(result)
 }
 
-fn reconciled(
+pub(crate) fn reconciled(
     incoming: &crate::playlists::Document,
     previous: &crate::playlists::Document,
 ) -> anyhow::Result<crate::playlists::Document> {

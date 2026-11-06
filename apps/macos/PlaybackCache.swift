@@ -164,7 +164,7 @@ final class PlaybackCache {
             includingPropertiesForKeys: [.fileSizeKey, .contentModificationDateKey, .isRegularFileKey])
         let entries = try files.compactMap { url -> (URL, UInt64, Date)? in
             guard ClusterIdentity.isLowercaseHex256(url.deletingPathExtension().lastPathComponent),
-                  ["mp3", "m4a", "aac", "flac", "wav", "aiff", "aif", "alac"].contains(url.pathExtension) else { return nil }
+                  ["mp3", "m4a", "aac", "flac", "wav", "aiff", "aif", "alac", "audio"].contains(url.pathExtension) else { return nil }
             let info = try url.resourceValues(forKeys: [.fileSizeKey, .contentModificationDateKey, .isRegularFileKey])
             guard info.isRegularFile == true else { return nil }
             return (url, UInt64(info.fileSize ?? 0), info.contentModificationDate ?? .distantPast)

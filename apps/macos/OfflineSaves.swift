@@ -22,6 +22,10 @@ extension Library {
     }
 }
 
+extension LocalEntry {
+    var saveIdentity: String { track.audioHash == nil ? sha256 : track.id + ":" + sha256 }
+}
+
 extension LocalTransfer {
     func requestSave(_ tracks: [Track], scope: String) async {
         guard !Task.isCancelled else { return }
@@ -44,8 +48,17 @@ extension LocalTransfer {
             guard let catalog = snapshot?.catalog else { throw LocalMusicError.invalidData }
             try Task.checkCancellation()
             guard preparingSaves[scope]?.token == token else { return }
-            let entries = catalog.entries.filter { ids.contains($0.track.id) }
-            guard entries.count == ids.count, !entries.isEmpty else { throw LocalMusicError.invalidData }
+            let entries: [LocalEntry]
+            if catalog.logicalAudio == true {
+                let database = try store.database()
+                let addresses = try database.sharedAudioSnapshot()?.catalog.addresses ?? [:]
+                var included: Set<String> = []
+                entries = try tracks.map { track in
+                    guard let entry = try database.playbackEntry(addresses[track.id] ?? track.id, hash: track.audioHash)?.entry else { throw LocalMusicError.invalidData }
+                    return entry
+                }.filter { included.insert($0.saveIdentity).inserted }
+            } else { entries = catalog.entries.filter { ids.contains($0.track.id) } }
+            guard catalog.logicalAudio == true || entries.count == ids.count, !entries.isEmpty else { throw LocalMusicError.invalidData }
             stopSaveWorker()
             var updated = saveRequests.filter { $0.library != catalog.id || $0.id != scope }
             updated.append(OfflineSaveRequest(id: scope, library: catalog.id, entries: entries))
@@ -76,7 +89,8 @@ extension LocalTransfer {
     }
 
     func cancelSaves(containing tracks: [Track]) throws {
-        let ids = Set(tracks.map(\.id))
+        let addresses = try store.database().sharedAudioSnapshot()?.catalog.addresses ?? [:]
+        let ids = Set(tracks.map { addresses[$0.id] ?? $0.id })
         var updated = saveRequests
         for index in updated.indices where updated[index].entries.contains(where: { ids.contains($0.track.id) }) {
             let remaining = updated[index].entries.filter { !ids.contains($0.track.id) }
@@ -84,7 +98,7 @@ extension LocalTransfer {
                 updated[index].state = .cancelled
             } else {
                 updated[index].entries = remaining
-                updated[index].completed.formIntersection(remaining.map(\.sha256))
+                updated[index].completed.formIntersection(remaining.map(\.saveIdentity))
             }
         }
         try persistSaves(updated)
@@ -165,16 +179,17 @@ extension LocalTransfer {
                     for entry in request.entries {
                         try Task.checkCancellation()
                         guard saveGeneration == token else { return }
-                        saveRequests[index].completed.remove(entry.sha256)
+                        saveRequests[index].completed.remove(entry.saveIdentity)
                         do {
-                            guard catalog.entries.contains(where: { $0.track.id == entry.track.id && $0.sha256 == entry.sha256 }) else {
+                            guard (catalog.logicalAudio == true ? (try store.database().playbackEntry(entry.track.id, hash: entry.sha256) != nil) : catalog.entries.contains(where: { $0.track.id == entry.track.id && $0.sha256 == entry.sha256 })) else {
                                 throw LocalMusicError.invalidData
                             }
                             if store.hasFile(entry), try LocalMusicStore.digest(file: store.fileURL(entry)) == entry.sha256 {
                                 if clusterRegistration != nil {
                                     try await ClusterNetwork(store: store, secrets: peerSecrets).recoverDownloadedFile(entry)
                                 }
-                                saveRequests[index].completed.insert(entry.sha256)
+                                if entry.track.audioHash != nil { try store.database().saveAudioPin(entry) }
+                                saveRequests[index].completed.insert(entry.saveIdentity)
                                 try persistSaves(saveRequests)
                                 continue
                             }
@@ -194,7 +209,7 @@ extension LocalTransfer {
                                     let network = ClusterNetwork(store: store, secrets: peerSecrets)
                                     saveNetwork = network
                                     defer { network.stop(); if saveGeneration == token { saveNetwork = nil } }
-                                    try await network.download(object: entry.sha256) { _ in }
+                                    try await network.download(object: entry.sha256, track: entry.track.id) { _ in }
                                 } else if connected && !busy {
                                     let cached = try await playbackFile(entry.track)
                                     try Task.checkCancellation()
@@ -206,7 +221,8 @@ extension LocalTransfer {
                             }
                             try Task.checkCancellation()
                             guard saveGeneration == token else { return }
-                            saveRequests[index].completed.insert(entry.sha256)
+                            if entry.track.audioHash != nil { try store.database().saveAudioPin(entry) }
+                            saveRequests[index].completed.insert(entry.saveIdentity)
                             try persistSaves(saveRequests)
                             onSaved?()
                         } catch {
@@ -221,7 +237,7 @@ extension LocalTransfer {
                         }
                     }
                     guard saveGeneration == token else { return }
-                    let finished = request.entries.allSatisfy { self.saveRequests[index].completed.contains($0.sha256) }
+                    let finished = request.entries.allSatisfy { self.saveRequests[index].completed.contains($0.saveIdentity) }
                     saveRequests[index].state = finished ? .complete : failure != nil ? .failed : waiting ? (saveRequests[index].state == .wifi ? .wifi : .waiting) : .failed
                     if let failure { saveRequests[index].error = failure }
                     try persistSaves(saveRequests)
@@ -237,8 +253,9 @@ extension LocalTransfer {
     private func protectCachedFile(_ url: URL, entry: LocalEntry) async throws {
         let temporary = store.root.appendingPathComponent(".offline-save-" + UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: temporary) }
-        try FileManager.default.copyItem(at: url, to: temporary)
-        try store.importFile(temporary, entry: entry)
+        if entry.track.audioHash != nil { try FileManager.default.linkItem(at: url, to: temporary) }
+        else { try FileManager.default.copyItem(at: url, to: temporary) }
+        try store.importFile(temporary, entry: entry, recordReceipt: entry.track.audioHash == nil)
         if clusterRegistration != nil {
             try await ClusterNetwork(store: store, secrets: peerSecrets).recoverDownloadedFile(entry)
         }
@@ -253,7 +270,7 @@ struct OfflineSaveControls: View {
     var iconOnly = false
 
     private var request: OfflineSaveRequest? { library.saveRequest(for: tracks, scope: scope) }
-    private var saved: Int { tracks.filter { library.localFiles[$0.id] != nil }.count }
+    private var saved: Int { tracks.filter { library.hasManagedCopy($0) }.count }
     private var pending: Bool { request.map { [.waiting, .wifi, .saving].contains($0.state) } ?? false }
 
     var body: some View {

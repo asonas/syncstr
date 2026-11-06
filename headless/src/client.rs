@@ -5,6 +5,128 @@ pub struct Client {
 }
 
 impl crate::client::Client {
+    #[cfg(feature = "p2p")]
+    pub async fn shared_catalog(&self) -> anyhow::Result<crate::shared_audio::Catalog> {
+        let response = Self::response(self.request(reqwest::Method::GET, "v5/catalog")?).await?;
+        let catalog: crate::shared_audio::Catalog = Self::json(response, 64 * 1024 * 1024).await?;
+        anyhow::ensure!(catalog.version == 1, "unsupported shared catalog");
+        Ok(catalog)
+    }
+
+    #[cfg(feature = "p2p")]
+    pub async fn shared_commit(
+        &self,
+        request: &crate::shared_audio::Request,
+    ) -> anyhow::Result<crate::shared_audio::Signed> {
+        let response = Self::response(
+            self.request(reqwest::Method::POST, "v5/commit")?
+                .json(request),
+        )
+        .await?;
+        Self::json(response, 2 * 1024 * 1024).await
+    }
+
+    #[cfg(feature = "p2p")]
+    pub async fn shared_playlists(&self) -> anyhow::Result<Vec<crate::playlists::Snapshot>> {
+        let response = Self::response(self.request(reqwest::Method::GET, "v5/playlists")?).await?;
+        Self::json(response, 64 * 1024 * 1024).await
+    }
+
+    #[cfg(feature = "p2p")]
+    pub async fn shared_update_playlists(
+        &self,
+        request: &crate::shared_audio::PlaylistUpdate,
+    ) -> anyhow::Result<Vec<crate::playlists::Signed>> {
+        let response = Self::response(
+            self.request(reqwest::Method::POST, "v5/playlists")?
+                .json(request),
+        )
+        .await?;
+        Self::json(response, 64 * 1024 * 1024).await
+    }
+
+    #[cfg(feature = "p2p")]
+    pub async fn shared_pull(&self, store: &crate::shared_audio::Store) -> anyhow::Result<()> {
+        let remote = self.shared_catalog().await?;
+        let local = store.catalog()?;
+        anyhow::ensure!(
+            remote.cluster == local.cluster && remote.baseline == local.baseline,
+            "different cluster or migration baseline"
+        );
+        let response = Self::response(self.request(reqwest::Method::GET, "v5/membership")?).await?;
+        let proof: crate::enrollment::Proof = Self::json(response, 4 * 1024 * 1024).await?;
+        let membership_store = store.clone();
+        tokio::task::spawn_blocking(move || membership_store.merge_membership(proof)).await??;
+        loop {
+            let after = store.cursor(self.endpoint.as_str())?;
+            let response = Self::response(
+                self.request(reqwest::Method::GET, &format!("v5/records?after={after}"))?,
+            )
+            .await?;
+            let page: Vec<(i64, crate::shared_audio::Signed)> =
+                Self::json(response, 64 * 1024 * 1024).await?;
+            if page.is_empty() {
+                break;
+            }
+            let store = store.clone();
+            let peer = self.endpoint.to_string();
+            tokio::task::spawn_blocking(move || store.receive_page(&peer, after, page)).await??;
+        }
+        let peer = format!("{}playlists", self.endpoint);
+        loop {
+            let after = store.cursor(&peer)?;
+            let response = Self::response(self.request(
+                reqwest::Method::GET,
+                &format!("v5/playlist-records?after={after}"),
+            )?)
+            .await?;
+            let page: Vec<(i64, crate::playlists::Signed)> =
+                Self::json(response, 64 * 1024 * 1024).await?;
+            if page.is_empty() {
+                break;
+            }
+            let store = store.clone();
+            let peer = peer.clone();
+            tokio::task::spawn_blocking(move || store.receive_playlist_page(&peer, after, page))
+                .await??;
+        }
+        Ok(())
+    }
+
+    #[cfg(feature = "p2p")]
+    pub async fn shared_fetch_audio(
+        &self,
+        id: &str,
+        hash: &str,
+        store: &crate::shared_audio::Store,
+    ) -> anyhow::Result<()> {
+        use futures_util::StreamExt as _;
+        use tokio::io::AsyncWriteExt as _;
+        let mut url = self.endpoint.clone();
+        url.path_segments_mut()
+            .map_err(|_| anyhow::anyhow!("invalid node URL"))?
+            .clear()
+            .extend(["v5", "tracks", id, "audio", hash]);
+        let response = Self::response(self.http.get(url).bearer_auth(&self.token)).await?;
+        let staged = store.stage()?;
+        let mut file = tokio::fs::File::from_std(staged.reopen()?);
+        let mut stream = response.bytes_stream();
+        let mut count = 0u64;
+        while let Some(chunk) = stream.next().await {
+            let chunk = chunk?;
+            count += chunk.len() as u64;
+            anyhow::ensure!(count <= crate::model::MAX_AUDIO, "audio too large");
+            file.write_all(&chunk).await?;
+        }
+        file.flush().await?;
+        drop(file);
+        let store = store.clone();
+        let hash = hash.to_owned();
+        tokio::task::spawn_blocking(move || store.put_audio(&hash, &mut staged.reopen()?))
+            .await??;
+        Ok(())
+    }
+
     pub fn new(
         endpoint: &str,
         certificate: &std::path::Path,

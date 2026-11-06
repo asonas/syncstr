@@ -29,6 +29,7 @@ jobs:
           cargo +1.99.1 test --locked --features p2p --lib
           --test cluster_changes --test cluster_client --test cluster_remote
           --test cluster_replication --test contracts --test node --test cli_process
+          --test shared_audio --test playlists
       - name: Clippy
         run: cargo +1.99.1 clippy --locked --features p2p --lib -- -D warnings
   simulator:
@@ -42,6 +43,10 @@ jobs:
       - uses: actions/checkout@v7
       - name: Install XcodeGen
         run: brew install xcodegen
+      - name: Build required v5 fixture tools
+        run: |
+          rustup toolchain install 1.99.1 --profile minimal
+          cargo +1.99.1 build --manifest-path headless/Cargo.toml --locked --features p2p --target-dir .build/v5-rust --bin syncstr-headless --example shared_audio_fixture --example shared_audio_fixture_update
       - name: Runner regression tests
         run: python3 -m unittest discover -s apps/ios/scripts/tests -v
       - name: Unit and library UI tests
@@ -55,10 +60,16 @@ jobs:
   macos:
     runs-on: xcode-27
     timeout-minutes: 30
+    env:
+      TEST_RUNNER_SYNCSTR_V5_TEST_BIN_DIR: ${{ github.workspace }}/.build/v5-rust/debug
     steps:
       - uses: actions/checkout@v7
       - run: brew install xcodegen
       - run: xcodegen generate --spec apps/ios/project.yml
+      - name: Build required v5 interoperability tools
+        run: |
+          rustup toolchain install 1.99.1 --profile minimal
+          cargo +1.99.1 build --manifest-path headless/Cargo.toml --locked --features p2p --target-dir .build/v5-rust --bin syncstr-headless --example shared_audio_fixture --example shared_audio_fixture_update
       - name: Resolve locked packages
         run: >-
           xcodebuild -resolvePackageDependencies -project apps/ios/Syncstr.xcodeproj
