@@ -1059,6 +1059,130 @@ impl crate::shared_audio::Store {
         }
     }
 
+    pub(crate) fn resolve_track_member(
+        &self,
+        signer: &crate::peer::Identity,
+        member: &str,
+        mutation: crate::shared_audio_net::MutationRequest,
+        proof: &crate::enrollment::Proof,
+    ) -> crate::shared_audio_net::MutationReply {
+        use crate::shared_audio_net::{MutationRejection, MutationReply, ResolveTrack};
+        let request = mutation.request.clone();
+        let result = (|| -> anyhow::Result<_> {
+            let resolution: ResolveTrack = serde_json::from_value(mutation.payload.clone())?;
+            anyhow::ensure!(mutation.confirmed.is_empty(), "unexpected confirmation");
+            // Prefer host authority when a member has both kinds of grant.
+            let grant = proof
+                .grants
+                .iter()
+                .filter(|g| g.member == member && proof.verify(&g.id).is_ok())
+                .max_by_key(|g| g.host)
+                .ok_or(crate::shared_audio::CommitFailure::Revoked)?;
+            let origin = crate::shared_audio::Origin {
+                member: member.into(),
+                grant: grant.id.clone(),
+            };
+            let selected = self
+                .records()?
+                .into_iter()
+                .find(|record| record.id == resolution.select);
+            let digest = crate::shared_audio::hash(&serde_json::to_vec(&(member, &mutation))?);
+            let (signed, body) =
+                self.commit_prepared(signer, &request, digest, Some(origin), |catalog| {
+                    let subject = format!("track:{}", resolution.track);
+                    let current = catalog.heads.get(&subject).cloned().unwrap_or_default();
+                    anyhow::ensure!(
+                        catalog.conflicts.contains(&subject)
+                            && current.len() > 1
+                            && mutation.expected.get(&subject) == Some(&current),
+                        crate::shared_audio::CommitFailure::NeedsReview(
+                            std::collections::BTreeMap::from([(subject, current.clone())])
+                        )
+                    );
+                    anyhow::ensure!(
+                        current.contains(&resolution.select),
+                        "selection is not a head"
+                    );
+                    let selected = selected.ok_or_else(|| anyhow::anyhow!("unknown selection"))?;
+                    let selected = crate::shared_audio::decode(&selected, proof)?;
+                    let track = selected
+                        .edits
+                        .into_iter()
+                        .find_map(|edit| match edit.value {
+                            crate::shared_audio::Value::Track { track, .. }
+                                if track.id == resolution.track =>
+                            {
+                                Some(track)
+                            }
+                            _ => None,
+                        })
+                        .ok_or_else(|| anyhow::anyhow!("selection is not a track revision"))?;
+                    anyhow::ensure!(
+                        !track.retired || grant.host,
+                        crate::shared_audio::CommitFailure::Unauthorized
+                    );
+                    Ok(crate::shared_audio::Request {
+                        id: request.clone(),
+                        expected: mutation.expected,
+                        action: crate::shared_audio::Action::EditTrack {
+                            track,
+                            evidence: crate::shared_audio::Evidence {
+                                snapshot: catalog.baseline.clone(),
+                                catalog: crate::shared_audio::hash(&serde_json::to_vec(catalog)?),
+                                reason: "Member track conflict resolution".into(),
+                                // The selected signed head already approved these audio bindings.
+                                audio_eligible: true,
+                            },
+                        },
+                    })
+                })?;
+            let heads = body
+                .edits
+                .iter()
+                .map(|edit| (edit.value.subject(), vec![signed.id.clone()]))
+                .collect();
+            Ok(MutationReply::Accepted {
+                request: request.clone(),
+                record: signed.id,
+                host: body.author,
+                heads,
+            })
+        })();
+        match result {
+            Ok(reply) => reply,
+            Err(error) => match error.downcast_ref::<crate::shared_audio::CommitFailure>() {
+                Some(crate::shared_audio::CommitFailure::NeedsReview(current)) => {
+                    MutationReply::NeedsReview {
+                        request,
+                        current: current.clone(),
+                    }
+                }
+                Some(crate::shared_audio::CommitFailure::Incomplete) => MutationReply::Deferred {
+                    request,
+                    reason: "incomplete-history".into(),
+                },
+                Some(crate::shared_audio::CommitFailure::Revoked) => MutationReply::Rejected {
+                    request,
+                    reason: MutationRejection::Revoked,
+                },
+                Some(crate::shared_audio::CommitFailure::Unauthorized) => MutationReply::Rejected {
+                    request,
+                    reason: MutationRejection::Unauthorized,
+                },
+                None if error.downcast_ref::<rusqlite::Error>().is_some() => {
+                    MutationReply::Deferred {
+                        request,
+                        reason: "store-unavailable".into(),
+                    }
+                }
+                None => MutationReply::Rejected {
+                    request,
+                    reason: MutationRejection::Invalid,
+                },
+            },
+        }
+    }
+
     pub fn receive(&self, records: Vec<crate::shared_audio::Signed>) -> anyhow::Result<()> {
         self.ingest(records, None)
     }

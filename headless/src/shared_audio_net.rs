@@ -49,6 +49,13 @@ pub struct EditTrack {
     pub metadata: std::collections::BTreeMap<String, serde_json::Value>,
 }
 
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ResolveTrack {
+    pub track: String,
+    pub select: String,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum MutationRejection {
@@ -167,6 +174,9 @@ impl crate::shared_audio::Store {
             },
             Ok(_) if mutation.operation == "edit-track" => {
                 self.edit_track_member(signer, peer, mutation, &proof)
+            }
+            Ok(_) if mutation.operation == "resolve-track" => {
+                self.resolve_track_member(signer, peer, mutation, &proof)
             }
             Ok(_) => MutationReply::Unsupported {
                 request,
@@ -346,7 +356,7 @@ async fn serve_connection(
         &crate::shared_audio_net::Hello {
             version: 5,
             proof,
-            supported_operations: vec!["edit-track".into()],
+            supported_operations: vec!["edit-track".into(), "resolve-track".into()],
         },
     )
     .await?;
@@ -600,6 +610,28 @@ impl crate::shared_audio_net::Session {
             .supported_operations
             .iter()
             .any(|op| op == "edit-track")
+        {
+            return Ok(crate::shared_audio_net::MutationReply::Unsupported {
+                request: mutation.request,
+                operation: mutation.operation,
+            });
+        }
+        self.request(crate::shared_audio_net::Request::Mutation { mutation })
+            .await
+    }
+
+    pub async fn resolve_track(
+        &self,
+        mutation: crate::shared_audio_net::MutationRequest,
+    ) -> anyhow::Result<crate::shared_audio_net::MutationReply> {
+        anyhow::ensure!(
+            mutation.operation == "resolve-track",
+            "expected resolve-track operation"
+        );
+        if !self
+            .supported_operations
+            .iter()
+            .any(|op| op == "resolve-track")
         {
             return Ok(crate::shared_audio_net::MutationReply::Unsupported {
                 request: mutation.request,
