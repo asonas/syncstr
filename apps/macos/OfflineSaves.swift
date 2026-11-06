@@ -376,11 +376,11 @@ struct OfflineSaveRemoval: ViewModifier {
         content.alert("この端末の保存を解除しますか？", isPresented: Binding(
             get: { enabled && !library.localCopiesToRemove.isEmpty },
             set: { if !$0 { library.localCopiesToRemove = [] } }
-        )) {
+        ), presenting: library.localCopiesToRemove) { tracks in
             Button("キャンセル", role: .cancel) {}
-            Button("保存を解除", role: .destructive) { library.removeLocalCopies() }
-        } message: {
-            Text("\(library.localCopiesToRemove.count)曲の管理されたコピーを削除します。対象の曲は再生を停止します。共有ライブラリ、他の端末の音源、元のファイルは残ります。")
+            Button("保存を解除", role: .destructive) { library.removeLocalCopies(tracks) }
+        } message: { tracks in
+            Text("\(tracks.count)曲の管理されたコピーを削除します。対象の曲は再生を停止します。共有ライブラリ、他の端末の音源、元のファイルは残ります。")
         }
     }
 }

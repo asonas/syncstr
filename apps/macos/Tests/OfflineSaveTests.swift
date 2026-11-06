@@ -265,14 +265,42 @@ final class OfflineSaveTests: XCTestCase {
         try await settled(library.transfer)
         XCTAssertEqual(library.saveRequest(for: [entries[0].track], scope: "track:track-1")?.state, .complete)
         XCTAssertTrue(library.canRemoveLocalCopy(entries[0].track))
-        library.localCopiesToRemove = [entries[0].track]
-        library.removeLocalCopies()
+        library.removeLocalCopies([entries[0].track])
         XCTAssertFalse(store.hasFile(entries[0]))
         XCTAssertFalse(library.transfer.playbackCache.store.hasFile(entries[0]))
         XCTAssertEqual(try Data(contentsOf: original), Data(repeating: 1, count: 1024))
         XCTAssertEqual(try store.load()?.entries.count, 3)
         XCTAssertEqual(library.transfer.saveRequests.first?.state, .cancelled)
         library.closeLibrary()
+    }
+
+    func testRemovalKeepsConfirmedTargetAfterAlertDismissalClearsPendingTracks() async throws {
+        let (store, entries) = try fixture()
+        let library = Library(localStore: store)
+        defer { library.closeLibrary() }
+        try library.openLocal(try XCTUnwrap(store.load()))
+        for index in 0..<2 {
+            try cache(entries[index], transfer: library.transfer, number: UInt8(index + 1))
+            await library.transfer.requestSave([entries[index].track], scope: "track:" + entries[index].track.id)
+            try await settled(library.transfer)
+            XCTAssertTrue(library.canRemoveLocalCopy(entries[index].track))
+        }
+
+        library.localCopiesToRemove = [entries[0].track]
+        let confirmedTracks = library.localCopiesToRemove
+        // SwiftUI can dismiss the alert before invoking its destructive action.
+        library.localCopiesToRemove = []
+        library.removeLocalCopies(confirmedTracks)
+
+        XCTAssertNil(library.message)
+        XCTAssertFalse(store.hasFile(entries[0]))
+        XCTAssertFalse(library.transfer.playbackCache.store.hasFile(entries[0]))
+        XCTAssertFalse(library.hasManagedCopy(entries[0].track))
+        XCTAssertEqual(library.saveRequest(for: [entries[0].track], scope: "track:track-1")?.state, .cancelled)
+        XCTAssertTrue(store.hasFile(entries[1]))
+        XCTAssertTrue(library.hasManagedCopy(entries[1].track))
+        XCTAssertEqual(library.saveRequest(for: [entries[1].track], scope: "track:track-2")?.state, .complete)
+        XCTAssertEqual(try store.load()?.entries.map(\.track.id), entries.map(\.track.id))
     }
 
 #if os(macOS)
