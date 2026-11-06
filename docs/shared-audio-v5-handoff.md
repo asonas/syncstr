@@ -20,7 +20,7 @@ and requires live membership for the remote ID and live host authority for itsel
 before storing any presented grants or revocations. Validation, authorization and
 storage share one store lock and transaction; a rejected Hello leaves membership
 unchanged. The server replies with its current proof and
-`"supported_operations":["edit-track","resolve-track"]`, then finishes. A missing
+`"supported_operations":["edit-track","resolve-track","update-playlists"]`, then finishes. A missing
 operations field means no member mutations are supported. Clients must keep their known
 revocations when merging the response, validate root and cluster equality, and
 require a live host grant for the actual remote ID.
@@ -89,7 +89,7 @@ new connection is refused during Hello authorization, before mutation requests.
 Other outcomes keep the session open.
 Incomplete history returns `deferred` with reason `incomplete-history`; unavailable
 storage returns `deferred` with reason `store-unavailable`. Operations other than
-`edit-track` and `resolve-track` remain `unsupported`.
+`edit-track`, `resolve-track` and `update-playlists` remain `unsupported`.
 
 Persist the request ID and original envelope before sending. Retry only at the
 same accepting host. Exact retries return the original record, host and heads,
@@ -136,6 +136,93 @@ receives `rejected` with reason `unauthorized`, and no record is stored. That
 reply closes the session under the existing authorization rule; the member may
 reconnect and select a non-retired head. An accepted resolution's exact retry
 returns its original acceptance even after the conflict has disappeared.
+
+### Member XML playlist updates
+
+An enrolled member may submit `update-playlists` to a host advertising it. Its
+payload contains only `documents`, using the existing playlist document shape:
+
+```json
+{
+  "operation": "mutation",
+  "mutation": {
+    "request": "playlist-update-example-1",
+    "cluster": "cluster-example",
+    "baseline": "<baseline-sha256>",
+    "operation": "update-playlists",
+    "expected": {"playlist:source:mix": ["<previous-record-id>"]},
+    "payload": {
+      "documents": [{
+        "id": "source:mix",
+        "sourceLibrary": "source",
+        "sourcePlaylist": "mix",
+        "sourceFingerprint": "<source-xml-sha256>",
+        "name": "Example Mix",
+        "kind": "manual",
+        "parent": null,
+        "definition": {},
+        "items": [{
+          "id": "occurrence-example",
+          "sourceTrack": "17",
+          "title": "Example Song",
+          "artist": null,
+          "album": null,
+          "trackId": "T-A",
+          "sha256": "<audio-sha256>"
+        }]
+      }]
+    },
+    "confirmed": ["playlist:source:mix"]
+  }
+}
+```
+
+Each expected-head key is `playlist:<document-id>`. A new playlist has no heads.
+Each string in `confirmed` explicitly approves binding replacements in that
+selected playlist. Replacing an existing `(track_id, sha256)` binding requires
+this confirmation; unknown, unselected, non-string or duplicate confirmations
+are invalid. Do not send `expected` or `confirmed_replacements` inside the payload.
+
+The host applies the existing playlist checks in one transaction: current parents,
+replacement confirmations, unchanged source XML structure and occurrence IDs,
+known track bindings, and valid folder ancestry. Updates to conflicted playlists
+are rejected with reason `invalid`. Stale expected heads return `needs-review`
+with current `playlist:<document-id>` heads for every selected playlist. Neither
+failure stores a partial batch or a request receipt. Other member mutation
+authorization and error rules apply unchanged.
+
+An accepted batch returns one record ID per document in `heads`:
+
+```json
+{"status":"accepted","request":"playlist-update-example-1","record":"<first-document-record-id>","host":"<host-id>","heads":{"playlist:source:mix":["<first-document-record-id>"]}}
+```
+
+`record` is the signed record for the first document in the request's `documents`
+array, even when a later document has a smaller record ID. `heads` includes every
+document in the batch. Preserve the document order and original request envelope
+on retry. `Session::update_playlists` uses Hello capability advertisement and
+returns `unsupported` locally if the host does not advertise the operation.
+
+Each member-authored playlist body adds optional `origin: {member, grant}`,
+`request`, and `request_digest`. The origin comes from the authenticated session;
+the accepting host signs the body. The digest binds the original request envelope
+and origin member. Older playlist bodies omit these fields and remain readable;
+host-only administrative updates continue to omit them, preserving their previous
+signed representation and IDs. Later origin revocation preserves accepted history.
+Playlist bodies deny unknown fields, so every host must be upgraded before members
+update playlists; an older host cannot decode these new records and stops replication.
+
+The accepting host reserves the ID and digest in the existing `shared_requests`
+table, with `record` pointing to the first document's signed record. An additional
+`shared_playlist_requests` table stores the ordered record ID array for that request.
+It is created on the first member update without changing existing v5 records.
+Both entries and all playlist records commit atomically. Replays load those
+original records rather than current heads, including after restart or later
+updates. A different envelope or another member reusing the ID is rejected as
+invalid. Receipts are local to the accepting host; retries remain pinned to that
+host under decision D3 A, without cross-host replay guarantees.
+
+### Catalog snapshot
 
 `Snapshot.catalog` is the same typed catalog as HTTPS `GET /v5/catalog`;
 `version: 1` denotes its first schema, not the transport version. The exact types

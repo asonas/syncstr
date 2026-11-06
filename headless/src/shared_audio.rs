@@ -154,6 +154,13 @@ pub struct PlaylistUpdate {
     pub confirmed_replacements: bool,
 }
 
+struct PlaylistIntent {
+    request: String,
+    digest: String,
+    origin: crate::shared_audio::Origin,
+    confirmed: std::collections::BTreeSet<String>,
+}
+
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct Object {
     pub sha256: String,
@@ -559,23 +566,108 @@ impl crate::shared_audio::Store {
         signer: &crate::peer::Identity,
         request: crate::shared_audio::PlaylistUpdate,
     ) -> anyhow::Result<Vec<crate::playlists::Signed>> {
+        self.update_playlists_prepared(signer, request, None)
+    }
+
+    fn update_playlists_prepared(
+        &self,
+        signer: &crate::peer::Identity,
+        request: crate::shared_audio::PlaylistUpdate,
+        intent: Option<crate::shared_audio::PlaylistIntent>,
+    ) -> anyhow::Result<Vec<crate::playlists::Signed>> {
         self.run(|connection, _| {
+            use rusqlite::OptionalExtension as _;
             anyhow::ensure!(
                 !request.documents.is_empty() && request.documents.len() <= 64,
                 "invalid playlist selection"
             );
             let transaction = connection.transaction()?;
             let proof = crate::enrollment::read_proof(&transaction)?;
+            if let Some(intent) = &intent {
+                anyhow::ensure!(
+                    crate::shared_audio::identity(&intent.request),
+                    "invalid request ID"
+                );
+                anyhow::ensure!(
+                    proof
+                        .verify(&intent.origin.grant)
+                        .is_ok_and(|g| g.member == intent.origin.member),
+                    crate::shared_audio::CommitFailure::Revoked
+                );
+            }
             let grant = proof
                 .grants
                 .iter()
                 .find(|g| {
                     g.member == signer.id().to_string() && g.host && proof.verify(&g.id).is_ok()
                 })
-                .ok_or_else(|| anyhow::anyhow!("unauthorized playlist author"))?;
+                .ok_or_else(|| {
+                    if intent.is_some() {
+                        anyhow::Error::from(crate::shared_audio::CommitFailure::Unauthorized)
+                    } else {
+                        anyhow::anyhow!("unauthorized playlist author")
+                    }
+                })?;
+            if let Some(intent) = &intent {
+                // Receipts are local to the accepting host and commit with every batch record.
+                transaction.execute_batch("CREATE TABLE IF NOT EXISTS shared_playlist_requests (id TEXT PRIMARY KEY, records BLOB NOT NULL);")?;
+                let prior: Option<(String, String)> = transaction
+                    .query_row(
+                        "SELECT digest, record FROM shared_requests WHERE id=?",
+                        [&intent.request],
+                        |r| Ok((r.get(0)?, r.get(1)?)),
+                    )
+                    .optional()?;
+                if let Some((digest, first)) = prior {
+                    anyhow::ensure!(
+                        digest == intent.digest,
+                        "idempotency key reused with different content"
+                    );
+                    let raw: Vec<u8> = transaction.query_row(
+                        "SELECT records FROM shared_playlist_requests WHERE id=?",
+                        [&intent.request],
+                        |r| r.get(0),
+                    )?;
+                    let ids: Vec<String> = serde_json::from_slice(&raw)?;
+                    anyhow::ensure!(ids.first() == Some(&first), "invalid playlist receipt");
+                    return ids
+                        .into_iter()
+                        .map(|id| {
+                            let raw: Vec<u8> = transaction.query_row(
+                                "SELECT payload FROM shared_playlists WHERE id=?",
+                                [&id],
+                                |r| r.get(0),
+                            )?;
+                            let signed: crate::playlists::Signed = serde_json::from_slice(&raw)?;
+                            let body = signed.decode(&proof)?;
+                            anyhow::ensure!(
+                                body.request.as_ref() == Some(&intent.request)
+                                    && body.request_digest.as_ref() == Some(&intent.digest)
+                                    && body.origin.as_ref().is_some_and(|o| o.member == intent.origin.member),
+                                "invalid playlist receipt"
+                            );
+                            Ok(signed)
+                        })
+                        .collect();
+                }
+            }
             let mut records = crate::shared_audio::playlist_records(&transaction)?;
             let before = crate::playlists::project(&records, &proof)?;
             let catalog = crate::shared_audio::catalog(&transaction)?;
+            if intent.is_some() {
+                anyhow::ensure!(
+                    catalog.incomplete.is_empty(),
+                    crate::shared_audio::CommitFailure::Incomplete
+                );
+            }
+            let current = request
+                .documents
+                .iter()
+                .map(|document| (
+                    format!("playlist:{}", document.id),
+                    before.get(&document.id).map(|p| p.revisions.clone()).unwrap_or_default(),
+                ))
+                .collect::<std::collections::BTreeMap<_, _>>();
             let mut result = vec![];
             let mut seen = std::collections::BTreeSet::new();
             for document in request.documents {
@@ -594,6 +686,9 @@ impl crate::shared_audio::Store {
                     cluster: catalog.cluster.clone(),
                     author: signer.id().to_string(),
                     grant: grant.id.clone(),
+                    origin: intent.as_ref().map(|i| i.origin.clone()),
+                    request: intent.as_ref().map(|i| i.request.clone()),
+                    request_digest: intent.as_ref().map(|i| i.digest.clone()),
                     document,
                     parents,
                 };
@@ -613,10 +708,12 @@ impl crate::shared_audio::Store {
                     result.push(signed);
                     continue;
                 }
-                anyhow::ensure!(
-                    previous.map(|p| &p.revisions).cloned().unwrap_or_default() == body.parents,
-                    "stale playlist preview"
-                );
+                if previous.map(|p| &p.revisions).cloned().unwrap_or_default() != body.parents {
+                    if intent.is_some() {
+                        return Err(crate::shared_audio::CommitFailure::NeedsReview(current).into());
+                    }
+                    anyhow::bail!("stale playlist preview");
+                }
                 if let Some(previous) = previous {
                     anyhow::ensure!(
                         crate::playlists::reconciled(&body.document, &previous.document)?
@@ -628,7 +725,9 @@ impl crate::shared_audio::Store {
                             && (old.track_id != new.track_id || old.sha256 != new.sha256)
                         {
                             anyhow::ensure!(
-                                request.confirmed_replacements,
+                                intent.as_ref()
+                                    .map(|i| i.confirmed.contains(&body.document.id))
+                                    .unwrap_or(request.confirmed_replacements),
                                 "replacement confirmation required"
                             );
                         }
@@ -671,9 +770,131 @@ impl crate::shared_audio::Store {
                     parent = folder.document.parent.as_ref();
                 }
             }
+            if let Some(intent) = &intent {
+                let ids = result.iter().map(|r| r.id.clone()).collect::<Vec<_>>();
+                transaction.execute(
+                    "INSERT INTO shared_requests VALUES (?, ?, ?)",
+                    rusqlite::params![intent.request, intent.digest, ids[0]],
+                )?;
+                transaction.execute(
+                    "INSERT INTO shared_playlist_requests VALUES (?, ?)",
+                    rusqlite::params![intent.request, serde_json::to_vec(&ids)?],
+                )?;
+            }
             transaction.commit()?;
             Ok(result)
         })
+    }
+
+    pub(crate) fn update_playlists_member(
+        &self,
+        signer: &crate::peer::Identity,
+        member: &str,
+        mutation: crate::shared_audio_net::MutationRequest,
+        proof: &crate::enrollment::Proof,
+    ) -> crate::shared_audio_net::MutationReply {
+        use crate::shared_audio_net::{MutationRejection, MutationReply, UpdatePlaylists};
+        let request = mutation.request.clone();
+        let result = (|| -> anyhow::Result<_> {
+            let update: UpdatePlaylists = serde_json::from_value(mutation.payload.clone())?;
+            let subjects = update
+                .documents
+                .iter()
+                .map(|d| (format!("playlist:{}", d.id), d.id.clone()))
+                .collect::<std::collections::BTreeMap<_, _>>();
+            let expected = mutation
+                .expected
+                .iter()
+                .map(|(subject, heads)| {
+                    let id = subjects
+                        .get(subject)
+                        .ok_or_else(|| anyhow::anyhow!("unexpected playlist head"))?;
+                    Ok((id.clone(), heads.clone()))
+                })
+                .collect::<anyhow::Result<std::collections::BTreeMap<_, _>>>()?;
+            let mut confirmed = std::collections::BTreeSet::new();
+            for confirmation in &mutation.confirmed {
+                let id = confirmation
+                    .as_str()
+                    .and_then(|s| subjects.get(s))
+                    .ok_or_else(|| anyhow::anyhow!("unknown playlist confirmation"))?;
+                anyhow::ensure!(
+                    confirmed.insert(id.clone()),
+                    "duplicate playlist confirmation"
+                );
+            }
+            let grant = proof
+                .grants
+                .iter()
+                .find(|g| g.member == member && proof.verify(&g.id).is_ok())
+                .ok_or(crate::shared_audio::CommitFailure::Revoked)?;
+            let digest = crate::shared_audio::hash(&serde_json::to_vec(&(member, &mutation))?);
+            let records = self.update_playlists_prepared(
+                signer,
+                crate::shared_audio::PlaylistUpdate {
+                    documents: update.documents,
+                    expected,
+                    confirmed_replacements: false,
+                },
+                Some(crate::shared_audio::PlaylistIntent {
+                    request: request.clone(),
+                    digest,
+                    origin: crate::shared_audio::Origin {
+                        member: member.into(),
+                        grant: grant.id.clone(),
+                    },
+                    confirmed,
+                }),
+            )?;
+            let mut heads = std::collections::BTreeMap::new();
+            for signed in &records {
+                let body = signed.decode(proof)?;
+                heads.insert(
+                    format!("playlist:{}", body.document.id),
+                    vec![signed.id.clone()],
+                );
+            }
+            let body = records[0].decode(proof)?;
+            Ok(MutationReply::Accepted {
+                request: request.clone(),
+                record: records[0].id.clone(),
+                host: body.author,
+                heads,
+            })
+        })();
+        match result {
+            Ok(reply) => reply,
+            Err(error) => match error.downcast_ref::<crate::shared_audio::CommitFailure>() {
+                Some(crate::shared_audio::CommitFailure::NeedsReview(current)) => {
+                    MutationReply::NeedsReview {
+                        request,
+                        current: current.clone(),
+                    }
+                }
+                Some(crate::shared_audio::CommitFailure::Incomplete) => MutationReply::Deferred {
+                    request,
+                    reason: "incomplete-history".into(),
+                },
+                Some(crate::shared_audio::CommitFailure::Revoked) => MutationReply::Rejected {
+                    request,
+                    reason: MutationRejection::Revoked,
+                },
+                Some(crate::shared_audio::CommitFailure::Unauthorized) => MutationReply::Rejected {
+                    request,
+                    reason: MutationRejection::Unauthorized,
+                },
+                None if error.downcast_ref::<rusqlite::Error>().is_some() => {
+                    MutationReply::Deferred {
+                        request,
+                        reason: "store-unavailable".into(),
+                    }
+                }
+                None => MutationReply::Rejected {
+                    request,
+                    reason: MutationRejection::Invalid,
+                },
+            },
+        }
     }
 
     pub fn receive_playlist_page(

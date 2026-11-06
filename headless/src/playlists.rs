@@ -108,6 +108,12 @@ pub struct Body {
     pub cluster: String,
     pub author: String,
     pub grant: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origin: Option<crate::shared_audio::Origin>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub request: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub request_digest: Option<String>,
     pub document: crate::playlists::Document,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub parents: Vec<String>,
@@ -147,6 +153,28 @@ impl crate::playlists::Signed {
             grant.host && grant.cluster == body.cluster && grant.member == body.author,
             "unauthorized playlist author"
         );
+        match (&body.origin, &body.request, &body.request_digest) {
+            (None, None, None) => {}
+            (Some(origin), Some(request), Some(digest)) => {
+                // The accepting host checked liveness; later revocation preserves history.
+                let chain = proof.chain(&origin.grant)?;
+                anyhow::ensure!(
+                    chain[0].member == origin.member && chain[0].cluster == body.cluster,
+                    "invalid playlist origin"
+                );
+                anyhow::ensure!(
+                    !request.trim().is_empty()
+                        && request.len() <= 256
+                        && !request.chars().any(char::is_control)
+                        && digest.len() == 64
+                        && digest
+                            .bytes()
+                            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)),
+                    "invalid playlist request identity"
+                );
+            }
+            _ => anyhow::bail!("incomplete playlist request identity"),
+        }
         let signature: [u8; 64] = hex::decode(&self.signature)?
             .try_into()
             .map_err(|_| anyhow::anyhow!("invalid signature"))?;
@@ -337,6 +365,9 @@ impl crate::store::Store {
                 cluster: cluster.clone(),
                 author: authority.member.clone(),
                 grant: authority.id.clone(),
+                origin: None,
+                request: None,
+                request_digest: None,
                 document,
                 parents,
             };

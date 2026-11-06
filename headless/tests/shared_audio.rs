@@ -423,6 +423,9 @@ async fn unrelated_playlist_updates_do_not_validate_a_conflicted_source_structur
             cluster: grant.cluster.clone(),
             author: signer.id().to_string(),
             grant: grant.id.clone(),
+            origin: None,
+            request: None,
+            request_digest: None,
             document,
             parents: vec![],
         };
@@ -844,7 +847,7 @@ async fn quic_mutation_replies_preserve_session_and_existing_requests() -> anyho
     .await?;
     assert_eq!(
         session.supported_operations,
-        ["edit-track", "resolve-track"]
+        ["edit-track", "resolve-track", "update-playlists"]
     );
     let mutation = MutationRequest {
         request: "b6f1c0de-1f2a-4c3b-9d4e-5a6b7c8d9e0f".into(),
@@ -870,7 +873,7 @@ async fn quic_mutation_replies_preserve_session_and_existing_requests() -> anyho
         "register-track",
         "future-resolution",
         "assign-source",
-        "update-playlists",
+        "future-playlist-update",
         "future-operation",
     ] {
         let mut unsupported = mutation.clone();
@@ -1655,7 +1658,7 @@ async fn quic_legacy_hello_and_invalid_mutations_keep_working_until_revoked() ->
     let hello: serde_json::Value = crate::shared_exchange(&connection, &legacy).await?;
     assert_eq!(
         hello["supported_operations"],
-        serde_json::json!(["edit-track", "resolve-track"])
+        serde_json::json!(["edit-track", "resolve-track", "update-playlists"])
     );
     let old_decoder: LegacyHello = serde_json::from_value(hello)?;
     assert_eq!(old_decoder.version, 5);
@@ -1865,6 +1868,421 @@ fn mutation_reply_wire_has_all_five_typed_outcomes() -> anyhow::Result<()> {
         assert_eq!(serde_json::to_value(&reply)?, wire);
         assert_eq!(serde_json::from_value::<MutationReply>(wire)?, reply);
     }
+    Ok(())
+}
+
+#[tokio::test]
+async fn quic_member_playlist_updates_record_origin_and_replay_atomically() -> anyhow::Result<()> {
+    use syncstr_headless::shared_audio_net::{
+        MutationRejection, MutationReply, MutationRequest, Session, UpdatePlaylists,
+    };
+    let fixture = crate::Fixture::new().await?;
+    let replica = fixture.replica()?;
+    let store = fixture.activate()?;
+    for id in ["one", "two"] {
+        store.commit(
+            &fixture.host,
+            crate::register(&store.catalog()?, id, &fixture.entry.sha256),
+        )?;
+    }
+    replica.receive(store.records()?)?;
+    let catalog = store.catalog()?;
+    let target = catalog.correspondences[&crate::source("one").subject()].clone();
+    let later_target = catalog.correspondences[&crate::source("two").subject()].clone();
+    let original = store.playlists()?.remove(0);
+    let mut other = original.document.clone();
+    other.id = "source:z-mix".into();
+    other.source_playlist = "z-mix".into();
+    let administrative = store.update_playlists(
+        &fixture.host,
+        syncstr_headless::shared_audio::PlaylistUpdate {
+            documents: vec![other.clone()],
+            expected: Default::default(),
+            confirmed_replacements: false,
+        },
+    )?;
+    for signed in store.snapshot()?.playlist_history {
+        let body = signed.decode(&store.membership()?)?;
+        assert!(body.origin.is_none());
+        assert!(body.request.is_none());
+        assert!(body.request_digest.is_none());
+        assert_eq!(
+            signed.payload,
+            format!("syncstr-playlist-v1\n{}", serde_json::to_string(&body)?)
+        );
+    }
+    let reader = syncstr_headless::peer::Identity::from_secret(
+        &fixture.root.path().join("reader"),
+        [43; 32],
+    )?;
+    let proof = store.membership()?;
+    let reader_grant = proof
+        .grants
+        .iter()
+        .find(|g| g.member == reader.id().to_string())
+        .unwrap();
+    let (host_endpoint, _host_lock) = fixture
+        .host
+        .cluster_endpoint(&["127.0.0.1:0".parse()?])
+        .await?;
+    let (reader_endpoint, _reader_lock) =
+        reader.cluster_endpoint(&["127.0.0.1:0".parse()?]).await?;
+    let mut tasks = tokio::task::JoinSet::new();
+    tasks.spawn(syncstr_headless::shared_audio_net::serve(
+        host_endpoint.clone(),
+        store.clone(),
+        fixture.host.clone(),
+    ));
+    let session = Session::connect(&reader_endpoint, host_endpoint.addr(), proof.clone()).await?;
+    assert!(
+        session
+            .supported_operations
+            .iter()
+            .any(|op| op == "update-playlists")
+    );
+    let mut documents = vec![other, original.document.clone()];
+    for document in &mut documents {
+        document.items[0].track_id = Some(target.clone());
+    }
+    let subjects = documents
+        .iter()
+        .map(|d| format!("playlist:{}", d.id))
+        .collect::<Vec<_>>();
+    let mutation = MutationRequest {
+        request: "member-playlist-batch".into(),
+        cluster: catalog.cluster.clone(),
+        baseline: catalog.baseline.clone(),
+        operation: "update-playlists".into(),
+        expected: std::collections::BTreeMap::from([
+            (subjects[0].clone(), vec![administrative[0].id.clone()]),
+            (subjects[1].clone(), original.revisions.clone()),
+        ]),
+        payload: serde_json::to_value(UpdatePlaylists {
+            documents: documents.clone(),
+        })?,
+        confirmed: subjects.iter().map(|s| serde_json::json!(s)).collect(),
+    };
+    let before = serde_json::to_value(store.snapshot()?.playlist_history)?;
+    for confirmed in [
+        vec![],
+        vec![serde_json::json!(subjects[0])],
+        vec![serde_json::json!("playlist:unknown")],
+        vec![
+            serde_json::json!(subjects[0]),
+            serde_json::json!(subjects[0]),
+        ],
+        vec![serde_json::json!(true)],
+    ] {
+        let mut invalid = mutation.clone();
+        invalid.confirmed = confirmed;
+        assert_eq!(
+            session.update_playlists(invalid).await?,
+            MutationReply::Rejected {
+                request: mutation.request.clone(),
+                reason: MutationRejection::Invalid
+            }
+        );
+        assert_eq!(
+            serde_json::to_value(store.snapshot()?.playlist_history)?,
+            before
+        );
+    }
+    for field in ["expected", "confirmed_replacements", "origin"] {
+        let mut invalid = mutation.clone();
+        invalid.payload[field] = serde_json::json!({});
+        assert_eq!(
+            session.update_playlists(invalid).await?,
+            MutationReply::Rejected {
+                request: mutation.request.clone(),
+                reason: MutationRejection::Invalid
+            }
+        );
+    }
+    let mut changed_source = mutation.clone();
+    changed_source.payload["documents"][0]["items"][0]["id"] = serde_json::json!("new-occurrence");
+    assert!(matches!(
+        session.update_playlists(changed_source).await?,
+        MutationReply::Rejected {
+            reason: MutationRejection::Invalid,
+            ..
+        }
+    ));
+    assert_eq!(
+        serde_json::to_value(store.snapshot()?.playlist_history)?,
+        before
+    );
+    let accepted = session.update_playlists(mutation.clone()).await?;
+    let (record, heads) = match &accepted {
+        MutationReply::Accepted {
+            record,
+            host,
+            heads,
+            ..
+        } => {
+            assert_eq!(host, &fixture.host.id().to_string());
+            assert_eq!(heads.len(), 2);
+            assert_eq!(&heads[&subjects[0]], &vec![record.clone()]);
+            (record.clone(), heads.clone())
+        }
+        other => anyhow::bail!("unexpected playlist reply: {other:?}"),
+    };
+    let page = store.playlist_page(0)?;
+    assert_eq!(page.len(), 3);
+    assert_eq!(page[1].1.id, record);
+    assert_eq!(page[1].1.decode(&proof)?.document.id, documents[0].id);
+    for (_, signed) in &page[1..] {
+        let body = signed.decode(&proof)?;
+        assert_eq!(
+            body.origin,
+            Some(syncstr_headless::shared_audio::Origin {
+                member: reader.id().to_string(),
+                grant: reader_grant.id.clone(),
+            })
+        );
+        assert_eq!(body.request.as_deref(), Some(mutation.request.as_str()));
+        assert!(body.request_digest.as_ref().is_some_and(|d| d.len() == 64));
+        let original = documents.iter().find(|d| d.id == body.document.id).unwrap();
+        assert_eq!(&body.document, original);
+        assert_eq!(
+            heads[&format!("playlist:{}", body.document.id)],
+            vec![signed.id.clone()]
+        );
+    }
+    let after = serde_json::to_value(store.snapshot()?.playlist_history)?;
+    assert_eq!(session.update_playlists(mutation.clone()).await?, accepted);
+    assert_eq!(
+        serde_json::to_value(store.snapshot()?.playlist_history)?,
+        after
+    );
+    let db = rusqlite::Connection::open(fixture.data().join("node.sqlite"))?;
+    let receipt: Vec<u8> = db.query_row(
+        "SELECT records FROM shared_playlist_requests WHERE id=?",
+        [&mutation.request],
+        |r| r.get(0),
+    )?;
+    assert_eq!(
+        serde_json::from_slice::<Vec<String>>(&receipt)?,
+        vec![page[1].1.id.clone(), page[2].1.id.clone()]
+    );
+    let mut stale = mutation.clone();
+    stale.request = "stale-playlist-batch".into();
+    stale
+        .expected
+        .insert(subjects[0].clone(), heads[&subjects[0]].clone());
+    assert_eq!(
+        session.update_playlists(stale.clone()).await?,
+        MutationReply::NeedsReview {
+            request: stale.request.clone(),
+            current: heads.clone()
+        }
+    );
+    assert_eq!(
+        serde_json::to_value(store.snapshot()?.playlist_history)?,
+        after
+    );
+    for table in ["shared_requests", "shared_playlist_requests"] {
+        let count: i64 = db.query_row(
+            &format!("SELECT COUNT(*) FROM {table} WHERE id=?"),
+            [&stale.request],
+            |r| r.get(0),
+        )?;
+        assert_eq!(count, 0);
+    }
+    let mut reused = mutation.clone();
+    reused.payload["documents"][0]["items"][0]["trackId"] = serde_json::json!(later_target);
+    assert_eq!(
+        session.update_playlists(reused).await?,
+        MutationReply::Rejected {
+            request: mutation.request.clone(),
+            reason: MutationRejection::Invalid
+        }
+    );
+    let reused_for_edit = metadata_edit(
+        &catalog,
+        &mutation.request,
+        &fixture.logical,
+        serde_json::json!({"title": "Another operation"}),
+    );
+    assert_eq!(
+        session.edit_track(reused_for_edit).await?,
+        MutationReply::Rejected {
+            request: mutation.request.clone(),
+            reason: MutationRejection::Invalid,
+        }
+    );
+    let mut later = mutation.clone();
+    later.request = "single-playlist-update".into();
+    documents[0].items[0].track_id = Some(later_target);
+    later.payload = serde_json::to_value(UpdatePlaylists {
+        documents: vec![documents[0].clone()],
+    })?;
+    later.expected =
+        std::collections::BTreeMap::from([(subjects[0].clone(), heads[&subjects[0]].clone())]);
+    later.confirmed = vec![serde_json::json!(subjects[0])];
+    let later_reply = session.update_playlists(later.clone()).await?;
+    assert!(matches!(&later_reply, MutationReply::Accepted { .. }));
+    let later_history = serde_json::to_value(store.snapshot()?.playlist_history)?;
+    assert_eq!(
+        later_history.as_array().unwrap().len(),
+        after.as_array().unwrap().len() + 1
+    );
+    assert_eq!(session.update_playlists(later.clone()).await?, later_reply);
+    assert_eq!(
+        serde_json::to_value(store.snapshot()?.playlist_history)?,
+        later_history
+    );
+    assert_eq!(session.update_playlists(mutation.clone()).await?, accepted);
+    replica.receive_playlist_page("host/playlists", 0, store.playlist_page(0)?)?;
+    assert_eq!(
+        serde_json::to_value(replica.playlists()?)?,
+        serde_json::to_value(store.playlists()?)?
+    );
+    drop(db);
+    drop(session);
+    tasks.abort_all();
+    while tasks.join_next().await.is_some() {}
+    drop(store);
+    let store = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            match syncstr_headless::shared_audio::Store::open(&fixture.data()) {
+                Ok(store) => break anyhow::Ok(store),
+                Err(_) => tokio::time::sleep(std::time::Duration::from_millis(10)).await,
+            }
+        }
+    })
+    .await??;
+    tasks.spawn(syncstr_headless::shared_audio_net::serve(
+        host_endpoint.clone(),
+        store.clone(),
+        fixture.host.clone(),
+    ));
+    let session =
+        Session::connect(&reader_endpoint, host_endpoint.addr(), store.membership()?).await?;
+    assert_eq!(session.update_playlists(mutation).await?, accepted);
+    assert_eq!(session.update_playlists(later).await?, later_reply);
+    assert_eq!(
+        serde_json::to_value(store.snapshot()?.playlist_history)?,
+        later_history
+    );
+    store.revoke_member(&fixture.host, &reader.id().to_string())?;
+    assert_eq!(store.playlists()?.len(), 2);
+    tasks.abort_all();
+    while tasks.join_next().await.is_some() {}
+    host_endpoint.close().await;
+    reader_endpoint.close().await;
+    Ok(())
+}
+
+#[tokio::test]
+async fn quic_member_playlist_updates_reject_conflicted_targets_without_partial_records()
+-> anyhow::Result<()> {
+    use syncstr_headless::shared_audio_net::{
+        MutationRejection, MutationReply, MutationRequest, Request, Session, UpdatePlaylists,
+    };
+    let fixture = crate::Fixture::new().await?;
+    let replica = fixture.replica()?;
+    let store = fixture.activate()?;
+    for id in ["one", "two"] {
+        store.commit(
+            &fixture.host,
+            crate::register(&store.catalog()?, id, &fixture.entry.sha256),
+        )?;
+    }
+    replica.receive(store.records()?)?;
+    let original = store.playlists()?.remove(0);
+    let catalog = store.catalog()?;
+    for (node, signer, target) in [
+        (&store, &fixture.host, "one"),
+        (&replica, &fixture.other, "two"),
+    ] {
+        let mut document = original.document.clone();
+        document.items[0].track_id =
+            Some(catalog.correspondences[&crate::source(target).subject()].clone());
+        node.update_playlists(
+            signer,
+            syncstr_headless::shared_audio::PlaylistUpdate {
+                documents: vec![document],
+                expected: std::collections::BTreeMap::from([(
+                    original.document.id.clone(),
+                    original.revisions.clone(),
+                )]),
+                confirmed_replacements: true,
+            },
+        )?;
+    }
+    store.receive_playlist_page("other/playlists", 0, replica.playlist_page(0)?)?;
+    let conflict = store.playlists()?.remove(0);
+    assert!(conflict.conflicted);
+    let reader = syncstr_headless::peer::Identity::from_secret(
+        &fixture.root.path().join("reader"),
+        [43; 32],
+    )?;
+    let (host_endpoint, _host_lock) = fixture
+        .host
+        .cluster_endpoint(&["127.0.0.1:0".parse()?])
+        .await?;
+    let (reader_endpoint, _reader_lock) =
+        reader.cluster_endpoint(&["127.0.0.1:0".parse()?]).await?;
+    let mut tasks = tokio::task::JoinSet::new();
+    tasks.spawn(syncstr_headless::shared_audio_net::serve(
+        host_endpoint.clone(),
+        store.clone(),
+        fixture.host.clone(),
+    ));
+    let session =
+        Session::connect(&reader_endpoint, host_endpoint.addr(), store.membership()?).await?;
+    let mut healthy = original.document.clone();
+    healthy.id = "source:healthy".into();
+    healthy.source_playlist = "healthy".into();
+    let mutation = MutationRequest {
+        request: "conflicted-playlist-batch".into(),
+        cluster: catalog.cluster,
+        baseline: catalog.baseline,
+        operation: "update-playlists".into(),
+        expected: std::collections::BTreeMap::from([(
+            format!("playlist:{}", conflict.document.id),
+            conflict.revisions.clone(),
+        )]),
+        payload: serde_json::to_value(UpdatePlaylists {
+            documents: vec![healthy.clone(), original.document],
+        })?,
+        confirmed: vec![serde_json::json!(format!(
+            "playlist:{}",
+            conflict.document.id
+        ))],
+    };
+    let before = serde_json::to_value(store.snapshot()?.playlist_history)?;
+    assert_eq!(
+        session.update_playlists(mutation.clone()).await?,
+        MutationReply::Rejected {
+            request: mutation.request.clone(),
+            reason: MutationRejection::Invalid
+        }
+    );
+    assert_eq!(
+        serde_json::to_value(store.snapshot()?.playlist_history)?,
+        before
+    );
+    let snapshot: syncstr_headless::shared_audio_net::Snapshot =
+        session.request(Request::Catalog).await?;
+    assert_eq!(snapshot.playlists.len(), 1);
+    assert_eq!(snapshot.playlists[0].revisions, conflict.revisions);
+    assert!(snapshot.playlists[0].conflicted);
+    let mut healthy_only = mutation;
+    healthy_only.expected.clear();
+    healthy_only.confirmed.clear();
+    healthy_only.payload = serde_json::to_value(UpdatePlaylists {
+        documents: vec![healthy],
+    })?;
+    assert!(matches!(
+        session.update_playlists(healthy_only).await?,
+        MutationReply::Accepted { .. }
+    ));
+    assert_eq!(store.playlists()?.len(), 2);
+    tasks.abort_all();
+    while tasks.join_next().await.is_some() {}
+    host_endpoint.close().await;
+    reader_endpoint.close().await;
     Ok(())
 }
 

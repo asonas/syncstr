@@ -56,6 +56,12 @@ pub struct ResolveTrack {
     pub select: String,
 }
 
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct UpdatePlaylists {
+    pub documents: Vec<crate::playlists::Document>,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum MutationRejection {
@@ -177,6 +183,9 @@ impl crate::shared_audio::Store {
             }
             Ok(_) if mutation.operation == "resolve-track" => {
                 self.resolve_track_member(signer, peer, mutation, &proof)
+            }
+            Ok(_) if mutation.operation == "update-playlists" => {
+                self.update_playlists_member(signer, peer, mutation, &proof)
             }
             Ok(_) => MutationReply::Unsupported {
                 request,
@@ -356,7 +365,11 @@ async fn serve_connection(
         &crate::shared_audio_net::Hello {
             version: 5,
             proof,
-            supported_operations: vec!["edit-track".into(), "resolve-track".into()],
+            supported_operations: vec![
+                "edit-track".into(),
+                "resolve-track".into(),
+                "update-playlists".into(),
+            ],
         },
     )
     .await?;
@@ -632,6 +645,28 @@ impl crate::shared_audio_net::Session {
             .supported_operations
             .iter()
             .any(|op| op == "resolve-track")
+        {
+            return Ok(crate::shared_audio_net::MutationReply::Unsupported {
+                request: mutation.request,
+                operation: mutation.operation,
+            });
+        }
+        self.request(crate::shared_audio_net::Request::Mutation { mutation })
+            .await
+    }
+
+    pub async fn update_playlists(
+        &self,
+        mutation: crate::shared_audio_net::MutationRequest,
+    ) -> anyhow::Result<crate::shared_audio_net::MutationReply> {
+        anyhow::ensure!(
+            mutation.operation == "update-playlists",
+            "expected update-playlists operation"
+        );
+        if !self
+            .supported_operations
+            .iter()
+            .any(|op| op == "update-playlists")
         {
             return Ok(crate::shared_audio_net::MutationReply::Unsupported {
                 request: mutation.request,
