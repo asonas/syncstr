@@ -1,5 +1,92 @@
 #![cfg(feature = "p2p")]
 
+#[cfg(unix)]
+mod lock_lifetime {
+    use std::io::{Read, Write};
+    use std::os::fd::AsRawFd;
+    use std::os::unix::{net::UnixStream, process::CommandExt};
+    use std::process::{Command, Stdio};
+
+    fn releases_before_child_exec<T: Clone>(
+        owner: T,
+        reopen: impl Fn() -> anyhow::Result<T>,
+    ) -> anyhow::Result<()> {
+        assert!(reopen().is_err(), "a live owner must exclude another store");
+        let cloned_owner = owner.clone();
+        let (mut parent, child_gate) = UnixStream::pair()?;
+        parent.set_read_timeout(Some(std::time::Duration::from_secs(5)))?;
+        let launch = std::thread::spawn(move || {
+            let mut command = Command::new(env!("CARGO_BIN_EXE_syncstr-headless"));
+            command
+                .arg("--help")
+                .stdout(Stdio::null())
+                .stderr(Stdio::null());
+            // Only async-signal-safe calls run in the child before exec.
+            unsafe {
+                command.pre_exec(move || {
+                    let fd = child_gate.as_raw_fd();
+                    let pid = libc::getpid().to_ne_bytes();
+                    if libc::write(fd, pid.as_ptr().cast(), pid.len()) != pid.len() as isize {
+                        return Err(std::io::Error::last_os_error());
+                    }
+                    let mut release = 0u8;
+                    if libc::read(fd, (&mut release as *mut u8).cast(), 1) != 1 {
+                        return Err(std::io::Error::last_os_error());
+                    }
+                    Ok(())
+                });
+            }
+            command.status()
+        });
+        let mut pid = [0u8; std::mem::size_of::<libc::pid_t>()];
+        let ready = parent.read_exact(&mut pid);
+        let started = std::time::Instant::now();
+        drop(owner);
+        let clone_still_excludes = reopen().is_err();
+        drop(cloned_owner);
+        let reopened = reopen();
+        let elapsed = started.elapsed();
+        // Release and join even on a failed assertion; never leave a blocked child.
+        let released = parent.write_all(&[1]);
+        let child = launch
+            .join()
+            .map_err(|_| anyhow::anyhow!("child launcher panicked"))??;
+        ready?;
+        released?;
+        assert!(child.success());
+        assert!(
+            clone_still_excludes,
+            "dropping one clone must retain ownership"
+        );
+        eprintln!(
+            "node.lock inherited by child {} for {:?} before exec",
+            libc::pid_t::from_ne_bytes(pid),
+            elapsed
+        );
+        assert!(
+            reopened.is_ok(),
+            "last owner dropped while child retained its FD: {:?}",
+            reopened.err()
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn legacy_store_ownership_ends_before_a_child_execs() -> anyhow::Result<()> {
+        let fixture = crate::Fixture::new().await?;
+        releases_before_child_exec(
+            syncstr_headless::store::Store::open(&fixture.data())?,
+            || syncstr_headless::store::Store::open(&fixture.data()),
+        )
+    }
+
+    #[tokio::test]
+    async fn v5_store_ownership_ends_before_a_child_execs() -> anyhow::Result<()> {
+        let fixture = crate::Fixture::new().await?;
+        releases_before_child_exec(fixture.activate()?, || fixture.activate())
+    }
+}
+
 #[tokio::test]
 async fn quic_sync_preserves_ids_pins_and_recovers_after_reconnection() -> anyhow::Result<()> {
     let fixture = crate::Fixture::new().await?;

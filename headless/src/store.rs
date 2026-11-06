@@ -1,7 +1,7 @@
 struct Inner {
     connection: std::sync::Mutex<rusqlite::Connection>,
     root: std::path::PathBuf,
-    _lock: std::fs::File,
+    _lock: crate::node_lock::NodeLock,
 }
 
 #[derive(Clone)]
@@ -9,7 +9,6 @@ pub struct Store(std::sync::Arc<crate::store::Inner>);
 
 impl crate::store::Store {
     pub fn open(root: &std::path::Path) -> anyhow::Result<Self> {
-        use fs2::FileExt as _;
         crate::platform_fs::create_private_dir(root)?;
         let root = crate::platform_fs::absolute_directory(root)?;
         let lock = crate::platform_fs::private_file_options()
@@ -18,7 +17,7 @@ impl crate::store::Store {
             .create(true)
             .truncate(false)
             .open(root.join("node.lock"))?;
-        lock.try_lock_exclusive()
+        let lock = crate::node_lock::NodeLock::acquire(lock)
             .map_err(|error| anyhow::anyhow!("data directory is already in use: {error}"))?;
         for name in ["objects", "staging"] {
             crate::platform_fs::create_private_dir(&root.join(name)).or_else(|error| {
