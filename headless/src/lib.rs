@@ -21,6 +21,7 @@ pub mod enrollment;
 pub mod identity;
 pub mod membership;
 pub mod model;
+mod node_lock;
 pub mod organization;
 #[cfg(feature = "p2p")]
 pub mod peer;

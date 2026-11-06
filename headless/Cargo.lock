@@ -3640,6 +3640,7 @@ dependencies = [
  "iroh",
  "iroh-relay",
  "jpeg-decoder",
+ "libc",
  "lofty",
  "mdns-sd",
  "qrcode",

@@ -347,7 +347,7 @@ fn legacy(connection: &rusqlite::Connection) -> anyhow::Result<crate::shared_aud
 struct Inner {
     connection: std::sync::Mutex<rusqlite::Connection>,
     root: std::path::PathBuf,
-    _lock: std::fs::File,
+    _lock: crate::node_lock::NodeLock,
 }
 
 #[derive(Clone)]
@@ -356,13 +356,17 @@ pub struct Store(std::sync::Arc<crate::shared_audio::Inner>);
 impl crate::shared_audio::Store {
     fn locked(
         root: &std::path::Path,
-    ) -> anyhow::Result<(rusqlite::Connection, std::fs::File, std::path::PathBuf)> {
+    ) -> anyhow::Result<(
+        rusqlite::Connection,
+        crate::node_lock::NodeLock,
+        std::path::PathBuf,
+    )> {
         let root = crate::platform_fs::absolute_directory(root)?;
         let lock = crate::platform_fs::private_file_options()
             .read(true)
             .write(true)
             .open(root.join("node.lock"))?;
-        fs2::FileExt::try_lock_exclusive(&lock)?;
+        let lock = crate::node_lock::NodeLock::acquire(lock)?;
         let connection = rusqlite::Connection::open_with_flags(
             root.join("node.sqlite"),
             rusqlite::OpenFlags::SQLITE_OPEN_READ_WRITE,
