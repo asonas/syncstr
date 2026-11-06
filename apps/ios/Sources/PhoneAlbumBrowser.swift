@@ -116,7 +116,8 @@ struct PhoneAlbumBrowser<Detail: View>: View {
             let targets = selected.contains(album.id) ? selected : [album.id]
             Button(hidden ? "非表示を解除する" : "非表示にする") {
                 changeVisibility(targets)
-            }.disabled(targets.contains(where: library.isSavingAlbumVisibility))
+            }.disabled(library.legacyMutationNotice != nil || targets.contains(where: library.isSavingAlbumVisibility))
+            if let notice = library.legacyMutationNotice { Text(notice) }
         }
     }
 
@@ -145,11 +146,16 @@ struct PhoneAlbumBrowser<Detail: View>: View {
 
     @ViewBuilder private var selectionBar: some View {
         if selecting {
-            HStack {
-                Text("\(selected.count)枚を選択")
-                Spacer()
-                Button(hidden ? "非表示を解除" : "非表示にする") { changeVisibility(selected) }
-                    .disabled(selected.isEmpty || selected.contains(where: library.isSavingAlbumVisibility))
+            VStack(alignment: .leading, spacing: 4) {
+                HStack {
+                    Text("\(selected.count)枚を選択")
+                    Spacer()
+                    Button(hidden ? "非表示を解除" : "非表示にする") { changeVisibility(selected) }
+                        .disabled(library.legacyMutationNotice != nil || selected.isEmpty || selected.contains(where: library.isSavingAlbumVisibility))
+                }
+                if let notice = library.legacyMutationNotice {
+                    Text(notice).font(.caption).foregroundStyle(.secondary)
+                }
             }.padding(20).background(.regularMaterial)
         }
     }

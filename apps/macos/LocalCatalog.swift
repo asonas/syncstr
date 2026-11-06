@@ -219,7 +219,7 @@ struct LocalCatalog: Codable {
 
 enum LocalMusicError: LocalizedError {
     case invalidData, disconnected, unauthorized, changedFile, noMusic, invalidCode, incompatiblePeer
-    case clusterUnavailable, clusterNeedsAttention
+    case clusterUnavailable, clusterNeedsAttention, legacyMutationsUnavailable
     case backgroundAcquisition
 
     var errorDescription: String? {
@@ -233,6 +233,7 @@ enum LocalMusicError: LocalizedError {
         case .incompatiblePeer: "接続先のSyncstrを更新してください。アルバムの整理情報に対応していません。"
         case .clusterUnavailable: "利用できる音源に接続できません。保存済みの音楽は引き続き聴けます。接続後に再試行できます。"
         case .clusterNeedsAttention: "保存先で変更の確認が必要です。ライブラリを更新して競合を確認し、解消後に再試行してください。音源はこの端末に保持しています。"
+        case .legacyMutationsUnavailable: "この接続では音源の追加、アルバム情報や表示・非表示の変更、競合の解消、アルバム名の選択は利用できません。"
         case .backgroundAcquisition: "バックグラウンドでは次の音源を取得できません。アプリを開いて再試行してください。"
         }
     }

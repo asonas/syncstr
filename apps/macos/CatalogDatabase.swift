@@ -648,6 +648,7 @@ final class CatalogDatabase {
 
     func setAlbumsHidden(_ ids: Set<String>, hidden: Bool, libraryID: String) throws -> AlbumOrganization {
         try transaction {
+            guard try sharedAudioSnapshot() == nil else { throw LocalMusicError.legacyMutationsUnavailable }
             guard let catalog = try readSnapshot()?.catalog, catalog.id == libraryID,
                   var organization = catalog.organization else { throw LocalMusicError.invalidData }
             for id in ids.sorted() {
@@ -660,6 +661,7 @@ final class CatalogDatabase {
     }
 
     private func recordOrganizationEdits(_ organization: AlbumOrganization, previous: LocalCatalog?, entries: [LocalEntry]) throws {
+        guard try sharedAudioSnapshot() == nil else { return }
         guard let registration = try clusterRegistration() else { return }
         _ = try registration.membership.verify(registration.localGrant)
         let records = try clusterChanges()

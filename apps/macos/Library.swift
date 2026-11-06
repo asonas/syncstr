@@ -306,6 +306,11 @@ final class Library: ObservableObject {
 
     func isAlbumHidden(_ id: String) -> Bool { localCatalog?.organization?.isHidden(id) ?? false }
 
+    var legacyMutationNotice: String? {
+        localCatalog?.logicalAudio == true || transfer.clusterMutationsUnavailable
+            ? LocalMusicError.legacyMutationsUnavailable.localizedDescription : nil
+    }
+
     func isSavingAlbumVisibility(_ id: String) -> Bool { visibilityRequests[id, default: 0] > 0 }
 
     func albumVisibilityLabel(_ id: String) -> String {
@@ -320,6 +325,10 @@ final class Library: ObservableObject {
 
     @discardableResult
     func setAlbumsHidden(_ ids: Set<String>, hidden: Bool) -> Task<Void, Never> {
+        if let notice = legacyMutationNotice {
+            message = notice
+            return Task {}
+        }
         let previous = visibilityChange
         let generation = visibilityGeneration
         let libraryID = localCatalog?.id
@@ -335,6 +344,7 @@ final class Library: ObservableObject {
             }
             await previous?.value
             guard visibilityGeneration == generation, let libraryID, localCatalog?.id == libraryID else { return }
+            if let notice = legacyMutationNotice { message = notice; return }
             do {
                 let result = try await localStore.setAlbumsHidden(ids, hidden: hidden, libraryID: libraryID)
                 guard visibilityGeneration == generation, localCatalog?.id == libraryID,
@@ -541,6 +551,8 @@ final class Library: ObservableObject {
     }
 
     func saveOrganization(_ organization: AlbumOrganization) throws {
+        guard try localStore.database().sharedAudioSnapshot() == nil,
+              legacyMutationNotice == nil else { throw LocalMusicError.legacyMutationsUnavailable }
         guard var catalog = localCatalog else { throw LocalMusicError.invalidData }
         let selectedMembers = albums.first { $0.id == selectedAlbum }?.tracks.map(\.id) ?? []
         try organization.validate()
@@ -1219,6 +1231,10 @@ final class Library: ObservableObject {
     }
 
     func addMusic(_ files: [URL]) async {
+        if let notice = legacyMutationNotice {
+            message = notice
+            return
+        }
         if transfer.clusterRegistration != nil || transfer.peerConnected {
             transfer.uploadPeer(files: files)
             return
