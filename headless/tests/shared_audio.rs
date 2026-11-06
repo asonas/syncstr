@@ -351,6 +351,9 @@ async fn quic_catalog_and_unrelated_playlist_updates_survive_replicated_playlist
             .document,
         unrelated
     );
+    // Record replication does not copy audio into the replica's empty object store.
+    let mut audio = store.audio(&fixture.logical, &fixture.entry.sha256)?;
+    replica.put_audio(&fixture.entry.sha256, &mut audio)?;
     let reader = syncstr_headless::peer::Identity::from_secret(
         &fixture.root.path().join("reader"),
         [43; 32],
