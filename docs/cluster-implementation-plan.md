@@ -1,6 +1,6 @@
 # Cluster connectivity and replication plan
 
-Status: implementation in progress; M0, M1, and M2 complete and M3 next. Product requirements are agreed in [the cluster model](cluster-model-design.md) and [ADR 0002](adr/0002-local-first-connectivity-with-user-operated-remote-access.md). This document does not authorize production deployment. Verification claims are limited to the milestone records below.
+Status (2026-11-06): M0–M2 are recorded complete; M3 has an integrated Apple checkpoint with remaining manual acceptance, M4 has isolated remote-access evidence, and M5 has initial clients with platform limits. The source-gap table below preserves its original research baseline. Product requirements are agreed in [the cluster model](cluster-model-design.md) and [ADR 0002](adr/0002-local-first-connectivity-with-user-operated-remote-access.md); [ADR 0006](adr/0006-preserve-source-track-identity-independently-of-audio.md) updates logical identity. See the [v5 completion design](v5-completion-design.md) for current follow-up. This document does not authorize production deployment or transfer old milestone evidence to v5.
 
 Research baseline: repository commit `0b8b387`, with upstream documentation checked on 2026-10-10. Concrete dependency versions and platform support must be verified in the implementation spikes below.
 

@@ -1,5 +1,7 @@
 # Syncstr product specification
 
+Scope note (2026-11-06): this document preserves the local-transfer milestone, including its original deferred list. Current apps also support cluster enrollment and other later work. Use the [cluster model](cluster-model-design.md), specific player/save/playlist contracts, and the [completion design](v5-completion-design.md) to interpret subsequent scope. The completion design is a draft; it does not claim v5 is implemented on main.
+
 Syncstr lets people listen to their own audio files with a consistent experience across devices and operating systems. The current implementation supports macOS and iPhone without a hosted service, server account, or Internet connection during playback.
 
 ## User journey

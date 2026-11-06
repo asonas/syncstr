@@ -1,5 +1,7 @@
 # Syncstr overview
 
+Scope note (2026-11-06): this overview records the earlier local-transfer product. Its platform, native-integration and remote-access limitations are historical. See [current implementation](../README.md#current-implementation), the [cluster model](cluster-model-design.md), and the [v5 design draft](v5-completion-design.md) for the later direction and remaining work.
+
 Syncstr is a native player for audio files you own. Select a music folder on a Mac, pair an iPhone on the same local network, and copy albums to listen offline. Users do not administer a server or create an account.
 
 The Mac reads the original files without editing them. The phone retains its own verified audio, catalog, and artwork and can restart without the Mac or a network connection. Pairing requires a code or QR scan and explicit approval on the Mac.

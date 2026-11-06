@@ -4,6 +4,8 @@ A native macOS and iPhone player for a music library you manage yourself.
 
 ## Current implementation
 
+For the current design backlog, see the [product-gap audit](docs/product-gap-audit-2026-11-06.md) and [v5 completion design](docs/v5-completion-design.md). The latter is a design draft, not implemented behavior. PR #15 merged the Apple v5 work into main on 2026-11-06. Physical-device audio output and the cross-platform acceptance in ASO-12 are not yet verified.
+
 Both Apple apps can join an existing cluster library using an invitation, or import music for local playback without enrollment. macOS also supports a selected music folder. The retained catalog stays visible offline, and playback and explicit offline saves automatically select an authorized source. Track and album saves retain pending requests across restarts, report partial results, and resume under the communication policy while the app is active.
 
 Settings contains enrollment, hosts, connection diagnostics, conflicts, communication policy, storage limits, and legacy connections. The older Mac-to-iPhone pairing flow remains available under **Legacy device transfer** in Settings; see [the legacy transfer guide](docs/local-music-transfer.md) for its protocol and verification limits.
@@ -45,7 +47,7 @@ continue to use the existing conflict-resolution flow.
 | iPhone UI and device features | [Sources](apps/ios/Sources/), [iPhone guide](apps/ios/README.md) |
 | Folder settings | [SettingsView.swift](apps/macos/SettingsView.swift) |
 | Headless NAS node and CLI | [Headless guide](headless/README.md), [HTTPS API](headless/src/api.rs), [node catalog](headless/src/store.rs) |
-| Music/iTunes owned-library migration | [Windows handoff](docs/music-library-migration-windows-handoff.md), [Windows-to-NAS MVP plan](docs/music-library-migration-plan.md), [source metadata precedence](docs/adr/0004-preserve-source-library-metadata-during-migration.md); implementation pending |
+| Music/iTunes owned-library migration | [Existing inventory/prepare/import/resume CLI](tools/music-migration/README.md), [Windows-to-NAS plan](docs/music-library-migration-plan.md), [source metadata precedence](docs/adr/0004-preserve-source-library-metadata-during-migration.md); v5 correspondence integration and acquisition follow-ups remain planned |
 | Shared playlists and playlist XML migration | [Implementation plan](docs/playlist-implementation-plan.md), [updating imported playlists and verification](docs/playlist-reconciliation.md); full editing and smart-rule evaluation remain planned |
 | Source track identity and Windows evidence collection | [Shared-audio server design](docs/shared-audio-server-design.md), [implementation and verification](docs/shared-audio-server-implementation.md), [Inventory and correspondence commands](tools/playlist-audit/README.md#source-registration-inventory), [report format](tools/playlist-audit/inventory-format.md), [Windows validation](docs/validation/source-track-identity-windows.md), [Windows implementation handoff](docs/source-track-identity-windows-handoff.md), [identity boundary](docs/adr/0006-preserve-source-track-identity-independently-of-audio.md) |
 | Cluster enrollment and LAN replication | [Implementation plan](docs/cluster-implementation-plan.md), [M2 protocol and CLI](docs/cluster-lan-sync-m2.md), [membership](headless/src/enrollment.rs), [reconciliation](headless/src/cluster_sync.rs) |
@@ -73,9 +75,9 @@ Record the expected behavior before, during, and after the interaction, includin
 
 ## Long-term design and deferred work
 
-Playback-state synchronization, passkey authentication, Music XML migration, and the Windows client belong to the long-term design. Android has an initial LAN playback implementation; remote access and distribution remain pending. These are not prerequisites for running or changing the local music player.
+Cross-device playback-state synchronization remains deferred. Music XML migration and Windows/Android clients have partial implementations; see their guides for supported behavior and outstanding acceptance. Passkey authentication belongs to the superseded account-based design and is not a requirement for the current cluster product.
 
-The service specification describes the current local music product. The plans and technical investigations preserve earlier work; their server requirements are superseded by the local transfer design. Use the app guides and source code for implemented behavior, and issues for work status.
+The service specification preserves the local-transfer milestone. The [cluster model](docs/cluster-model-design.md), identity ADRs and specific player/save/playlist contracts define subsequent direction. Historical plans do not reinstate NAS authority or account requirements. Use the app guides and source code for implemented behavior, and Linear issues for work status.
 
 - [Service specification](docs/design-spec.md), [service overview](docs/service-overview.md), [design decisions](docs/decisions.md)
 - [Design interview](docs/grill-me.md), [long-term plans](docs/plans/README.md), [initial roadmap](docs/plans/2026-08-15-syncstr-implementation-plan.md)
