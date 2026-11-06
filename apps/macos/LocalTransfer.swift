@@ -200,6 +200,7 @@ final class LocalTransfer: ObservableObject {
     @Published var pairedName: String?
     @Published var busy = false {
         didSet {
+            updateLocalCopyRemovalReadiness()
             if !busy {
                 let waiters = idleWaiters
                 idleWaiters.removeAll()
@@ -284,7 +285,14 @@ final class LocalTransfer: ObservableObject {
     @Published private(set) var automaticCellular = false
     @Published var saveRequests: [OfflineSaveRequest] = []
     var preparingSaves: [String: (token: UUID, tracks: Set<String>, task: Task<CatalogSnapshot?, Error>)] = [:]
-    var saveWorker: Task<Void, Never>?
+    @Published private(set) var readyForLocalCopyRemoval = true
+    var saveWorker: Task<Void, Never>? {
+        didSet { updateLocalCopyRemovalReadiness() }
+    }
+    private func updateLocalCopyRemovalReadiness() {
+        let ready = !busy && saveWorker == nil
+        if readyForLocalCopyRemoval != ready { readyForLocalCopyRemoval = ready }
+    }
     var saveRetry: Task<Void, Never>?
     var saveNetwork: ClusterNetwork?
     var saveGeneration = UUID()
@@ -825,7 +833,8 @@ final class LocalTransfer: ObservableObject {
     }
 
     func removeClusterCopy(_ entry: LocalEntry) throws {
-        guard !busy, saveWorker == nil, LocalMusicStore.valid(entry) else { throw LocalMusicError.invalidData }
+        guard readyForLocalCopyRemoval else { throw LocalMusicError.transferBusy }
+        guard LocalMusicStore.valid(entry) else { throw LocalMusicError.invalidData }
         let database = try store.database()
         if let registration = try database.clusterRegistration(),
            try registration.membership.verify(registration.localGrant).host { throw LocalMusicError.unauthorized }

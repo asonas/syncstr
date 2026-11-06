@@ -102,6 +102,7 @@ struct PhoneRoot: View {
                     HStack(alignment: .top, spacing: 8) {
                         RegenIcon(name: "circle-alert", size: 20)
                         Text(message).font(.callout).frame(maxWidth: .infinity, alignment: .leading)
+                            .accessibilityIdentifier("library-error-message")
                         if !dynamicTypeSize.isAccessibilitySize {
                             Button("閉じる") { library.message = nil }
                         }
@@ -493,7 +494,9 @@ struct PhoneRoot: View {
             }
         }
         .contextMenu {
-            if library.canRemoveLocalCopy(track) {
+            if library.isLocalCopyRemovalPending(track) {
+                Text("保存の解除待ち")
+            } else if library.canRemoveLocalCopy(track) {
                 Button("この端末の保存を解除", role: .destructive) { library.localCopiesToRemove = [track] }.disabled(library.transfer.busy)
             }
         }

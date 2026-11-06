@@ -65,7 +65,9 @@ struct PhoneNowPlaying: View {
                             .frame(maxWidth: .infinity, alignment: .leading)
                             .fixedSize(horizontal: false, vertical: true)
                             Menu {
-                                if let request = library.saveRequest(for: [track], scope: "track:" + track.id),
+                                if library.isLocalCopyRemovalPending(track) {
+                                    Text("保存の解除待ち")
+                                } else if let request = library.saveRequest(for: [track], scope: "track:" + track.id),
                                    [.waiting, .wifi, .saving].contains(request.state) {
                                     Text(request.state == .wifi ? "Wi-Fi接続待ち" : request.state == .saving ? "保存中" : "接続待ち")
                                     Button(request.entries.count > 1 ? "アルバム保存を中止" : "保存を中止") { library.transfer.cancelSave(request) }
@@ -77,7 +79,7 @@ struct PhoneNowPlaying: View {
                                 } else {
                                     Text("保存済み")
                                 }
-                                if library.canRemoveLocalCopy(track) {
+                                if library.canRemoveLocalCopy(track) && !library.isLocalCopyRemovalPending(track) {
                                     Button("この端末の保存を解除", role: .destructive) { library.localCopiesToRemove = [track] }
                                 }
                             } label: {

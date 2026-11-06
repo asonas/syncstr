@@ -221,10 +221,12 @@ enum LocalMusicError: LocalizedError {
     case invalidData, disconnected, unauthorized, changedFile, noMusic, invalidCode, incompatiblePeer
     case clusterUnavailable, clusterNeedsAttention, legacyMutationsUnavailable
     case backgroundAcquisition
+    case transferBusy
 
     var errorDescription: String? {
         switch self {
         case .invalidData: "音楽の情報を確認できませんでした。もう一度転送してください。"
+        case .transferBusy: "転送中のため保存を解除できません。転送が終わってからもう一度お試しください。"
         case .disconnected: "接続が切れました。保存済みの音楽は引き続き聴けます。接続を確認して再試行してください。"
         case .unauthorized: "ライブラリへのアクセスが許可されませんでした。設定の登録内容を確認するか、ライブラリの管理者に確認してください。"
         case .changedFile: "音源が変更されたか読み込めません。ライブラリを更新してください。"
