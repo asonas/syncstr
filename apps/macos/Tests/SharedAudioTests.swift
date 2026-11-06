@@ -231,7 +231,7 @@ struct SharedAudioTests {
         transfer.connectCluster(invitation: "invalid-invitation")
         #expect(transfer.busy)
         transfer.cancel()
-        let registration = try #require(f.database.clusterRegistration())
+        let registration = try #require(try f.database.clusterRegistration())
         let identity = try registration.membership.verify(registration.localGrant).member
         await transfer.restorePeer(readIdentity: { identity })
         #expect(transfer.peerID == identity)
