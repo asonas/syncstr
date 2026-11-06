@@ -2,9 +2,9 @@ use std::ops::Range;
 
 use gpui::{
     App, Bounds, ClipboardItem, Context, CursorStyle, ElementInputHandler, EntityInputHandler,
-    FocusHandle, KeyBinding, MouseButton, Pixels, Point, Role, ShapedLine, SharedString, TextRun,
-    UTF16Selection, UnderlineStyle, Window, actions, canvas, div, fill, point, prelude::*, px, rgb,
-    rgba, size,
+    FocusHandle, KeyBinding, MouseButton, MouseDownEvent, MouseMoveEvent, Pixels, Point, Role,
+    ShapedLine, SharedString, TextRun, UTF16Selection, UnderlineStyle, Window, actions, canvas,
+    div, fill, point, prelude::*, px, rgb, rgba, size,
 };
 use unicode_segmentation::UnicodeSegmentation;
 
@@ -380,13 +380,13 @@ impl Render for SearchInput {
             }))
             .on_mouse_down(
                 MouseButton::Left,
-                cx.listener(|this, event, w, cx| {
+                cx.listener(|this, event: &MouseDownEvent, w, cx| {
                     w.focus(&this.focus, cx);
                     this.dragging = true;
                     this.move_cursor(this.index_at(event.position), event.modifiers.shift, w, cx);
                 }),
             )
-            .on_mouse_move(cx.listener(|this, event, w, cx| {
+            .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, w, cx| {
                 if this.dragging {
                     this.move_cursor(this.index_at(event.position), true, w, cx);
                 }

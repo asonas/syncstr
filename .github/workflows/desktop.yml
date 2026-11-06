@@ -36,19 +36,11 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             apps/desktop/target
-          key: desktop-${{ runner.os }}-1.99.1-${{ hashFiles('apps/desktop/Cargo.toml') }}
+          key: desktop-${{ runner.os }}-1.99.1-${{ hashFiles('apps/desktop/Cargo.lock') }}
       - name: Build
-        run: cargo +1.99.1 build
+        run: cargo +1.99.1 build --locked
       - name: Test
-        run: cargo +1.99.1 test
-      - name: Upload resolved lockfile
-        if: always()
-        uses: actions/upload-artifact@v7
-        with:
-          name: desktop-lock-macos
-          path: apps/desktop/Cargo.lock
-          if-no-files-found: warn
-          retention-days: 7
+        run: cargo +1.99.1 test --locked
   windows:
     runs-on: windows-2025
     timeout-minutes: 60
@@ -65,18 +57,10 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             apps/desktop/target
-          key: desktop-${{ runner.os }}-1.99.1-${{ hashFiles('apps/desktop/Cargo.toml') }}
+          key: desktop-${{ runner.os }}-1.99.1-${{ hashFiles('apps/desktop/Cargo.lock') }}
       - name: Build
-        run: cargo +1.99.1 build
+        run: cargo +1.99.1 build --locked
       - name: Test
-        run: cargo +1.99.1 test
+        run: cargo +1.99.1 test --locked
       - name: Clippy
-        run: cargo +1.99.1 clippy --all-targets -- -D warnings
-      - name: Upload resolved lockfile
-        if: always()
-        uses: actions/upload-artifact@v7
-        with:
-          name: desktop-lock-windows
-          path: apps/desktop/Cargo.lock
-          if-no-files-found: warn
-          retention-days: 7
+        run: cargo +1.99.1 clippy --locked --all-targets -- -D warnings

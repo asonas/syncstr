@@ -1,3 +1,5 @@
+use std::ops::Range;
+
 use gpui::{
     App, Context, Entity, FocusHandle, KeyBinding, Role, ScrollStrategy, Subscription,
     UniformListScrollHandle, Window, actions, canvas, div, prelude::*, px, rgb, uniform_list,
@@ -42,7 +44,8 @@ impl Desktop {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let tracks = fixture_tracks(DEFAULT_TRACK_COUNT);
         let search = cx.new(SearchInput::new);
-        window.focus(&search.read(cx).focus, cx);
+        let search_focus = search.read(cx).focus.clone();
+        window.focus(&search_focus, cx);
         let subscription = cx.observe(&search, |this, search, cx| {
             let query = search.read(cx).content.to_string();
             if query != this.query {
@@ -195,7 +198,7 @@ impl Render for Desktop {
                             uniform_list(
                                 "track-rows",
                                 self.filtered.len(),
-                                cx.processor(|this, range, _, cx| {
+                                cx.processor(|this, range: Range<usize>, _, cx| {
                                     range
                                         .map(|index| {
                                             let track = &this.tracks[this.filtered[index]];
