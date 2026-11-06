@@ -133,6 +133,7 @@ final class Library: ObservableObject {
     @Published var refreshing = false
     @Published var restoringSession = true
     @Published var message: String?
+    @Published private(set) var catalogNotice: String?
     @Published var position = 0.0
     @Published var duration = 0.0
     @Published var queue: [Track] = []
@@ -205,7 +206,7 @@ final class Library: ObservableObject {
     private let makePlayer: (URL) -> AVPlayer
     let diagnostics: PlaybackDiagnostics
 
-    init(makePlayer: @escaping (URL) -> AVPlayer = { AVPlayer(url: $0) },
+    init(makePlayer: @escaping (URL) -> AVPlayer = { SharedAudioPlayback.player($0) },
          diagnostics: PlaybackDiagnostics? = nil,
          localStore: LocalMusicStore = LocalMusicStore(),
          pairingSecrets: CredentialStore = CredentialStore(service: "as.ason.syncstr.local-pair"),
@@ -505,6 +506,10 @@ final class Library: ObservableObject {
         }
         localCatalog = catalog
         sharedAudioCatalog = try localStore.database().sharedAudioSnapshot()?.catalog
+        catalogNotice = try localStore.database().sharedAudioRefreshNotice()
+        if catalogNotice == nil, sharedAudioCatalog?.conflicts.isEmpty == false {
+            catalogNotice = "ライブラリに競合があります。影響のない曲は引き続き再生できます。"
+        }
         transfer.diagnosticLibraryID = catalog.id
         transfer.connectionEvent("library_selected")
         applyingPreparedCatalog = true
@@ -1173,6 +1178,7 @@ final class Library: ObservableObject {
         queue = []
         orderedQueue = []
         artworkURLs = [:]
+        catalogNotice = nil
         connected = false
         search = ""
         navigate(.albums)

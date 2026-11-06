@@ -73,6 +73,11 @@ struct LibraryView: View {
                     }
                 }.padding(32).frame(maxWidth: .infinity, maxHeight: .infinity)
             }
+            if let notice = library.catalogNotice {
+                Text(notice).font(.callout).frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(16).background(Studio.graphite)
+                    .accessibilityIdentifier("library-status-notice")
+            }
             if let message = library.message ?? (showingUploadStatus ? library.transfer.status : nil) {
                 HStack(alignment: .top, spacing: 8) {
                     MacIcon("circle-alert").accessibilityHidden(true)

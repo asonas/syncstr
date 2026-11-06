@@ -29,6 +29,11 @@ extension CatalogDatabase {
         return try JSONDecoder().decode(SharedAudioSnapshot.self, from: Data(payload.utf8))
     }
 
+    func sharedAudioRefreshNotice() throws -> String? {
+        guard !(try rows("SELECT payload FROM shared_audio_refresh_notice WHERE singleton = 1")).isEmpty else { return nil }
+        return "ライブラリの更新が未完了です。前回の情報と保存済みの曲を保持しています。もう一度更新してください。"
+    }
+
     func receiveSharedAudio(_ data: Data, peer: String) throws {
         let snapshot = try JSONDecoder().decode(SharedAudioSnapshot.self, from: data)
         let catalog = snapshot.catalog
@@ -38,10 +43,22 @@ extension CatalogDatabase {
         guard catalog.version == 1, catalog.cluster == authority.cluster,
               ClusterIdentity.isLowercaseHex256(catalog.baseline) else { throw LocalMusicError.incompatiblePeer }
         if let previous = try sharedAudioSnapshot()?.catalog {
-            guard previous.baseline == catalog.baseline, previous.library == catalog.library,
-                  Set(previous.tracks.keys).isSubset(of: Set(catalog.tracks.keys)),
-                  previous.addresses.allSatisfy({ catalog.addresses[$0.key] == $0.value }),
-                  previous.pins.allSatisfy({ $0.value.isSubset(of: catalog.pins[$0.key, default: []]) }) else { throw LocalMusicError.incompatiblePeer }
+            guard previous.baseline == catalog.baseline, previous.library == catalog.library else { throw LocalMusicError.incompatiblePeer }
+            if catalog.incomplete.isEmpty {
+                guard Set(previous.tracks.keys).isSubset(of: Set(catalog.tracks.keys)),
+                      previous.addresses.allSatisfy({ catalog.addresses[$0.key] == $0.value }),
+                      previous.pins.allSatisfy({ $0.value.isSubset(of: catalog.pins[$0.key, default: []]) }) else { throw LocalMusicError.incompatiblePeer }
+            }
+        }
+        // The current contract supplies incomplete record IDs, not their subjects.
+        // Persist the unresolved refresh separately and leave verified state intact.
+        if !catalog.incomplete.isEmpty {
+            guard catalog.incomplete.count <= 100000,
+                  catalog.incomplete.allSatisfy(ClusterIdentity.isLowercaseHex256) else { throw LocalMusicError.invalidData }
+            try execute("INSERT OR REPLACE INTO shared_audio_refresh_notice VALUES (1, ?)",
+                [String(decoding: try JSONEncoder().encode(catalog.incomplete), as: UTF8.self)])
+            if try sharedAudioSnapshot() == nil { throw LocalMusicError.clusterNeedsAttention }
+            return
         }
         _ = try catalog.localCatalog(name: registration.name)
         for (hash, object) in catalog.objects {
@@ -58,6 +75,7 @@ extension CatalogDatabase {
                     [record.id, body.document.id, String(decoding: try JSONEncoder().encode(record), as: UTF8.self)])
             }
             try execute("INSERT OR REPLACE INTO shared_audio_snapshot VALUES (1, ?)", [String(decoding: data, as: UTF8.self)])
+            try execute("DELETE FROM shared_audio_refresh_notice")
         }
     }
 }
@@ -152,6 +170,7 @@ extension CatalogDatabase {
 
 extension CatalogDatabase {
     private func migrateClusterMembership() throws {
+        try execute("CREATE TABLE IF NOT EXISTS shared_audio_refresh_notice (singleton INTEGER PRIMARY KEY CHECK(singleton = 1), payload TEXT NOT NULL)")
         try execute("CREATE TABLE IF NOT EXISTS shared_audio_saves (track TEXT NOT NULL, hash TEXT NOT NULL, PRIMARY KEY(track, hash))")
         try execute("CREATE TABLE IF NOT EXISTS shared_audio_snapshot (singleton INTEGER PRIMARY KEY CHECK(singleton = 1), payload TEXT NOT NULL)")
         try execute("CREATE TABLE IF NOT EXISTS cluster_registration (singleton INTEGER PRIMARY KEY CHECK(singleton = 1), payload TEXT NOT NULL)")

@@ -1,5 +1,6 @@
 import Foundation
 import Testing
+import AVFoundation
 private final class SharedAudioTestBundle: NSObject {}
 #if os(iOS)
 @testable import Syncstr
@@ -7,6 +8,29 @@ private final class SharedAudioTestBundle: NSObject {}
 
 @MainActor
 struct SharedAudioTests {
+    @Test(arguments: ["mp3", "m4a", "flac"])
+    func hashPathsPlayUsingTheByteFormatRatherThanMetadata(_ suffix: String) async throws {
+        let source = try #require(Bundle(for: SharedAudioTestBundle.self).url(forResource: "untagged", withExtension: suffix))
+        let bytes = try Data(contentsOf: source)
+        let hash = LocalMusicStore.digest(bytes)
+        let store = LocalMusicStore(root: FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString))
+        try store.prepare()
+        defer { try? FileManager.default.removeItem(at: store.root) }
+        var a = Track(id: "A", title: "A", artist: nil, suffix: "incorrect")
+        a.audioHash = hash
+        var b = a
+        b.id = "B"
+        let first = LocalEntry(track: a, sha256: hash, artwork: nil)
+        let second = LocalEntry(track: b, sha256: hash, artwork: nil)
+        #expect(store.fileURL(first) == store.fileURL(second))
+        #expect(store.fileURL(first).pathExtension == "audio")
+        try bytes.write(to: store.fileURL(first))
+        let player = SharedAudioPlayback.player(store.fileURL(first))
+        let asset = try #require(player.currentItem?.asset)
+        #expect(try await asset.load(.isPlayable))
+        #expect(try await asset.load(.duration).seconds > 0)
+    }
+
     struct Fixture {
         let store: LocalMusicStore
         let database: CatalogDatabase
@@ -65,6 +89,98 @@ struct SharedAudioTests {
         }
         #expect(throws: (any Error).self) { try f.database.receiveSharedAudio(truncated, peer: f.host) }
         #expect(try f.database.clusterCatalog().entries.map(\.track.id) == ["A", "B", "missing"])
+    }
+
+    @Test(arguments: [false, true])
+    func projectionPreservesEditionsCreditsArtworkAndVisibility(emptyArtwork: Bool) throws {
+        let f = try Fixture()
+        defer { try? FileManager.default.removeItem(at: f.store.root) }
+        let resource = try #require(Bundle(for: SharedAudioTestBundle.self).url(forResource: "album-artwork", withExtension: "json"))
+        struct Art: Decodable { var organization: AlbumOrganization; var blue: String }
+        let art = try JSONDecoder().decode(Art.self, from: Data(contentsOf: resource))
+        let image = try #require(art.organization.artwork?.assets[art.blue])
+        var organization = AlbumOrganization(albums: [
+            OrganizationAlbum(id: "edition-a", title: "Same Album"), OrganizationAlbum(id: "edition-b", title: "Same Album")],
+            tracks: ["A", "B"].map { id in OrganizationTrack(id: id, sha256: f.hash,
+                imported: ImportedAlbumMetadata(title: "Same Album", artist: "Performer " + id,
+                    albumArtist: "Ensemble " + id, compilationValues: [id == "A" ? "1" : "0"]),
+                importedAlbumID: id == "A" ? "edition-a" : "edition-b") })
+        try organization.captureArtwork(image, track: "A", source: "music", context: "fictional-source")
+        organization.set(subject: "edition-a", kind: "classification", value: "true")
+        organization.set(subject: "edition-b", kind: "visibility", value: "true")
+        if emptyArtwork { organization.artwork?.assets[art.blue] = Data() }
+        let raw = try JSONSerialization.jsonObject(with: JSONEncoder().encode(organization))
+        let data = try f.changedSnapshot { catalog in
+            catalog["legacy_organization"] = raw
+            var tracks = catalog["tracks"] as! [String: Any]
+            for id in ["A", "B"] {
+                var track = tracks[id] as! [String: Any]
+                track["album_id"] = id == "A" ? "edition-a" : "edition-b"
+                tracks[id] = track
+            }
+            catalog["tracks"] = tracks
+        }
+        try f.database.receiveSharedAudio(data, peer: f.host)
+        let catalog = try #require(try f.store.load())
+        try f.store.save(catalog)
+        let projected = try #require(catalog.organization)
+        #expect(projected.choices == organization.choices)
+        #expect(projected.canonicalTrack("A") != projected.canonicalTrack("B"))
+        #expect(projected.tracks.first { $0.id == "A" }?.imported.compilation == true)
+        #expect(projected.isHidden("edition-b"))
+        #expect(catalog.displayTracks().contains { $0.id == "A" })
+        let a = try #require(catalog.entries.first { $0.track.id == "A" })
+        let b = try #require(catalog.entries.first { $0.track.id == "B" })
+        #expect(a.track.albumId == "edition-a" && b.track.albumId == "edition-b")
+        #expect(projected.artistCredit(for: [a.track]) == "Ensemble A")
+        #expect(a.artwork == (emptyArtwork ? nil : image))
+        #expect(a.track.coverArt == (emptyArtwork ? nil : art.blue))
+        if !emptyArtwork { #expect(try Data(contentsOf: f.store.artworkURL(asset: art.blue)) == image) }
+        #expect(try LocalMusicStore(root: f.store.root).load()?.organization == projected)
+    }
+
+    @Test func incompleteRefreshRetainsVerifiedCatalogAndUnrelatedLocalPlayback() async throws {
+        let f = try Fixture()
+        defer { try? FileManager.default.removeItem(at: f.store.root) }
+        try f.database.receiveSharedAudio(f.snapshot(), peer: f.host)
+        let b = try #require(f.database.playbackEntry("B")?.entry)
+        try Data("abc".utf8).write(to: f.store.fileURL(b))
+        try f.database.saveAudioPin(b)
+        let incomplete = try f.changedSnapshot { catalog in
+            catalog["incomplete"] = [String(repeating: "f", count: 64)]
+            var tracks = catalog["tracks"] as! [String: Any]
+            tracks.removeValue(forKey: "A")
+            var unconfirmed = tracks["B"] as! [String: Any]
+            unconfirmed["metadata"] = ["title": "Unconfirmed B"]
+            tracks["B"] = unconfirmed
+            catalog["tracks"] = tracks
+        }
+        try f.database.receiveSharedAudio(incomplete, peer: f.host)
+        #expect(try f.database.sharedAudioRefreshNotice() != nil)
+        #expect(try f.database.sharedAudioSnapshot()?.catalog.incomplete.isEmpty == true)
+        #expect(try f.database.playbackEntry("B")?.entry.track.title == "B")
+        #expect(try f.database.playbackEntry("A") != nil)
+        let transfer = LocalTransfer(store: f.store)
+        defer { transfer.stopSaveWorker() }
+        #expect(try await transfer.playbackFile(b.track) == f.store.fileURL(b))
+        let restarted = try LocalMusicStore(root: f.store.root).database()
+        #expect(try restarted.sharedAudioRefreshNotice() != nil)
+        #expect(try restarted.playbackEntry("B")?.entry.track.unavailable == false)
+        let library = Library(localStore: f.store)
+        try library.openLocal(restarted.clusterCatalog())
+        #expect(library.catalogNotice?.contains("未完了") == true)
+        library.message = nil
+        #expect(library.catalogNotice != nil)
+        library.search = "B"
+        #expect(library.visibleTracks.map(\.id) == ["B"])
+        try restarted.receiveSharedAudio(f.snapshot(conflict: true), peer: f.host)
+        #expect(try restarted.sharedAudioRefreshNotice() == nil)
+        #expect(throws: (any Error).self) { try restarted.playbackEntry("A") }
+        #expect(try restarted.playbackEntry("B")?.entry.track.unavailable == false)
+        try library.openLocal(restarted.clusterCatalog())
+        #expect(library.catalogNotice?.contains("競合") == true)
+        #expect(library.visibleTracks.map(\.id) == ["B"])
+        library.closeLibrary()
     }
 
     @Test func knownAudioDoesNotRequireInventingMetadata() throws {
@@ -251,9 +367,7 @@ struct SharedAudioTests {
             ?? repository.appendingPathComponent("headless/target/debug")
     }
 
-    @Test(.enabled(if: FileManager.default.isExecutableFile(atPath: binaries.appendingPathComponent("examples/shared_audio_fixture").path)
-        && FileManager.default.isExecutableFile(atPath: binaries.appendingPathComponent("syncstr-headless").path),
-        "Requires the p2p headless binary and shared_audio_fixture example"))
+    @Test
     func realV5ServerAuthenticatesAndDownloadsExactPlaylistBindings() async throws {
         let binary = Self.binaries.appendingPathComponent("syncstr-headless")
         let generator = Self.binaries.appendingPathComponent("examples/shared_audio_fixture")
@@ -312,6 +426,10 @@ struct SharedAudioTests {
         let entry = try #require(try database.playbackEntry(trackID, hash: hash)?.entry)
         try await session.downloadSharedAudio(entry, store: store) { _ in }
         #expect(try LocalMusicStore.digest(file: store.fileURL(entry)) == item.sha256)
+        let player = SharedAudioPlayback.player(store.fileURL(entry))
+        let asset = try #require(player.currentItem?.asset)
+        #expect(try await asset.load(.isPlayable))
+        #expect(try await asset.load(.duration).seconds > 0)
         let data = try Data(contentsOf: root.appendingPathComponent("snapshot.json"))
         #expect(try JSONDecoder().decode(SharedAudioSnapshot.self, from: data).playlist_history.map(\.payload) == snapshot.playlist_history.map(\.payload))
         session.close()

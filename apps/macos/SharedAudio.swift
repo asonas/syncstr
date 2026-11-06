@@ -1,4 +1,25 @@
 import Foundation
+import AVFoundation
+import AudioToolbox
+
+enum SharedAudioPlayback {
+    static func player(_ url: URL) -> AVPlayer {
+        guard url.isFileURL, url.pathExtension == "audio" else { return AVPlayer(url: url) }
+        var file: AudioFileID?
+        guard AudioFileOpenURL(url as CFURL, .readPermission, 0, &file) == noErr, let file else { return AVPlayer(url: url) }
+        defer { AudioFileClose(file) }
+        var format: AudioFileTypeID = 0
+        var size = UInt32(MemoryLayout.size(ofValue: format))
+        guard AudioFileGetProperty(file, kAudioFilePropertyFileFormat, &size, &format) == noErr else { return AVPlayer(url: url) }
+        var types: Unmanaged<CFArray>?
+        var typesSize = UInt32(MemoryLayout.size(ofValue: types))
+        guard AudioFileGetGlobalInfo(kAudioFileGlobalInfo_MIMETypesForType, size, &format, &typesSize, &types) == noErr,
+              let mime = (types?.takeRetainedValue() as? [String])?.first else { return AVPlayer(url: url) }
+        // Hash paths deliberately omit the encoding; identify it from verified local bytes.
+        let asset = AVURLAsset(url: url, options: [AVURLAssetOverrideMIMETypeKey: mime])
+        return AVPlayer(playerItem: AVPlayerItem(asset: asset))
+    }
+}
 
 // The original snapshot is stored separately, including metadata unknown to this client.
 struct SharedAudioSnapshot: Decodable {
@@ -38,8 +59,13 @@ struct SharedAudioSnapshot: Decodable {
         let pins: [String: Set<String>]
         let conflicts: Set<String>
         let incomplete: [String]
+        let legacy_organization: AlbumOrganization?
 
         func entry(_ id: String, hash: String? = nil) throws -> LocalEntry {
+            try entry(id, hash: hash, organization: organization())
+        }
+
+        private func entry(_ id: String, hash: String?, organization: AlbumOrganization) throws -> LocalEntry {
             let canonical = addresses[id] ?? id
             guard let logical = tracks[canonical], logical.id == canonical else { throw LocalMusicError.invalidData }
             let metadata = logical.metadata
@@ -47,21 +73,87 @@ struct SharedAudioSnapshot: Decodable {
             let hash = hash ?? logical.preferred
             if let hash, !pins[canonical, default: []].contains(hash) { throw LocalMusicError.invalidData }
             let object = hash.flatMap { objects[$0] }
-            let blocked = logical.retired || conflicts.contains("track:" + canonical) || !incomplete.isEmpty
-            var track = Track(id: id, title: metadata.title ?? old?.title ?? metadata.organization?.title ?? "",
-                artist: metadata.artist ?? old?.artist ?? metadata.organization?.imported.artist,
-                album: metadata.album ?? old?.album ?? metadata.organization?.imported.title,
-                albumId: logical.album_id, duration: metadata.duration ?? old?.duration,
-                track: metadata.track ?? old?.track, discNumber: metadata.discNumber ?? old?.discNumber,
+            let blocked = logical.retired || conflicts.contains("track:" + canonical)
+            let albumID = organization.albumID(for: canonical)
+            let album = organization.albums.first { $0.id == albumID }
+            let record = organization.tracks.first { $0.id == canonical }
+            let artwork = albumID.flatMap { organization.coverAsset(for: $0) }
+                .flatMap { organization.artwork?.assets[$0] }
+            var track = Track(id: id, title: metadata.title ?? old?.title ?? record?.title ?? "",
+                artist: metadata.artist ?? old?.artist ?? record?.imported.artist,
+                album: metadata.album ?? album?.title ?? old?.album ?? metadata.organization?.imported.title,
+                albumId: albumID, coverArt: artwork.map(LocalMusicStore.digest), duration: metadata.duration ?? old?.duration,
+                track: metadata.track ?? old?.track ?? record?.trackNumber,
+                discNumber: metadata.discNumber ?? old?.discNumber ?? record?.discNumber,
                 suffix: metadata.suffix ?? old?.suffix, size: object?.bytes, addedAt: logical.added_at)
             track.audioHash = hash
             track.unavailable = blocked || object?.bytes == nil || hash == nil
-            return LocalEntry(track: track, sha256: hash ?? "", artwork: nil)
+            return LocalEntry(track: track, sha256: hash ?? "", artwork: artwork, importedAlbum: record?.imported)
         }
 
         func localCatalog(name: String) throws -> LocalCatalog {
-            let entries = try tracks.keys.sorted().map { try entry($0) }
-            return LocalCatalog(id: library, name: name, entries: entries, logicalAudio: true)
+            let organization = try organization()
+            let entries = try tracks.keys.sorted().map { try entry($0, hash: nil, organization: organization) }
+            return LocalCatalog(id: library, name: name, entries: entries, organization: organization, logicalAudio: true)
+        }
+
+        private func organization() throws -> AlbumOrganization {
+            var result = legacy_organization ?? AlbumOrganization()
+            for id in tracks.keys.sorted() {
+                guard let logical = tracks[id], logical.id == id else { throw LocalMusicError.invalidData }
+                let metadata = logical.metadata
+                let existing = result.tracks.first { $0.id == id }
+                let albumID = logical.album_id ?? metadata.organization?.importedAlbumID
+                    ?? existing?.importedAlbumID ?? "v5-unassigned:" + id
+                var record = metadata.organization ?? existing ?? OrganizationTrack(id: id,
+                    sha256: logical.preferred ?? "", imported: ImportedAlbumMetadata(title: metadata.album ?? metadata.legacyEntry?.album,
+                        artist: metadata.artist ?? metadata.legacyEntry?.artist, compilationValues: []), importedAlbumID: albumID)
+                // Project logical identity directly; AlbumOrganization.merge would alias by hash.
+                record.id = id
+                record.sha256 = logical.preferred ?? ""
+                record.importedAlbumID = albumID
+                if let previous = result.albumID(for: id), previous != result.canonical(albumID) {
+                    let replaced = Set(result.choices.filter {
+                        $0.kind == "membership" && result.canonicalTrack($0.subject) == id
+                    }.map(\.id))
+                    result.choices.removeAll { replaced.contains($0.id) }
+                    result.preferred.removeValue(forKey: "membership:" + id)
+                }
+                if let index = result.tracks.firstIndex(where: { $0.id == id }) { result.tracks[index] = record }
+                else { result.tracks.append(record) }
+                let canonicalAlbum = result.canonical(albumID)
+                if !result.albums.contains(where: { $0.id == canonicalAlbum }) {
+                    result.albums.append(OrganizationAlbum(id: canonicalAlbum,
+                        title: metadata.album ?? metadata.legacyEntry?.album ?? record.imported.title ?? "",
+                        releases: record.imported.release.map { [$0] } ?? []))
+                }
+            }
+            result.trackAliases = addresses.filter { $0.key != $0.value }
+            if var artwork = result.artwork {
+                let missing = Set(artwork.assets.filter { $0.value.isEmpty }.keys)
+                if !missing.isEmpty {
+                    // Empty asset payloads are references, not downloadable images.
+                    // Remove only the affected presentation graph; raw history stays retained.
+                    let albums = Set(artwork.candidates.filter { missing.contains($0.asset) }
+                        .compactMap { result.albumID(for: $0.track) })
+                        .union(result.choices.filter { $0.kind == "artwork" && $0.value.map(missing.contains) == true }
+                            .map { result.canonical($0.subject) })
+                    let removedChoices = Set(result.choices.filter {
+                        $0.kind == "artwork" && albums.contains(result.canonical($0.subject))
+                    }.map(\.id))
+                    result.choices.removeAll { removedChoices.contains($0.id) }
+                    result.preferred = result.preferred.filter { !removedChoices.contains($0.value) }
+                    artwork.assets = artwork.assets.filter { !missing.contains($0.key) }
+                    let removed = Set(artwork.candidates.filter {
+                        result.albumID(for: $0.track).map(albums.contains) == true
+                    }.map(\.id))
+                    artwork.candidates.removeAll { removed.contains($0.id) }
+                    artwork.preferred = artwork.preferred.filter { !missing.contains($0.value) }
+                    result.artwork = artwork
+                }
+            }
+            try result.validate()
+            return result
         }
     }
     let catalog: Catalog
@@ -72,11 +164,29 @@ struct SharedAudioSnapshot: Decodable {
 #if DEBUG
 @MainActor
 enum SharedAudioUIFixture {
+    static var requested: Bool {
+        ProcessInfo.processInfo.arguments.contains("--v5-fixture") || Bundle.main.object(forInfoDictionaryKey: "SyncstrV5FixtureRoot") is String
+    }
+
     static func library() throws -> Library? {
         let arguments = ProcessInfo.processInfo.arguments
-        guard let index = arguments.firstIndex(of: "--v5-fixture"), arguments.indices.contains(index + 1) else { return nil }
-        let root = URL(fileURLWithPath: arguments[index + 1], isDirectory: true)
-        let store = LocalMusicStore(root: root.appendingPathComponent("apple-ui"))
+        let path: String
+        if let index = arguments.firstIndex(of: "--v5-fixture"), arguments.indices.contains(index + 1) {
+            path = arguments[index + 1]
+        } else if let configured = Bundle.main.object(forInfoDictionaryKey: "SyncstrV5FixtureRoot") as? String {
+            path = configured
+        } else { return nil }
+        let root: URL
+        if path.hasPrefix("/") { root = URL(fileURLWithPath: path, isDirectory: true) }
+        else {
+            root = try FileManager.default.url(for: .documentDirectory, in: .userDomainMask,
+                appropriateFor: nil, create: false).appendingPathComponent(path, isDirectory: true)
+        }
+        let stateIndex = arguments.firstIndex(of: "--v5-fixture-state")
+        let state = stateIndex.flatMap { arguments.indices.contains($0 + 1) ? arguments[$0 + 1] : nil }
+            ?? (Bundle.main.object(forInfoDictionaryKey: "SyncstrV5FixtureState") as? String) ?? "normal"
+        guard ["normal", "conflict", "incomplete"].contains(state) else { throw LocalMusicError.invalidData }
+        let store = LocalMusicStore(root: root.appendingPathComponent("apple-ui-" + state))
         let database = try store.database()
         struct Enrollment: Decodable { let grant: String; let proof: ClusterMembership; let member: String }
         let enrollment = try JSONDecoder().decode(Enrollment.self, from: Data(contentsOf: root.appendingPathComponent("reader-enrollment.json")))
@@ -91,6 +201,19 @@ enum SharedAudioUIFixture {
                 if !store.hasFile(entry) { try FileManager.default.copyItem(at: root.appendingPathComponent("tone.wav"), to: store.fileURL(entry)) }
                 try database.saveAudioPin(entry)
             }
+        }
+        if state != "normal" {
+            let data = try Data(contentsOf: root.appendingPathComponent("snapshot.json"))
+            var snapshot = try JSONSerialization.jsonObject(with: data) as! [String: Any]
+            var catalog = snapshot["catalog"] as! [String: Any]
+            if state == "incomplete" { catalog["incomplete"] = [String(repeating: "f", count: 64)] }
+            else {
+                let tracks = catalog["tracks"] as! [String: [String: Any]]
+                guard let id = tracks.first(where: { ($0.value["metadata"] as? [String: Any])?["title"] as? String == "TRACK-A" })?.key else { throw LocalMusicError.invalidData }
+                catalog["conflicts"] = ["track:" + id]
+            }
+            snapshot["catalog"] = catalog
+            try database.receiveSharedAudio(JSONSerialization.data(withJSONObject: snapshot), peer: grant.issuer)
         }
         let service = "syncstr-v5-ui-" + LocalMusicStore.digest(Data(root.path.utf8))
         let library = Library(localStore: store, pairingSecrets: CredentialStore(service: service + ".pair"),

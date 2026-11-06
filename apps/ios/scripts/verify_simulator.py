@@ -3,10 +3,36 @@
 
 import argparse
 import json
+import os
 from pathlib import Path
+import plistlib
+import shutil
 import subprocess
 import sys
 import tempfile
+
+
+def prepare_v5_fixture(root, device, run):
+    binaries = Path(os.environ.get("SYNCSTR_V5_TEST_BIN_DIR", root / ".build/v5-rust/debug"))
+    generator = binaries / "examples/shared_audio_fixture"
+    if not generator.is_file() or not os.access(generator, os.X_OK):
+        raise RuntimeError("Required v5 fixture generator is missing; build shared_audio_fixture first")
+    app = root / ".build/SimulatorDerivedData/Build/Products/Debug-iphonesimulator/Syncstr.app"
+    with (app / "Info.plist").open("rb") as info:
+        bundle_id = plistlib.load(info)["CFBundleIdentifier"]
+    run(["xcrun", "simctl", "install", device, str(app)], "v5-install")
+    container = Path(subprocess.check_output(
+        ["xcrun", "simctl", "get_app_container", device, bundle_id, "data"], text=True).strip())
+    destination = container / "Documents/v5-fixture"
+    destination.mkdir(parents=True)
+    # Keep generated signing keys/tokens out of the app and uploaded test artifacts.
+    with tempfile.TemporaryDirectory(prefix="syncstr-v5-private-") as temporary:
+        source = Path(temporary) / "fixture"
+        run([str(generator), str(source)], "v5-generate")
+        for name in ("snapshot.json", "reader-enrollment.json", "tone.wav"):
+            shutil.copyfile(source / name, destination / name)
+    # Xcode may relocate the data container when it installs the UI-test build.
+    return "v5-fixture"
 
 
 def main():
@@ -20,10 +46,11 @@ def main():
     output = Path(tempfile.mkdtemp(prefix=args.device + "-", dir=results))
     print(f"Verification results: {output}", flush=True)
 
-    def run(command, name):
+    def run(command, name, environment=None):
         with (output / (name + ".log")).open("w") as log:
             subprocess.run(command, cwd=root, stdout=log, stderr=subprocess.STDOUT,
-                           check=True, timeout=180 if name in ("bootstatus", "restart-ready") else 1200)
+                           check=True, env=environment,
+                           timeout=180 if name in ("bootstatus", "restart-ready") else 1200)
 
     runtime_data = subprocess.check_output(["xcrun", "simctl", "list", "runtimes", "--json"])
     runtimes = [runtime for runtime in json.loads(runtime_data)["runtimes"]
@@ -54,6 +81,10 @@ def main():
              "-disableAutomaticPackageResolution", "-onlyUsePackageVersionsFromResolvedFile"], "resolve")
         responsiveness = "SyncstrTests/LibraryPresentationTests/testSelectionAndPlaybackUpdatesBrowseRetainedCatalogWithoutBlocking()"
         for scheme, name in [("Syncstr", "unit"), ("Syncstr", "responsiveness"), ("SyncstrUITests", "ui")]:
+            environment = None
+            if name == "ui" and (not args.only_testing or any("SharedAudioFlowTests" in item for item in args.only_testing)):
+                fixture = prepare_v5_fixture(root, device, run)
+                environment = dict(os.environ, TEST_RUNNER_SYNCSTR_V5_FIXTURE_ROOT=fixture)
             command = [
                 "xcodebuild", "-project", "apps/ios/Syncstr.xcodeproj", "-scheme", scheme,
                 "-disableAutomaticPackageResolution", "-onlyUsePackageVersionsFromResolvedFile",
@@ -69,7 +100,7 @@ def main():
                 command += ["-only-testing:" + responsiveness]
             else:
                 command += ["-skip-testing:" + responsiveness]
-            run(command, name)
+            run(command, name, environment)
             run(["xcrun", "xcresulttool", "get", "test-results", "summary", "--path",
                  str(output / (name + ".xcresult"))], name + "-summary")
             summary = json.loads((output / (name + "-summary.log")).read_text())

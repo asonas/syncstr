@@ -10,7 +10,7 @@ struct SyncstrApp: App {
     init() {
         let library: Library
 #if DEBUG
-        if ProcessInfo.processInfo.arguments.contains("--v5-fixture") {
+        if SharedAudioUIFixture.requested {
             do { library = try SharedAudioUIFixture.library()! }
             catch { fatalError("Cannot open isolated v5 fixture: \(error)") }
             appearanceDefaults = UserDefaults(suiteName: "syncstr-v5-ui")!

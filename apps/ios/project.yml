@@ -166,6 +166,9 @@ targets:
       - path: ../macos/Tests/PlayerInteractionTests.swift
       - path: ../macos/Tests/OfflineSaveTests.swift
       - path: ../macos/Tests/SharedAudioTests.swift
+      - path: ../macos/Tests/Fixtures
+        buildPhase: resources
+        excludes: [README.md]
       - path: ../macos/Tests/SavePreparationTests.swift
       - path: ../macos/Tests/LibraryPresentationTests.swift
       - path: ../macos/Tests/AlbumOrganizationTests.swift
@@ -199,6 +202,10 @@ targets:
       - path: ../macos/PlaybackDiagnostics.swift
       - path: ../macos/OfflineSaves.swift
       - path: ../macos/Tests
+        excludes: [Fixtures]
+      - path: ../macos/Tests/Fixtures
+        buildPhase: resources
+        excludes: [README.md]
       - path: ../../headless/fixtures/cluster-signed.json
         buildPhase: resources
       - path: ../../headless/fixtures/compilation-membership.json

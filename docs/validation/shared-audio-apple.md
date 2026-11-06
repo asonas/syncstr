@@ -5,7 +5,27 @@ Logical rows remain keyed by track ID. Playlist occurrences and playback queues
 retain their original ID/hash pairs; save ownership uses the canonical logical
 ID and pinned hash. Audio filenames use the hash rather than metadata suffixes.
 Managed saves share an inode with cached v5 audio, so cache eviction cannot
-remove a saved reference. The wire contract is unchanged.
+remove a saved reference. Playback detects the format from the local bytes and
+passes its MIME type to AVFoundation; mutable metadata does not name the file
+or choose its parser. The wire contract and server behavior are unchanged.
+
+## Projection and unresolved refreshes
+
+The Apple projection retains the existing album organization, edition and
+compilation distinctions, artist credits, and visibility choices. Logical IDs
+remain distinct even when their bytes match. Empty artwork payloads mean no
+image; they do not invalidate the catalog. Image acquisition has moved to
+ASO-47, including any server-side hydration.
+
+The current projection lists incomplete record IDs without identifying their
+affected tracks. ASO-9 therefore retains the last verified catalog and playlist
+bindings, persists an incomplete-refresh notice across relaunch, and continues
+verified local playback. A later complete accepted refresh clears that notice.
+This fallback defers every unverified update in that snapshot, including updates
+that may be unrelated. Record-based attribution and partial refresh application
+have moved to ASO-46. Known track conflicts still block only the
+affected track; the library shows a persistent conflict notice without choosing
+a winner.
 
 ## Reproduction
 
@@ -44,18 +64,25 @@ For the iOS model tests, run the `Syncstr` scheme on an isolated Simulator with
 the corresponding `SyncstrTests` filters. The process-based Rust test is macOS
 only; the catalog, save, cache and queue tests are shared with iOS.
 
-For iOS UI verification, build the `SyncstrUITests` scheme, install its app in a
-dedicated Simulator, and generate a new fixture directory with
-`shared_audio_fixture`. Copy only `snapshot.json`, `reader-enrollment.json` and
-`tone.wav` into a fresh directory under the installed app's Documents container.
-Do not copy private keys or the HTTPS token. Set
-`TEST_RUNNER_SYNCSTR_V5_FIXTURE_ROOT` to that directory when running
-`SyncstrUITests/SharedAudioFlowTests` with `test-without-building`,
-`-parallel-testing-enabled NO`, `-testLanguage ja` and `-testRegion JP`.
-The DEBUG fixture stores app data in an `apple-ui` subdirectory and preserves it
-across relaunch. Repeated verification uses a new fixture directory.
+For iOS model and UI verification, use the repository runner:
 
-## Acceptance status
+```sh
+env DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer \
+  SYNCSTR_V5_TEST_BIN_DIR=/tmp/syncstr-v5-rust/debug \
+  python3 apps/ios/scripts/verify_simulator.py --device iphone \
+  --only-testing SyncstrUITests/SharedAudioFlowTests
+```
+
+The runner creates a dedicated Simulator and copies only `snapshot.json`,
+`reader-enrollment.json` and `tone.wav` into its app's Documents directory.
+Generated private keys and tokens remain outside the uploaded artifacts and
+are removed after fixture generation. The UI runner passes a path relative to
+Documents so Xcode can relocate the app container during installation. The
+DEBUG fixture uses independent `apple-ui-normal`, `apple-ui-conflict` and
+`apple-ui-incomplete` stores, retained across app relaunch. Missing fixtures or
+interoperability tools fail the relevant tests rather than skipping them.
+
+## Earlier evidence
 
 Verified on 2026-10-30:
 
@@ -77,8 +104,50 @@ Verified on 2026-10-30:
   repository's migration-recovery procedure. Its app installed, but the UI
   runner still did not start; the stalled test process was interrupted.
 
-ASO-9 remains in progress. Final iOS model/UI execution, full visual acceptance
-(including search and conflict/incomplete states), and physical-device gaps
-must remain explicit. Build success is not interaction verification. No result
-authorizes production migration, enrollment reset, deployment or distribution.
-Cross-platform acceptance remains ASO-12 work.
+The October run did not establish actual AVFoundation playback of hash-named
+files. On November 6, the same synthetic TRACK-B bytes reproduced
+`AVFoundationErrorDomain -11828` with underlying `-12847` through the unchanged
+`c2a7df3` projection, file path and default AVPlayer. Explicitly supplying the
+byte-detected MIME type resolves that recognition failure without renaming or
+duplicating saved audio.
+
+## Current validation
+
+Verified on 2026-11-06:
+
+- The final macOS regression selection passed 47 tests (50 parameter-expanded
+  runs), with zero failures and zero skips. This includes real Rust v5
+  interoperability, artwork present/empty projection, incomplete retention and
+  recovery, independent logical saves, and byte-format playback of MP3, M4A and
+  FLAC from shared hash paths despite incorrect metadata suffixes.
+- The final iPhone Simulator model selection passed 106 tests (110
+  parameter-expanded runs), with zero failures and zero skips. Its separate
+  responsiveness test also passed with zero skips.
+- Both final iPhone v5 UI tests passed with zero skips. They exercised search,
+  A's save removal while B remains saved after relaunch, B's full player, and
+  conflict/incomplete notices across relaunch. Exported screenshots also show
+  the retained notices and B's one-second completed playback.
+- All seven Simulator-runner regression tests passed, including missing fixture
+  failure, public-input-only copying, relative-path forwarding and cleanup.
+- The isolated macOS app showed normal, conflict and incomplete states.
+  Search returned B without A; removing A's save preserved B after relaunch.
+  Following the MIME fix, B advanced in playback and reached completion.
+  Conflict left unrelated B playable; incomplete retained the verified catalog
+  and saved playback, and its notice survived app relaunch. The exact target
+  executable and single running process were checked; that process was stopped.
+- The Rust contract selection passed all 11 tests serially and in one parallel
+  diagnostic run. Other parallel runs failed with
+  `Resource temporarily unavailable (os error 35)`; the last uninstrumented
+  diagnostic run passed nine tests and failed two. Its backtrace identifies `Store::locked` at
+  `shared_audio.rs:365`, acquiring the replica's `node.lock` during fixture
+  activation immediately after inspection. The remaining lock owner or release
+  timing is unresolved. A temporary failure-time `lsof` probe reproduced the
+  error but captured no remaining holder; it does not confirm or refute a
+  transient child-process lock inheritance hypothesis. The probe was removed.
+  No server change is included here.
+
+Physical iPhone/iPad playback, audible output on physical hardware, a fresh
+iPad Simulator run, narrow-window and accessibility appearance variants, and
+cross-platform ASO-12 acceptance remain unverified. Build success is not
+interaction verification. No result authorizes production migration,
+enrollment reset, deployment or distribution.

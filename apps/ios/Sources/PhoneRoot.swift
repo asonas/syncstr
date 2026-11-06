@@ -91,6 +91,11 @@ struct PhoneRoot: View {
                 .presentationBackground(PhoneStyle.graphite)
         }
         .safeAreaInset(edge: .top, spacing: 0) {
+            if let notice = library.catalogNotice {
+                Text(notice).font(.callout).frame(maxWidth: .infinity, alignment: .leading)
+                    .padding().background(PhoneStyle.carbon)
+                    .accessibilityIdentifier("library-status-notice")
+            }
             if let message = library.message {
                 VStack(alignment: .leading, spacing: 8) {
                     HStack(alignment: .top, spacing: 8) {
