@@ -293,7 +293,8 @@ impl EntityInputHandler for SearchInput {
         _: &mut Context<Self>,
     ) -> Option<Bounds<Pixels>> {
         let line = self.layout.as_ref()?;
-        if line.text != self.content {
+        // The empty value is painted using placeholder text, whose index zero is valid.
+        if !self.content.is_empty() && line.text != self.content {
             return None;
         }
         let range = self.utf8_range(range);
