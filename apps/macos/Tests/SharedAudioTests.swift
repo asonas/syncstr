@@ -1,6 +1,7 @@
 import Foundation
 import Testing
 import AVFoundation
+import Security
 private final class SharedAudioTestBundle: NSObject {}
 #if os(iOS)
 @testable import Syncstr
@@ -183,6 +184,65 @@ struct SharedAudioTests {
         #expect(try encoder.encode(reopened.clusterBatches()) == batches)
         #expect(try encoder.encode(reopened.clusterMetadataEdits()) == edits)
         #expect(try Data(contentsOf: f.store.fileURL(entry)) == Data("abc".utf8))
+    }
+
+    @Test func failedIdentityRestoreKeepsV5StateAndBlocksAutomaticConnection() async throws {
+        let f = try Fixture()
+        defer { try? FileManager.default.removeItem(at: f.store.root) }
+        var catalog = try f.legacyCatalog()
+        let entry = try #require(catalog.entries.first)
+        let album = try #require(catalog.organization?.albumID(for: entry.track.id))
+        catalog.organization?.set(subject: album, kind: "classification", value: "true")
+        try f.store.save(catalog, clusterEdits: true)
+        let batch = ClusterImportBatch(id: UUID().uuidString, host: f.host, items: [
+            ClusterImportBatch.Item(id: UUID().uuidString, name: "Fixture.wav", entry: entry,
+                organization: catalog.organization, parents: [], state: .queued, createdCopy: true, localCopy: .pending)
+        ])
+        try f.database.saveClusterBatch(batch)
+        try f.database.setClusterAutomaticCellular(true)
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        let edits = try encoder.encode(f.database.clusterMetadataEdits())
+        let batches = try encoder.encode(f.database.clusterBatches())
+        try f.database.receiveSharedAudio(f.snapshot(), peer: f.host)
+        let transfer = LocalTransfer(store: f.store,
+            peerPairing: CredentialStore(service: "syncstr-restore-failure-test-" + UUID().uuidString))
+        defer { transfer.cancel() }
+        await transfer.restorePeer(readIdentity: {
+            // Persisted UI state must be available before the first Keychain operation.
+            #expect(transfer.clusterMutationsUnavailable)
+            #expect(transfer.clusterBatches.map(\.id) == [batch.id])
+            #expect(transfer.automaticCellular)
+            #expect(transfer.clusterMutationQueueNotice != nil)
+            throw KeychainError(status: errSecInteractionNotAllowed)
+        })
+        #expect(transfer.peerID.isEmpty)
+        #expect(transfer.clusterRegistration != nil)
+        #expect(transfer.clusterMutationsUnavailable)
+        #expect(transfer.clusterMutationNotice == LocalMusicError.legacyMutationsUnavailable.localizedDescription)
+        #expect(transfer.clusterMutationQueueNotice != nil)
+        transfer.connectCluster()
+        #expect(!transfer.busy)
+        #expect(!transfer.connected)
+        #expect(transfer.status?.contains("識別情報") == true)
+        #expect(transfer.status?.contains("接続できません") == true)
+
+        // Check the synchronous start gate, then cancel before transport work executes.
+        transfer.connectCluster(invitation: "invalid-invitation")
+        #expect(transfer.busy)
+        transfer.cancel()
+        let registration = try #require(f.database.clusterRegistration())
+        let identity = try registration.membership.verify(registration.localGrant).member
+        await transfer.restorePeer(readIdentity: { identity })
+        #expect(transfer.peerID == identity)
+        transfer.connectCluster()
+        #expect(transfer.busy)
+        transfer.cancel()
+        #expect(transfer.clusterMutationsUnavailable)
+        #expect(transfer.clusterMutationQueueNotice != nil)
+        let reopened = try f.store.database()
+        #expect(try encoder.encode(reopened.clusterBatches()) == batches)
+        #expect(try encoder.encode(reopened.clusterMetadataEdits()) == edits)
     }
 
     @Test func truncatedRefreshCannotForgetKnownLogicalIDs() throws {

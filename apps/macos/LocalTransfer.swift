@@ -260,6 +260,7 @@ final class LocalTransfer: ObservableObject {
     }
 
     @Published var peerID = ""
+    private var peerIdentityRestoreFailed = false
     @Published var peerName: String?
     @Published var peerAddressText = ""
     @Published private(set) var clusterRegistration: ClusterRegistration?
@@ -456,15 +457,11 @@ final class LocalTransfer: ObservableObject {
         }
     }
 
-    func restorePeer() async {
+    func restorePeer(readIdentity: (@MainActor () async throws -> String)? = nil) async {
         connectionEvent("restore_peer_called")
         let attempt = generation
-        var stage = "peer_identity_keychain"
+        var stage = "cluster_database"
         do {
-            let identity = try await PeerMusicConnection.publicID(secrets: peerSecrets)
-            guard generation == attempt else { return }
-            peerID = identity
-            stage = "cluster_database"
             let files = store
             let recover = !recoveredClusterJobs
             let state = try await CatalogStorage.shared.perform {
@@ -477,6 +474,13 @@ final class LocalTransfer: ObservableObject {
             applyClusterState(state)
             automaticCellular = state.cellular
             recoveredClusterJobs = true
+            stage = "peer_identity_keychain"
+            let identity: String
+            if let readIdentity { identity = try await readIdentity() }
+            else { identity = try await PeerMusicConnection.publicID(secrets: peerSecrets) }
+            guard generation == attempt else { return }
+            peerID = identity
+            peerIdentityRestoreFailed = false
             stage = "saved_peer_keychain"
             let saved = try await peerPairing.load()
             guard generation == attempt else { return }
@@ -497,6 +501,7 @@ final class LocalTransfer: ObservableObject {
             scheduleClusterRetry()
         } catch {
             guard generation == attempt, !(error is CancellationError) else { return }
+            if stage == "peer_identity_keychain" { peerIdentityRestoreFailed = true }
             if stage == "saved_peer_keychain" { savedPeerReadState = "failed" }
             if stage == "cluster_database" && registrationReadState == "not_read" { registrationReadState = "failed" }
             connectionEvent("restore_peer_failed", outcome: "failed", fields: ["reason": stage], error: error)
@@ -559,6 +564,10 @@ final class LocalTransfer: ObservableObject {
     }
 
     func connectCluster(invitation: String? = nil, name: String = "ライブラリ") {
+        guard invitation != nil || !peerIdentityRestoreFailed else {
+            status = "この端末の識別情報を読み込めないため、ライブラリに接続できません。もう一度お試しください。"
+            return
+        }
         cancel(reason: "starting_cluster_connection")
         let attempt = generation
         busy = true

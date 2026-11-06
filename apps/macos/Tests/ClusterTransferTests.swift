@@ -9,7 +9,6 @@ final class ClusterTransferTests: XCTestCase {
         let repository = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
             .deletingLastPathComponent().deletingLastPathComponent()
         let binary = ProcessInfo.processInfo.environment["SYNCSTR_HEADLESS_TEST_BINARY"].map { URL(fileURLWithPath: $0) }
-            ?? ProcessInfo.processInfo.environment["SYNCSTR_V5_TEST_BIN_DIR"].map { URL(fileURLWithPath: $0).appendingPathComponent("syncstr-headless") }
             ?? repository.appendingPathComponent("headless/target/debug/syncstr-headless")
         guard FileManager.default.isExecutableFile(atPath: binary.path) else {
             throw XCTSkip("Build headless with --features p2p before running interoperability tests")
