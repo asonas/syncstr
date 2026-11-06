@@ -222,6 +222,243 @@ async fn quic_sync_preserves_ids_pins_and_recovers_after_reconnection() -> anyho
 }
 
 #[tokio::test]
+async fn quic_catalog_and_unrelated_playlist_updates_survive_replicated_playlist_conflicts()
+-> anyhow::Result<()> {
+    let fixture = crate::Fixture::new().await?;
+    let replica = fixture.replica()?;
+    let store = fixture.activate()?;
+    for id in ["one", "two"] {
+        store.commit(
+            &fixture.host,
+            crate::register(&store.catalog()?, id, &fixture.entry.sha256),
+        )?;
+    }
+    replica.receive(store.records()?)?;
+    let original = store.playlists()?.remove(0);
+    assert!(!original.conflicted);
+    let mut unrelated = original.document.clone();
+    unrelated.id = "source:unrelated".into();
+    unrelated.source_playlist = "unrelated".into();
+    store.update_playlists(
+        &fixture.host,
+        syncstr_headless::shared_audio::PlaylistUpdate {
+            documents: vec![unrelated.clone()],
+            expected: Default::default(),
+            confirmed_replacements: false,
+        },
+    )?;
+    let host_peer = format!("{}/playlists", fixture.host.id());
+    let other_peer = format!("{}/playlists", fixture.other.id());
+    replica.receive_playlist_page(&host_peer, 0, store.playlist_page(0)?)?;
+    let before_conflict = replica.cursor(&host_peer)?;
+    let catalog = store.catalog()?;
+    let mut a = original.document.clone();
+    a.items[0].track_id = Some(catalog.correspondences[&crate::source("one").subject()].clone());
+    let mut b = original.document.clone();
+    b.items[0].track_id = Some(catalog.correspondences[&crate::source("two").subject()].clone());
+    let expected = std::collections::BTreeMap::from([(
+        original.document.id.clone(),
+        original.revisions.clone(),
+    )]);
+    let a = store.update_playlists(
+        &fixture.host,
+        syncstr_headless::shared_audio::PlaylistUpdate {
+            documents: vec![a],
+            expected: expected.clone(),
+            confirmed_replacements: true,
+        },
+    )?;
+    let b = replica.update_playlists(
+        &fixture.other,
+        syncstr_headless::shared_audio::PlaylistUpdate {
+            documents: vec![b],
+            expected,
+            confirmed_replacements: true,
+        },
+    )?;
+    store.receive_playlist_page(&other_peer, 0, replica.playlist_page(0)?)?;
+    replica.receive_playlist_page(
+        &host_peer,
+        before_conflict,
+        store.playlist_page(before_conflict)?,
+    )?;
+    let mut heads = vec![a[0].id.clone(), b[0].id.clone()];
+    heads.sort();
+    for node in [&store, &replica] {
+        let snapshot = node.snapshot()?;
+        assert_eq!(snapshot.catalog.tracks.len(), 3);
+        assert_eq!(snapshot.playlists.len(), 2);
+        let conflict = snapshot
+            .playlists
+            .iter()
+            .find(|p| p.document.id == original.document.id)
+            .unwrap();
+        assert!(conflict.conflicted);
+        assert_eq!(conflict.revisions, heads);
+        for record in [&a[0], &b[0]] {
+            assert!(snapshot.playlist_history.iter().any(|r| {
+                r.id == record.id && r.payload == record.payload && r.signature == record.signature
+            }));
+        }
+        let healthy = node
+            .playlists()?
+            .into_iter()
+            .find(|p| p.document.id == unrelated.id)
+            .unwrap();
+        assert!(!healthy.conflicted);
+        assert_eq!(healthy.document, unrelated);
+    }
+    let history = store.snapshot()?.playlist_history.len();
+    assert!(
+        store
+            .update_playlists(
+                &fixture.host,
+                syncstr_headless::shared_audio::PlaylistUpdate {
+                    documents: vec![original.document.clone()],
+                    expected: std::collections::BTreeMap::from([(
+                        original.document.id.clone(),
+                        heads.clone(),
+                    )]),
+                    confirmed_replacements: true,
+                },
+            )
+            .unwrap_err()
+            .to_string()
+            .contains("playlist conflict requires resolution")
+    );
+    assert_eq!(store.snapshot()?.playlist_history.len(), history);
+    let healthy = store
+        .playlists()?
+        .into_iter()
+        .find(|p| p.document.id == unrelated.id)
+        .unwrap();
+    unrelated.items[0].track_id =
+        Some(catalog.correspondences[&crate::source("one").subject()].clone());
+    store.update_playlists(
+        &fixture.host,
+        syncstr_headless::shared_audio::PlaylistUpdate {
+            documents: vec![unrelated.clone()],
+            expected: std::collections::BTreeMap::from([(unrelated.id.clone(), healthy.revisions)]),
+            confirmed_replacements: true,
+        },
+    )?;
+    assert_eq!(
+        store
+            .playlists()?
+            .into_iter()
+            .find(|p| p.document.id == unrelated.id)
+            .unwrap()
+            .document,
+        unrelated
+    );
+    // Record replication does not copy audio into the replica's empty object store.
+    let mut audio = store.audio(&fixture.logical, &fixture.entry.sha256)?;
+    replica.put_audio(&fixture.entry.sha256, &mut audio)?;
+    let reader = syncstr_headless::peer::Identity::from_secret(
+        &fixture.root.path().join("reader"),
+        [43; 32],
+    )?;
+    let (host_endpoint, _host_lock) = fixture
+        .other
+        .cluster_endpoint(&["127.0.0.1:0".parse()?])
+        .await?;
+    let (reader_endpoint, _reader_lock) =
+        reader.cluster_endpoint(&["127.0.0.1:0".parse()?]).await?;
+    let mut tasks = tokio::task::JoinSet::new();
+    tasks.spawn(syncstr_headless::shared_audio_net::serve(
+        host_endpoint.clone(),
+        replica.clone(),
+        fixture.other.id().to_string(),
+    ));
+    let session = syncstr_headless::shared_audio_net::Session::connect(
+        &reader_endpoint,
+        host_endpoint.addr(),
+        replica.membership()?,
+    )
+    .await?;
+    let snapshot: syncstr_headless::shared_audio_net::Snapshot = session
+        .request(syncstr_headless::shared_audio_net::Request::Catalog)
+        .await?;
+    assert_eq!(snapshot.catalog.tracks.len(), 3);
+    assert!(snapshot.playlists.iter().any(|p| {
+        p.document.id == original.document.id && p.conflicted && p.revisions == heads
+    }));
+    assert!(snapshot.playlists.iter().any(|p| {
+        p.document.id == healthy.document.id && !p.conflicted && p.document == healthy.document
+    }));
+    let downloaded = fixture.root.path().join("during-playlist-conflict.audio");
+    session
+        .download(&fixture.logical, &fixture.entry.sha256, &downloaded)
+        .await?;
+    assert_eq!(std::fs::read(downloaded)?, b"abc");
+    drop(session);
+    tasks.abort_all();
+    while tasks.join_next().await.is_some() {}
+    host_endpoint.close().await;
+    reader_endpoint.close().await;
+    Ok(())
+}
+
+#[tokio::test]
+async fn unrelated_playlist_updates_do_not_validate_a_conflicted_source_structure()
+-> anyhow::Result<()> {
+    use sha2::Digest as _;
+    let fixture = crate::Fixture::new().await?;
+    let store = fixture.activate()?;
+    let original = store.playlists()?.remove(0);
+    let proof = store.membership()?;
+    let mut page = Vec::new();
+    for (sequence, signer) in [(1, &fixture.host), (2, &fixture.other)] {
+        let mut document = original.document.clone();
+        document.id = "source:conflicted".into();
+        document.source_playlist = "conflicted".into();
+        document.parent = Some(format!("source:missing-{sequence}"));
+        let grant = proof
+            .grants
+            .iter()
+            .find(|g| g.member == signer.id().to_string() && g.host)
+            .unwrap();
+        let body = syncstr_headless::playlists::Body {
+            version: 1,
+            cluster: grant.cluster.clone(),
+            author: signer.id().to_string(),
+            grant: grant.id.clone(),
+            document,
+            parents: vec![],
+        };
+        let payload = format!("syncstr-playlist-v1\n{}", serde_json::to_string(&body)?);
+        page.push((
+            sequence,
+            syncstr_headless::playlists::Signed {
+                id: hex::encode(sha2::Sha256::digest(payload.as_bytes())),
+                signature: hex::encode(signer.sign(payload.as_bytes())),
+                payload,
+            },
+        ));
+    }
+    store.receive_playlist_page(&format!("{}/playlists", fixture.other.id()), 0, page)?;
+    let snapshot = store.snapshot()?;
+    assert!(
+        snapshot
+            .playlists
+            .iter()
+            .any(|p| p.document.id == "source:conflicted" && p.conflicted)
+    );
+    store.update_playlists(
+        &fixture.host,
+        syncstr_headless::shared_audio::PlaylistUpdate {
+            documents: vec![original.document.clone()],
+            expected: std::collections::BTreeMap::from([(
+                original.document.id,
+                original.revisions,
+            )]),
+            confirmed_replacements: false,
+        },
+    )?;
+    Ok(())
+}
+
+#[tokio::test]
 async fn quic_revocation_blocks_existing_sessions_and_propagates_without_resurrection()
 -> anyhow::Result<()> {
     let fixture = crate::Fixture::new().await?;
