@@ -35,9 +35,20 @@ final class ClusterNetwork {
     private let secrets: CredentialStore
     private var session: ClusterSession?
     private(set) var lastPath: String?
+    private(set) var sharedAudio = false
 
     init(store: LocalMusicStore, secrets: CredentialStore) {
         self.store = store; self.secrets = secrets
+    }
+
+    private func requireLegacyMutations(database: CatalogDatabase) async throws {
+        if try await CatalogStorage.shared.perform({ try database.sharedAudioSnapshot() != nil }) { sharedAudio = true }
+        guard !sharedAudio else { throw LocalMusicError.legacyMutationsUnavailable }
+    }
+
+    private func requireLegacyMutations(session: ClusterSession) async throws {
+        if await session.sharedAudio { sharedAudio = true }
+        guard !sharedAudio else { throw LocalMusicError.legacyMutationsUnavailable }
     }
 
     func stop() {
@@ -134,6 +145,7 @@ final class ClusterNetwork {
                 let current = try await ClusterSession.connect(address: address, secrets: secrets, database: database)
                 session = current
                 defer { current.close(); session = nil }
+                if await current.sharedAudio { sharedAudio = true }
                 try await current.reconcile(database: database)
                 if await current.sharedAudio { successful = true; lastPath = current.selectedPath; continue }
                 let missing = try await CatalogStorage.shared.perform { try database.clusterCatalog().organization?.tracks.filter { $0.imported.tagValues == nil } ?? [] }
@@ -238,6 +250,7 @@ final class ClusterNetwork {
     func upload(entry: LocalEntry, organization: AlbumOrganization, parents: [String], restore: Bool = false, host: String, file: URL, progress: @escaping @MainActor (Double) -> Void) async throws -> String {
         let files = store
         let database = try await CatalogStorage.shared.perform { try files.database() }
+        try await requireLegacyMutations(database: database)
         let candidates = try await addresses(database: database).sorted { ($0.id().description == host ? 0 : 1) < ($1.id().description == host ? 0 : 1) }
         var failure: Error = LocalMusicError.clusterUnavailable
         for address in candidates {
@@ -245,11 +258,14 @@ final class ClusterNetwork {
                 let current = try await ClusterSession.connect(address: address, secrets: secrets, database: database)
                 session = current
                 defer { current.close(); session = nil }
+                try await requireLegacyMutations(session: current)
                 try await current.upload(entry: entry, organization: organization, parents: parents, restore: restore, file: file, progress: progress)
                 lastPath = current.selectedPath
                 try await current.reconcile(database: database)
                 try await CatalogStorage.shared.perform { try files.save(database.clusterCatalog()) }
                 return current.peer
+            } catch LocalMusicError.legacyMutationsUnavailable {
+                throw LocalMusicError.legacyMutationsUnavailable
             } catch is IrohLib.IrohError {
                 failure = LocalMusicError.clusterUnavailable
             } catch {
@@ -263,6 +279,7 @@ final class ClusterNetwork {
     func syncMetadata() async throws {
         let files = store
         let database = try await CatalogStorage.shared.perform { try files.database() }
+        try await requireLegacyMutations(database: database)
         let pending = try await CatalogStorage.shared.perform { try database.clusterMetadataEdits() }
         guard !pending.isEmpty else { return }
         var failure: Error = LocalMusicError.clusterUnavailable
@@ -271,6 +288,7 @@ final class ClusterNetwork {
                 let current = try await ClusterSession.connect(address: address, secrets: secrets, database: database)
                 session = current
                 defer { current.close(); session = nil }
+                try await requireLegacyMutations(session: current)
                 for edit in try await CatalogStorage.shared.perform({ try database.clusterMetadataEdits() }) {
                     do {
                         let revision = try await current.editMetadata(edit)
@@ -282,6 +300,8 @@ final class ClusterNetwork {
                 try await current.reconcile(database: database)
                 lastPath = current.selectedPath
                 if try await CatalogStorage.shared.perform({ try database.clusterMetadataEdits().isEmpty }) { return }
+            } catch LocalMusicError.legacyMutationsUnavailable {
+                throw LocalMusicError.legacyMutationsUnavailable
             } catch {
                 try Task.checkCancellation()
                 failure = error
@@ -293,10 +313,12 @@ final class ClusterNetwork {
     func resolve(object: String, selected: String, parents: [String]) async throws -> LocalCatalog {
         let files = store
         let database = try await CatalogStorage.shared.perform { try files.database() }
+        try await requireLegacyMutations(database: database)
         guard let address = try await addresses(database: database).first else { throw LocalMusicError.disconnected }
         let current = try await ClusterSession.connect(address: address, secrets: secrets, database: database)
         session = current
         defer { current.close(); session = nil }
+        try await requireLegacyMutations(session: current)
         try await current.resolve(object: object, selected: selected, parents: parents)
         try await current.reconcile(database: database)
         lastPath = current.selectedPath
@@ -308,6 +330,7 @@ final class ClusterNetwork {
     func resolveAlbum(_ conflict: ClusterAlbumConflict, title: String) async throws -> LocalCatalog {
         let files = store
         let database = try await CatalogStorage.shared.perform { try files.database() }
+        try await requireLegacyMutations(database: database)
         let states = try await CatalogStorage.shared.perform { try database.clusterObjectStates() }
         var heads: [String: String] = [:]
         for object in conflict.objects {
@@ -318,6 +341,7 @@ final class ClusterNetwork {
         let current = try await ClusterSession.connect(address: address, secrets: secrets, database: database)
         session = current
         defer { current.close(); session = nil }
+        try await requireLegacyMutations(session: current)
         try await current.resolveAlbum(album: conflict.id, title: title, heads: heads)
         try await current.reconcile(database: database)
         lastPath = current.selectedPath
@@ -541,6 +565,7 @@ final class ClusterSession {
     }
 
     func upload(entry: LocalEntry, organization: AlbumOrganization, parents: [String], restore: Bool = false, file: URL, progress: @escaping @MainActor (Double) -> Void) async throws {
+        guard !sharedAudio else { throw LocalMusicError.legacyMutationsUnavailable }
         guard LocalMusicStore.valid(entry), let size = entry.track.size,
               try LocalMusicStore.digest(file: file) == entry.sha256 else { throw LocalMusicError.changedFile }
         let timeout = Task {
@@ -568,6 +593,7 @@ final class ClusterSession {
     }
 
     func resolve(object: String, selected: String, parents: [String]) async throws {
+        guard !sharedAudio else { throw LocalMusicError.legacyMutationsUnavailable }
         let stream = try await connection.openBi()
         try await send(Request(operation: "resolve", object: object, parents: parents, selected: selected), stream: stream)
         try await stream.send().finish()
@@ -576,6 +602,7 @@ final class ClusterSession {
     }
 
     func resolveAlbum(album: String, title: String, heads: [String: String]) async throws {
+        guard !sharedAudio else { throw LocalMusicError.legacyMutationsUnavailable }
         let stream = try await connection.openBi()
         try await send(Request(operation: "album-title", album: album, title: title, heads: heads), stream: stream)
         try await stream.send().finish()
@@ -584,6 +611,7 @@ final class ClusterSession {
     }
 
     func editMetadata(_ edit: ClusterMetadataEdit) async throws -> String {
+        guard !sharedAudio else { throw LocalMusicError.legacyMutationsUnavailable }
         let stream = try await connection.openBi()
         try await send(Request(operation: "metadata", entry: edit.entry, organization: edit.organization, parents: edit.parents), stream: stream)
         try await stream.send().finish()

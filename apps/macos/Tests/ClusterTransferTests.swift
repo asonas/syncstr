@@ -176,6 +176,7 @@ final class ClusterTransferTests: XCTestCase {
             peerPairing: CredentialStore(service: "syncstr-cluster-test-pair-" + UUID().uuidString))
         defer { transfer.cancel() }
         await transfer.restorePeer()
+        XCTAssertFalse(transfer.clusterMutationsUnavailable)
         transfer.importCluster([source, invalid])
         for _ in 0..<600 {
             if !transfer.busy { break }
@@ -292,6 +293,27 @@ final class ClusterTransferTests: XCTestCase {
         XCTAssertEqual(recovered.organization?.albumID(for: other.track.id), recoveredAlbum)
         XCTAssertEqual(recovered.organization?.coverAsset(for: recoveredAlbum), images.blue)
         XCTAssertEqual(recovered.organization?.tracks.filter { recovered.organization?.albumID(for: $0.id) == recoveredAlbum }.count, 2)
+        // Keep all four legacy mutations covered: upload and metadata above, title and resolution here.
+        let title = try XCTUnwrap(recovered.organization?.albums.first { $0.id == recoveredAlbum }?.title)
+        let titled = try await network.resolveAlbum(ClusterAlbumConflict(id: recoveredAlbum, titles: [title],
+            objects: [legacy.sha256, other.sha256]), title: title)
+        XCTAssertEqual(titled.organization?.albums.first { $0.id == recoveredAlbum }?.title, title)
+        let state = try XCTUnwrap(restored.clusterObjectStates().first { $0.object == legacy.sha256 })
+        let head = try XCTUnwrap(state.heads.first)
+        _ = try await network.resolve(object: state.object, selected: head.id, parents: state.heads.map(\.id))
+        let resolved = try XCTUnwrap(restored.clusterObjectStates().first { $0.object == legacy.sha256 })
+        XCTAssertEqual(resolved.heads.count, 1)
+        XCTAssertEqual(resolved.heads.first?.action.kind, .resolve)
+        for hidden in [true, false] {
+            let current = try await network.refresh()
+            _ = try restored.setAlbumsHidden([recoveredAlbum], hidden: hidden, libraryID: current.id)
+            XCTAssertGreaterThan(try restored.clusterMetadataEdits().count, 1)
+            do { try await network.syncMetadata() }
+            catch LocalMusicError.clusterNeedsAttention {}
+            XCTAssertEqual(try restored.clusterMetadataEdits().map(\.id), [rejectedEdit.id])
+            let updated = try await network.refresh()
+            XCTAssertEqual(updated.organization?.isHidden(recoveredAlbum), hidden)
+        }
         second.terminate(); second.waitUntilExit()
         XCTAssertEqual(try LocalMusicStore.digest(file: store.fileURL(entry)), entry.sha256)
         XCTAssertEqual(try store.load()?.entries.count, 4)

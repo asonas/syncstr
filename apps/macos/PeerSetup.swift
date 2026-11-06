@@ -14,6 +14,12 @@ struct ClusterImportResults: View {
     var body: some View {
         NavigationStack {
             List {
+                if let notice = transfer.clusterMutationNotice {
+                    Text(notice).foregroundStyle(.secondary)
+                }
+                if let notice = transfer.clusterMutationQueueNotice {
+                    Text(notice).foregroundStyle(.secondary)
+                }
                 ForEach(transfer.clusterBatches) { batch in
                     Section {
                         Text("優先する保存先: \(batch.host)")
@@ -26,18 +32,23 @@ struct ClusterImportResults: View {
                                 if item.state == .stored {
                                     Text("保存先への追加を確認しました").foregroundStyle(.secondary)
                                     Text(item.storedHost ?? batch.host).font(.system(.caption, design: .monospaced)).textSelection(.enabled)
+                                } else if transfer.clusterMutationsUnavailable {
+                                    Text("この接続では追加できません。音源は保持しています。")
+                                        .foregroundStyle(.secondary)
                                 } else {
                                     Text(item.error ?? "追加を待っています").foregroundStyle(.secondary)
                                 }
                                 if item.state == .awaitingRestore {
                                     Button("削除された音源を再追加…") {
                                         restoration = (batch.id, item.id); confirmingRestore = true
-                                    }.disabled(transfer.busy)
+                                    }.disabled(transfer.busy || transfer.clusterMutationsUnavailable)
                                 }
                             }
                         }
                         if batch.items.contains(where: { ($0.state == .queued || $0.state == .failed) && $0.entry != nil }) {
-                            Button("追加できなかった音源を再試行") { transfer.retryClusterBatch(batch.id) }.disabled(transfer.busy)
+                            Button(transfer.clusterMutationsUnavailable ? "音源の追加は利用できません" : "追加できなかった音源を再試行") {
+                                transfer.retryClusterBatch(batch.id)
+                            }.disabled(transfer.busy || transfer.clusterMutationsUnavailable)
                         }
                         if !batch.awaitingDecision.isEmpty {
                             Text("保存先への追加を確認した\(batch.awaitingDecision.count)曲を、この端末にも残しますか？ 元のファイルと、追加できなかった音源は保持します。")
@@ -79,7 +90,9 @@ struct ClusterConflictsView: View {
         VStack(alignment: .leading, spacing: 16) {
             if !transfer.clusterConflicts.isEmpty || !transfer.clusterAlbumConflicts.isEmpty {
                 Text("変更が競合しています").font(.headline)
-                Text("自動では内容を選びません。確認して優先する内容を選んでください。")
+                Text(transfer.clusterMutationsUnavailable
+                    ? "この接続では競合の解消とアルバム名の選択は利用できません。"
+                    : "自動では内容を選びません。確認して優先する内容を選んでください。")
                     .foregroundStyle(.secondary)
             }
             ForEach(transfer.clusterAlbumConflicts) { album in
@@ -87,7 +100,7 @@ struct ClusterConflictsView: View {
                 ForEach(album.titles, id: \.self) { title in
                     Button("「\(title)」を優先") {
                         albumConflict = album; albumTitle = title; confirmingAlbum = true
-                    }.disabled(transfer.busy)
+                    }.disabled(transfer.busy || transfer.clusterMutationsUnavailable)
                 }
                 Divider()
             }
@@ -101,7 +114,7 @@ struct ClusterConflictsView: View {
                             if let album = entry?.track.album { Text(album).foregroundStyle(.secondary) }
                             Text("変更した端末: \(head.author)").font(.system(.caption, design: .monospaced))
                             Button("この内容を優先") { conflict = state; selected = head.id; confirming = true }
-                                .disabled(transfer.busy || (entry == nil && !canDelete))
+                                .disabled(transfer.busy || transfer.clusterMutationsUnavailable || (entry == nil && !canDelete))
                             if entry == nil && !canDelete {
                                 Text("削除を優先する場合は、保存先の端末で解消してください。")
                                     .font(.caption).foregroundStyle(.secondary)
@@ -185,7 +198,14 @@ struct PeerSetupView: View {
                     address = ""
                     updatingRegistration = true
                 }.disabled(transfer.busy)
-                Button("音源ファイルを追加") { importing = true }.disabled(transfer.busy)
+                Button("音源ファイルを追加") { importing = true }
+                    .disabled(transfer.busy || transfer.clusterMutationsUnavailable)
+                if let notice = transfer.clusterMutationNotice {
+                    Text(notice).font(.caption).foregroundStyle(.secondary)
+                }
+                if let notice = transfer.clusterMutationQueueNotice {
+                    Text(notice).font(.caption).foregroundStyle(.secondary)
+                }
                 if !transfer.clusterBatches.isEmpty {
                     Button("音源の追加結果") { showingResults = true }
                 }

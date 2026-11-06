@@ -1,6 +1,7 @@
 import Foundation
 import Testing
 import AVFoundation
+import Security
 private final class SharedAudioTestBundle: NSObject {}
 #if os(iOS)
 @testable import Syncstr
@@ -76,6 +77,172 @@ struct SharedAudioTests {
             root["catalog"] = catalog
             return try JSONSerialization.data(withJSONObject: root)
         }
+
+        func legacyCatalog() throws -> LocalCatalog {
+            let url = try #require(Bundle(for: SharedAudioTestBundle.self).url(forResource: "cluster-signed", withExtension: "json"))
+            struct Signed: Decodable {
+                struct Signature: Decodable { let id: String; let signature: String }
+                let change: Signature
+                let signingPayload: String
+            }
+            let signed = try JSONDecoder().decode(Signed.self, from: Data(contentsOf: url))
+            try database.receiveClusterPage(peer: host, sequence: 1, signed: ClusterSignedChange(
+                id: signed.change.id, signature: signed.change.signature, payload: signed.signingPayload))
+            let catalog = try database.clusterCatalog()
+            try store.save(catalog)
+            return catalog
+        }
+    }
+
+    private func expectMutationUnavailable(_ operation: () async throws -> Void) async {
+        do {
+            try await operation()
+            Issue.record("A v5 session must reject legacy mutations before sending")
+        } catch LocalMusicError.legacyMutationsUnavailable {
+        } catch { Issue.record("Expected an unavailable operation, received: \(error)") }
+    }
+
+    @Test(arguments: [false, true])
+    func snapshotBlocksMutationsAndPreservesQueues(withPendingMetadata: Bool) async throws {
+        let f = try Fixture()
+        defer { try? FileManager.default.removeItem(at: f.store.root) }
+        var catalog = try f.legacyCatalog()
+        let entry = try #require(catalog.entries.first)
+        let album = try #require(catalog.organization?.albumID(for: entry.track.id))
+        if withPendingMetadata {
+            catalog.organization?.set(subject: album, kind: "classification", value: "true")
+            try f.store.save(catalog, clusterEdits: true)
+        }
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        let edits = try encoder.encode(f.database.clusterMetadataEdits())
+        #expect(try f.database.clusterMetadataEdits().count == (withPendingMetadata ? 1 : 0))
+        let batch = ClusterImportBatch(id: UUID().uuidString, host: f.host,
+            items: [ClusterImportBatch.Item.State.queued, .failed, .awaitingRestore].map { state in
+                ClusterImportBatch.Item(id: UUID().uuidString, name: "Fixture.wav", entry: entry,
+                    organization: catalog.organization, parents: [], state: state, createdCopy: true, localCopy: .pending)
+            })
+        try f.database.saveClusterBatch(batch)
+        try Data("abc".utf8).write(to: f.store.fileURL(entry))
+        let batches = try encoder.encode(f.database.clusterBatches())
+        try f.database.receiveSharedAudio(f.snapshot(), peer: f.host)
+
+        // A v5 visibility change must not add or replace a legacy metadata edit.
+        let projected = try f.database.clusterCatalog()
+        let projectedAlbum = try #require(projected.organization?.albumID(for: "A"))
+        await expectMutationUnavailable {
+            _ = try f.database.setAlbumsHidden([projectedAlbum], hidden: true, libraryID: projected.id)
+        }
+        await expectMutationUnavailable {
+            _ = try await f.store.setAlbumsHidden([projectedAlbum], hidden: false, libraryID: projected.id)
+        }
+        #expect(try encoder.encode(f.database.clusterMetadataEdits()) == edits)
+
+        let secrets = CredentialStore(service: "syncstr-mutation-test-" + UUID().uuidString)
+        let pairing = CredentialStore(service: "syncstr-mutation-pair-test-" + UUID().uuidString)
+        defer { Task { try? await secrets.remove(); try? await pairing.remove() } }
+        let network = ClusterNetwork(store: f.store, secrets: secrets)
+        defer { network.stop() }
+        let organization = try #require(catalog.organization)
+        await expectMutationUnavailable {
+            _ = try await network.upload(entry: entry, organization: organization, parents: [],
+                host: f.host, file: f.store.fileURL(entry)) { _ in Issue.record("No upload progress expected") }
+        }
+        await expectMutationUnavailable { try await network.syncMetadata() }
+        await expectMutationUnavailable { _ = try await network.resolve(object: entry.sha256, selected: "unused", parents: []) }
+        await expectMutationUnavailable {
+            _ = try await network.resolveAlbum(ClusterAlbumConflict(id: album, titles: ["Fixture"], objects: [entry.sha256]), title: "Fixture")
+        }
+        let library = Library(localStore: f.store, pairingSecrets: pairing, peerSecrets: secrets, peerPairing: pairing)
+        let transfer = library.transfer
+        defer { library.closeLibrary(); transfer.cancel() }
+        try library.openLocal(projected)
+        await transfer.restorePeer()
+        #expect(library.legacyMutationNotice == LocalMusicError.legacyMutationsUnavailable.localizedDescription)
+        #expect(transfer.clusterMutationsUnavailable)
+        #expect(transfer.clusterMutationNotice == LocalMusicError.legacyMutationsUnavailable.localizedDescription)
+        #expect(transfer.clusterMutationQueueNotice != nil)
+        transfer.importCluster([f.store.root.appendingPathComponent("missing.wav")])
+        transfer.retryClusterBatch(batch.id)
+        transfer.confirmClusterRestore(batchID: batch.id, itemID: batch.items[2].id)
+        transfer.resolveCluster(ClusterObjectState(object: entry.sha256, heads: []), selected: "unused")
+        transfer.resolveClusterAlbum(ClusterAlbumConflict(id: album, titles: ["Fixture"], objects: [entry.sha256]), title: "Fixture")
+        transfer.syncOrganization()
+        #expect(!transfer.busy)
+        #expect(transfer.status == transfer.clusterMutationNotice)
+        await expectMutationUnavailable { try library.saveOrganization(organization) }
+        await library.addMusic([f.store.root.appendingPathComponent("missing.wav")])
+        #expect(library.message == LocalMusicError.legacyMutationsUnavailable.localizedDescription)
+        let visible = library.albums.map(\.id)
+        await library.setAlbumsHidden([projectedAlbum], hidden: true).value
+        await library.setAlbumHidden(projectedAlbum, hidden: false).value
+        #expect(library.albums.map(\.id) == visible)
+        #expect(!library.isSavingAlbumVisibility(projectedAlbum))
+        #expect(library.message == library.legacyMutationNotice)
+        #expect(try f.database.clusterCatalog().organization?.isHidden(projectedAlbum) == false)
+        let reopened = try f.store.database()
+        #expect(try encoder.encode(reopened.clusterBatches()) == batches)
+        #expect(try encoder.encode(reopened.clusterMetadataEdits()) == edits)
+        #expect(try Data(contentsOf: f.store.fileURL(entry)) == Data("abc".utf8))
+    }
+
+    @Test func failedIdentityRestoreKeepsV5StateAndBlocksAutomaticConnection() async throws {
+        let f = try Fixture()
+        defer { try? FileManager.default.removeItem(at: f.store.root) }
+        var catalog = try f.legacyCatalog()
+        let entry = try #require(catalog.entries.first)
+        let album = try #require(catalog.organization?.albumID(for: entry.track.id))
+        catalog.organization?.set(subject: album, kind: "classification", value: "true")
+        try f.store.save(catalog, clusterEdits: true)
+        let batch = ClusterImportBatch(id: UUID().uuidString, host: f.host, items: [
+            ClusterImportBatch.Item(id: UUID().uuidString, name: "Fixture.wav", entry: entry,
+                organization: catalog.organization, parents: [], state: .queued, createdCopy: true, localCopy: .pending)
+        ])
+        try f.database.saveClusterBatch(batch)
+        try f.database.setClusterAutomaticCellular(true)
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        let edits = try encoder.encode(f.database.clusterMetadataEdits())
+        let batches = try encoder.encode(f.database.clusterBatches())
+        try f.database.receiveSharedAudio(f.snapshot(), peer: f.host)
+        let transfer = LocalTransfer(store: f.store,
+            peerPairing: CredentialStore(service: "syncstr-restore-failure-test-" + UUID().uuidString))
+        defer { transfer.cancel() }
+        await transfer.restorePeer(readIdentity: {
+            // Persisted UI state must be available before the first Keychain operation.
+            #expect(transfer.clusterMutationsUnavailable)
+            #expect(transfer.clusterBatches.map(\.id) == [batch.id])
+            #expect(transfer.automaticCellular)
+            #expect(transfer.clusterMutationQueueNotice != nil)
+            throw KeychainError(status: errSecInteractionNotAllowed)
+        })
+        #expect(transfer.peerID.isEmpty)
+        #expect(transfer.clusterRegistration != nil)
+        #expect(transfer.clusterMutationsUnavailable)
+        #expect(transfer.clusterMutationNotice == LocalMusicError.legacyMutationsUnavailable.localizedDescription)
+        #expect(transfer.clusterMutationQueueNotice != nil)
+        transfer.connectCluster()
+        #expect(!transfer.busy)
+        #expect(!transfer.connected)
+        #expect(transfer.status?.contains("識別情報") == true)
+        #expect(transfer.status?.contains("接続できません") == true)
+
+        // Check the synchronous start gate, then cancel before transport work executes.
+        transfer.connectCluster(invitation: "invalid-invitation")
+        #expect(transfer.busy)
+        transfer.cancel()
+        let registration = try #require(try f.database.clusterRegistration())
+        let identity = try registration.membership.verify(registration.localGrant).member
+        await transfer.restorePeer(readIdentity: { identity })
+        #expect(transfer.peerID == identity)
+        transfer.connectCluster()
+        #expect(transfer.busy)
+        transfer.cancel()
+        #expect(transfer.clusterMutationsUnavailable)
+        #expect(transfer.clusterMutationQueueNotice != nil)
+        let reopened = try f.store.database()
+        #expect(try encoder.encode(reopened.clusterBatches()) == batches)
+        #expect(try encoder.encode(reopened.clusterMetadataEdits()) == edits)
     }
 
     @Test func truncatedRefreshCannotForgetKnownLogicalIDs() throws {
@@ -415,6 +582,23 @@ struct SharedAudioTests {
         let session = try await ClusterSession.connect(address: address.endpoint(expected: address.id), secrets: secrets, database: database)
         defer { session.close() }
         #expect(await session.sharedAudio)
+        // Negotiation alone must block writes, before a catalog snapshot exists.
+        #expect(try database.sharedAudioSnapshot() == nil)
+        let mutationEntry = LocalEntry(track: Track(id: "blocked", title: "Blocked", artist: nil, suffix: "wav", size: 3),
+            sha256: LocalMusicStore.digest(Data("abc".utf8)), artwork: nil)
+        let mutationOrganization = AlbumOrganization()
+        await expectMutationUnavailable {
+            try await session.upload(entry: mutationEntry, organization: mutationOrganization, parents: [],
+                file: root.appendingPathComponent("missing.wav")) { _ in Issue.record("No upload progress expected") }
+        }
+        await expectMutationUnavailable { try await session.resolve(object: mutationEntry.sha256, selected: "unused", parents: []) }
+        await expectMutationUnavailable { try await session.resolveAlbum(album: "unused", title: "Unused", heads: [:]) }
+        await expectMutationUnavailable {
+            _ = try await session.editMetadata(ClusterMetadataEdit(id: UUID().uuidString, entry: mutationEntry,
+                organization: mutationOrganization, parents: []))
+        }
+        #expect(try database.sharedAudioSnapshot() == nil)
+        // A request sent to v5 would close this connection; reconciliation must still work.
         try await session.reconcile(database: database)
         let snapshot = try #require(try database.sharedAudioSnapshot())
         #expect(snapshot.catalog.tracks.count == 3)

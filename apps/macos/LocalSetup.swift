@@ -10,16 +10,23 @@ import VisionKit
 struct AddMusicButton: View {
     @ObservedObject var library: Library
     @State private var importing = false
+    private var unavailable: Bool { library.legacyMutationNotice != nil }
 
     var body: some View {
-        Button("音楽ファイルを追加") { importing = true }
-            .disabled(library.refreshing || library.transfer.busy)
-            .fileImporter(isPresented: $importing, allowedContentTypes: [.audio], allowsMultipleSelection: true) { result in
-                switch result {
-                case .success(let files): Task { await library.addMusic(files) }
-                case .failure(let error): library.message = error.localizedDescription
+        VStack(alignment: .leading, spacing: 4) {
+            Button("音楽ファイルを追加") { importing = true }
+                .disabled(library.refreshing || library.transfer.busy || unavailable)
+                .fileImporter(isPresented: $importing, allowedContentTypes: [.audio], allowsMultipleSelection: true) { result in
+                    switch result {
+                    case .success(let files): Task { await library.addMusic(files) }
+                    case .failure(let error): library.message = error.localizedDescription
+                    }
                 }
+            if let notice = library.legacyMutationNotice {
+                Text(notice)
+                    .font(.caption).foregroundStyle(.secondary)
             }
+        }
     }
 }
 
