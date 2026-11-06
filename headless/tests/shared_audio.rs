@@ -333,6 +333,185 @@ async fn quic_revocation_blocks_existing_sessions_and_propagates_without_resurre
 }
 
 #[tokio::test]
+async fn quic_authorizes_hello_before_persisting_new_membership() -> anyhow::Result<()> {
+    let fixture = crate::Fixture::new().await?;
+    let store = fixture.replica()?;
+    let before = store.membership()?;
+    let new_member = syncstr_headless::peer::Identity::from_secret(
+        &fixture.root.path().join("new-member"),
+        [44; 32],
+    )?;
+    let outsider = syncstr_headless::peer::Identity::from_secret(
+        &fixture.root.path().join("outsider"),
+        [45; 32],
+    )?;
+    let enrollment =
+        syncstr_headless::store::Store::open(&fixture.root.path().join("enroller-data"))?;
+    let authority = before
+        .grants
+        .iter()
+        .find(|g| g.member == fixture.other.id().to_string())
+        .unwrap();
+    enrollment
+        .join_cluster(
+            &fixture.other,
+            fixture.host.id(),
+            authority.id.clone(),
+            before.clone(),
+        )
+        .await?;
+    let invitation = enrollment
+        .create_cluster_invitation(&fixture.other, false, 200, 600)
+        .await?;
+    let grant = enrollment
+        .redeem_cluster_invitation(
+            &fixture.other,
+            &invitation.secret,
+            new_member.id().to_string(),
+            201,
+        )
+        .await?;
+    let reader = before
+        .grants
+        .iter()
+        .find(|g| !g.host)
+        .unwrap()
+        .member
+        .clone();
+    let revocation = enrollment
+        .revoke_cluster_member(&fixture.other, reader.clone())
+        .await?;
+    let incoming = enrollment.cluster_membership_proof().await?;
+    assert_eq!(incoming.verify(&grant.id)?, &grant);
+    assert!(
+        syncstr_headless::shared_audio_net::authorize(&before, &new_member.id().to_string(), false)
+            .is_err()
+    );
+    let (host_endpoint, _host_lock) = fixture
+        .host
+        .cluster_endpoint(&["127.0.0.1:0".parse()?])
+        .await?;
+    let (outsider_endpoint, _outsider_lock) =
+        outsider.cluster_endpoint(&["127.0.0.1:0".parse()?]).await?;
+    let (peer_endpoint, _peer_lock) = fixture
+        .other
+        .cluster_endpoint(&["127.0.0.1:0".parse()?])
+        .await?;
+    let (new_endpoint, _new_lock) = new_member
+        .cluster_endpoint(&["127.0.0.1:0".parse()?])
+        .await?;
+    let mut tasks = tokio::task::JoinSet::new();
+    tasks.spawn(syncstr_headless::shared_audio_net::serve(
+        host_endpoint.clone(),
+        store.clone(),
+        fixture.host.id().to_string(),
+    ));
+    assert!(
+        syncstr_headless::shared_audio_net::Session::connect(
+            &outsider_endpoint,
+            host_endpoint.addr(),
+            incoming.clone(),
+        )
+        .await
+        .is_err()
+    );
+    let unchanged = store.membership()?;
+    assert_eq!(unchanged.root, before.root);
+    assert_eq!(unchanged.grants, before.grants);
+    assert_eq!(unchanged.revocations, before.revocations);
+    // The reader remains authorized until a member presents the revocation.
+    syncstr_headless::shared_audio_net::authorize(&unchanged, &reader, false)?;
+    let peer = syncstr_headless::shared_audio_net::Session::connect(
+        &peer_endpoint,
+        host_endpoint.addr(),
+        before.clone(),
+    )
+    .await?;
+    let _: syncstr_headless::shared_audio_net::Snapshot = peer
+        .request(syncstr_headless::shared_audio_net::Request::Catalog)
+        .await?;
+    let member = syncstr_headless::shared_audio_net::Session::connect(
+        &new_endpoint,
+        host_endpoint.addr(),
+        incoming,
+    )
+    .await?;
+    let _: syncstr_headless::shared_audio_net::Snapshot = member
+        .request(syncstr_headless::shared_audio_net::Request::Catalog)
+        .await?;
+    let merged = store.membership()?;
+    assert!(merged.grants.contains(&grant));
+    assert!(merged.revocations.contains(&revocation));
+    assert!(syncstr_headless::shared_audio_net::authorize(&merged, &reader, false).is_err());
+    let _: syncstr_headless::shared_audio_net::Snapshot = peer
+        .request(syncstr_headless::shared_audio_net::Request::Catalog)
+        .await?;
+    tasks.abort_all();
+    while tasks.join_next().await.is_some() {}
+    host_endpoint.close().await;
+    outsider_endpoint.close().await;
+    peer_endpoint.close().await;
+    new_endpoint.close().await;
+    Ok(())
+}
+
+#[tokio::test]
+async fn quic_rejected_hello_does_not_persist_peer_or_host_revocations() -> anyhow::Result<()> {
+    for revoke_host in [false, true] {
+        let fixture = crate::Fixture::new().await?;
+        let store = fixture.replica()?;
+        let before = store.membership()?;
+        let source = fixture.activate()?;
+        let revoked = if revoke_host {
+            fixture.host.id()
+        } else {
+            fixture.other.id()
+        };
+        source.revoke_member(&fixture.host, &revoked.to_string())?;
+        let incoming = source.membership()?;
+        if revoke_host {
+            syncstr_headless::shared_audio_net::authorize(
+                &incoming,
+                &fixture.other.id().to_string(),
+                false,
+            )?;
+        }
+        let (host_endpoint, _host_lock) = fixture
+            .host
+            .cluster_endpoint(&["127.0.0.1:0".parse()?])
+            .await?;
+        let (peer_endpoint, _peer_lock) = fixture
+            .other
+            .cluster_endpoint(&["127.0.0.1:0".parse()?])
+            .await?;
+        let mut tasks = tokio::task::JoinSet::new();
+        tasks.spawn(syncstr_headless::shared_audio_net::serve(
+            host_endpoint.clone(),
+            store.clone(),
+            fixture.host.id().to_string(),
+        ));
+        assert!(
+            syncstr_headless::shared_audio_net::Session::connect(
+                &peer_endpoint,
+                host_endpoint.addr(),
+                incoming,
+            )
+            .await
+            .is_err()
+        );
+        let unchanged = store.membership()?;
+        assert_eq!(unchanged.root, before.root);
+        assert_eq!(unchanged.grants, before.grants);
+        assert_eq!(unchanged.revocations, before.revocations);
+        tasks.abort_all();
+        while tasks.join_next().await.is_some() {}
+        host_endpoint.close().await;
+        peer_endpoint.close().await;
+    }
+    Ok(())
+}
+
+#[tokio::test]
 async fn quic_rejects_legacy_protocol_wrong_capability_and_different_baseline() -> anyhow::Result<()>
 {
     let fixture = crate::Fixture::new().await?;
