@@ -1,0 +1,12 @@
+[package]
+name = "syncstr-desktop"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.99"
+publish = false
+
+[dependencies]
+# Update both revisions together; platform initialization lives in gpui_platform.
+gpui = { git = "https://github.com/zed-industries/zed", rev = "4304dec732a75505066de5ce2dbbfb2bec369498", default-features = false }
+gpui_platform = { git = "https://github.com/zed-industries/zed", rev = "4304dec732a75505066de5ce2dbbfb2bec369498", default-features = false, features = ["font-kit"] }
+unicode-segmentation = "1.12"

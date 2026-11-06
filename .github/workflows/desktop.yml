@@ -1,0 +1,66 @@
+name: Desktop
+
+on:
+  pull_request:
+    paths:
+      - apps/desktop/**
+      - .github/workflows/desktop.yml
+  push:
+    branches: [main]
+    paths:
+      - apps/desktop/**
+      - .github/workflows/desktop.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: desktop-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  macos:
+    runs-on: xcode-27
+    timeout-minutes: 60
+    defaults:
+      run:
+        working-directory: apps/desktop
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install Rust
+        run: rustup toolchain install 1.99.1 --profile minimal
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            apps/desktop/target
+          key: desktop-${{ runner.os }}-1.99.1-${{ hashFiles('apps/desktop/Cargo.lock') }}
+      - name: Build
+        run: cargo +1.99.1 build --locked
+      - name: Test
+        run: cargo +1.99.1 test --locked
+  windows:
+    runs-on: windows-2025
+    timeout-minutes: 60
+    defaults:
+      run:
+        working-directory: apps/desktop
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install Rust
+        run: rustup toolchain install 1.99.1 --profile minimal --component clippy
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            apps/desktop/target
+          key: desktop-${{ runner.os }}-1.99.1-${{ hashFiles('apps/desktop/Cargo.lock') }}
+      - name: Build
+        run: cargo +1.99.1 build --locked
+      - name: Test
+        run: cargo +1.99.1 test --locked
+      - name: Clippy
+        run: cargo +1.99.1 clippy --locked --all-targets -- -D warnings
