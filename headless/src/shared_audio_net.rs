@@ -96,9 +96,19 @@ impl crate::shared_audio::Store {
     }
 
     pub fn merge_membership(&self, incoming: crate::enrollment::Proof) -> anyhow::Result<()> {
+        self.merge_membership_from(incoming, None).map(|_| ())
+    }
+
+    fn merge_membership_from(
+        &self,
+        incoming: crate::enrollment::Proof,
+        presenter: Option<(&str, &str)>,
+    ) -> anyhow::Result<crate::enrollment::Proof> {
         self.run(|connection, _| {
             let transaction = connection.transaction()?;
             let mut combined = crate::enrollment::read_proof(&transaction)?;
+            let known_grants = combined.grants.len();
+            let known_revocations = combined.revocations.len();
             anyhow::ensure!(combined.root == incoming.root, "cluster root mismatch");
             let cluster: String = transaction.query_row(
                 "SELECT id FROM cluster_identity WHERE singleton=1",
@@ -110,12 +120,12 @@ impl crate::shared_audio::Store {
                 if let Some(previous) = combined.grants.iter().find(|g| g.id == grant.id) {
                     anyhow::ensure!(previous == &grant, "inconsistent grant replay");
                 } else {
-                    transaction.execute(
-                        "INSERT INTO cluster_enrollment_grants VALUES (?, ?)",
-                        rusqlite::params![grant.id, serde_json::to_vec(&grant)?],
-                    )?;
                     combined.grants.push(grant);
                 }
+            }
+            if let Some((peer, _)) = presenter {
+                // New members may present an unknown grant chain, but cannot replace retained revocations.
+                crate::shared_audio_net::authorize(&combined, peer, false)?;
             }
             for revocation in incoming.revocations {
                 anyhow::ensure!(revocation.cluster == cluster, "cross-cluster revocation");
@@ -123,10 +133,6 @@ impl crate::shared_audio::Store {
                 {
                     anyhow::ensure!(previous == &revocation, "inconsistent revocation replay");
                 } else {
-                    transaction.execute(
-                        "INSERT INTO cluster_revocations VALUES (?, ?)",
-                        rusqlite::params![revocation.id, serde_json::to_vec(&revocation)?],
-                    )?;
                     combined.revocations.push(revocation);
                 }
             }
@@ -134,8 +140,24 @@ impl crate::shared_audio::Store {
                 combined.chain(&grant.id)?;
             }
             combined.revocation_state()?;
+            if let Some((peer, own)) = presenter {
+                crate::shared_audio_net::authorize(&combined, peer, false)?;
+                crate::shared_audio_net::authorize(&combined, own, true)?;
+            }
+            for grant in &combined.grants[known_grants..] {
+                transaction.execute(
+                    "INSERT INTO cluster_enrollment_grants VALUES (?, ?)",
+                    rusqlite::params![grant.id, serde_json::to_vec(grant)?],
+                )?;
+            }
+            for revocation in &combined.revocations[known_revocations..] {
+                transaction.execute(
+                    "INSERT INTO cluster_revocations VALUES (?, ?)",
+                    rusqlite::params![revocation.id, serde_json::to_vec(revocation)?],
+                )?;
+            }
             transaction.commit()?;
-            Ok(())
+            Ok(combined)
         })
     }
 }
@@ -180,11 +202,7 @@ async fn serve_connection(
     let presenter = peer.clone();
     let own_check = own.clone();
     let proof = tokio::task::spawn_blocking(move || -> anyhow::Result<_> {
-        check.merge_membership(hello.proof)?;
-        let proof = check.membership()?;
-        crate::shared_audio_net::authorize(&proof, &presenter, false)?;
-        crate::shared_audio_net::authorize(&proof, &own_check, true)?;
-        Ok(proof)
+        check.merge_membership_from(hello.proof, Some((&presenter, &own_check)))
     })
     .await??;
     crate::cluster_net::send(

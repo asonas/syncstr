@@ -13,10 +13,16 @@ preceded by a four-byte unsigned big-endian byte length. The maximum frame is
 
 The first bidirectional stream carries a client frame
 `{"version":5,"proof":<enrollment-proof>}`. The client finishes its send side.
-The server authenticates the QUIC remote ID against the merged proof and replies
-with the same JSON shape containing its current proof, then finishes. Clients
-must keep their known revocations when merging the response, validate root and
-cluster equality, and require a live host grant for the actual remote ID.
+The server authenticates the QUIC remote ID using the presented grant chain and
+retained revocations, allowing a newly enrolled member to present a grant that
+this host has not seen. It merges the full proof in memory, validates all records,
+and requires live membership for the remote ID and live host authority for itself
+before storing any presented grants or revocations. Validation, authorization and
+storage share one store lock and transaction; a rejected Hello leaves membership
+unchanged. The server replies with the same JSON shape containing its current
+proof, then finishes. Clients must keep their known revocations when merging the
+response, validate root and cluster equality, and require a live host grant for
+the actual remote ID.
 They must also verify their own live membership. A successful QUIC transport
 handshake alone is not application authorization.
 
