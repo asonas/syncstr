@@ -59,6 +59,14 @@ final class SharedAudioFlowTests: XCTestCase {
         openPlayer(app)
         capture(app, "Offline playback of retained B after relaunch")
         app.terminate()
+        if UIDevice.current.userInterfaceIdiom == .phone {
+            XCUIDevice.shared.orientation = .landscapeLeft
+            app.launch()
+            searchForB(app)
+            captureSearchPresentation(app, "Landscape search without a notice")
+            XCTAssertFalse(app.staticTexts["library-status-notice"].exists)
+            app.terminate()
+        }
     }
 
     @MainActor
