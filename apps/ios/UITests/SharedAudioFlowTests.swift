@@ -1,4 +1,5 @@
 import XCTest
+import UIKit
 
 final class SharedAudioFlowTests: XCTestCase {
     @MainActor
@@ -34,7 +35,8 @@ final class SharedAudioFlowTests: XCTestCase {
         XCTAssertEqual(b.value as? String, "保存済み")
         XCTAssertNotEqual(a.value as? String, "保存済み")
         searchForB(app)
-        app.buttons.containing(.staticText, identifier: "TRACK-B").firstMatch.tap()
+        app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "track-"))
+            .containing(.staticText, identifier: "TRACK-B").firstMatch.tap()
         openPlayer(app)
         capture(app, "Offline playback of retained B after relaunch")
         app.terminate()
@@ -52,7 +54,8 @@ final class SharedAudioFlowTests: XCTestCase {
             XCTAssertTrue(notice.waitForExistence(timeout: 10))
             XCTAssertTrue(notice.label.contains(state == "conflict" ? "競合" : "未完了"))
             searchForB(app)
-            app.buttons.containing(.staticText, identifier: "TRACK-B").firstMatch.tap()
+            app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "track-"))
+                .containing(.staticText, identifier: "TRACK-B").firstMatch.tap()
             openPlayer(app)
             capture(app, state + ": unrelated B remains playable")
             app.terminate()
@@ -61,6 +64,87 @@ final class SharedAudioFlowTests: XCTestCase {
             capture(app, state + ": notice survives relaunch")
             app.terminate()
         }
+    }
+
+    @MainActor
+    func testLongNoticePreservesControlsAcrossAppearanceAndOrientation() throws {
+        continueAfterFailure = false
+        let root = try XCTUnwrap(ProcessInfo.processInfo.environment["SYNCSTR_V5_FIXTURE_ROOT"])
+        let app = XCUIApplication()
+        app.launchArguments = ["--v5-fixture", root, "--v5-fixture-state", "incomplete"]
+        defer { XCUIDevice.shared.orientation = .portrait; app.terminate() }
+        for appearance in ["ライト", "ダーク"] {
+            app.launch()
+            chooseAppearance(appearance, app)
+            app.terminate()
+            for orientation in [UIDeviceOrientation.portrait, .landscapeLeft] {
+                XCUIDevice.shared.orientation = orientation
+                app.launch()
+                let notice = app.staticTexts["library-status-notice"]
+                XCTAssertTrue(notice.waitForExistence(timeout: 10))
+                XCTAssertTrue(notice.label.contains("前回の情報と保存済みの曲を保持"))
+                searchForB(app)
+                app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "track-"))
+                    .containing(.staticText, identifier: "TRACK-B").firstMatch.tap()
+                let mini = app.buttons["mini-player-open"].firstMatch
+                XCTAssertTrue(mini.waitForExistence(timeout: 5))
+                XCTAssertTrue(mini.isHittable)
+                XCTAssertFalse(notice.frame.intersects(mini.frame))
+                if UIDevice.current.userInterfaceIdiom == .phone {
+                    XCTAssertTrue(app.tabBars.buttons["ライブラリ"].isHittable)
+                    XCTAssertTrue(app.tabBars.buttons["設定"].isHittable)
+                }
+                capture(app, "Long notice \(appearance) \(orientation.rawValue): navigation and playback")
+                let screen = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
+                screen.name = "Full screen \(appearance) \(orientation.rawValue)"
+                screen.lifetime = .keepAlways
+                add(screen)
+                openPlayer(app)
+                app.terminate()
+            }
+        }
+        app.launch()
+        chooseAppearance("システムに合わせる", app)
+    }
+
+    @available(iOS 27.0, *)
+    @MainActor
+    func testVoiceOverReadsPersistentNotice() throws {
+        continueAfterFailure = false
+        let root = try XCTUnwrap(ProcessInfo.processInfo.environment["SYNCSTR_V5_FIXTURE_ROOT"])
+        let app = XCUIApplication()
+        app.launchArguments = ["--v5-fixture", root, "--v5-fixture-state", "incomplete"]
+        app.launch()
+        let notice = app.staticTexts["library-status-notice"]
+        XCTAssertTrue(notice.waitForExistence(timeout: 10))
+        let voiceOver = XCUIDevice.shared.voiceOverService
+        let wasEnabled = voiceOver.isEnabled
+        defer { if !wasEnabled { try? voiceOver.disable() }; app.terminate() }
+        try voiceOver.enable()
+        XCTAssertTrue(voiceOver.isEnabled)
+        var utterances = [String]()
+        if let speech = try? voiceOver.currentSpeech() { utterances.append(speech.utterance) }
+        for _ in 0..<60 {
+            if utterances.contains(where: { $0.contains(notice.label) }) { break }
+            utterances.append(try voiceOver.moveForward().utterance)
+        }
+        let speech = XCTAttachment(string: utterances.joined(separator: "\n"))
+        speech.name = "VoiceOver spoken notice"
+        speech.lifetime = .keepAlways
+        add(speech)
+        XCTAssertTrue(utterances.contains { $0.contains(notice.label) })
+        capture(app, "VoiceOver reads the persistent notice")
+    }
+
+    @MainActor
+    private func chooseAppearance(_ title: String, _ app: XCUIApplication) {
+        let button = app.buttons["設定"].firstMatch
+        let sidebar = app.cells.containing(.staticText, identifier: "設定").firstMatch
+        let settings = button.exists ? button : sidebar
+        XCTAssertTrue(settings.waitForExistence(timeout: 5))
+        settings.tap()
+        app.buttons["appearance-picker"].tap()
+        app.buttons[title].tap()
     }
 
     @MainActor
@@ -74,12 +158,24 @@ final class SharedAudioFlowTests: XCTestCase {
 
     @MainActor
     private func searchForB(_ app: XCUIApplication) {
-        let searchTab = app.buttons["検索"].firstMatch
+        let searchButton = app.buttons["検索"].firstMatch
+        let sidebarSearch = app.cells.containing(.staticText, identifier: "検索").firstMatch
+        if !searchButton.exists, !sidebarSearch.exists, app.navigationBars.buttons["ライブラリ"].exists {
+            app.navigationBars.buttons["ライブラリ"].tap()
+        }
+        let searchTab = searchButton.exists ? searchButton : sidebarSearch
         XCTAssertTrue(searchTab.waitForExistence(timeout: 5))
         searchTab.tap()
         let field = app.searchFields.firstMatch
         XCTAssertTrue(field.waitForExistence(timeout: 5))
+        capture(app, "Search field before interaction")
+        let notice = app.staticTexts["library-status-notice"]
+        if notice.exists {
+            XCTAssertFalse(notice.frame.intersects(field.frame))
+        }
+        XCTAssertTrue(field.isHittable)
         field.tap()
+        capture(app, "Search field before typing B")
         field.typeText("TRACK-B")
         XCTAssertTrue(app.staticTexts["TRACK-B"].waitForExistence(timeout: 5))
         XCTAssertFalse(app.staticTexts["TRACK-A"].exists)
@@ -87,7 +183,10 @@ final class SharedAudioFlowTests: XCTestCase {
 
     @MainActor
     private func openSongs(_ app: XCUIApplication) {
-        let songs = app.buttons["曲"].firstMatch
+        let songs = app.descendants(matching: .any)["曲"].firstMatch
+        if !songs.exists, app.navigationBars.buttons["ライブラリ"].exists {
+            app.navigationBars.buttons["ライブラリ"].tap()
+        }
         XCTAssertTrue(songs.waitForExistence(timeout: 10))
         songs.tap()
     }
