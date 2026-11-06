@@ -328,7 +328,22 @@ final class ClusterTransferTests: XCTestCase {
             host: recipient, file: otherFile) { _ in }
         XCTAssertNil(try restored.clusterCatalog().organization?.tracks.first { $0.sha256 == legacy.sha256 }?.imported.tagValues)
         XCTAssertFalse(try XCTUnwrap(restored.clusterObjectStates().first { $0.object == legacy.sha256 }).conflicted)
+        func assertSingleHeads(_ stage: String, file: StaticString = #filePath, line: UInt = #line) throws {
+            let states = try restored.clusterObjectStates()
+            let edits = try restored.clusterMetadataEdits()
+            let heads = states.map { "\($0.object):\($0.heads.map(\.id))" }.joined(separator: "; ")
+            let queue = edits.map { "\($0.entry.sha256):\($0.id) parents=\($0.parents)" }.joined(separator: "; ")
+            XCTAssertTrue(states.allSatisfy { $0.heads.count == 1 },
+                "\(stage): heads=[\(heads)] queue=[\(queue)]", file: file, line: line)
+        }
+        let queueEncoder = JSONEncoder()
+        queueEncoder.outputFormatting = [.sortedKeys]
+        let pendingBeforeRecovery = try queueEncoder.encode(restored.clusterMetadataEdits())
+        XCTAssertEqual(try restored.clusterMetadataEdits().map(\.id), [rejectedEdit.id])
         let recovered = try await network.refresh()
+        XCTAssertEqual(try queueEncoder.encode(restored.clusterMetadataEdits()), pendingBeforeRecovery,
+            "Receiving the host's tag recovery must not enqueue local edits or replace pending edits")
+        try assertSingleHeads("host tag recovery")
         let evidence = try XCTUnwrap(recovered.organization?.tracks.first { $0.sha256 == legacy.sha256 })
         XCTAssertEqual(evidence.imported.compilationValues, ["1"], String(describing: evidence.imported.tagValues))
         XCTAssertEqual(evidence.importContext, context)
@@ -343,21 +358,36 @@ final class ClusterTransferTests: XCTestCase {
         let titled = try await network.resolveAlbum(ClusterAlbumConflict(id: recoveredAlbum, titles: [title],
             objects: [legacy.sha256, other.sha256]), title: title)
         XCTAssertEqual(titled.organization?.albums.first { $0.id == recoveredAlbum }?.title, title)
+        try assertSingleHeads("album-title")
+        XCTAssertEqual(try queueEncoder.encode(restored.clusterMetadataEdits()), pendingBeforeRecovery)
         let state = try XCTUnwrap(restored.clusterObjectStates().first { $0.object == legacy.sha256 })
         let head = try XCTUnwrap(state.heads.first)
         _ = try await network.resolve(object: state.object, selected: head.id, parents: state.heads.map(\.id))
         let resolved = try XCTUnwrap(restored.clusterObjectStates().first { $0.object == legacy.sha256 })
         XCTAssertEqual(resolved.heads.count, 1)
         XCTAssertEqual(resolved.heads.first?.action.kind, .resolve)
+        try assertSingleHeads("resolve")
+        XCTAssertEqual(try queueEncoder.encode(restored.clusterMetadataEdits()), pendingBeforeRecovery)
         for hidden in [true, false] {
             let current = try await network.refresh()
+            XCTAssertEqual(try queueEncoder.encode(restored.clusterMetadataEdits()), pendingBeforeRecovery,
+                "Refreshing before visibility must not create local edits")
+            let heads = Dictionary(uniqueKeysWithValues: try restored.clusterObjectStates().map { ($0.object, $0.heads.map(\.id)) })
             _ = try restored.setAlbumsHidden([recoveredAlbum], hidden: hidden, libraryID: current.id)
             XCTAssertGreaterThan(try restored.clusterMetadataEdits().count, 1)
+            for edit in try restored.clusterMetadataEdits() where [legacy.sha256, other.sha256].contains(edit.entry.sha256) {
+                let expectedParents = try XCTUnwrap(heads[edit.entry.sha256])
+                XCTAssertEqual(edit.parents, expectedParents, "Visibility edits must use the current object heads")
+            }
             do { try await network.syncMetadata() }
             catch LocalMusicError.clusterNeedsAttention {}
             XCTAssertEqual(try restored.clusterMetadataEdits().map(\.id), [rejectedEdit.id])
+            try assertSingleHeads(hidden ? "hide" : "restore visibility")
             let updated = try await network.refresh()
             XCTAssertEqual(updated.organization?.isHidden(recoveredAlbum), hidden)
+            XCTAssertEqual(try queueEncoder.encode(restored.clusterMetadataEdits()), pendingBeforeRecovery,
+                "Receiving the visibility acknowledgement must leave only the original pending edit")
+            try assertSingleHeads("visibility acknowledgement")
         }
         second.terminate(); second.waitUntilExit()
         XCTAssertEqual(try LocalMusicStore.digest(file: store.fileURL(entry)), entry.sha256)

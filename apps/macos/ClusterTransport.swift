@@ -172,8 +172,12 @@ final class ClusterNetwork {
         }
         guard successful else { throw failure }
         var catalog = try await CatalogStorage.shared.perform { try database.clusterCatalog() }
-        if catalog.logicalAudio != true { catalog = try await UploadedMusic.recoverClusterEvidence(catalog, store: store) }
-        try await CatalogStorage.shared.perform { [catalog] in try files.save(catalog, clusterEdits: true) }
+        // Received changes are the baseline; only recovery from this device creates edits.
+        try await CatalogStorage.shared.perform { [catalog] in try files.save(catalog, clusterEdits: false) }
+        if catalog.logicalAudio != true {
+            catalog = try await UploadedMusic.recoverClusterEvidence(catalog, store: store)
+            try await CatalogStorage.shared.perform { [catalog] in try files.save(catalog, clusterEdits: true) }
+        }
         return catalog
     }
 
