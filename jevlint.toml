@@ -1,0 +1,8 @@
+presets = ["readable-code", "software-design"]
+
+[provider]
+name = "typesafe"
+model = "jev-latest"
+
+[scoring]
+fail_under = 0
