@@ -8,9 +8,15 @@ final class ClusterTransferTests: XCTestCase {
     func testNativeEnrollmentReconciliationAndVerifiedDownloadSurviveRestart() async throws {
         let repository = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
             .deletingLastPathComponent().deletingLastPathComponent()
-        let binary = ProcessInfo.processInfo.environment["SYNCSTR_HEADLESS_TEST_BINARY"].map { URL(fileURLWithPath: $0) }
+        let configuredBinary = ProcessInfo.processInfo.environment["SYNCSTR_HEADLESS_TEST_BINARY"].map { URL(fileURLWithPath: $0) }
+            ?? ProcessInfo.processInfo.environment["SYNCSTR_V5_TEST_BIN_DIR"].map { URL(fileURLWithPath: $0).appendingPathComponent("syncstr-headless") }
+        let binary = configuredBinary
             ?? repository.appendingPathComponent("headless/target/debug/syncstr-headless")
         guard FileManager.default.isExecutableFile(atPath: binary.path) else {
+            if configuredBinary != nil {
+                XCTFail("The configured interoperability binary is missing or not executable")
+                throw LocalMusicError.invalidData
+            }
             throw XCTSkip("Build headless with --features p2p before running interoperability tests")
         }
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
@@ -29,6 +35,35 @@ final class ClusterTransferTests: XCTestCase {
                 throw LocalMusicError.invalidData
             }
         }
+        func startHost(_ arguments: [String], name: String) async throws -> (Process, PeerAddress) {
+            let addressFile = root.appendingPathComponent(name + ".json")
+            let logFile = root.appendingPathComponent(name + ".log")
+            _ = FileManager.default.createFile(atPath: logFile.path, contents: nil)
+            let log = try FileHandle(forWritingTo: logFile)
+            defer { try? log.close() }
+            let process = Process()
+            process.executableURL = binary
+            process.arguments = ["cluster-serve"] + arguments + ["--peer-listen", "127.0.0.1:0",
+                "--peer-address-out", addressFile.path, "--no-discovery"]
+            process.standardOutput = log; process.standardError = log
+            try process.run()
+            var ready = false
+            defer { if !ready && process.isRunning { process.terminate(); process.waitUntilExit() } }
+            for _ in 0..<200 {
+                if FileManager.default.fileExists(atPath: addressFile.path) {
+                    let address = try PeerAddress.parse(String(decoding: Data(contentsOf: addressFile), as: UTF8.self))
+                    XCTAssertFalse(address.addresses.isEmpty)
+                    XCTAssertTrue(address.addresses.allSatisfy { $0.hasPrefix("127.0.0.1:") })
+                    ready = true
+                    return (process, address)
+                }
+                if !process.isRunning { break }
+                try await Task.sleep(for: .milliseconds(50))
+            }
+            let details = String(decoding: try Data(contentsOf: logFile), as: UTF8.self)
+            XCTFail("Legacy host did not publish its loopback endpoint: \(details)")
+            throw LocalMusicError.clusterUnavailable
+        }
         let peer = root.appendingPathComponent("peer")
         let data = root.appendingPathComponent("data")
         let invitationURL = root.appendingPathComponent("invitation.json")
@@ -46,23 +81,18 @@ final class ClusterTransferTests: XCTestCase {
         let hostInvitation = root.appendingPathComponent("host-invitation.json")
         try run(["cluster-invite"] + arguments + ["--library-host", "--output", hostInvitation.path])
         let invitation = try ClusterInvitation.parse(String(decoding: Data(contentsOf: invitationURL), as: UTF8.self))
-        let process = Process()
-        process.executableURL = binary; process.arguments = ["cluster-serve"] + arguments
-        process.standardOutput = Pipe()
-        try process.run()
+        let (process, firstAddress) = try await startHost(arguments, name: "first-host")
         defer { if process.isRunning { process.terminate(); process.waitUntilExit() } }
-        let discovery = ClusterDiscovery()
-        defer { discovery.stop() }
-        let address = try await discovery.find(invitation.host)
+        let address = try firstAddress.endpoint(expected: invitation.host)
         let secondPeer = root.appendingPathComponent("second-peer")
         let secondData = root.appendingPathComponent("second-data")
         let secondArguments = ["--data", secondData.path, "--peer-state", secondPeer.path]
         try run(["peer-init", "--state", secondPeer.path])
-        try run(["cluster-join"] + secondArguments + ["--invitation", hostInvitation.path])
-        let second = Process()
-        second.executableURL = binary; second.arguments = ["cluster-serve"] + secondArguments
-        second.standardOutput = Pipe()
-        try second.run()
+        let firstAddressFile = root.appendingPathComponent("first-host.json")
+        try run(["cluster-join"] + secondArguments + ["--invitation", hostInvitation.path,
+            "--peer-listen", "127.0.0.1:0", "--host-address", firstAddressFile.path])
+        let (second, secondAddress) = try await startHost(secondArguments + [
+            "--peer-address", firstAddress.id + "=" + firstAddressFile.path], name: "second-host")
         defer { if second.isRunning { second.terminate(); second.waitUntilExit() } }
         let secrets = CredentialStore(service: "syncstr-cluster-test-" + UUID().uuidString)
         let store = LocalMusicStore(root: root.appendingPathComponent("received"))
@@ -73,6 +103,8 @@ final class ClusterTransferTests: XCTestCase {
             try await ClusterSession.enroll(invitation: invitation, address: address, secrets: secrets, database: database, name: "Fixture library")
             let session = try await ClusterSession.connect(address: address, secrets: secrets, database: database)
             defer { session.close() }
+            let sharedAudio = await session.sharedAudio
+            XCTAssertFalse(sharedAudio, "This test must exercise the legacy protocol")
             var imported = LocalCatalog(id: invitation.cluster, name: "Fixture", entries: [entry])
             imported.organize()
             try imported.organization?.captureArtwork(blue, track: entry.track.id, source: "music", context: "exact-file")
@@ -136,7 +168,7 @@ final class ClusterTransferTests: XCTestCase {
         editedCatalog.organization?.set(subject: album, kind: "visibility", value: "true")
         try store.save(editedCatalog, clusterEdits: true)
         XCTAssertEqual(try CatalogDatabase(databaseURL).clusterMetadataEdits().count, 1)
-        let metadataNetwork = ClusterNetwork(store: store, secrets: secrets)
+        let metadataNetwork = ClusterNetwork(store: store, secrets: secrets, addresses: [firstAddress])
         try await metadataNetwork.syncMetadata()
         let edited = try await metadataNetwork.refresh()
         metadataNetwork.stop()
@@ -149,7 +181,7 @@ final class ClusterTransferTests: XCTestCase {
         var chosen = edited
         try chosen.organization?.chooseArtwork(red, album: album)
         try store.save(chosen, clusterEdits: true)
-        let covers = ClusterNetwork(store: store, secrets: secrets)
+        let covers = ClusterNetwork(store: store, secrets: secrets, addresses: [firstAddress])
         defer { covers.stop() }
         try await covers.syncMetadata()
         let manual = try await covers.refresh()
@@ -173,7 +205,8 @@ final class ClusterTransferTests: XCTestCase {
         let invalid = root.appendingPathComponent("invalid.mp3")
         try Data("not audio".utf8).write(to: invalid)
         let transfer = LocalTransfer(store: store, peerSecrets: secrets,
-            peerPairing: CredentialStore(service: "syncstr-cluster-test-pair-" + UUID().uuidString))
+            peerPairing: CredentialStore(service: "syncstr-cluster-test-pair-" + UUID().uuidString),
+            clusterAddresses: [firstAddress])
         defer { transfer.cancel() }
         await transfer.restorePeer()
         XCTAssertFalse(transfer.clusterMutationsUnavailable)
@@ -225,13 +258,25 @@ final class ClusterTransferTests: XCTestCase {
         transfer.cancel()
         try FileManager.default.removeItem(at: store.fileURL(entry))
         let replica = secondData.appendingPathComponent("objects").appendingPathComponent(entry.sha256 + ".mp3")
-        for _ in 0..<120 {
-            if FileManager.default.fileExists(atPath: replica.path) { break }
+        let replicaNetwork = ClusterNetwork(store: store, secrets: secrets, addresses: [secondAddress])
+        defer { replicaNetwork.stop() }
+        let replicaDeadline = ContinuousClock.now.advanced(by: .seconds(30))
+        var replicaReady = false
+        while ContinuousClock.now < replicaDeadline {
+            if FileManager.default.fileExists(atPath: replica.path) {
+                let replicated = try await replicaNetwork.refresh()
+                if replicated.organization?.coverAsset(for: album) == images.red,
+                   replicated.organization?.artwork?.assets[images.red] == red {
+                    replicaReady = true
+                    break
+                }
+            }
             try await Task.sleep(for: .milliseconds(250))
         }
-        XCTAssertTrue(FileManager.default.fileExists(atPath: replica.path), "The second host must have a verified replica before the first stops")
+        XCTAssertTrue(replicaReady, "The second host must have verified audio and current metadata before the first stops")
+        guard replicaReady else { throw LocalMusicError.clusterUnavailable }
         process.terminate(); process.waitUntilExit()
-        let network = ClusterNetwork(store: store, secrets: secrets)
+        let network = ClusterNetwork(store: store, secrets: secrets, addresses: [secondAddress])
         defer { network.stop() }
         let catalog = try await network.refresh()
         XCTAssertEqual(catalog.entries.map(\.sha256), [entry.sha256])

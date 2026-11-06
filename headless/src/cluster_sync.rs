@@ -4,7 +4,8 @@ pub async fn run_lan(
     identity: std::sync::Arc<crate::peer::Identity>,
     endpoint: iroh::Endpoint,
     store: crate::store::Store,
-    discovery: crate::cluster_discovery::Discovery,
+    discovery: Option<crate::cluster_discovery::Discovery>,
+    initial_peers: Vec<iroh::EndpointAddr>,
 ) -> anyhow::Result<()> {
     store.local_cluster_grant(&identity).await?;
     let catalog = store.catalog().await?;
@@ -27,13 +28,21 @@ pub async fn run_lan(
                 .await?;
         }
     }
-    let mut peers = std::collections::BTreeMap::new();
+    let mut peers: std::collections::BTreeMap<_, _> = initial_peers
+        .into_iter()
+        .map(|address| (address.id, address))
+        .collect();
     let relay = store.cluster_relay().await?.map(|url| crate::cluster_remote::validate_url(&url)).transpose()?;
     let mut interval = tokio::time::interval(std::time::Duration::from_secs(3));
     interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     loop {
         tokio::select! {
-            found = discovery.next() => {
+            found = async {
+                match &discovery {
+                    Some(discovery) => discovery.next().await,
+                    None => std::future::pending::<anyhow::Result<iroh::EndpointAddr>>().await,
+                }
+            } => {
                 let mut address = found?;
                 if let Some(relay) = &relay { address = address.with_relay_url(relay.clone()); }
                 if address.id != identity.id() && (peers.len() < 256 || peers.contains_key(&address.id)) { peers.insert(address.id, address); }

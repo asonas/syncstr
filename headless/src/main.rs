@@ -143,6 +143,14 @@ enum Command {
         peer_state: std::path::PathBuf,
         #[arg(long)]
         relay_only: bool,
+        #[arg(long)]
+        peer_listen: Vec<std::net::SocketAddr>,
+        #[arg(long)]
+        peer_address_out: Option<std::path::PathBuf>,
+        #[arg(long)]
+        no_discovery: bool,
+        #[arg(long, value_name = "ID=ADDRESS_FILE", requires = "no_discovery")]
+        peer_address: Vec<String>,
     },
     #[cfg(feature = "p2p")]
     RelayServe {
@@ -218,6 +226,10 @@ enum Command {
         peer_state: std::path::PathBuf,
         #[arg(long)]
         invitation: std::path::PathBuf,
+        #[arg(long)]
+        peer_listen: Vec<std::net::SocketAddr>,
+        #[arg(long)]
+        host_address: Option<std::path::PathBuf>,
     },
     #[cfg(feature = "p2p")]
     ClusterRevoke {
@@ -617,15 +629,40 @@ async fn run(cli: crate::Cli) -> anyhow::Result<()> {
             data,
             peer_state,
             relay_only,
+            peer_listen,
+            peer_address_out,
+            no_discovery,
+            peer_address,
         } => {
             let identity =
                 std::sync::Arc::new(syncstr_headless::peer::Identity::open(&peer_state)?);
             let store = syncstr_headless::store::Store::open(&data)?;
             let relay = store.cluster_relay().await?;
+            anyhow::ensure!(peer_address.len() <= 256, "too many explicit peers");
+            let peers = peer_address
+                .iter()
+                .map(|value| {
+                    let (id, path) = value
+                        .split_once('=')
+                        .ok_or_else(|| anyhow::anyhow!("expected ID=ADDRESS_FILE"))?;
+                    syncstr_headless::peer::Address::read(std::path::Path::new(path), id.parse()?)?
+                        .endpoint()
+                })
+                .collect::<anyhow::Result<Vec<_>>>()?;
             let (endpoint, _lock) = identity
-                .cluster_remote_endpoint(&[], relay.as_deref(), relay_only)
+                .cluster_remote_endpoint(&peer_listen, relay.as_deref(), relay_only)
                 .await?;
-            let discovery = syncstr_headless::cluster_discovery::Discovery::start(&endpoint)?;
+            // This service handles legacy protocols; v5 is served by shared-audio-serve.
+            endpoint.set_alpns(vec![
+                syncstr_headless::cluster_net::ENROLLMENT_ALPN.to_vec(),
+                syncstr_headless::cluster_sync::ALPN.to_vec(),
+                syncstr_headless::playlist_sync::ALPN.to_vec(),
+            ]);
+            let discovery = if no_discovery {
+                None
+            } else {
+                Some(syncstr_headless::cluster_discovery::Discovery::start(&endpoint)?)
+            };
             println!("Cluster LAN endpoint {}", identity.id());
             let task = tokio::spawn(syncstr_headless::cluster_net::serve(
                 identity.clone(),
@@ -637,7 +674,11 @@ async fn run(cli: crate::Cli) -> anyhow::Result<()> {
                 endpoint.clone(),
                 store,
                 discovery,
+                peers,
             ));
+            if let Some(path) = peer_address_out {
+                syncstr_headless::peer::Address::write(&endpoint, &path)?;
+            }
             tokio::select! { _ = wait_for_shutdown() => {}, result = &mut replication => { result??; } }
             replication.abort();
             endpoint.close().await;
@@ -718,6 +759,8 @@ async fn run(cli: crate::Cli) -> anyhow::Result<()> {
             data,
             peer_state,
             invitation,
+            peer_listen,
+            host_address,
         } => {
             use std::io::Read as _;
             let mut bytes = Vec::new();
@@ -728,7 +771,19 @@ async fn run(cli: crate::Cli) -> anyhow::Result<()> {
             let invite: syncstr_headless::enrollment::Invitation = serde_json::from_slice(&bytes)?;
             let identity = syncstr_headless::peer::Identity::open(&peer_state)?;
             let store = syncstr_headless::store::Store::open(&data)?;
-            let (endpoint, _lock) = identity.cluster_endpoint(&[]).await?;
+            let (endpoint, _lock) = identity.cluster_endpoint(&peer_listen).await?;
+            if let Some(path) = host_address {
+                let address = syncstr_headless::peer::Address::read(&path, invite.host.parse()?)?
+                    .endpoint()?;
+                let result = syncstr_headless::cluster_net::enroll(
+                    &identity, &endpoint, address, &invite, &store,
+                )
+                .await;
+                endpoint.close().await;
+                result?;
+                println!("Joined cluster {}", invite.cluster);
+                return Ok(());
+            }
             let discovery = syncstr_headless::cluster_discovery::Discovery::start(&endpoint)?;
             let mut candidates = 0;
             let mut phase = "waiting for the pinned host via mDNS";

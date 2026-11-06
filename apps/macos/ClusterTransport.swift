@@ -33,12 +33,13 @@ final class ClusterNetwork {
     private let discovery = ClusterDiscovery()
     private let store: LocalMusicStore
     private let secrets: CredentialStore
+    private let explicitAddresses: [PeerAddress]?
     private var session: ClusterSession?
     private(set) var lastPath: String?
     private(set) var sharedAudio = false
 
-    init(store: LocalMusicStore, secrets: CredentialStore) {
-        self.store = store; self.secrets = secrets
+    init(store: LocalMusicStore, secrets: CredentialStore, addresses: [PeerAddress]? = nil) {
+        self.store = store; self.secrets = secrets; self.explicitAddresses = addresses
     }
 
     private func requireLegacyMutations(database: CatalogDatabase) async throws {
@@ -96,6 +97,9 @@ final class ClusterNetwork {
             }
         }
         diagnostic?.record("selection", "eligible", fields: ["count": String(hosts.count)])
+        if let explicitAddresses {
+            return try explicitAddresses.filter { hosts.contains($0.id) }.map { try $0.endpoint(expected: $0.id) }
+        }
         discovery.start()
         if let configured = registration.relay {
             let relay = try ClusterInvitation.validatedRelay(configured)

@@ -294,7 +294,8 @@ final class LocalTransfer: ObservableObject {
     private let clusterPath = NWPathMonitor()
     private var automaticAudioOperation = false
     private var clusterRetry: Task<Void, Never>?
-    private lazy var clusterNetwork = ClusterNetwork(store: store, secrets: peerSecrets)
+    private let clusterAddresses: [PeerAddress]?
+    private lazy var clusterNetwork = ClusterNetwork(store: store, secrets: peerSecrets, addresses: clusterAddresses)
     var canSyncPlaylists: Bool { clusterRegistration != nil || peerName != nil }
 
     private func exchangePlaylists(_ request: PlaylistRequest? = nil) async throws -> PlaylistResponse? {
@@ -370,12 +371,14 @@ final class LocalTransfer: ObservableObject {
     init(store: LocalMusicStore = LocalMusicStore(), secrets: CredentialStore = CredentialStore(
         service: "as.ason.syncstr.local-pair", label: "syncstr paired device"),
         peerSecrets: CredentialStore = CredentialStore(service: "as.ason.syncstr.p2p.identity"),
-        peerPairing: CredentialStore = CredentialStore(service: "as.ason.syncstr.p2p.peer"), diagnostics: PlaybackDiagnostics? = nil) {
+        peerPairing: CredentialStore = CredentialStore(service: "as.ason.syncstr.p2p.peer"), diagnostics: PlaybackDiagnostics? = nil,
+        clusterAddresses: [PeerAddress]? = nil) {
         self.diagnostics = diagnostics
         self.store = store
         self.secrets = secrets
         self.peerSecrets = peerSecrets
         self.peerPairing = peerPairing
+        self.clusterAddresses = clusterAddresses
         restoreSaves()
         clusterPath.pathUpdateHandler = { [weak self] path in
             Task { @MainActor in
