@@ -272,27 +272,30 @@ struct OfflineSaveControls: View {
     private var request: OfflineSaveRequest? { library.saveRequest(for: tracks, scope: scope) }
     private var saved: Int { tracks.filter { library.hasManagedCopy($0) }.count }
     private var pending: Bool { request.map { [.waiting, .wifi, .saving].contains($0.state) } ?? false }
+    private var removalPending: Bool { tracks.contains(where: library.isLocalCopyRemovalPending) }
 
     var body: some View {
         if compact || iconOnly {
             Menu {
                 Text(saveStatus)
-                if let request, let error = request.error { Text(error) }
-                if pending, let request {
-                    Button(request.entries.count > tracks.count ? "アルバム全体の保存を中止" : "保存を中止") {
-                        library.transfer.cancelSave(request)
+                if !removalPending {
+                    if let request, let error = request.error { Text(error) }
+                    if pending, let request {
+                        Button(request.entries.count > tracks.count ? "アルバム全体の保存を中止" : "保存を中止") {
+                            library.transfer.cancelSave(request)
+                        }
+                    } else if saved < tracks.count {
+                        Button(request?.state == .failed ? "保存を再試行" : "この端末に保存") {
+                            Task { await library.transfer.requestSave(tracks, scope: scope) }
+                        }
                     }
-                } else if saved < tracks.count {
-                    Button(request?.state == .failed ? "保存を再試行" : "この端末に保存") {
-                        Task { await library.transfer.requestSave(tracks, scope: scope) }
+                    if !pending && tracks.contains(where: library.canRemoveLocalCopy) {
+                        Button("この端末の保存を解除", role: .destructive) { library.localCopiesToRemove = tracks }
                     }
-                }
-                if !pending && tracks.contains(where: library.canRemoveLocalCopy) {
-                    Button("この端末の保存を解除", role: .destructive) { library.localCopiesToRemove = tracks }
                 }
             } label: {
                 Group {
-                    if pending && saved < tracks.count {
+                    if removalPending || (pending && saved < tracks.count) {
                         ProgressView().controlSize(.small)
                     } else {
                         Image(saved == tracks.count && !tracks.isEmpty ? "regen-circle-check" : request?.state == .failed ? "regen-circle-alert" : compact ? "regen-dots" : "regen-cloud-download")
@@ -314,7 +317,9 @@ struct OfflineSaveControls: View {
             .help(saveStatus)
         } else {
         VStack(alignment: .leading, spacing: 4) {
-            if pending, let request {
+            if removalPending {
+                Text("保存の解除待ち").font(.caption).foregroundStyle(.secondary)
+            } else if pending, let request {
                 Text(request.state == .wifi ? "Wi-Fi接続待ち" : request.state == .saving ? "保存中" : "接続待ち")
                     .font(.caption).foregroundStyle(.secondary)
                 if !compact { Text("\(saved)/\(tracks.count)曲を保存済み").font(.caption).monospacedDigit() }
@@ -346,7 +351,7 @@ struct OfflineSaveControls: View {
                 .accessibilityLabel(request?.state == .failed ? "保存を再試行" : "この端末に保存")
                 .help(request?.state == .failed ? "保存を再試行" : "この端末に保存")
             }
-            if !compact && tracks.contains(where: library.canRemoveLocalCopy) && !pending {
+            if !compact && tracks.contains(where: library.canRemoveLocalCopy) && !pending && !removalPending {
                 Button("この端末の保存を解除", role: .destructive) { library.localCopiesToRemove = tracks }
             }
         }
@@ -357,6 +362,7 @@ struct OfflineSaveControls: View {
     }
 
     private var saveStatus: String {
+        if removalPending { return "保存の解除待ち" }
         if saved == tracks.count && !tracks.isEmpty { return "保存済み" }
         switch request?.state {
         case .wifi: return "Wi-Fi接続待ち"
@@ -378,7 +384,13 @@ struct OfflineSaveRemoval: ViewModifier {
             set: { if !$0 { library.localCopiesToRemove = [] } }
         ), presenting: library.localCopiesToRemove) { tracks in
             Button("キャンセル", role: .cancel) {}
-            Button("保存を解除", role: .destructive) { library.removeLocalCopies(tracks) }
+            Button("保存を解除", role: .destructive) {
+                let libraryID = library.localCatalog?.id
+                Task { @MainActor in
+                    guard library.localCatalog?.id == libraryID else { return }
+                    library.removeLocalCopies(tracks)
+                }
+            }
         } message: { tracks in
             Text("\(tracks.count)曲の管理されたコピーを削除します。対象の曲は再生を停止します。共有ライブラリ、他の端末の音源、元のファイルは残ります。")
         }

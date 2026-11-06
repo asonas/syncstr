@@ -1,3 +1,4 @@
+import Combine
 import Foundation
 import SQLite3
 import XCTest
@@ -13,6 +14,108 @@ final class OfflineSaveTests: XCTestCase {
     private var root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
 
     override func tearDown() { try? FileManager.default.removeItem(at: root) }
+
+    func testBusyTransferReportsRemovalBusyInsteadOfInvalidData() throws {
+        let (store, entries) = try fixture()
+        let transfer = LocalTransfer(store: store)
+        defer { transfer.stopSaveWorker() }
+        transfer.busy = true
+        XCTAssertThrowsError(try transfer.removeClusterCopy(entries[0])) { error in
+            guard case LocalMusicError.transferBusy = error else {
+                return XCTFail("Expected transferBusy, received \(error)")
+            }
+        }
+        transfer.busy = false
+        let invalid = LocalEntry(track: entries[0].track, sha256: "invalid", artwork: nil)
+        XCTAssertThrowsError(try transfer.removeClusterCopy(invalid)) { error in
+            guard case LocalMusicError.invalidData = error else {
+                return XCTFail("Expected invalidData, received \(error)")
+            }
+        }
+    }
+
+    func testConfirmedSharedAudioRemovalWaitsForBusyTransferAndKeepsB() async throws {
+        let f = try SharedAudioTests.Fixture()
+        defer { try? FileManager.default.removeItem(at: f.store.root) }
+        try f.database.receiveSharedAudio(f.snapshot(), peer: f.host)
+        let a = try XCTUnwrap(f.database.playbackEntry("A")?.entry)
+        let b = try XCTUnwrap(f.database.playbackEntry("B")?.entry)
+        try Data("abc".utf8).write(to: f.store.fileURL(a))
+        try f.database.saveAudioPin(a)
+        try f.database.saveAudioPin(b)
+        let library = Library(localStore: f.store)
+        defer { library.closeLibrary() }
+        try library.openLocal(f.database.clusterCatalog())
+
+        library.transfer.busy = true
+        library.localCopiesToRemove = [a.track]
+        let confirmed = library.localCopiesToRemove
+        library.localCopiesToRemove = []
+        library.removeLocalCopies(confirmed)
+        XCTAssertTrue(library.isLocalCopyRemovalPending(a.track))
+        XCTAssertFalse(library.isLocalCopyRemovalPending(b.track))
+        XCTAssertTrue(f.store.hasSavedFile(a))
+        XCTAssertTrue(f.store.hasSavedFile(b))
+        XCTAssertNil(library.message)
+
+        let completed = expectation(description: "Confirmed removal resumes when busy becomes false")
+        let observation = library.$pendingLocalCopyRemovals.dropFirst().filter { $0.isEmpty }.prefix(1).sink { _ in
+            completed.fulfill()
+        }
+        defer { observation.cancel() }
+        // A failed transfer still becomes idle; removal does not require network success.
+        library.transfer.status = LocalMusicError.disconnected.localizedDescription
+        library.transfer.busy = false
+        await fulfillment(of: [completed], timeout: 2)
+        XCTAssertTrue(library.pendingLocalCopyRemovals.isEmpty)
+        XCTAssertFalse(f.store.hasSavedFile(a))
+        XCTAssertFalse(library.hasManagedCopy(a.track))
+        XCTAssertTrue(f.store.hasSavedFile(b))
+        XCTAssertTrue(library.hasManagedCopy(b.track))
+        XCTAssertTrue(f.store.hasFile(b))
+        XCTAssertNil(library.message)
+    }
+
+    func testConfirmedRemovalResumesAfterSaveWorkerFinishesWithoutBusyChanging() async throws {
+        let (store, entries) = try fixture()
+        try Data(repeating: 1, count: 1024).write(to: store.fileURL(entries[0]))
+        try Data(repeating: 2, count: 1024).write(to: store.fileURL(entries[1]))
+        let library = Library(localStore: store)
+        defer { library.closeLibrary() }
+        try library.openLocal(try XCTUnwrap(store.load()))
+        library.transfer.setSavesBackgrounded(true)
+        try cache(entries[2], transfer: library.transfer, number: 3)
+        await library.transfer.requestSave([entries[2].track], scope: "track:track-3")
+        library.transfer.setSavesBackgrounded(false)
+
+        XCTAssertFalse(library.transfer.busy)
+        XCTAssertNotNil(library.transfer.saveWorker)
+        XCTAssertFalse(library.transfer.readyForLocalCopyRemoval)
+        library.removeLocalCopies([entries[0].track])
+        XCTAssertTrue(library.isLocalCopyRemovalPending(entries[0].track))
+        XCTAssertTrue(store.hasFile(entries[0]))
+        XCTAssertTrue(library.hasManagedCopy(entries[1].track))
+        XCTAssertNotNil(library.transfer.saveWorker, "Confirmation must not cancel the active save")
+
+        let completed = expectation(description: "Removal resumes after the real save worker finishes")
+        let observation = library.$pendingLocalCopyRemovals.dropFirst().filter { $0.isEmpty }.prefix(1).sink { _ in
+            completed.fulfill()
+        }
+        defer { observation.cancel() }
+        await fulfillment(of: [completed], timeout: 2)
+
+        XCTAssertFalse(library.transfer.busy)
+        XCTAssertNil(library.transfer.saveWorker)
+        XCTAssertTrue(library.transfer.readyForLocalCopyRemoval)
+        XCTAssertTrue(library.pendingLocalCopyRemovals.isEmpty)
+        XCTAssertFalse(store.hasFile(entries[0]))
+        XCTAssertFalse(library.hasManagedCopy(entries[0].track))
+        XCTAssertTrue(store.hasFile(entries[1]))
+        XCTAssertTrue(library.hasManagedCopy(entries[1].track))
+        XCTAssertTrue(store.hasFile(entries[2]))
+        XCTAssertEqual(library.saveRequest(for: [entries[2].track], scope: "track:track-3")?.state, .complete)
+        XCTAssertNil(library.message)
+    }
 
     private func fixture() throws -> (LocalMusicStore, [LocalEntry]) {
         let store = LocalMusicStore(root: root.appendingPathComponent("library"))

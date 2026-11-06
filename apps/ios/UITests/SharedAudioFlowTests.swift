@@ -52,10 +52,14 @@ final class SharedAudioFlowTests: XCTestCase {
         let dismissed = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: alert)
         let removed = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == true AND value == %@", "未保存"), object: a)
         let removalCompleted = XCTWaiter.wait(for: [dismissed, removed], timeout: 5)
-        if removalCompleted != .completed || !b.exists || b.value as? String != "保存済み" {
+        let alertClosed = !alert.exists
+        let errorBanner = app.staticTexts["library-error-message"]
+        if removalCompleted != .completed || !alertClosed || errorBanner.exists || !b.exists || b.value as? String != "保存済み" {
             captureSaveRemovalFailure(app, confirmation: confirmationDetails, stage: "After confirmation")
         }
-        XCTAssertEqual(removalCompleted, .completed, "The alert must close and TRACK-A must become unsaved")
+        XCTAssertTrue(alertClosed, "The save removal alert must close")
+        XCTAssertFalse(errorBanner.exists, errorBanner.exists ? errorBanner.label : "")
+        XCTAssertEqual(removalCompleted, .completed, "TRACK-A must become unsaved")
         XCTAssertEqual(b.value as? String, "保存済み")
         searchForB(app)
         capture(app, "Only A is unsaved; B retains shared audio")
@@ -290,19 +294,26 @@ final class SharedAudioFlowTests: XCTestCase {
         let b = app.buttons["TRACK-Bの保存操作"]
         let aValue = a.exists ? String(describing: a.value) : "missing"
         let bValue = b.exists ? String(describing: b.value) : "missing"
-        let state = XCTAttachment(string: """
+        let alertExists = app.alerts["この端末の保存を解除しますか？"].exists
+        let errorBanner = app.staticTexts["library-error-message"]
+        let errorText = errorBanner.exists ? errorBanner.label : "none"
+        let states = [
+            ("Alert dismissal", "Current alert exists: \(alertExists)\nPresented confirmation BEFORE the tap:\n\(confirmation)"),
+            ("Track save states", """
             Expected removal target: TRACK-A (TRACK-Aの保存操作), expected value: 未保存
             Expected retained track: TRACK-B (TRACK-Bの保存操作), expected value: 保存済み
             Actual TRACK-A value: \(aValue)
             Actual TRACK-B value: \(bValue)
-            Presented confirmation:
-            \(confirmation)
-            Current hierarchy:
-            \(app.debugDescription)
-            """)
-        state.name = "Save removal target and state: " + stage
-        state.lifetime = .keepAlways
-        add(state)
+            """),
+            ("Error banner", "Displayed error banner: \(errorText)"),
+            ("Current hierarchy", app.debugDescription)
+        ]
+        for (name, text) in states {
+            let state = XCTAttachment(string: text)
+            state.name = "Save removal \(name): \(stage)"
+            state.lifetime = .keepAlways
+            add(state)
+        }
     }
 
     @MainActor

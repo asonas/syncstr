@@ -150,6 +150,8 @@ final class Library: ObservableObject {
     @Published var sidebarVisible = true
     @Published var showingNowPlaying = false
     @Published var localCopiesToRemove: [Track] = []
+    @Published private(set) var pendingLocalCopyRemovals: [Track] = []
+    private var removalLibraryID: String?
     @Published private(set) var artworkURLs: [String: URL] = [:]
     let localStore: LocalMusicStore
     let transfer: LocalTransfer
@@ -157,6 +159,7 @@ final class Library: ObservableObject {
     private var managedTracks: Set<String> = []
     private(set) var localCatalog: LocalCatalog?
     private var transferChanges: AnyCancellable?
+    private var removalChanges: AnyCancellable?
 #if os(macOS)
     private var localFolder: LocalFolder?
     var hasLocalFolder: Bool { localFolder != nil }
@@ -228,6 +231,10 @@ final class Library: ObservableObject {
             if wasLocal, transfer.clusterRegistration != nil, let current, localFiles[current.id] == nil { stop() }
         }
         transferChanges = transfer.objectWillChange.sink { [weak self] in self?.objectWillChange.send() }
+        removalChanges = transfer.$readyForLocalCopyRemoval.dropFirst().filter { $0 }.sink { [weak self] _ in
+            // Published emits before readiness changes; resume after the transition finishes.
+            Task { @MainActor [weak self] in self?.resumeLocalCopyRemovals() }
+        }
     }
 
     nonisolated static func preparedAlbums(_ tracks: [Track], organization: AlbumOrganization?) -> [Album] {
@@ -1160,6 +1167,9 @@ final class Library: ObservableObject {
     }
 
     func closeLibrary() {
+        pendingLocalCopyRemovals = []
+        removalLibraryID = nil
+        localCopiesToRemove = []
         playlists = []
         playlistConflicts = []
         playlistTracksByIdentity = [:]
@@ -1215,9 +1225,34 @@ final class Library: ObservableObject {
         return true
     }
 
+    func isLocalCopyRemovalPending(_ track: Track) -> Bool {
+        guard localCatalog?.id == removalLibraryID else { return false }
+        let id = sharedAudioCatalog?.addresses[track.id] ?? track.id
+        return pendingLocalCopyRemovals.contains {
+            (sharedAudioCatalog?.addresses[$0.id] ?? $0.id) == id && $0.audioHash == track.audioHash
+        }
+    }
+
     func removeLocalCopies(_ confirmedTracks: [Track]) {
+        guard let libraryID = localCatalog?.id else { return }
+        if removalLibraryID != libraryID { pendingLocalCopyRemovals = [] }
+        removalLibraryID = libraryID
+        for track in confirmedTracks where canRemoveLocalCopy(track) && !isLocalCopyRemovalPending(track) {
+            pendingLocalCopyRemovals.append(track)
+        }
+        localCopiesToRemove = []
+        resumeLocalCopyRemovals()
+    }
+
+    private func resumeLocalCopyRemovals() {
+        guard transfer.readyForLocalCopyRemoval, !pendingLocalCopyRemovals.isEmpty else { return }
+        guard localCatalog?.id == removalLibraryID else {
+            pendingLocalCopyRemovals = []
+            removalLibraryID = nil
+            return
+        }
         do {
-            let tracks = confirmedTracks.filter(canRemoveLocalCopy)
+            let tracks = pendingLocalCopyRemovals.filter(canRemoveLocalCopy)
             try transfer.cancelSaves(containing: tracks)
             if let current, tracks.contains(where: { $0.id == current.id }) { stop() }
             for track in tracks {
@@ -1225,8 +1260,11 @@ final class Library: ObservableObject {
                 try transfer.removeClusterCopy(entry)
             }
             refreshLocalFiles()
+        } catch LocalMusicError.transferBusy {
+            return
         } catch { message = error.localizedDescription }
-        localCopiesToRemove = []
+        pendingLocalCopyRemovals = []
+        removalLibraryID = nil
         transfer.resumeSaves()
     }
 
