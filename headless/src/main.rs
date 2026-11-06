@@ -324,7 +324,9 @@ async fn run(cli: crate::Cli) -> anyhow::Result<()> {
             let (discovered, discoveries) = tokio::sync::mpsc::channel(256);
             let mut cluster_tasks = tokio::task::JoinSet::new();
             cluster_tasks.spawn(syncstr_headless::shared_audio_net::serve(
-                endpoint.clone(), store.clone(), signer.id().to_string(),
+                endpoint.clone(),
+                store.clone(),
+                signer.clone(),
             ));
             cluster_tasks.spawn(async move {
                 while let Ok(address) = discovery.next().await {

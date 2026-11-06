@@ -19,17 +19,19 @@ this host has not seen. It merges the full proof in memory, validates all record
 and requires live membership for the remote ID and live host authority for itself
 before storing any presented grants or revocations. Validation, authorization and
 storage share one store lock and transaction; a rejected Hello leaves membership
-unchanged. The server replies with the same JSON shape containing its current
-proof, then finishes. Clients must keep their known revocations when merging the
-response, validate root and cluster equality, and require a live host grant for
-the actual remote ID.
+unchanged. The server replies with its current proof and
+`"supported_operations":["edit-track"]`, then finishes. A missing operations
+field means no member mutations are supported. Clients must keep their known
+revocations when merging the response, validate root and cluster equality, and
+require a live host grant for the actual remote ID.
 They must also verify their own live membership. A successful QUIC transport
 handshake alone is not application authorization.
 
 Every subsequent bidirectional stream contains one request frame; the requester
 finishes its send side. The server sends the indicated response and finishes.
-Errors reset/close the stream or connection; there is no success-shaped error
-envelope. Do not replace retained state on an incomplete or failed response.
+Read/replication errors reset or close the stream or connection. Mutation requests
+use the typed replies below. Do not replace retained state on an incomplete or
+failed response.
 
 | Request JSON | Response JSON, followed by optional bytes |
 | --- | --- |
@@ -38,6 +40,62 @@ envelope. Do not replace retained state on an incomplete or failed response.
 | `{"operation":"playlist-records","after":0}` | Array of `[cursor, PlaylistSigned]`, at most four |
 | `{"operation":"receive","records":[...]}` | `true`; only an authorized host may submit signed decisions |
 | `{"operation":"audio","track":"T-A","hash":"<sha256>"}` | A JSON integer byte length, then exactly that many raw audio bytes until EOF |
+| `{"operation":"mutation","mutation":<request>}` | `MutationReply`, tagged by `status` |
+
+### Member track metadata edits
+
+An enrolled member may send this request on an authenticated session:
+
+```json
+{
+  "operation": "mutation",
+  "mutation": {
+    "request": "edit-example-1",
+    "cluster": "cluster-example",
+    "baseline": "<baseline-sha256>",
+    "operation": "edit-track",
+    "expected": {"track:T-A": ["<previous-record-id>"]},
+    "payload": {"track": "T-A", "metadata": {"title": "Example Song"}},
+    "confirmed": []
+  }
+}
+```
+
+`payload` accepts only `track` and a nonempty `metadata` object. Supplied metadata
+keys overwrite the corresponding keys on this logical track; omitted keys remain
+unchanged. There is no key-removal operation. Audio bindings, album membership,
+addition time, retirement, other tracks and the retained organization stay
+unchanged. Album visibility is an album-level setting and is outside this slice.
+`confirmed` must be empty. `expected` names only the edited track's subject and
+the heads the member observed; a baseline-only track has an empty head list.
+
+An accepted reply is
+`{"status":"accepted","request":"edit-example-1","record":"<record-id>","host":"<host-id>","heads":{"track:T-A":["<record-id>"]}}`.
+The host signs the record and adds `origin: {member, grant}` to its body using the
+authenticated member's identity and live grant. Older records omit `origin` and
+remain readable. Later revocation of the origin does not invalidate an accepted
+record; its host signature remains the authority. Record bodies deny unknown
+fields, so a host without `origin` support cannot decode these records and stops
+replicating at the first one. Upgrade every host in a cluster before members
+submit edits.
+
+A stale edit returns
+`{"status":"needs-review","request":"edit-example-1","current":{"track:T-A":["<current-record-id>"]}}`
+without storing any part of the edit. Invalid edits and reused request IDs with
+different content return `rejected` with reason `invalid`. On an existing session,
+a revoked member gets reason `revoked`; insufficient authority gets `unauthorized`.
+These two replies are delivered before the connection closes. A revoked member's
+new connection is refused during Hello authorization, before mutation requests.
+Other outcomes keep the session open.
+Incomplete history returns `deferred` with reason `incomplete-history`; unavailable
+storage returns `deferred` with reason `store-unavailable`. Other operations remain
+`unsupported`.
+
+Persist the request ID and original envelope before sending. Retry only at the
+same accepting host. Exact retries return the original record, host and heads,
+including after later edits, and create no additional record. Another member
+cannot reuse that request ID to claim the result. Request IDs retain their
+cluster-wide namespace; this slice does not implement cross-host retry.
 
 `Snapshot.catalog` is the same typed catalog as HTTPS `GET /v5/catalog`;
 `version: 1` denotes its first schema, not the transport version. The exact types
@@ -87,9 +145,9 @@ revoked require explicit review rather than automatic acceptance.
 HTTPS bearer tokens are administrative host credentials, not playback-member
 tokens. Do not install them in ordinary native playback clients. Host approval
 and explicit playlist revisions use the documented authenticated HTTPS endpoints.
-The member QUIC service offers read/replication operations, not unsigned client
-metadata writes. New invitation issuance/redemption remains pre-activation;
-v5 recognizes existing grants and accepts additional valid signed membership
+The member QUIC service also accepts track metadata requests; the accepting host
+validates and signs the resulting record. New invitation issuance/redemption
+remains pre-activation; v5 recognizes existing grants and accepts additional valid signed membership
 proofs. Do not reset existing device identities to connect.
 
 The v5 server advertises the existing cluster discovery service when bound to a

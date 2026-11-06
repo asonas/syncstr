@@ -76,10 +76,40 @@ pub struct Body {
     pub baseline: String,
     pub author: String,
     pub grant: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origin: Option<crate::shared_audio::Origin>,
     pub request: String,
     pub request_digest: String,
     pub edits: Vec<crate::shared_audio::Edit>,
 }
+
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Origin {
+    pub member: String,
+    pub grant: String,
+}
+
+#[derive(Debug)]
+enum CommitFailure {
+    NeedsReview(std::collections::BTreeMap<String, Vec<String>>),
+    Incomplete,
+    Revoked,
+    Unauthorized,
+}
+
+impl std::fmt::Display for crate::shared_audio::CommitFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::NeedsReview(_) => "stale preview",
+            Self::Incomplete => "incomplete shared history",
+            Self::Revoked => "origin member revoked or disputed",
+            Self::Unauthorized => "signer is not an authorized host",
+        })
+    }
+}
+
+impl std::error::Error for crate::shared_audio::CommitFailure {}
 
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -682,26 +712,46 @@ impl crate::shared_audio::Store {
         signer: &crate::peer::Identity,
         request: crate::shared_audio::Request,
     ) -> anyhow::Result<crate::shared_audio::Signed> {
+        let id = request.id.clone();
+        let digest = crate::shared_audio::hash(&serde_json::to_vec(&request)?);
+        self.commit_prepared(signer, &id, digest, None, |_| Ok(request))
+            .map(|(signed, _)| signed)
+    }
+
+    fn commit_prepared(
+        &self,
+        signer: &crate::peer::Identity,
+        id: &str,
+        digest: String,
+        origin: Option<crate::shared_audio::Origin>,
+        prepare: impl FnOnce(
+            &crate::shared_audio::Catalog,
+        ) -> anyhow::Result<crate::shared_audio::Request>,
+    ) -> anyhow::Result<(crate::shared_audio::Signed, crate::shared_audio::Body)> {
         self.run(|connection, _| {
             use rusqlite::OptionalExtension as _;
-            anyhow::ensure!(
-                crate::shared_audio::identity(&request.id),
-                "invalid request ID"
-            );
-            let digest = crate::shared_audio::hash(&serde_json::to_vec(&request)?);
+            anyhow::ensure!(crate::shared_audio::identity(id), "invalid request ID");
             let transaction = connection.transaction()?;
             let proof = crate::enrollment::read_proof(&transaction)?;
+            if let Some(origin) = &origin {
+                anyhow::ensure!(
+                    proof
+                        .verify(&origin.grant)
+                        .is_ok_and(|g| g.member == origin.member),
+                    crate::shared_audio::CommitFailure::Revoked
+                );
+            }
             let grant = proof
                 .grants
                 .iter()
                 .find(|g| {
                     g.member == signer.id().to_string() && g.host && proof.verify(&g.id).is_ok()
                 })
-                .ok_or_else(|| anyhow::anyhow!("signer is not an authorized host"))?;
+                .ok_or(crate::shared_audio::CommitFailure::Unauthorized)?;
             let prior: Option<(String, String)> = transaction
                 .query_row(
                     "SELECT digest, record FROM shared_requests WHERE id=?",
-                    [&request.id],
+                    [id],
                     |r| Ok((r.get(0)?, r.get(1)?)),
                 )
                 .optional()?;
@@ -714,7 +764,7 @@ impl crate::shared_audio::Store {
                     .into_iter()
                     .map(|raw| -> anyhow::Result<bool> {
                         let signed: crate::shared_audio::Signed = serde_json::from_slice(&raw)?;
-                        Ok(crate::shared_audio::decode(&signed, &proof)?.request == request.id)
+                        Ok(crate::shared_audio::decode(&signed, &proof)?.request == id)
                     })
                     .collect::<anyhow::Result<Vec<_>>>()?;
                 anyhow::ensure!(
@@ -726,14 +776,20 @@ impl crate::shared_audio::Store {
                     [record],
                     |r| r.get(0),
                 )?;
-                return Ok(serde_json::from_slice(&raw)?);
+                let signed = serde_json::from_slice(&raw)?;
+                let body = crate::shared_audio::decode(&signed, &proof)?;
+                return Ok((signed, body));
             }
             let catalog = crate::shared_audio::catalog(&transaction)?;
             anyhow::ensure!(
                 grant.cluster == catalog.cluster,
                 "host belongs to another cluster"
             );
-            anyhow::ensure!(catalog.incomplete.is_empty(), "incomplete shared history");
+            anyhow::ensure!(
+                catalog.incomplete.is_empty(),
+                crate::shared_audio::CommitFailure::Incomplete
+            );
+            let request = prepare(&catalog)?;
             let values = match request.action {
                 crate::shared_audio::Action::Register {
                     source,
@@ -809,7 +865,9 @@ impl crate::shared_audio::Store {
                 let current = catalog.heads.get(&subject).cloned().unwrap_or_default();
                 anyhow::ensure!(
                     request.expected.get(&subject).cloned().unwrap_or_default() == current,
-                    "stale preview"
+                    crate::shared_audio::CommitFailure::NeedsReview(
+                        std::collections::BTreeMap::from([(subject.clone(), current.clone())])
+                    )
                 );
                 if let crate::shared_audio::Value::Correspondence {
                     target: Some(target),
@@ -859,6 +917,7 @@ impl crate::shared_audio::Store {
                 baseline: catalog.baseline,
                 author: signer.id().to_string(),
                 grant: grant.id.clone(),
+                origin,
                 request: request.id.clone(),
                 request_digest: digest.clone(),
                 edits,
@@ -891,8 +950,113 @@ impl crate::shared_audio::Store {
                 rusqlite::params![request.id, digest, signed.id],
             )?;
             transaction.commit()?;
-            Ok(signed)
+            Ok((signed, body))
         })
+    }
+
+    pub(crate) fn edit_track_member(
+        &self,
+        signer: &crate::peer::Identity,
+        member: &str,
+        mutation: crate::shared_audio_net::MutationRequest,
+        proof: &crate::enrollment::Proof,
+    ) -> crate::shared_audio_net::MutationReply {
+        use crate::shared_audio_net::{EditTrack, MutationRejection, MutationReply};
+        let request = mutation.request.clone();
+        let result = (|| -> anyhow::Result<_> {
+            let edit: EditTrack = serde_json::from_value(mutation.payload.clone())?;
+            anyhow::ensure!(
+                !edit.metadata.is_empty() && mutation.confirmed.is_empty(),
+                "invalid metadata edit"
+            );
+            let grant = proof
+                .grants
+                .iter()
+                .find(|g| g.member == member && proof.verify(&g.id).is_ok())
+                .ok_or(crate::shared_audio::CommitFailure::Revoked)?;
+            let origin = crate::shared_audio::Origin {
+                member: member.into(),
+                grant: grant.id.clone(),
+            };
+            // Hash the original intent, not metadata/evidence rebuilt from a later catalog on retry.
+            let digest = crate::shared_audio::hash(&serde_json::to_vec(&(member, &mutation))?);
+            let (signed, body) =
+                self.commit_prepared(signer, &request, digest, Some(origin), |catalog| {
+                    let subject = format!("track:{}", edit.track);
+                    anyhow::ensure!(
+                        !catalog.conflicts.contains(&subject),
+                        crate::shared_audio::CommitFailure::NeedsReview(
+                            std::collections::BTreeMap::from([(
+                                subject.clone(),
+                                catalog.heads.get(&subject).cloned().unwrap_or_default()
+                            )])
+                        )
+                    );
+                    let mut track = catalog
+                        .tracks
+                        .get(&edit.track)
+                        .ok_or_else(|| anyhow::anyhow!("unknown track"))?
+                        .clone();
+                    track.metadata.extend(edit.metadata);
+                    Ok(crate::shared_audio::Request {
+                        id: request.clone(),
+                        expected: mutation.expected,
+                        action: crate::shared_audio::Action::EditTrack {
+                            track,
+                            evidence: crate::shared_audio::Evidence {
+                                snapshot: catalog.baseline.clone(),
+                                catalog: crate::shared_audio::hash(&serde_json::to_vec(catalog)?),
+                                reason: "Member metadata edit".into(),
+                                audio_eligible: false,
+                            },
+                        },
+                    })
+                })?;
+            let heads = body
+                .edits
+                .iter()
+                .map(|edit| (edit.value.subject(), vec![signed.id.clone()]))
+                .collect();
+            Ok(MutationReply::Accepted {
+                request: request.clone(),
+                record: signed.id,
+                host: body.author,
+                heads,
+            })
+        })();
+        match result {
+            Ok(reply) => reply,
+            Err(error) => match error.downcast_ref::<crate::shared_audio::CommitFailure>() {
+                Some(crate::shared_audio::CommitFailure::NeedsReview(current)) => {
+                    MutationReply::NeedsReview {
+                        request,
+                        current: current.clone(),
+                    }
+                }
+                Some(crate::shared_audio::CommitFailure::Incomplete) => MutationReply::Deferred {
+                    request,
+                    reason: "incomplete-history".into(),
+                },
+                Some(crate::shared_audio::CommitFailure::Revoked) => MutationReply::Rejected {
+                    request,
+                    reason: MutationRejection::Revoked,
+                },
+                Some(crate::shared_audio::CommitFailure::Unauthorized) => MutationReply::Rejected {
+                    request,
+                    reason: MutationRejection::Unauthorized,
+                },
+                None if error.downcast_ref::<rusqlite::Error>().is_some() => {
+                    MutationReply::Deferred {
+                        request,
+                        reason: "store-unavailable".into(),
+                    }
+                }
+                None => MutationReply::Rejected {
+                    request,
+                    reason: MutationRejection::Invalid,
+                },
+            },
+        }
     }
 
     pub fn receive(&self, records: Vec<crate::shared_audio::Signed>) -> anyhow::Result<()> {
@@ -1057,6 +1221,14 @@ fn decode(
         grant.cluster == body.cluster && grant.member == body.author && grant.host,
         "unauthorized record author"
     );
+    if let Some(origin) = &body.origin {
+        // The accepting host checked liveness; later revocation must preserve accepted history.
+        let chain = proof.chain(&origin.grant)?;
+        anyhow::ensure!(
+            chain[0].member == origin.member && chain[0].cluster == body.cluster,
+            "invalid record origin"
+        );
+    }
     let signature: [u8; 64] = hex::decode(&record.signature)?
         .try_into()
         .map_err(|_| anyhow::anyhow!("invalid signature"))?;
