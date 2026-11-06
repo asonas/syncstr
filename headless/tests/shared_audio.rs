@@ -368,7 +368,7 @@ async fn quic_catalog_and_unrelated_playlist_updates_survive_replicated_playlist
     tasks.spawn(syncstr_headless::shared_audio_net::serve(
         host_endpoint.clone(),
         replica.clone(),
-        fixture.other.id().to_string(),
+        fixture.other.clone(),
     ));
     let session = syncstr_headless::shared_audio_net::Session::connect(
         &reader_endpoint,
@@ -1593,7 +1593,7 @@ fn mutation_reply_wire_has_all_five_typed_outcomes() -> anyhow::Result<()> {
 struct Fixture {
     root: tempfile::TempDir,
     host: std::sync::Arc<syncstr_headless::peer::Identity>,
-    other: syncstr_headless::peer::Identity,
+    other: std::sync::Arc<syncstr_headless::peer::Identity>,
     entry: syncstr_headless::model::Entry,
     logical: String,
 }
@@ -1605,8 +1605,10 @@ impl crate::Fixture {
             &root.path().join("host"),
             [41; 32],
         )?);
-        let other =
-            syncstr_headless::peer::Identity::from_secret(&root.path().join("other"), [42; 32])?;
+        let other = std::sync::Arc::new(syncstr_headless::peer::Identity::from_secret(
+            &root.path().join("other"),
+            [42; 32],
+        )?);
         let data = root.path().join("data");
         let store = syncstr_headless::store::Store::open(&data)?;
         let cluster = store.create_cluster(host.id().to_string()).await?.id;
