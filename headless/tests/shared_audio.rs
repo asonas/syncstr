@@ -842,7 +842,10 @@ async fn quic_mutation_replies_preserve_session_and_existing_requests() -> anyho
         store.membership()?,
     )
     .await?;
-    assert_eq!(session.supported_operations, ["edit-track"]);
+    assert_eq!(
+        session.supported_operations,
+        ["edit-track", "resolve-track"]
+    );
     let mutation = MutationRequest {
         request: "b6f1c0de-1f2a-4c3b-9d4e-5a6b7c8d9e0f".into(),
         cluster: before.cluster.clone(),
@@ -865,7 +868,7 @@ async fn quic_mutation_replies_preserve_session_and_existing_requests() -> anyho
     for operation in [
         "put-object",
         "register-track",
-        "resolve-track",
+        "future-resolution",
         "assign-source",
         "update-playlists",
         "future-operation",
@@ -1166,6 +1169,281 @@ async fn quic_member_metadata_edits_are_independent_atomic_and_record_origin() -
 }
 
 #[tokio::test]
+async fn quic_members_resolve_track_heads_but_only_hosts_may_select_retirement()
+-> anyhow::Result<()> {
+    use syncstr_headless::shared_audio_net::{
+        MutationRejection, MutationReply, MutationRequest, Session,
+    };
+    let fixture = crate::Fixture::new().await?;
+    let replica = fixture.replica()?;
+    let store = fixture.activate()?;
+    let before = store.catalog()?;
+    let subject = format!("track:{}", fixture.logical);
+    let mut live = before.tracks[&fixture.logical].clone();
+    live.metadata.insert("title".into(), "Host A title".into());
+    let mut retired = live.clone();
+    retired
+        .metadata
+        .insert("title".into(), "Host B title".into());
+    retired.retired = true;
+    let a = store.commit(
+        &fixture.host,
+        syncstr_headless::shared_audio::Request {
+            id: "host-a-edit".into(),
+            expected: std::collections::BTreeMap::from([(subject.clone(), vec![])]),
+            action: syncstr_headless::shared_audio::Action::EditTrack {
+                track: live.clone(),
+                evidence: crate::evidence(&before),
+            },
+        },
+    )?;
+    let b = replica.commit(
+        &fixture.other,
+        syncstr_headless::shared_audio::Request {
+            id: "host-b-edit".into(),
+            expected: std::collections::BTreeMap::from([(subject.clone(), vec![])]),
+            action: syncstr_headless::shared_audio::Action::EditTrack {
+                track: retired.clone(),
+                evidence: crate::evidence(&replica.catalog()?),
+            },
+        },
+    )?;
+    store.receive(vec![b.clone()])?;
+    replica.receive(vec![a.clone()])?;
+    let conflict = store.catalog()?;
+    assert!(conflict.conflicts.contains(&subject));
+    assert_eq!(conflict.heads[&subject].len(), 2);
+    let records = store.records()?;
+    let resolution = MutationRequest {
+        request: "member-track-resolution".into(),
+        cluster: conflict.cluster.clone(),
+        baseline: conflict.baseline.clone(),
+        operation: "resolve-track".into(),
+        expected: std::collections::BTreeMap::from([(
+            subject.clone(),
+            conflict.heads[&subject].clone(),
+        )]),
+        payload: serde_json::json!({"track": fixture.logical, "select": a.id}),
+        confirmed: vec![],
+    };
+    let reader = syncstr_headless::peer::Identity::from_secret(
+        &fixture.root.path().join("reader"),
+        [43; 32],
+    )?;
+    let proof = store.membership()?;
+    let reader_grant = proof
+        .grants
+        .iter()
+        .find(|g| g.member == reader.id().to_string())
+        .unwrap();
+    let (host_endpoint, _host_lock) = fixture
+        .host
+        .cluster_endpoint(&["127.0.0.1:0".parse()?])
+        .await?;
+    let (reader_endpoint, _reader_lock) =
+        reader.cluster_endpoint(&["127.0.0.1:0".parse()?]).await?;
+    let mut tasks = tokio::task::JoinSet::new();
+    tasks.spawn(syncstr_headless::shared_audio_net::serve(
+        host_endpoint.clone(),
+        store.clone(),
+        fixture.host.clone(),
+    ));
+    let session = Session::connect(&reader_endpoint, host_endpoint.addr(), proof.clone()).await?;
+    assert!(
+        session
+            .supported_operations
+            .iter()
+            .any(|op| op == "resolve-track")
+    );
+    let mut partial = resolution.clone();
+    partial.request = "partial-track-heads".into();
+    partial.expected.get_mut(&subject).unwrap().pop();
+    assert_eq!(
+        session.resolve_track(partial.clone()).await?,
+        MutationReply::NeedsReview {
+            request: partial.request,
+            current: resolution.expected.clone(),
+        }
+    );
+    assert_eq!(store.records()?, records);
+    let mut invalid = resolution.clone();
+    invalid.request = "invalid-track-selection".into();
+    invalid.payload["select"] = serde_json::json!("0".repeat(64));
+    assert_eq!(
+        session.resolve_track(invalid.clone()).await?,
+        MutationReply::Rejected {
+            request: invalid.request,
+            reason: MutationRejection::Invalid,
+        }
+    );
+    let mut injected = resolution.clone();
+    injected.request = "injected-track-value".into();
+    injected.payload["audio"] = serde_json::json!([]);
+    assert_eq!(
+        session.resolve_track(injected.clone()).await?,
+        MutationReply::Rejected {
+            request: injected.request,
+            reason: MutationRejection::Invalid,
+        }
+    );
+    assert_eq!(store.records()?, records);
+    let mut deletion = resolution.clone();
+    deletion.request = "member-retirement-resolution".into();
+    deletion.payload["select"] = serde_json::json!(b.id);
+    assert_eq!(
+        session.resolve_track(deletion.clone()).await?,
+        MutationReply::Rejected {
+            request: deletion.request,
+            reason: MutationRejection::Unauthorized,
+        }
+    );
+    assert_eq!(store.records()?, records);
+    assert_eq!(
+        crate::fingerprint(&store.catalog()?),
+        crate::fingerprint(&conflict)
+    );
+    drop(session);
+    let session = Session::connect(&reader_endpoint, host_endpoint.addr(), proof.clone()).await?;
+    let accepted = session.resolve_track(resolution.clone()).await?;
+    let record = match &accepted {
+        MutationReply::Accepted {
+            request,
+            record,
+            host,
+            heads,
+        } => {
+            assert_eq!(request, &resolution.request);
+            assert_eq!(host, &fixture.host.id().to_string());
+            assert_eq!(
+                heads,
+                &std::collections::BTreeMap::from([(subject.clone(), vec![record.clone()])])
+            );
+            record.clone()
+        }
+        other => anyhow::bail!("unexpected resolution reply: {other:?}"),
+    };
+    let signed = store
+        .records()?
+        .into_iter()
+        .find(|r| r.id == record)
+        .unwrap();
+    let body: syncstr_headless::shared_audio::Body =
+        serde_json::from_str(signed.payload.split_once('\n').unwrap().1)?;
+    assert_eq!(body.author, fixture.host.id().to_string());
+    assert_eq!(
+        body.origin,
+        Some(syncstr_headless::shared_audio::Origin {
+            member: reader.id().to_string(),
+            grant: reader_grant.id.clone(),
+        })
+    );
+    assert_eq!(body.edits.len(), 1);
+    assert_eq!(body.edits[0].parents, conflict.heads[&subject]);
+    match &body.edits[0].value {
+        syncstr_headless::shared_audio::Value::Track { track, .. } => assert_eq!(track, &live),
+        _ => anyhow::bail!("resolution changed a correspondence"),
+    }
+    let signature: [u8; 64] = hex::decode(&signed.signature)?.try_into().unwrap();
+    fixture.host.id().verify(
+        signed.payload.as_bytes(),
+        &iroh::Signature::from_bytes(&signature),
+    )?;
+    let resolved = store.catalog()?;
+    assert!(!resolved.conflicts.contains(&subject));
+    assert_eq!(resolved.tracks[&fixture.logical], live);
+    assert_eq!(resolved.pins, before.pins);
+    assert_eq!(
+        serde_json::to_value(&resolved.objects)?,
+        serde_json::to_value(&before.objects)?
+    );
+    replica.receive(vec![signed])?;
+    assert_eq!(replica.catalog()?.tracks, resolved.tracks);
+    let saved = store.records()?;
+    assert_eq!(session.resolve_track(resolution.clone()).await?, accepted);
+    assert_eq!(store.records()?, saved);
+    let mut stale = resolution.clone();
+    stale.request = "resolved-track-stale-heads".into();
+    assert_eq!(
+        session.resolve_track(stale.clone()).await?,
+        MutationReply::NeedsReview {
+            request: stale.request,
+            current: std::collections::BTreeMap::from([(subject.clone(), vec![record])]),
+        }
+    );
+    assert_eq!(store.records()?, saved);
+    let alive_edit = store.commit(
+        &fixture.host,
+        syncstr_headless::shared_audio::Request {
+            id: "host-a-second-edit".into(),
+            expected: std::collections::BTreeMap::from([(
+                subject.clone(),
+                resolved.heads[&subject].clone(),
+            )]),
+            action: syncstr_headless::shared_audio::Action::EditTrack {
+                track: live,
+                evidence: crate::evidence(&resolved),
+            },
+        },
+    )?;
+    let deletion_edit = replica.commit(
+        &fixture.other,
+        syncstr_headless::shared_audio::Request {
+            id: "host-b-second-edit".into(),
+            expected: std::collections::BTreeMap::from([(
+                subject.clone(),
+                resolved.heads[&subject].clone(),
+            )]),
+            action: syncstr_headless::shared_audio::Action::EditTrack {
+                track: retired.clone(),
+                evidence: crate::evidence(&replica.catalog()?),
+            },
+        },
+    )?;
+    store.receive(vec![deletion_edit.clone()])?;
+    replica.receive(vec![alive_edit])?;
+    let conflict = store.catalog()?;
+    assert!(conflict.conflicts.contains(&subject));
+    let (other_endpoint, _other_lock) = fixture
+        .other
+        .cluster_endpoint(&["127.0.0.1:0".parse()?])
+        .await?;
+    let host_session =
+        Session::connect(&other_endpoint, host_endpoint.addr(), store.membership()?).await?;
+    let mut host_resolution = resolution.clone();
+    host_resolution.request = "host-retirement-resolution".into();
+    host_resolution.expected =
+        std::collections::BTreeMap::from([(subject.clone(), conflict.heads[&subject].clone())]);
+    let mut ancestor = resolution.clone();
+    ancestor.request = "superseded-track-selection".into();
+    ancestor.expected = host_resolution.expected.clone();
+    let saved = store.records()?;
+    assert_eq!(
+        session.resolve_track(ancestor.clone()).await?,
+        MutationReply::Rejected {
+            request: ancestor.request,
+            reason: MutationRejection::Invalid,
+        }
+    );
+    assert_eq!(store.records()?, saved);
+    host_resolution.payload["select"] = serde_json::json!(deletion_edit.id);
+    assert!(matches!(
+        host_session.resolve_track(host_resolution).await?,
+        MutationReply::Accepted { .. }
+    ));
+    assert!(!store.catalog()?.conflicts.contains(&subject));
+    assert_eq!(store.catalog()?.tracks[&fixture.logical], retired);
+    assert_eq!(session.resolve_track(resolution).await?, accepted);
+    drop(host_session);
+    drop(session);
+    tasks.abort_all();
+    while tasks.join_next().await.is_some() {}
+    host_endpoint.close().await;
+    reader_endpoint.close().await;
+    other_endpoint.close().await;
+    Ok(())
+}
+
+#[tokio::test]
 async fn quic_member_metadata_retry_after_lost_reply_returns_original_acceptance()
 -> anyhow::Result<()> {
     use syncstr_headless::shared_audio_net::{
@@ -1377,7 +1655,7 @@ async fn quic_legacy_hello_and_invalid_mutations_keep_working_until_revoked() ->
     let hello: serde_json::Value = crate::shared_exchange(&connection, &legacy).await?;
     assert_eq!(
         hello["supported_operations"],
-        serde_json::json!(["edit-track"])
+        serde_json::json!(["edit-track", "resolve-track"])
     );
     let old_decoder: LegacyHello = serde_json::from_value(hello)?;
     assert_eq!(old_decoder.version, 5);

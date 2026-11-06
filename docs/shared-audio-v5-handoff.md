@@ -20,8 +20,8 @@ and requires live membership for the remote ID and live host authority for itsel
 before storing any presented grants or revocations. Validation, authorization and
 storage share one store lock and transaction; a rejected Hello leaves membership
 unchanged. The server replies with its current proof and
-`"supported_operations":["edit-track"]`, then finishes. A missing operations
-field means no member mutations are supported. Clients must keep their known
+`"supported_operations":["edit-track","resolve-track"]`, then finishes. A missing
+operations field means no member mutations are supported. Clients must keep their known
 revocations when merging the response, validate root and cluster equality, and
 require a live host grant for the actual remote ID.
 They must also verify their own live membership. A successful QUIC transport
@@ -88,14 +88,54 @@ These two replies are delivered before the connection closes. A revoked member's
 new connection is refused during Hello authorization, before mutation requests.
 Other outcomes keep the session open.
 Incomplete history returns `deferred` with reason `incomplete-history`; unavailable
-storage returns `deferred` with reason `store-unavailable`. Other operations remain
-`unsupported`.
+storage returns `deferred` with reason `store-unavailable`. Operations other than
+`edit-track` and `resolve-track` remain `unsupported`.
 
 Persist the request ID and original envelope before sending. Retry only at the
 same accepting host. Exact retries return the original record, host and heads,
 including after later edits, and create no additional record. Another member
 cannot reuse that request ID to claim the result. Request IDs retain their
 cluster-wide namespace; this slice does not implement cross-host retry.
+
+### Member track conflict resolutions
+
+An enrolled member may select one current conflicting track revision:
+
+```json
+{
+  "operation": "mutation",
+  "mutation": {
+    "request": "resolve-example-1",
+    "cluster": "cluster-example",
+    "baseline": "<baseline-sha256>",
+    "operation": "resolve-track",
+    "expected": {"track:T-A": ["<head-a-record-id>", "<head-b-record-id>"]},
+    "payload": {"track": "T-A", "select": "<head-a-record-id>"},
+    "confirmed": []
+  }
+}
+```
+
+`payload` accepts only the logical track ID and the selected record ID. The member
+cannot supply a new Track value or override metadata, audio, preferred encoding,
+addition time or retirement. `expected` must contain only this track's subject
+and every current conflicting head, in the order returned by Catalog.
+`confirmed` must be empty. A stale or partial head list, or a track that is no
+longer conflicted, returns `needs-review` with its current heads. A selection that
+is not one of those heads returns `rejected` with reason `invalid`. Correspondence
+conflicts and resolutions that construct new values are outside this operation.
+
+The host verifies the selected signed revision, copies its complete Track value,
+and signs a new record with every conflicting head as a parent. It records the
+authenticated origin member and grant, using the same acceptance, rejection and
+retry rules as `edit-track`. For example, acceptance returns
+`{"status":"accepted","request":"resolve-example-1","record":"<resolution-record-id>","host":"<host-id>","heads":{"track:T-A":["<resolution-record-id>"]}}`.
+Selecting a revision whose Track has `retired: true` deletes shared music and
+requires a live host grant for the submitting member. A playback-only member
+receives `rejected` with reason `unauthorized`, and no record is stored. That
+reply closes the session under the existing authorization rule; the member may
+reconnect and select a non-retired head. An accepted resolution's exact retry
+returns its original acceptance even after the conflict has disappeared.
 
 `Snapshot.catalog` is the same typed catalog as HTTPS `GET /v5/catalog`;
 `version: 1` denotes its first schema, not the transport version. The exact types
@@ -145,10 +185,11 @@ revoked require explicit review rather than automatic acceptance.
 HTTPS bearer tokens are administrative host credentials, not playback-member
 tokens. Do not install them in ordinary native playback clients. Host approval
 and explicit playlist revisions use the documented authenticated HTTPS endpoints.
-The member QUIC service also accepts track metadata requests; the accepting host
-validates and signs the resulting record. New invitation issuance/redemption
-remains pre-activation; v5 recognizes existing grants and accepts additional valid signed membership
-proofs. Do not reset existing device identities to connect.
+The member QUIC service also accepts track metadata and conflict-resolution
+requests; the accepting host validates and signs the resulting record. New
+invitation issuance/redemption remains pre-activation; v5 recognizes existing
+grants and accepts additional valid signed membership proofs. Do not reset
+existing device identities to connect.
 
 The v5 server advertises the existing cluster discovery service when bound to a
 non-loopback IPv4 address. Discovered authorized hosts are retried every three
