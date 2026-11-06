@@ -10,6 +10,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 
 
 def prepare_v5_fixture(root, device, run):
@@ -45,12 +46,21 @@ def main():
     results.mkdir(parents=True, exist_ok=True)
     output = Path(tempfile.mkdtemp(prefix=args.device + "-", dir=results))
     print(f"Verification results: {output}", flush=True)
+    command_timings = {}
 
     def run(command, name, environment=None):
-        with (output / (name + ".log")).open("w") as log:
-            subprocess.run(command, cwd=root, stdout=log, stderr=subprocess.STDOUT,
-                           check=True, env=environment,
-                           timeout=180 if name in ("bootstatus", "restart-ready") else 1200)
+        timeout = 180 if name in ("bootstatus", "restart-ready") else 1200
+        started = time.monotonic()
+        try:
+            with (output / (name + ".log")).open("w") as log:
+                subprocess.run(command, cwd=root, stdout=log, stderr=subprocess.STDOUT,
+                               check=True, env=environment, timeout=timeout)
+        finally:
+            elapsed = time.monotonic() - started
+            command_timings[name] = {"elapsedSeconds": elapsed, "timeoutSeconds": timeout,
+                                     "remainingSeconds": timeout - elapsed}
+            (output / "command-timings.json").write_text(json.dumps(command_timings, indent=2) + "\n")
+            print(f"{name}: {elapsed:.3f}s of {timeout}s ({timeout - elapsed:.3f}s remaining)", flush=True)
 
     runtime_data = subprocess.check_output(["xcrun", "simctl", "list", "runtimes", "--json"])
     runtimes = [runtime for runtime in json.loads(runtime_data)["runtimes"]

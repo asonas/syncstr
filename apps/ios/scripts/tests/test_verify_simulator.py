@@ -1,3 +1,4 @@
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -7,6 +8,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
 
 class SimulatorRunnerTests(unittest.TestCase):
@@ -116,6 +118,12 @@ if os.environ.get("FAIL") == "delete" and command[1:3] == ["simctl", "delete"]:
         self.assertEqual(json.loads((output / "result.json").read_text())["status"], 0)
         self.assertTrue((output / "unit.log").exists())
         self.assertTrue((output / "ui.log").exists())
+        timings = json.loads((output / "command-timings.json").read_text())
+        self.assertEqual(timings["ui"]["timeoutSeconds"], 1200)
+        self.assertEqual(timings["bootstatus"]["timeoutSeconds"], 180)
+        self.assertGreaterEqual(timings["ui"]["elapsedSeconds"], 0)
+        self.assertAlmostEqual(timings["ui"]["remainingSeconds"],
+                               1200 - timings["ui"]["elapsedSeconds"])
 
     def test_failed_test_preserves_failure_and_cleans_up(self):
         result, calls, output = self.run_script("test")
@@ -123,6 +131,38 @@ if os.environ.get("FAIL") == "delete" and command[1:3] == ["simctl", "delete"]:
         self.assertEqual(calls[-1], ["xcrun", "simctl", "delete", "owned-simulator"])
         self.assertEqual((output / "unit.log").read_text().strip(), "test failed")
         self.assertEqual(json.loads((output / "result.json").read_text())["status"], 65)
+        self.assertIn("unit", json.loads((output / "command-timings.json").read_text()))
+
+    def test_timeout_keeps_elapsed_time_and_still_cleans_up(self):
+        spec = importlib.util.spec_from_file_location("verification", self.script)
+        runner = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(runner)
+        runtime = {"runtimes": [{"identifier": "com.apple.CoreSimulator.SimRuntime.iOS-27-0",
+                                  "isAvailable": True}]}
+        calls = []
+
+        def run(command, **options):
+            calls.append(command)
+            if command[1:3] == ["simctl", "boot"]:
+                self.assertEqual(options["timeout"], 1200)
+                raise subprocess.TimeoutExpired(command, options["timeout"])
+            return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+
+        with patch.object(sys, "argv", [str(self.script)]), \
+                patch.object(runner.subprocess, "check_output", side_effect=[
+                    json.dumps(runtime).encode(), "owned-simulator\n"]), \
+                patch.object(runner.subprocess, "run", side_effect=run), \
+                patch.object(runner.time, "monotonic", side_effect=[100.0, 1300.0]):
+            with self.assertRaises(subprocess.TimeoutExpired):
+                runner.main()
+
+        output = next((self.root / ".build/verification").iterdir())
+        timings = json.loads((output / "command-timings.json").read_text())
+        self.assertEqual(timings["boot"], {
+            "elapsedSeconds": 1200.0, "timeoutSeconds": 1200, "remainingSeconds": 0.0})
+        self.assertEqual(json.loads((output / "result.json").read_text())["status"], 1)
+        self.assertEqual(calls[-2:], [["xcrun", "simctl", action, "owned-simulator"]
+                                     for action in ("shutdown", "delete")])
 
     def test_failed_boot_also_cleans_up_without_running_tests(self):
         result, calls, output = self.run_script("boot")

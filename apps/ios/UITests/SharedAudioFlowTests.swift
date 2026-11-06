@@ -3,6 +3,25 @@ import UIKit
 
 final class SharedAudioFlowTests: XCTestCase {
     @MainActor
+    override func setUp() async throws {
+        try await super.setUp()
+        XCTContext.runActivity(named: "Establish portrait before SharedAudio test") { _ in
+            XCUIDevice.shared.orientation = .portrait
+            XCTAssertEqual(XCUIDevice.shared.orientation, .portrait)
+        }
+    }
+
+    @MainActor
+    override func tearDown() async throws {
+        XCUIApplication().terminate()
+        XCTContext.runActivity(named: "Restore portrait after SharedAudio test") { _ in
+            XCUIDevice.shared.orientation = .portrait
+            XCTAssertEqual(XCUIDevice.shared.orientation, .portrait)
+        }
+        try await super.tearDown()
+    }
+
+    @MainActor
     func testIndependentSavesSurviveOfflineRelaunch() throws {
         continueAfterFailure = false
         guard let root = ProcessInfo.processInfo.environment["SYNCSTR_V5_FIXTURE_ROOT"] else {
@@ -72,7 +91,6 @@ final class SharedAudioFlowTests: XCTestCase {
         let root = try XCTUnwrap(ProcessInfo.processInfo.environment["SYNCSTR_V5_FIXTURE_ROOT"])
         let app = XCUIApplication()
         app.launchArguments = ["--v5-fixture", root, "--v5-fixture-state", "incomplete"]
-        defer { XCUIDevice.shared.orientation = .portrait; app.terminate() }
         for appearance in ["ライト", "ダーク"] {
             app.launch()
             chooseAppearance(appearance, app)
@@ -117,22 +135,41 @@ final class SharedAudioFlowTests: XCTestCase {
         app.launch()
         let notice = app.staticTexts["library-status-notice"]
         XCTAssertTrue(notice.waitForExistence(timeout: 10))
+        let expectedNotice = notice.label
+        XCTAssertFalse(expectedNotice.isEmpty)
         let voiceOver = XCUIDevice.shared.voiceOverService
         let wasEnabled = voiceOver.isEnabled
-        defer { if !wasEnabled { try? voiceOver.disable() }; app.terminate() }
+        addTeardownBlock { @MainActor in
+            if !wasEnabled { try voiceOver.disable() }
+            XCTAssertEqual(voiceOver.isEnabled, wasEnabled)
+        }
         try voiceOver.enable()
         XCTAssertTrue(voiceOver.isEnabled)
+        var focus = [String]()
         var utterances = [String]()
-        if let speech = try? voiceOver.currentSpeech() { utterances.append(speech.utterance) }
+        if let speech = try? voiceOver.currentSpeech() {
+            focus.append("Before touch: " + speech.utterance)
+            utterances.append(speech.utterance)
+        } else { focus.append("Before touch: no speech available") }
+        notice.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
+        if let speech = try? voiceOver.currentSpeech() {
+            focus.append("After touch: " + speech.utterance)
+            utterances.append(speech.utterance)
+        } else { focus.append("After touch: no speech available") }
+        let focusRecord = XCTAttachment(string: focus.joined(separator: "\n"))
+        focusRecord.name = "VoiceOver speech before and after notice touch"
+        focusRecord.lifetime = .keepAlways
+        add(focusRecord)
+        capture(app, "VoiceOver focus after notice touch")
         for _ in 0..<60 {
-            if utterances.contains(where: { $0.contains(notice.label) }) { break }
+            if utterances.contains(where: { $0.contains(expectedNotice) }) { break }
             utterances.append(try voiceOver.moveForward().utterance)
         }
         let speech = XCTAttachment(string: utterances.joined(separator: "\n"))
         speech.name = "VoiceOver spoken notice"
         speech.lifetime = .keepAlways
         add(speech)
-        XCTAssertTrue(utterances.contains { $0.contains(notice.label) })
+        XCTAssertTrue(utterances.contains { $0.contains(expectedNotice) })
         capture(app, "VoiceOver reads the persistent notice")
     }
 
@@ -167,7 +204,21 @@ final class SharedAudioFlowTests: XCTestCase {
         XCTAssertTrue(searchTab.waitForExistence(timeout: 5))
         searchTab.tap()
         let field = app.searchFields.firstMatch
-        XCTAssertTrue(field.waitForExistence(timeout: 5))
+        let initiallyPresent = field.waitForExistence(timeout: 5)
+        if !initiallyPresent {
+            captureSearchPresentation(app, "Search missing before reveal")
+            app.swipeDown()
+            let revealedByPull = field.waitForExistence(timeout: 5)
+            captureSearchPresentation(app, "Search after pull down")
+            if !revealedByPull || !field.isHittable {
+                searchTab.tap()
+                _ = field.waitForExistence(timeout: 5)
+                captureSearchPresentation(app, "Search after reselecting Search")
+            }
+        }
+        // Reveal attempts diagnose the failure; they do not satisfy the original assertion.
+        XCTAssertTrue(initiallyPresent, "Search field must appear before diagnostic reveal actions")
+        guard initiallyPresent else { return }
         capture(app, "Search field before interaction")
         let notice = app.staticTexts["library-status-notice"]
         if notice.exists {
@@ -179,6 +230,23 @@ final class SharedAudioFlowTests: XCTestCase {
         field.typeText("TRACK-B")
         XCTAssertTrue(app.staticTexts["TRACK-B"].waitForExistence(timeout: 5))
         XCTAssertFalse(app.staticTexts["TRACK-A"].exists)
+    }
+
+    @MainActor
+    private func captureSearchPresentation(_ app: XCUIApplication, _ name: String) {
+        let field = app.searchFields.firstMatch
+        let exists = field.exists
+        let state = "SearchField exists: \(exists)\nSearchField hittable: \(exists && field.isHittable)\n"
+        XCTContext.runActivity(named: name) { activity in
+            let screen = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
+            screen.name = name
+            screen.lifetime = .keepAlways
+            activity.add(screen)
+            let hierarchy = XCTAttachment(string: state + app.debugDescription)
+            hierarchy.name = name + " hierarchy and state"
+            hierarchy.lifetime = .keepAlways
+            activity.add(hierarchy)
+        }
     }
 
     @MainActor
