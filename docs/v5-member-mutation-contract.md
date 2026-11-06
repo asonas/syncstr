@@ -1,6 +1,6 @@
 # v5 member mutation contract
 
-Status: design draft for owner review (ASO-38). It proposes a contract and lists the decisions it needs. It does not change code or the wire protocol, and it does not authorize implementation. The [v5 completion design](https://linear.app/asonas/document/v5-completion-design-and-delivery-boundaries-7bf03b53cfba) gives the surrounding plan.
+Status: design draft (ASO-38). The owner accepted the recommended option of every decision on 2026-11-06. This document does not change code or the wire protocol, and it does not authorize implementation. Each slice below is delivered under its own issue. The [v5 completion design](https://linear.app/asonas/document/v5-completion-design-and-delivery-boundaries-7bf03b53cfba) gives the surrounding plan.
 
 ## Problem
 
@@ -132,7 +132,9 @@ Adding audio uses two steps. `put-object` is idempotent by hash and can be retri
 
 Two logical tracks that share one Audio Copy stay independent. Registering a second track with an existing hash creates a second logical track, and editing one never changes the other.
 
-## Decisions for the owner
+## Decisions
+
+The owner accepted the recommended option of each decision on 2026-11-06.
 
 ### D1. May members edit metadata?
 
@@ -158,7 +160,7 @@ Request IDs also share one namespace across the cluster. Replication copies them
 - **B. Deterministic outcome (recommended).** Scope request IDs to the origin member, so the key is `(member, request)`. Derive new track IDs from that key instead of a random UUID. Two hosts accepting the same request then produce the same track ID and the same request digest. The projection treats records with the same key and the same digest as one outcome, and keeps the one with the smallest record ID. This replaces today's "competing host results" error. A request with the same key and a different digest is still rejected. The device can retry at any host.
 - **C. Ask other hosts first.** Before accepting, the host asks its peers whether they already accepted the request. This fails when the first host is offline, which is the case that matters.
 
-B needs a projection change, which affects ASO-43 and ASO-12. A works with today's projection and can ship first. Recommendation: ship A in the first slice, and adopt B before audio addition is offered from more than one host.
+B needs a projection change, which affects ASO-43 and ASO-12. A works with today's projection and can ship first. Decision: ship A in the first slice, and adopt B before audio addition is offered from more than one host.
 
 ### D4. Edits from a member revoked later
 
@@ -192,7 +194,7 @@ Each case names the expected device state.
 
 Each slice needs design approval first and is delivered under its own issue.
 
-1. **Gate legacy mutations on v5 sessions.** Show adding audio, metadata edits, resolution and album title as unavailable on v5, with an explanation. This is a client fix and does not depend on the rest of this contract.
+1. **Gate legacy mutations on v5 sessions** (ASO-53). Show adding audio, metadata edits, resolution and album title as unavailable on v5, with an explanation. This is a client fix and does not depend on the rest of this contract.
 2. **Transport and replies.** Add the mutation request and the typed replies to the member QUIC service, and advertise supported operations (D5). Add no operations yet. Errors stop closing the connection.
 3. **Metadata and album visibility.** `edit-track` with origin recording (D2), the device queue and states, on Apple, Android and Windows. This restores the most widely used journey.
 4. **Conflict resolution and album title.** `resolve-track`, with deleting resolutions limited to hosts.
@@ -202,8 +204,8 @@ Each slice needs design approval first and is delivered under its own issue.
 
 ## Findings outside this contract
 
-These came up while reading the code. Each needs its own issue.
+These came up while reading the code. Each has its own issue.
 
-- **Apple sends legacy mutations on v5 sessions.** `upload`, `resolve`, `album-title` and `metadata` have no v5 guard (`apps/macos/ClusterTransport.swift:543-595`). The v5 host closes the connection. Reading the code suggests that a queued upload is then retried every 15 seconds without end. This was not reproduced. Slice 1 fixes it.
-- **The QUIC handshake stores proof before authorization.** The host merges the caller's grants and revocations into its store before it checks that the caller is a member (`headless/src/shared_audio_net.rs:183-186`).
-- **One playlist conflict blocks every playlist read.** The projection fails with "playlist conflict requires resolution" (`headless/src/playlists.rs:206-209`). After that, every playlist read and update fails, and so does the QUIC Catalog snapshot. The comment at `headless/src/shared_audio.rs:661` expects conflicts to be kept and reported instead.
+- **Apple sends legacy mutations on v5 sessions** ([ASO-53](https://linear.app/asonas/issue/ASO-53/disable-legacy-mutations-on-apple-v5-sessions)). `upload`, `resolve`, `album-title` and `metadata` have no v5 guard (`apps/macos/ClusterTransport.swift:543-595`). The v5 host closes the connection. Reading the code suggests that a queued upload is then retried every 15 seconds without end. This was not reproduced. Slice 1 fixes it.
+- **The QUIC handshake stores proof before authorization** ([ASO-54](https://linear.app/asonas/issue/ASO-54/authorize-v5-quic-peers-before-storing-their-proof)). The host merges the caller's grants and revocations into its store before it checks that the caller is a member (`headless/src/shared_audio_net.rs:183-186`).
+- **One playlist conflict blocks every playlist read** ([ASO-55](https://linear.app/asonas/issue/ASO-55/keep-v5-playlist-reads-working-during-a-conflict)). The projection fails with "playlist conflict requires resolution" (`headless/src/playlists.rs:206-209`). After that, every playlist read and update fails, and so does the QUIC Catalog snapshot. The comment at `headless/src/shared_audio.rs:661` expects conflicts to be kept and reported instead.
