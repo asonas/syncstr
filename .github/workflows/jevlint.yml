@@ -1,0 +1,83 @@
+name: Jevlint review
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, edited]
+
+permissions:
+  contents: read
+  pull-requests: read
+
+concurrency:
+  group: jevlint-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  review:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    # Keep both findings and service failures advisory during the initial rollout.
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          # The PR must not choose the configuration used to judge itself.
+          ref: ${{ github.event.pull_request.base.sha }}
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "24.22.1"
+
+      - name: Install jevlint
+        run: npm install --global @indxjp/jevlint@0.2.1
+
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/jevlint
+          key: jevlint-v1-${{ runner.os }}-0.2.1-${{ github.event.pull_request.head.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: |
+            jevlint-v1-${{ runner.os }}-0.2.1-${{ github.event.pull_request.head.sha }}-
+            jevlint-v1-${{ runner.os }}-0.2.1-
+
+      - name: Review pull request
+        id: review
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TYPESAFE_AI_API_KEY: ${{ secrets.TYPESAFE_AI_API_KEY }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_FROM_FORK: ${{ github.event.pull_request.head.repo.full_name != github.repository }}
+          PR_AUTHOR: ${{ github.event.pull_request.user.login }}
+          NO_COLOR: "1"
+        shell: bash
+        run: |
+          if [[ "$PR_FROM_FORK" == true || "$PR_AUTHOR" == 'dependabot[bot]' ]]; then
+            echo "AST-only review: API credentials are unavailable for this pull request." > "$RUNNER_TEMP/jevlint-review.txt"
+            jevlint pr "$PR_NUMBER" --ast-only --ignore-pins 2>&1 | tee -a "$RUNNER_TEMP/jevlint-review.txt"
+          elif [[ -z "$TYPESAFE_AI_API_KEY" ]]; then
+            echo "Jev review did not run: add the TYPESAFE_AI_API_KEY repository Actions secret." > "$RUNNER_TEMP/jevlint-review.txt"
+            echo "::error::Missing TYPESAFE_AI_API_KEY; Jev and intent evaluation did not run."
+            exit 1
+          else
+            jevlint auth env on
+            echo "Jev model review with PR intent evaluation; findings are advisory." > "$RUNNER_TEMP/jevlint-review.txt"
+            jevlint pr "$PR_NUMBER" --intent --ignore-pins 2>&1 | tee -a "$RUNNER_TEMP/jevlint-review.txt"
+          fi
+
+      - name: Publish review summary
+        if: ${{ always() }}
+        env:
+          REVIEW_OUTCOME: ${{ steps.review.outcome }}
+        shell: bash
+        run: |
+          {
+            printf '## Jevlint review\n\n'
+            printf 'Review step: %s. This check is advisory.\n\n' "$REVIEW_OUTCOME"
+            if [[ -f "$RUNNER_TEMP/jevlint-review.txt" ]]; then
+              printf '<pre>\n'
+              jq -Rrs '@html' "$RUNNER_TEMP/jevlint-review.txt"
+              printf '</pre>\n'
+            else
+              printf 'No review report was produced. Check the setup and review logs.\n'
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
