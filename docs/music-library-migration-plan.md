@@ -1,8 +1,6 @@
 # Incremental Music library migration
 
-Status: design decisions agreed; Windows handoff prepared and feasibility
-checks pending. No migration implementation or library mutation has been
-performed during the interview.
+Status (2026-11-06): design decisions are agreed and an [inventory/prepare/import/resume CLI](../tools/music-migration/README.md) exists. The interview itself performed no migration. Some starting-point observations below are historical; v5 source-correspondence integration and acquisition/artwork follow-ups remain open in [the completion design](v5-completion-design.md) and ASO-41. A CLI implementation is not proof of complete migration or current production acceptance.
 
 ## Confirmed requirements
 

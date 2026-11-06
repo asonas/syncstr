@@ -1,5 +1,7 @@
 # Syncstr design decisions
 
+Applicability note (2026-11-06): the table records successive decisions, not simultaneous current restrictions. Later cluster requirements supersede D-011's sole-source limitation and extend the platform and connectivity scope. [ADR 0006](adr/0006-preserve-source-track-identity-independently-of-audio.md) supersedes hash-based logical-track merging. Use the [completion design](v5-completion-design.md) for the current decision hierarchy and proposed follow-up; it does not reactivate historical account requirements.
+
 These decisions describe the local music product. The initial server-oriented specification and superseded decisions remain in Git history. Earlier plans are investigations, not requirements for current onboarding.
 
 | ID | Decision | Rationale | Consequence |

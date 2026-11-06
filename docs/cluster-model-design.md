@@ -2,6 +2,8 @@
 
 This document records agreed product behavior from the design interview, not a claim of existing support. See [the implementation plan](cluster-implementation-plan.md) for the current source audit, technology comparison, proposed milestones, and unresolved technical details.
 
+Identity amendment: [ADR 0006](adr/0006-preserve-source-track-identity-independently-of-audio.md) takes precedence over this interview's initial content-based merging policy. Distinct source registrations are distinct logical tracks even when bytes match. Replicas of an established logical track may share storage; hashes alone do not authorize merging registrations. See the [v5 completion design](v5-completion-design.md) for pending integration and lifecycle work.
+
 ## Agreed product direction
 
 - Syncstr playback applications run on iPhone and macOS, with Android and Windows planned. Headless Syncstr stores and supplies music without playback.
@@ -32,7 +34,7 @@ Removing a local copy and deleting music from the cluster library are separate a
 
 ## Agreed library presentation
 
-Present one cluster library rather than separate libraries for each host. Replicas of the same track on multiple hosts appear as one library item, and retrieval automatically selects an available source without requiring the listener to choose a host for each operation. Initially, merge replicas only when their complete file contents match. Different encodings, masters, or tag-modified files remain distinct even when their titles match; do not infer audio equivalence or discard variants automatically.
+Present one cluster library rather than separate libraries for each host. Replicas of the same logical track on multiple hosts appear as one library item, and retrieval automatically selects an available source without requiring the listener to choose a host for each operation. Reuse byte-identical storage without merging distinct source registrations. Multiple encodings require evidenced logical correspondence; titles or hashes alone do not establish it. Do not discard releases, masters or variants automatically.
 
 Keep previously received library information visible when all hosts are offline. Locally saved music remains playable; unsaved music reports that no source is currently reachable. A disconnection must not clear the album list or imply that tracks have been deleted.
 

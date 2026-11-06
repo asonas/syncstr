@@ -1,9 +1,11 @@
 # Shared playlists and Music XML migration
 
-Status: implementation plan with a server-catalog review tool. Product scope and
-offline behavior were agreed on 2026-10-21. Storage and protocol details below
-are proposals requiring the Phase 1 contract checks. Playlist persistence,
-destination import, and application presentation have not been implemented.
+Status (2026-11-06): playlist persistence, Apple XML import/reconciliation,
+retained browsing and playback are implemented. Ordinary editing, durable
+offline edits, conflict resolution and smart-rule execution remain incomplete.
+Product scope and offline behavior were agreed on 2026-10-21; the full editing
+contracts below still require design closure. See the [completion design](v5-completion-design.md)
+and ASO-42. ASO-6/7 retain ownership of XML performance and migration UX.
 
 ## Agreed scope
 
