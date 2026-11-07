@@ -20,7 +20,7 @@ and requires live membership for the remote ID and live host authority for itsel
 before storing any presented grants or revocations. Validation, authorization and
 storage share one store lock and transaction; a rejected Hello leaves membership
 unchanged. The server replies with its current proof and
-`"supported_operations":["edit-track","resolve-track","update-playlists"]`, then finishes. A missing
+`"supported_operations":["edit-track","resolve-track","update-playlists","put-object","register-track"]`, then finishes. A missing
 operations field means no member mutations are supported. Clients must keep their known
 revocations when merging the response, validate root and cluster equality, and
 require a live host grant for the actual remote ID.
@@ -58,7 +58,8 @@ produces an ordinary connection failure with no refusal frame; clients must not
 treat that failure as verified revocation or mark queued edits rejected from it.
 
 Every subsequent bidirectional stream contains one request frame; the requester
-finishes its send side. The server sends the indicated response and finishes.
+finishes its send side after any `put-object` body described below. The server
+sends the indicated response and finishes.
 Read/replication errors reset or close the stream or connection. Mutation requests
 use the typed replies below. Do not replace retained state on an incomplete or
 failed response.
@@ -120,7 +121,8 @@ request, with ordinary connection failure when evidence cannot be returned.
 Other outcomes keep the session open.
 Incomplete history returns `deferred` with reason `incomplete-history`; unavailable
 storage returns `deferred` with reason `store-unavailable`. Operations other than
-`edit-track`, `resolve-track` and `update-playlists` remain `unsupported`.
+`edit-track`, `resolve-track`, `update-playlists`, `put-object` and `register-track`
+remain `unsupported`.
 
 Persist the request ID and original envelope before sending. Retry only at the
 same accepting host. Exact retries return the original record, host and heads,
@@ -252,6 +254,65 @@ original records rather than current heads, including after restart or later
 updates. A different envelope or another member reusing the ID is rejected as
 invalid. Receipts are local to the accepting host; retries remain pinned to that
 host under decision D3 A, without cross-host replay guarantees.
+
+### Member audio addition (host support; D3 A)
+
+Only clients implementing this wire contract may send the two advertised audio
+operations. The current Apple client decodes only `version` and `proof` from
+Hello, ignores `supported_operations`, and still blocks uploads on a v5 session
+(`ClusterNetwork.requireLegacyMutations`, `ClusterSession.upload`, and
+`LocalTransfer.permitsClusterMutations`). It does not send `put-object` or
+`register-track`, and has no `object-stored` handling. Host capability advertisement
+alone does not re-enable Apple audio addition. This slice changes no app clients.
+
+Send `put-object` in the existing mutation envelope with `expected: {}`,
+`confirmed: []`, and strict `payload: {"hash":"<sha256>","bytes":3}`. Immediately
+after its length-prefixed JSON frame, write exactly that many raw bytes to the
+same QUIC stream and finish the sending side. The frame limit is still 64 MiB;
+the separate body limit is `crate::model::MAX_AUDIO` (20 GiB). The host validates
+the declaration before reading the body, streams with bounded memory and SHA-256,
+requires the exact declared length and EOF, and only replies after verified,
+durable installation. Oversize declarations, truncation, excess bytes and digest
+mismatch return `rejected` / `invalid`, discard staging files, and create no
+record or success receipt. An unenrolled peer is refused during Hello. On an
+existing session a revoked member receives `rejected` / `revoked` before any body
+read, then the connection closes. Authorization is checked before reception and
+again immediately before publication on blocking workers, without a database read
+per upload chunk. Revocation during reception is rejected at publication. Other
+rejection outcomes leave the session usable.
+
+Success is a new recordless reply:
+
+```json
+{"status":"object-stored","request":"upload-example-1","hash":"<sha256>","bytes":3,"host":"<host-id>"}
+```
+
+It means only that the Audio Copy is stored, not that a logical track exists.
+Bytes are stored once per hash. The host retains successful unreferenced uploads
+without garbage collection. Exact retry verifies the bytes again and returns the
+same durable receipt, including after restart. A local `shared_object_requests`
+table holds the original digest and reply; its IDs share the existing mutation
+namespace. Different content, another origin member, or another operation reusing
+an ID is invalid. Uploading the same hash at another host is independently safe.
+No signed record is invented for an upload.
+
+Then send `register-track` without trailing bytes. Its strict payload is
+`{"source":{"library":"example-library","track":"example-source-track"},"metadata":{"title":"Example Song"},"hash":"<sha256>"}`,
+with `expected: {}` and exactly `confirmed: [{"audio":"<sha256>"}]`. That
+confirmation explicitly approves using those bytes as audio; it is not inferred
+from the upload. The Audio Copy must be present and verified and the source must
+not already have a correspondence. The host assigns a fresh logical track UUID
+and addition time, binds the supplied hash as audio/preferred, and signs the
+correspondence and track in one record with authenticated D2 member/grant origin.
+Other Track/Evidence fields cannot be supplied by the client.
+
+Registration returns the existing `accepted {request, record, host, heads}` shape,
+with original heads for both new subjects. Preserve the request ID and original
+envelope and retry only at the accepting host under D3 A. Exact replay returns
+the same record, host and heads after subsequent edits or restart. Different
+source tracks with equal hashes remain independent logical tracks. This slice
+does not add cross-host registration replay, member-scoped request IDs,
+deterministic track IDs, or projection changes (D3 B).
 
 ### Catalog snapshot
 

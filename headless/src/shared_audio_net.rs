@@ -81,6 +81,21 @@ pub struct UpdatePlaylists {
     pub documents: Vec<crate::playlists::Document>,
 }
 
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PutObject {
+    pub hash: String,
+    pub bytes: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RegisterTrack {
+    pub source: crate::shared_audio::Source,
+    pub metadata: std::collections::BTreeMap<String, serde_json::Value>,
+    pub hash: String,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum MutationRejection {
@@ -94,6 +109,12 @@ pub enum MutationRejection {
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "status", rename_all = "kebab-case", deny_unknown_fields)]
 pub enum MutationReply {
+    ObjectStored {
+        request: String,
+        hash: String,
+        bytes: u64,
+        host: String,
+    },
     Accepted {
         request: String,
         record: String,
@@ -189,44 +210,50 @@ fn revoked_hello(
 }
 
 impl crate::shared_audio::Store {
-    fn mutation_reply(
+    fn prepare_mutation(
         &self,
         peer: &str,
         signer: &crate::peer::Identity,
         request: String,
         incoming: &[u8],
-    ) -> crate::shared_audio_net::MutationReply {
+    ) -> Result<
+        (
+            crate::shared_audio_net::MutationRequest,
+            crate::enrollment::Proof,
+        ),
+        crate::shared_audio_net::MutationReply,
+    > {
         use crate::shared_audio_net::{MutationRejection, MutationReply, Request};
         let proof = match self.membership() {
             Ok(proof) => proof,
             Err(_) => {
-                return MutationReply::Deferred {
+                return Err(MutationReply::Deferred {
                     request,
                     reason: "store-unavailable".into(),
-                };
+                });
             }
         };
         if crate::shared_audio_net::authorize(&proof, peer, false).is_err() {
-            return MutationReply::Rejected {
+            return Err(MutationReply::Rejected {
                 request,
                 reason: if proof.grants.iter().any(|g| g.member == peer) {
                     MutationRejection::Revoked
                 } else {
                     MutationRejection::Unauthorized
                 },
-            };
+            });
         }
         if crate::shared_audio_net::authorize(&proof, &signer.id().to_string(), true).is_err() {
-            return MutationReply::Rejected {
+            return Err(MutationReply::Rejected {
                 request,
                 reason: MutationRejection::Unauthorized,
-            };
+            });
         }
         let Ok(Request::Mutation { mutation }) = serde_json::from_slice(incoming) else {
-            return MutationReply::Rejected {
+            return Err(MutationReply::Rejected {
                 request,
                 reason: MutationRejection::Invalid,
-            };
+            });
         };
         // Read the activation identity without projecting possibly incomplete history.
         let identity = self.run(|connection, _| {
@@ -237,29 +264,37 @@ impl crate::shared_audio::Store {
             )?)
         });
         match identity {
-            Err(_) => MutationReply::Deferred {
+            Err(_) => Err(MutationReply::Deferred {
                 request,
                 reason: "store-unavailable".into(),
-            },
-            Ok((cluster, _)) if mutation.cluster != cluster => MutationReply::Rejected {
+            }),
+            Ok((cluster, _)) if mutation.cluster != cluster => Err(MutationReply::Rejected {
                 request,
                 reason: MutationRejection::ClusterMismatch,
-            },
-            Ok((_, baseline)) if mutation.baseline != baseline => MutationReply::Rejected {
+            }),
+            Ok((_, baseline)) if mutation.baseline != baseline => Err(MutationReply::Rejected {
                 request,
                 reason: MutationRejection::BaselineMismatch,
-            },
-            Ok(_) if mutation.operation == "edit-track" => {
-                self.edit_track_member(signer, peer, mutation, &proof)
-            }
-            Ok(_) if mutation.operation == "resolve-track" => {
-                self.resolve_track_member(signer, peer, mutation, &proof)
-            }
-            Ok(_) if mutation.operation == "update-playlists" => {
-                self.update_playlists_member(signer, peer, mutation, &proof)
-            }
-            Ok(_) => MutationReply::Unsupported {
-                request,
+            }),
+            Ok(_) => Ok((mutation, proof)),
+        }
+    }
+
+    fn mutation_reply(
+        &self,
+        peer: &str,
+        signer: &crate::peer::Identity,
+        mutation: crate::shared_audio_net::MutationRequest,
+        proof: &crate::enrollment::Proof,
+    ) -> crate::shared_audio_net::MutationReply {
+        use crate::shared_audio_net::MutationReply;
+        match mutation.operation.as_str() {
+            "edit-track" => self.edit_track_member(signer, peer, mutation, proof),
+            "resolve-track" => self.resolve_track_member(signer, peer, mutation, proof),
+            "update-playlists" => self.update_playlists_member(signer, peer, mutation, proof),
+            "register-track" => self.register_track_member(signer, peer, mutation, proof),
+            _ => MutationReply::Unsupported {
+                request: mutation.request,
                 operation: mutation.operation,
             },
         }
@@ -483,6 +518,8 @@ async fn serve_connection(
                 "edit-track".into(),
                 "resolve-track".into(),
                 "update-playlists".into(),
+                "put-object".into(),
+                "register-track".into(),
             ],
         },
     )
@@ -509,11 +546,35 @@ async fn serve_connection(
                 .to_owned();
             let check = store.clone();
             let presenter = peer.clone();
-            let signer = signer.clone();
-            let reply = tokio::task::spawn_blocking(move || {
-                check.mutation_reply(&presenter, &signer, request, &payload)
+            let signing = signer.clone();
+            let prepared = tokio::task::spawn_blocking(move || {
+                check.prepare_mutation(&presenter, &signing, request, &payload)
             })
             .await?;
+            let reply = match prepared {
+                Err(reply) => reply,
+                Ok((mutation, _)) if mutation.operation == "put-object" => {
+                    crate::shared_audio_net::receive_object(
+                        &store,
+                        signer.clone(),
+                        &peer,
+                        mutation,
+                        &mut input,
+                    )
+                    .await
+                }
+                Ok((mutation, proof)) => {
+                    let check = store.clone();
+                    let presenter = peer.clone();
+                    let signing = signer.clone();
+                    tokio::task::spawn_blocking(move || {
+                        check.mutation_reply(&presenter, &signing, mutation, &proof)
+                    })
+                    .await?
+                }
+            };
+            // Rejections must not wait for an unauthenticated or oversized body.
+            let _ = input.stop(0u32.into());
             let unauthorized = matches!(
                 &reply,
                 crate::shared_audio_net::MutationReply::Rejected {
@@ -577,6 +638,58 @@ async fn serve_connection(
         output.finish()?;
     }
     Ok(())
+}
+
+async fn receive_object(
+    store: &crate::shared_audio::Store,
+    signer: std::sync::Arc<crate::peer::Identity>,
+    peer: &str,
+    mutation: crate::shared_audio_net::MutationRequest,
+    input: &mut iroh::endpoint::RecvStream,
+) -> crate::shared_audio_net::MutationReply {
+    let request = mutation.request.clone();
+    let result = async {
+        let check = store.clone();
+        let presenter = peer.to_owned();
+        let intent = mutation.clone();
+        let (put, staged) = tokio::task::spawn_blocking(move || -> anyhow::Result<_> {
+            let put = check.prepare_put_object(&presenter, &intent)?;
+            Ok((put, check.stage()?))
+        })
+        .await??;
+        use sha2::Digest as _;
+        use tokio::io::AsyncWriteExt as _;
+        let mut file = tokio::fs::File::from_std(staged.reopen()?);
+        let mut sha = sha2::Sha256::new();
+        let mut received = 0u64;
+        let mut buffer = vec![0; 65536];
+        loop {
+            let count =
+                tokio::time::timeout(std::time::Duration::from_secs(30), input.read(&mut buffer))
+                    .await??;
+            let Some(count) = count else {
+                break;
+            };
+            received += count as u64;
+            anyhow::ensure!(received <= put.bytes, "excess upload bytes");
+            sha.update(&buffer[..count]);
+            file.write_all(&buffer[..count]).await?;
+        }
+        anyhow::ensure!(
+            received == put.bytes && hex::encode(sha.finalize()) == put.hash,
+            "audio size or hash mismatch"
+        );
+        file.flush().await?;
+        drop(file);
+        let check = store.clone();
+        let presenter = peer.to_owned();
+        Ok(tokio::task::spawn_blocking(move || {
+            check.finish_put_object(&signer, &presenter, mutation, staged)
+        })
+        .await?)
+    }
+    .await;
+    crate::shared_audio::mutation_result(request, result)
 }
 
 pub struct Session {
@@ -781,6 +894,28 @@ impl crate::shared_audio_net::Session {
             .supported_operations
             .iter()
             .any(|op| op == "update-playlists")
+        {
+            return Ok(crate::shared_audio_net::MutationReply::Unsupported {
+                request: mutation.request,
+                operation: mutation.operation,
+            });
+        }
+        self.request(crate::shared_audio_net::Request::Mutation { mutation })
+            .await
+    }
+
+    pub async fn register_track(
+        &self,
+        mutation: crate::shared_audio_net::MutationRequest,
+    ) -> anyhow::Result<crate::shared_audio_net::MutationReply> {
+        anyhow::ensure!(
+            mutation.operation == "register-track",
+            "expected register-track operation"
+        );
+        if !self
+            .supported_operations
+            .iter()
+            .any(|op| op == "register-track")
         {
             return Ok(crate::shared_audio_net::MutationReply::Unsupported {
                 request: mutation.request,

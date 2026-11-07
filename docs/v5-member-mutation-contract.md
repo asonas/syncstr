@@ -94,6 +94,7 @@ Every outcome is a typed reply. The connection stays open.
 | Outcome | Meaning | Device state |
 | --- | --- | --- |
 | `accepted` | The host signed and stored a record. Carries the record ID, the accepting host and the new heads. | Accepted |
+| `object-stored` | `put-object` verified and durably stored the Audio Copy. Carries `request`, `hash`, `bytes` and `host`; no record or heads are created. | Accepted (bytes only; registration still required) |
 | `needs-review` | `expected` no longer matches, or the change would create a conflict. Carries the current heads of each subject. | Needs review |
 | `rejected` | Not authorized, revoked, invalid, baseline mismatch, or the request ID was reused with different content. | Rejected |
 | `deferred` | The host cannot decide yet, for example because its history is incomplete. Retryable. | Queued |
@@ -119,14 +120,45 @@ Cancel removes a request only while it is Draft or Queued. Cancelling a request 
 
 | Operation | Who may submit | Host checks | Legacy journey |
 | --- | --- | --- | --- |
-| `put-object` | Any member | Size limit and SHA-256 of the bytes. Stores the Audio Copy. Creates no record. | First half of adding audio |
-| `register-track` | Any member | Explicit audio eligibility, a new track, the Audio Copy present. | Second half of adding audio |
+| `put-object` | Authenticated, live member | Strict payload `{hash, bytes}`, empty `expected` and `confirmed`; raw bytes follow the mutation frame on the same stream. Requires `0 < bytes <= crate::model::MAX_AUDIO` (20 GiB), exact length/EOF and streaming SHA-256 verification. Returns `object-stored` after durable storage; creates no record. | First half of adding audio |
+| `register-track` | Authenticated, live member | Strict payload `{source: {library, track}, metadata, hash}`, empty `expected`, and exactly `confirmed: [{"audio": hash}]` for explicit audio eligibility. Requires a new source correspondence and a verified Audio Copy. The host generates the logical track ID and addition time and records D2 origin. | Second half of adding audio |
 | `edit-track` | Any member (decision D1) | `expected` heads. Changes only this logical track. | Metadata and album visibility |
 | `resolve-track` | Any member, except a resolution that deletes shared music, which needs a host | `expected` lists every competing head. | Resolve a conflict, album title |
 | `assign-source` | Any member, with explicit confirmation | `expected` heads of the source subject. The confirmation is recorded. | Track Correspondence review |
 | `update-playlists` | Any member | Today's `PlaylistUpdate` checks, plus a request ID. | XML playlist update |
 
 Adding audio uses two steps. `put-object` is idempotent by hash and can be retried at any host. `register-track` creates the logical track. If registration never happens, the Audio Copy stays on the host. Automatic object garbage collection is deferred (`docs/shared-audio-server-design.md:131-133`), so this contract does not remove it.
+
+The host advertises both operations in Hello. An upload consists of the existing
+length-prefixed mutation JSON frame, then exactly the declared number of raw bytes
+and FIN on that stream's sending side. The JSON frame limit remains 64 MiB;
+the audio body uses `crate::model::MAX_AUDIO`, without buffering the whole object.
+An unenrolled peer is refused during Hello; a revoked peer on an existing session
+is rejected before reading its upload body. Authorization is checked before
+reception and immediately before publication, on blocking workers, never per
+upload chunk. Revocation during reception is rejected at publication. Invalid
+length/hash/oversize uploads create no
+receipt, record or installed object and discard their temporary files. Successful
+unreferenced objects are retained. Other non-authorization failures keep the
+connection usable; authorization rejection closes it after the typed reply.
+
+`object-stored` has wire shape
+`{"status":"object-stored","request":"upload-example","hash":"<sha256>","bytes":3,"host":"<host-id>"}`.
+The host persists a recordless receipt in `shared_object_requests`, rejects request
+IDs already used by signed mutations, and rejects a different digest for the same
+ID. The digest binds the authenticated member and original envelope. Exact upload
+replay verifies the supplied bytes again and returns the original receipt. A
+different host may independently store the same hash; this does not register or
+merge any logical tracks. Signed mutations also reject IDs reserved by uploads.
+
+`register-track` uses D3 A: persist its original envelope and retry only at the
+accepting host. Its `accepted` reply has both the new `track:<id>` and source
+correspondence heads from the signed registration. Exact replay returns those
+original heads and the original host/record after later edits or restart. Different
+sources can register independent tracks with equal bytes; no alias is inferred.
+Member-scoped IDs, deterministic track IDs and D3 B remain deferred. The existing
+Apple client ignores Hello's operation list and continues to block v5 uploads;
+advertising these host operations does not enable its audio addition UI or sender.
 
 `update-playlists` keeps today's item IDs and the rule that only the original XML can update a playlist. ASO-6 and ASO-7 own changes to that behavior.
 
