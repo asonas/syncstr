@@ -57,6 +57,7 @@ continue to use the existing conflict-resolution flow.
 | Remote Android development | [Agreed setup plan and acceptance checklist](docs/android-remote-development-plan.md), [syncstr-android-dev skill](.agents/skills/syncstr-android-dev/SKILL.md); Linux build, local device loop and remote skill discovery verified |
 | Windows implementation preparation | [M5 native development handoff](docs/cluster-windows-m5.md); native Windows acceptance is pending |
 | Windows playback client | [Windows build and operation guide](apps/windows/README.md) |
+| Shared client binding experiment | [Windows Rust, Swift and Kotlin execution probe](experiments/client-bindings/README.md); isolated ASO-68 results and remaining native-target checks |
 | App-to-node P2P transfer | [P2P setup and protocol](docs/p2p-music-transfer.md), [Rust transport](headless/src/peer.rs), [native transport](apps/macos/PeerTransfer.swift), [setup controls](apps/macos/PeerSetup.swift) |
 | Signed endpoint discovery | [Rendezvous setup and protocol](docs/peer-rendezvous.md), [Cloudflare directory](rendezvous/src/index.ts), [headless publisher](headless/src/rendezvous.rs) |
 | Device identity and direct/relay connectivity experiment | [Connectivity probe](headless/connectivity-probe/README.md). Isolated from deployed services; independent-network verification is pending |
