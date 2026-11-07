@@ -1,6 +1,6 @@
 # v5 album visibility records
 
-Status: proposal for owner decision (ASO-66). No decision below is approved by this document. This design does not change the wire protocol or authorize implementation. It extends the [member mutation contract](v5-member-mutation-contract.md); its older current-state inventory is historical, not a description of today's implemented operations.
+Status: accepted design (ASO-66). The owner accepted the recommended option A of D1 to D4 on 2026-11-07. Implementation follows the bounded slice below under its own issues. It extends the [member mutation contract](v5-member-mutation-contract.md); its older current-state inventory is historical, not a description of today's implemented operations.
 
 ## Problem
 
@@ -22,6 +22,8 @@ These are source observations, not runtime acceptance results.
 | Apple entry point | `apps/macos/Library.swift:323` provides the visibility action label | Restore the existing journey after protocol and client support are available. |
 
 ## Decisions for the owner
+
+The owner accepted A for each decision below.
 
 ### D1. Subject, value and baseline overlay
 
@@ -75,4 +77,4 @@ Then add the catalog overlay and durable request queue to Apple, followed by the
 
 Existing record-value decoders reject unknown kinds. Upgrade all hosts before producing the new signed value, and ensure readers can apply the new catalog overlay before enabling the operation. Older clients otherwise risk showing stale baseline visibility; capability discovery alone does not update their projection. Treat deployment order as an acceptance gate, not an automatic migration.
 
-Out of scope: album creation/merge/split, new aliases, other album choices, metadata reclassification, track retirement, deleting audio, per-device visibility, and cross-host retry. This document changes no code, signed data or deployed service. Human decision required: select D1–D4 and approve the implementation and rollout boundary separately.
+Out of scope: album creation/merge/split, new aliases, other album choices, metadata reclassification, track retirement, deleting audio, per-device visibility, and cross-host retry. This document changes no code, signed data or deployed service.
