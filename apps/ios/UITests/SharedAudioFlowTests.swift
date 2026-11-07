@@ -152,6 +152,38 @@ final class SharedAudioFlowTests: XCTestCase {
     }
 
     @MainActor
+    func testTrackResolutionCapabilityGateAndNonHostDeletionChoice() throws {
+        let root = try XCTUnwrap(ProcessInfo.processInfo.environment["SYNCSTR_V5_FIXTURE_ROOT"])
+        for supported in [true, false] {
+            let app = XCUIApplication()
+            app.launchArguments = ["--v5-fixture", root, "--v5-fixture-state", supported ? "resolution" : "resolution-unsupported"]
+            app.launch()
+            let settings = app.buttons["設定"].firstMatch
+            if settings.waitForExistence(timeout: 5) { settings.tap() }
+            else { app.cells.containing(.staticText, identifier: "設定").firstMatch.tap() }
+            let disclosure = app.buttons["変更の競合と端末の権限"]
+            for _ in 0..<8 where !disclosure.isHittable { app.swipeUp() }
+            XCTAssertTrue(disclosure.waitForExistence(timeout: 5))
+            disclosure.tap()
+            let live = app.buttons["shared-resolution-choice-" + String(repeating: "a", count: 64)]
+            let deleted = app.buttons["shared-resolution-choice-" + String(repeating: "b", count: 64)]
+            for _ in 0..<4 where !live.isHittable { app.swipeUp() }
+            XCTAssertTrue(live.waitForExistence(timeout: 5))
+            XCTAssertTrue(deleted.exists)
+            XCTAssertEqual(live.isEnabled, supported)
+            XCTAssertFalse(deleted.isEnabled)
+            XCTAssertTrue(app.staticTexts["削除を優先する場合は、保存先の端末で解消してください。"].exists)
+            if supported {
+                live.tap()
+                let alert = app.alerts["選んだ内容で競合を解消しますか？"]
+                XCTAssertTrue(alert.waitForExistence(timeout: 5))
+                alert.buttons["キャンセル"].tap()
+            }
+            app.terminate()
+        }
+    }
+
+    @MainActor
     func testConflictAndIncompleteNoticesSurviveRelaunch() throws {
         continueAfterFailure = false
         let root = try XCTUnwrap(ProcessInfo.processInfo.environment["SYNCSTR_V5_FIXTURE_ROOT"], "Required isolated v5 fixture is missing")

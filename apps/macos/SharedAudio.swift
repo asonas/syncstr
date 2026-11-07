@@ -61,6 +61,7 @@ struct SharedAudioSnapshot: Decodable {
         let incomplete: [String]
         let legacy_organization: AlbumOrganization?
         let heads: [String: [String]]?
+        let candidates: [String: [String: LogicalTrack]]?
 
         func entry(_ id: String, hash: String? = nil) throws -> LocalEntry {
             try entry(id, hash: hash, organization: organization())
@@ -165,6 +166,13 @@ struct SharedAudioSnapshot: Decodable {
 #if DEBUG
 @MainActor
 enum SharedAudioUIFixture {
+    static var resolutionEnabled: Bool {
+        let arguments = ProcessInfo.processInfo.arguments
+        if let index = arguments.firstIndex(of: "--v5-fixture-state"), arguments.indices.contains(index + 1) {
+            return arguments[index + 1] == "resolution"
+        }
+        return Bundle.main.object(forInfoDictionaryKey: "SyncstrV5FixtureState") as? String == "resolution"
+    }
     static var requested: Bool {
         ProcessInfo.processInfo.arguments.contains("--v5-fixture") || Bundle.main.object(forInfoDictionaryKey: "SyncstrV5FixtureRoot") is String
     }
@@ -186,7 +194,7 @@ enum SharedAudioUIFixture {
         let stateIndex = arguments.firstIndex(of: "--v5-fixture-state")
         let state = stateIndex.flatMap { arguments.indices.contains($0 + 1) ? arguments[$0 + 1] : nil }
             ?? (Bundle.main.object(forInfoDictionaryKey: "SyncstrV5FixtureState") as? String) ?? "normal"
-        guard ["normal", "conflict", "incomplete", "metadata"].contains(state) else { throw LocalMusicError.invalidData }
+        guard ["normal", "conflict", "incomplete", "metadata", "resolution", "resolution-unsupported"].contains(state) else { throw LocalMusicError.invalidData }
         let store = LocalMusicStore(root: root.appendingPathComponent("apple-ui-" + state))
         let database = try store.database()
         struct Enrollment: Decodable { let grant: String; let proof: ClusterMembership; let member: String }
@@ -212,7 +220,7 @@ enum SharedAudioUIFixture {
                 try database.finishMetadataMutation(edit.id, reply: .rejected(request: edit.id, reason: .revoked))
             }
         }
-        if state == "conflict" || state == "incomplete" {
+        if state == "conflict" || state == "incomplete" || state.hasPrefix("resolution") {
             let data = try Data(contentsOf: root.appendingPathComponent("snapshot.json"))
             var snapshot = try JSONSerialization.jsonObject(with: data) as! [String: Any]
             var catalog = snapshot["catalog"] as! [String: Any]
@@ -221,6 +229,14 @@ enum SharedAudioUIFixture {
                 let tracks = catalog["tracks"] as! [String: [String: Any]]
                 guard let id = tracks.first(where: { ($0.value["metadata"] as? [String: Any])?["title"] as? String == "TRACK-A" })?.key else { throw LocalMusicError.invalidData }
                 catalog["conflicts"] = ["track:" + id]
+                if state.hasPrefix("resolution") {
+                    let live = String(repeating: "a", count: 64)
+                    let deleted = String(repeating: "b", count: 64)
+                    var retired = tracks[id]!
+                    retired["retired"] = true
+                    catalog["heads"] = ["track:" + id: [live, deleted]]
+                    catalog["candidates"] = [id: [live: tracks[id]!, deleted: retired]]
+                }
             }
             snapshot["catalog"] = catalog
             try database.receiveSharedAudio(JSONSerialization.data(withJSONObject: snapshot), peer: grant.issuer)

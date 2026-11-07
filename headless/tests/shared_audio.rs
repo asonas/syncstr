@@ -1520,6 +1520,10 @@ async fn quic_members_resolve_track_heads_but_only_hosts_may_select_retirement()
     let store = fixture.activate()?;
     let before = store.catalog()?;
     let subject = format!("track:{}", fixture.logical);
+    assert!(serde_json::to_value(&before)?.get("candidates").is_none());
+    let legacy: syncstr_headless::shared_audio::Catalog =
+        serde_json::from_value(serde_json::to_value(&before)?)?;
+    assert!(legacy.candidates.is_empty());
     let mut live = before.tracks[&fixture.logical].clone();
     live.metadata.insert("title".into(), "Host A title".into());
     let mut retired = live.clone();
@@ -1554,6 +1558,20 @@ async fn quic_members_resolve_track_heads_but_only_hosts_may_select_retirement()
     let conflict = store.catalog()?;
     assert!(conflict.conflicts.contains(&subject));
     assert_eq!(conflict.heads[&subject].len(), 2);
+    assert_eq!(
+        conflict.candidates[&fixture.logical],
+        std::collections::BTreeMap::from([
+            (a.id.clone(), live.clone()),
+            (b.id.clone(), retired.clone())
+        ])
+    );
+    assert_eq!(
+        conflict.candidates[&fixture.logical]
+            .keys()
+            .cloned()
+            .collect::<Vec<_>>(),
+        conflict.heads[&subject]
+    );
     let records = store.records()?;
     let resolution = MutationRequest {
         request: "member-track-resolution".into(),
@@ -1691,6 +1709,7 @@ async fn quic_members_resolve_track_heads_but_only_hosts_may_select_retirement()
     )?;
     let resolved = store.catalog()?;
     assert!(!resolved.conflicts.contains(&subject));
+    assert!(serde_json::to_value(&resolved)?.get("candidates").is_none());
     assert_eq!(resolved.tracks[&fixture.logical], live);
     assert_eq!(resolved.pins, before.pins);
     assert_eq!(
