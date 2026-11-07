@@ -1,6 +1,6 @@
 # Windows and Android playback support
 
-Status: under owner review for [ASO-45](https://linear.app/asonas/issue/ASO-45). On 2026-11-07 the owner agreed to the daily-use acceptance gate and both local-only and cluster entry paths, then directed the work toward the functionality already implemented on macOS. Implementation slices still need agreement; this document does not establish platform parity.
+Status: daily-use contract and staged Windows/Android delivery accepted on 2026-11-07. [ASO-45](https://linear.app/asonas/issue/ASO-45) remains open for full-parity follow-up scope. The owner agreed to both local-only and cluster entry paths and implemented macOS behavior as the target. This document does not establish delivered platform parity.
 
 Deliver v5 identity and save compatibility first, then require the daily-use contract below before describing Windows or Android as a supported daily player. The owner agreed to require continuous playback, automatic acquisition, offline restart, OS media controls and background/lock-screen playback. These are separate acceptance gates: a successful build or a saved-track playback check cannot establish background playback, queue continuity, or physical audio behavior.
 
@@ -8,7 +8,7 @@ The source assessment uses revision `fd50ab9bf604d415571ef35b5ad855b5b01d932a`. 
 
 ## Current merge decision packet
 
-The [merge decision packet](native-client-merge-decisions.md) separates the agreed product direction from four recommendations still awaiting owner agreement. It includes the merged Windows/Android binding evidence and proposes a delivery order without weakening the daily-use or full-parity targets. This document's source/status tables retain their dated assessment.
+The [accepted decision packet](native-client-merge-decisions.md) records D1–D4, the merged Windows/Android binding evidence and delivery order without weakening the daily-use or full-parity targets. This document's source/status tables retain their dated assessment.
 
 Since that assessment, PRs #41–43 delivered Apple playlist updates, conflict resolution and durable metadata editing, and PR #47 delivered host-side album visibility. The [v5 handoff](shared-audio-v5-handoff.md) records current wire behavior. Host visibility support alone does not establish client projection or enabled controls. Preserve those distinctions when implementing the platform slices rather than treating the historical gap inventory below as the latest feature list.
 
@@ -78,7 +78,7 @@ The OS integration must be evaluated separately from the Rust core design. Windo
 | --- | --- | --- | --- |
 | What does "supported playback" promise? | Require the daily-use matrix; label earlier v5-only milestones narrowly | Accept saved-file foreground playback as the product baseline. It ships less behavior, but cannot claim continuous/background daily playback | Daily-use gate agreed, 2026-11-07 |
 | Which initial entry paths are required? | Offer both local-only playback and joining an existing cluster | Ship cluster-join first and explicitly defer local import; this narrows standalone use | Both paths agreed, 2026-11-07 |
-| What is the feature reference? | Reach implemented macOS behavior, including shuffle/repeat; preserve known v5 limits explicitly | An intentionally smaller initial milestone may precede parity, with its omissions stated | macOS reference direction agreed; milestone breakdown pending |
+| What is the feature reference? | Reach implemented macOS behavior, including shuffle/repeat; preserve known v5 limits explicitly | An intentionally smaller initial milestone may precede parity, with its omissions stated | macOS reference and D4 staged delivery agreed, 2026-11-07 |
 
 Windows hosting, remote access and distribution are separate decisions regardless of the chosen baseline. Building an executable or APK does not establish installer behavior, signing continuity, store eligibility or release readiness. Hosting remains with the host-role work; remote continuity remains with ASO-40. Do not add either to the v5 compatibility tickets implicitly.
 
@@ -103,7 +103,7 @@ No dedicated implementation issue for the complete daily-player gap (queues, shu
 
 ## Bounded implementation sequence after agreement
 
-These are proposed implementation slices. Creating the tracking issues below does not approve unresolved design details or start implementation.
+These are the accepted delivery boundaries under D4. Native implementation and acceptance belong to the tracking issues below; unresolved Apple adoption and full-parity follow-up details remain explicitly gated.
 
 | Slice | Boundary and ownership | Completion evidence |
 | --- | --- | --- |
@@ -119,7 +119,7 @@ ASO-57 establishes the gpui UI scaffold and ASO-56 resolves its IME issue; neith
 
 ## Published implementation issues
 
-The following Backlog issues record the bounded platform work. They remain subject to the ASO-45 contract and ASO-48 architecture review. ASO-10/11 continue to own v5 compatibility; the new issues do not replace them.
+The following Backlog issues record the bounded platform work under the accepted D1–D4 contract. ASO-10/11 continue to own v5 compatibility; the new issues do not replace them. ASO-45/48 remain open for their separate full-parity and Apple obligations.
 
 | Capability | Windows | Android |
 | --- | --- | --- |

@@ -1,6 +1,6 @@
 # Shared Rust client module
 
-Status: proposal for [ASO-48](https://linear.app/asonas/issue/ASO-48), initially assessed at main `ecf8e4ea3ab9ed9eecbf8db59ad583435bfc7a9b` and prepared for publication on `50d4d95`. ASO-53's mutation guards and ASO-60's typed mutation transport are now merged. No implementation or dependency changes are included here. Apple linking/size measurements and owner agreement remain open.
+Status: Windows/Android contract and staged delivery accepted on 2026-11-07; see the [accepted decisions](native-client-merge-decisions.md). [ASO-48](https://linear.app/asonas/issue/ASO-48) remains open for Apple execution, linking/size measurements and migration decisions. The original inventory was assessed at `ecf8e4e` and prepared at `50d4d95`; this PR changes documentation only.
 
 Use one Rust client module for authenticated protocol handling, logical catalog projection and offline-save ownership. Windows calls its Rust interface directly; Swift and Kotlin use generated bindings to that same interface. Keep native UI, credentials, file-access permissions, audio decoding/output and OS media integration on each platform. The existing macOS behavior is the functional reference, with [ASO-45](https://linear.app/asonas/issue/ASO-45) defining the Windows/Android acceptance scope.
 
@@ -8,7 +8,7 @@ This follows the direction already agreed in ASO-48. It does not move Apple off 
 
 ## Current merge decision packet
 
-The [merge decision packet](native-client-merge-decisions.md) refreshes this proposal against main `e214f9b` with the merged Windows/Android ASO-68 evidence, four recommendations, alternatives and separate adoption gates. Those recommendations await owner agreement. The implementation inventory below retains its original dated assessment; it is not a current feature-completion claim.
+The [accepted decision packet](native-client-merge-decisions.md) refreshes this design against main `e214f9b` with merged Windows/Android ASO-68 evidence, four accepted choices, alternatives and separate adoption gates. The implementation inventory below retains its original dated assessment; it is not a current feature-completion claim.
 
 ## Original implementation inventory to preserve
 
@@ -43,7 +43,7 @@ The first module scope is client protocol, projection, acquisition and save stat
 
 ## Interface proposal
 
-Use a retained `Client` for one profile and explicit operation/save-job objects. Names below describe the proposed domain contract, not a published ABI or an implementation skeleton.
+Use a retained `Client` for one profile and explicit operation/save-job objects. Names below describe the agreed semantic contract, not a published ABI or an implementation skeleton.
 
 | Caller intent | Interface result and contract |
 | --- | --- |
@@ -64,7 +64,7 @@ The playback asset needs a lifetime contract, not just a path. The native adapte
 
 ## Bindings, execution and errors
 
-Recommend UniFFI for Swift and Kotlin and direct Rust calls for gpui. Pin the generator and runtime to the same reviewed version in the implementation slice; no version is selected or installed by this design. UniFFI generates typed Swift declarations and supports async calls mapped to Swift/Kotlin futures. Its documentation requires library-specific cancellation, so dropping a Swift task or Kotlin coroutine is not the cancellation contract. Provide an explicit operation cancellation method, and reject late results using the operation ID. [Swift bindings](https://mozilla.github.io/uniffi-rs/latest/swift/overview.html), [async and cancellation](https://mozilla.github.io/uniffi-rs/latest/futures.html).
+Accepted D1 selects direct Rust calls for gpui and UniFFI for Kotlin, starting with matching generator/runtime 0.32.2. Swift adoption remains subject to the Apple gates in the decision packet. This design changes no production dependency. UniFFI supports async calls mapped to Swift/Kotlin futures; cancellation remains an explicit library contract, not an inference from dropping a task or coroutine. Provide operation cancellation and reject late results using the operation ID. [Swift bindings](https://mozilla.github.io/uniffi-rs/latest/swift/overview.html), [async and cancellation](https://mozilla.github.io/uniffi-rs/latest/futures.html).
 
 Reuse one Rust runtime for the client layer, with explicit ownership and shutdown; do not create one per command. Dispatch iroh work onto that runtime, serialize profile writes and move blocking verification/database work off UI executors. Never hold a store lock while invoking native code. Native callbacks marshal onto the required platform executor rather than assuming a Rust worker is a UI thread. UniFFI's runtime integration guidance describes retaining a runtime and bridging spawned work. [Runtime integration](https://mozilla.github.io/uniffi-rs/latest/internals/async-overview.html).
 
@@ -74,7 +74,7 @@ Use typed failures for identity attention, revoked membership, incompatible base
 
 | Choice | Benefits | Costs and decision |
 | --- | --- | --- |
-| UniFFI for Swift/Kotlin; Rust directly for Windows | One typed domain interface and generated lifetime/error glue for both foreign callers | Recommended. Kotlin adds JNA/coroutine packaging; Swift concurrency and generated object lifetimes require actual binding tests |
+| UniFFI for Swift/Kotlin; Rust directly for Windows | One typed domain interface and generated lifetime/error glue for both foreign callers | Accepted for Windows/Android; Swift remains gated. Kotlin JNA/coroutine packaging passed the probe; production and Apple lifetime behavior still need validation |
 | Retain handwritten JNI; add a C interface for Swift | Reuses the Android loading path and avoids adopting generated Kotlin immediately | More handwritten marshaling, cancellation and ownership contracts in two languages; fallback only if the packaging experiment rejects UniFFI |
 | Keep separate Swift and Rust clients | Smallest immediate Apple migration | Duplicated projection/save correctness remains; does not fulfill the agreed shared-core direction |
 
@@ -123,15 +123,15 @@ The existing Swift tests become behavioral reference cases, not mocks of the Rus
 | --- | --- | --- |
 | [ASO-68](https://linear.app/asonas/issue/ASO-68) | Swift/Kotlin binding experiment, cancellation, dispatch and lifetime behavior | Supplies evidence for ASO-48; does not migrate production clients |
 | [ASO-69](https://linear.app/asonas/issue/ASO-69) | Apple A/B/C transport and packaging measurements | ASO-68 experiment and an Apple build environment |
-| [ASO-70](https://linear.app/asonas/issue/ASO-70) | Shared logical catalog and exact playlist projection | ASO-48 agreement |
-| [ASO-71](https://linear.app/asonas/issue/ASO-71) | Verified audio acquisition, protected assets and durable save ownership | ASO-48 agreement and ASO-70 identity/projection |
+| [ASO-70](https://linear.app/asonas/issue/ASO-70) | Shared logical catalog and exact playlist projection | Accepted D1–D4 contract |
+| [ASO-71](https://linear.app/asonas/issue/ASO-71) | Verified audio acquisition, protected assets and durable save ownership | Accepted contract and ASO-70 identity/projection |
 
 ASO-68 is In Progress with Windows and Android execution recorded; ASO-69–71 remain Backlog in the 2026-11-07 tracking snapshot. Existing ASO-10/11 own Android/Windows integration, and ASO-12 owns cross-platform identity acceptance. The [playback support contract](windows-android-playback-support.md#published-implementation-issues) links the separate daily-player follow-ups. Production Apple migration still needs an agreed import/rollback contract and a bounded implementation issue; the packaging experiment does not authorize that migration.
 
 ## Decisions and completion evidence still required
 
-- The owner has already chosen a shared Rust protocol/projection/save core with native UI/audio. The proposed typed interface, staged queue migration and UniFFI choice need review as concrete details of that direction.
+- The owner accepted the typed Windows/Android contract, initial UniFFI choice, copy-validated profile migration rules and staged delivery. Production implementation still needs its own focused parity and native acceptance.
 - Complete the remaining Apple binding experiment and A/B/C measurements before deciding when IrohLib can be removed. Windows/Android probe execution has passed; it does not establish Apple packaging cost. Account for legacy `PeerTransfer`, not only v5.
-- Agree on profile import/rollback rules and implementation ownership with ASO-10/11. Use the published follow-ups above, and scope production Apple migration separately rather than expanding the platform tickets implicitly.
+- Implement the accepted profile import/rollback contract under ASO-10/11. Use the published follow-ups above, and scope production Apple migration separately rather than expanding the platform tickets implicitly.
 
 This PR contains design documents only. The separately merged binding experiment is described in the decision packet; no production profile migration or device audio acceptance was performed by this design. ASO-48 remains open for its outstanding decisions and Apple evidence.

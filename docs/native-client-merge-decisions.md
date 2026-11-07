@@ -1,12 +1,12 @@
 # Native client merge decisions
 
-Status: recommendations for owner review on 2026-11-07, against main `e214f9b`. D1–D4 are not yet accepted. This packet updates the [shared Rust proposal](shared-rust-client-design.md) and [playback support proposal](windows-android-playback-support.md) in PR #36. It changes no production code, dependency, profile or Issue status.
+Status: D1–D4 accepted by the owner on 2026-11-07, against main `e214f9b`. The owner chose the recommended plan and authorized merge after verification. This packet updates the [shared Rust design](shared-rust-client-design.md) and [playback support contract](windows-android-playback-support.md) in PR #36. It changes no production code or profile; corresponding Linear dependency changes are recorded below. ASO-45/48 remain open.
 
-## Decisions needed to merge PR #36
+## Accepted decisions
 
-Recommend accepting a staged Windows/Android contract while retaining explicit Apple adoption gates. Merging the design records that contract; implementation and platform acceptance follow in their existing issues.
+Adopt the staged Windows/Android contract while retaining explicit Apple adoption gates. Merging the design records that contract; implementation and platform acceptance follow in their existing issues.
 
-| Decision | Recommendation | Alternative and consequence |
+| Decision | Accepted choice | Alternative and consequence |
 | --- | --- | --- |
 | D1. Binding and interface | Use direct Rust calls for gpui and UniFFI for Kotlin, initially pinning generator/runtime 0.32.2 together. Use the same typed interface for the future Swift adapter, subject to Apple validation. Retain client/operation objects, typed errors, explicit cancellation and asset leases; use `shutdown()` separately from generated disposal | Retain handwritten JNI/C interfaces. This avoids JNA but adds separate ownership/error/cancellation glue; the Windows/Android experiment currently supplies no reason to prefer it |
 | D2. Apple gate | Keep existing Swift/IrohLib production code. Require Apple execution in ASO-68 and ASO-69 A/B/C evidence before Apple adoption or IrohLib removal. These measurements do not block merging this conditional design or starting Windows/Android core work | Hold the entire design until Apple measurements finish, also blocking the demonstrated Windows/Android path |
@@ -21,7 +21,7 @@ The semantic interface is the decision, not a permanent ABI or every public fiel
 
 The experiment is synthetic and contains no iroh transport, production saves or migration. Swift on Windows does not establish Apple execution. API-28 runtime behavior, 16KB-page device execution, production callbacks and worker drain remain unverified. Its process-wide runtime and synchronous synthetic `shutdown()` are not the production lifecycle implementation. No Apple size/build/memory cost has been measured.
 
-## Proposed lifecycle and migration contract
+## Accepted lifecycle and migration contract
 
 `shutdown()` is an asynchronous domain operation: reject new work, cancel transient operations, persist accepted save intent, drain/checkpoint the writer, then release the profile lock. It is idempotent and must not block a native UI executor. Wrapper disposal releases a handle; it does not cancel a durable save. Android Activity disposal must not close a client owned by the playback service. Generation/operation IDs prevent cancelled or superseded completion from changing native playback.
 
@@ -39,18 +39,18 @@ Rollback before new writes may select the preserved original profile. After new 
 | Adopt on Apple/remove IrohLib | Apple binding execution, A/B/C measurements, legacy transport parity and separately scoped profile migration | ASO-68/69 and ASO-48 |
 | Claim daily use/full macOS parity | Companion matrix, native/physical checks and all applicable feature follow-ups | ASO-45 platform slices |
 
-After agreement, proposed dependency changes are:
+The agreed dependency changes are:
 
 - Remove ASO-48 as a whole-ticket blocker from ASO-70/71; ASO-71 retains ASO-70.
 - Replace ASO-45/48 blockers on ASO-11 with ASO-70/71; add those core prerequisites to ASO-10.
 - Link the accepted contract in each affected issue. Retain unrelated dependencies.
 - Keep ASO-48 open for Apple evidence/migration decisions and ASO-45 open for full-parity follow-up scope. Do not mark either complete to unlock one accepted platform slice.
 
-No dependency changes have been made by this proposal. ASO-68 remains open for its outstanding platform/lifecycle evidence; ASO-69 still requires its Apple experiment. These pending tasks are not implied to have passed by merging documentation.
+The affected issues link this accepted contract; unrelated dependencies are preserved. ASO-68 remains open for its outstanding platform/lifecycle evidence; ASO-69 still requires its Apple experiment. These pending tasks are not implied to have passed by merging documentation.
 
 ## Playback scope decision
 
-The owner already chose daily-use acceptance, both local audio and existing-library entry, and implemented macOS behavior as the target. D4 proposes the following delivery order without reducing that target:
+The owner chose daily-use acceptance, both local audio and existing-library entry, and implemented macOS behavior as the target. Accepted D4 sets the following delivery order without reducing that target:
 
 1. v5 identity, independent saves and basic native playback integration: ASO-70/71, then ASO-10/11; retain ASO-12 cross-platform acceptance.
 2. Queue/shuffle/repeat/restoration, browsing/save controls and standalone import: ASO-72–77.
