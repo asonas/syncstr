@@ -2,6 +2,9 @@ import Foundation
 
 enum PlaylistImportError: LocalizedError {
     case rejected(String)
+    case updateUnavailable
+    case updateDeferred
+    case updateRejected(ClusterMutationRejection)
     var errorDescription: String? {
         switch self {
         case .rejected(let reason):
@@ -9,6 +12,14 @@ enum PlaylistImportError: LocalizedError {
             case "playlist preview is stale; refresh the preview": "別の端末でプレイリストが更新されました。XMLを読み直し、最新の照合結果を確認してください。"
             case "playlist source changed; use the original XML": "登録済みのプレイリストとXMLの構成が異なります。最初に移行したXMLを選んでください。"
             default: "プレイリストを取り込めませんでした。\(reason)"
+            }
+        case .updateUnavailable: "このホストはプレイリストの更新に対応していません。ホストを更新してから再試行してください。"
+        case .updateDeferred: "更新の確認が完了していません。同じ内容でもう一度更新してください。"
+        case .updateRejected(let reason):
+            switch reason {
+            case .unauthorized, .revoked: "この端末にはプレイリストを更新する権限がありません。ライブラリへの登録を確認してください。"
+            case .clusterMismatch, .baselineMismatch: "接続先のライブラリが照合時と異なります。XMLを読み直してください。"
+            case .invalid: "プレイリストを更新できませんでした。XMLを読み直し、照合結果を確認してください。"
             }
         }
     }
@@ -31,6 +42,7 @@ struct PlaylistResponse: Decodable {
     let added: Int?
     let reason: String?
     let playlists: [PlaylistSnapshot]?
+    var baseline: String? = nil
 }
 
 struct PlaylistItem: Codable, Equatable, Identifiable {
@@ -116,6 +128,7 @@ struct PlaylistRecord: Codable, Equatable {
 struct PlaylistSnapshot: Codable {
     let document: PlaylistDocument
     let revisions: [String]
+    var conflicted: Bool? = nil
 }
 
 struct PlaylistReconciliation {
@@ -124,6 +137,7 @@ struct PlaylistReconciliation {
     let previousResolved: Int
     let updatedCount: Int
     let replacements: [String]
+    let replacementPlaylists: Set<String>
 
     init(documents: [PlaylistDocument], snapshots: [PlaylistSnapshot], entries: [LocalEntry] = []) throws {
         let existing = Dictionary(uniqueKeysWithValues: snapshots.map { ($0.document.id, $0) })
@@ -136,8 +150,10 @@ struct PlaylistReconciliation {
         var previousResolved = 0
         var updatedCount = 0
         var replacements: [String] = []
+        var replacementPlaylists: Set<String> = []
         for document in documents {
             if let snapshot = existing[document.id] {
+                guard snapshot.conflicted != true else { throw PlaylistImportError.rejected("同じプレイリストに競合があります。解消後にXMLを読み直してください。") }
                 let previous = snapshot.document
                 let result = try document.reconciling(previous)
                 merged.append(result)
@@ -145,6 +161,7 @@ struct PlaylistReconciliation {
                 if document.kind != "folder" { updatedCount += 1 }
                 previousResolved += previous.items.filter { $0.trackId != nil }.count
                 for (old, new) in zip(previous.items, result.items) where old.trackId != nil && (old.trackId != new.trackId || old.sha256 != new.sha256) {
+                    replacementPlaylists.insert(document.id)
                     replacements.append("\(document.name)：\(new.title)\n変更前：\(audioDescription(old))\n変更後：\(audioDescription(new))")
                 }
             } else {
@@ -157,12 +174,74 @@ struct PlaylistReconciliation {
         self.previousResolved = previousResolved
         self.updatedCount = updatedCount
         self.replacements = replacements
+        self.replacementPlaylists = replacementPlaylists
+    }
+
+    func mutation(cluster: String, baseline: String, request: String) throws -> ClusterMutationRequest {
+        struct Payload: Encodable { let documents: [PlaylistDocument] }
+        return try ClusterMutationRequest(request: request, cluster: cluster, baseline: baseline,
+            operation: .updatePlaylists,
+            expected: Dictionary(uniqueKeysWithValues: expected.map { ("playlist:" + $0.key, $0.value) }),
+            payload: Payload(documents: documents),
+            confirmed: replacementPlaylists.sorted().map { "playlist:" + $0 })
+    }
+}
+
+// One XML preview owns one intent and accepting host, including retries after a lost reply.
+@MainActor
+final class PlaylistUpdateAttempt {
+    let preview: PlaylistReconciliation
+    let cluster: String
+    let baseline: String?
+    let requestID = UUID().uuidString.lowercased()
+    private(set) var host: String?
+    private(set) var request: ClusterMutationRequest?
+
+    init(preview: PlaylistReconciliation, cluster: String, baseline: String?) {
+        self.preview = preview; self.cluster = cluster; self.baseline = baseline
+    }
+
+    func matches(_ preview: PlaylistReconciliation, cluster: String, baseline: String?) -> Bool {
+        self.cluster == cluster && self.baseline == baseline && self.preview.documents == preview.documents
+            && self.preview.expected == preview.expected && self.preview.replacementPlaylists == preview.replacementPlaylists
+    }
+
+    nonisolated static func requireSupport(_ operations: Set<ClusterOperation>) throws {
+        guard operations.contains(.updatePlaylists) else { throw PlaylistImportError.updateUnavailable }
+    }
+
+    func submit(peer: String, operations: Set<ClusterOperation>,
+                send: (ClusterMutationRequest) async throws -> ClusterMutationReply) async throws -> Int {
+        try Self.requireSupport(operations)
+        guard host == nil || host == peer else { throw LocalMusicError.clusterUnavailable }
+        guard let baseline else { throw LocalMusicError.invalidData }
+        let mutation = try request ?? preview.mutation(cluster: cluster, baseline: baseline, request: requestID)
+        request = mutation; host = peer
+        let reply = try await send(mutation)
+        switch reply {
+        case .accepted(let id, _, let host, let heads):
+            guard id == requestID, host == peer else { throw LocalMusicError.invalidData }
+            return heads.count
+        case .needsReview(let id, _):
+            guard id == requestID else { throw LocalMusicError.invalidData }
+            throw PlaylistImportError.rejected("playlist preview is stale; refresh the preview")
+        case .rejected(let id, let reason):
+            guard id == requestID else { throw LocalMusicError.invalidData }
+            throw PlaylistImportError.updateRejected(reason)
+        case .deferred(let id, _):
+            guard id == requestID else { throw LocalMusicError.invalidData }
+            throw PlaylistImportError.updateDeferred
+        case .unsupported(let id, _):
+            guard id == requestID else { throw LocalMusicError.invalidData }
+            throw PlaylistImportError.updateUnavailable
+        }
     }
 }
 
 struct PlaylistMatchingCatalog: Codable {
     let cluster: String
     let entries: [LocalEntry]
+    var baseline: String? = nil
 }
 
 struct PlaylistDraft {
@@ -187,6 +266,7 @@ struct PlaylistDraft {
     let sourceLibrary: String
     let fingerprint: String
     let cluster: String
+    let baseline: String?
     let playlists: [Source]
     let songs: [String: Song]
 
@@ -251,7 +331,7 @@ struct PlaylistDraft {
             }
             playlists[i].path = (playlists[i].ancestors.compactMap { byID[$0]?.name } + [playlists[i].name]).joined(separator: " / ")
         }
-        return Self(sourceLibrary: library, fingerprint: LocalMusicStore.digest(data), cluster: catalog.cluster, playlists: playlists, songs: songs)
+        return Self(sourceLibrary: library, fingerprint: LocalMusicStore.digest(data), cluster: catalog.cluster, baseline: catalog.baseline, playlists: playlists, songs: songs)
     }
 
     func documents(selected: Set<String>, accepted: [String: String]) throws -> [PlaylistDocument] {

@@ -306,8 +306,8 @@ final class LocalTransfer: ObservableObject {
     private lazy var clusterNetwork = ClusterNetwork(store: store, secrets: peerSecrets, addresses: clusterAddresses)
     var canSyncPlaylists: Bool { clusterRegistration != nil || peerName != nil }
 
-    private func exchangePlaylists(_ request: PlaylistRequest? = nil) async throws -> PlaylistResponse? {
-        if clusterRegistration != nil { return try await clusterNetwork.playlistExchange(request) }
+    private func exchangePlaylists(_ request: PlaylistRequest? = nil, attempt: PlaylistUpdateAttempt? = nil) async throws -> PlaylistResponse? {
+        if clusterRegistration != nil { return try await clusterNetwork.playlistExchange(request, attempt: attempt) }
         guard let saved = try await peerPairing.load(), let bytes = Data(base64Encoded: saved.key) else { throw LocalMusicError.clusterUnavailable }
         let address = try JSONDecoder().decode(PeerAddress.self, from: bytes)
         let files = store
@@ -330,7 +330,7 @@ final class LocalTransfer: ObservableObject {
     func playlistMatchingCatalog() async throws -> PlaylistMatchingCatalog {
         guard let response = try await exchangePlaylists(PlaylistRequest(operation: "catalog")),
               response.status == "catalog", let cluster = response.cluster, let entries = response.entries else { throw LocalMusicError.invalidData }
-        return PlaylistMatchingCatalog(cluster: cluster, entries: entries)
+        return PlaylistMatchingCatalog(cluster: cluster, entries: entries, baseline: response.baseline)
     }
 
     func importPlaylists(_ documents: [PlaylistDocument], cluster: String) async throws -> Int {
@@ -343,11 +343,11 @@ final class LocalTransfer: ObservableObject {
         guard let response = try await exchangePlaylists(PlaylistRequest(operation: "preview")),
               response.status == "preview", let cluster = response.cluster, let entries = response.entries,
               let snapshots = response.playlists else { throw LocalMusicError.incompatiblePeer }
-        return (PlaylistMatchingCatalog(cluster: cluster, entries: entries), snapshots)
+        return (PlaylistMatchingCatalog(cluster: cluster, entries: entries, baseline: response.baseline), snapshots)
     }
 
-    func reconcilePlaylists(_ preview: PlaylistReconciliation, cluster: String) async throws -> Int {
-        guard let response = try await exchangePlaylists(PlaylistRequest(operation: "reconcile", cluster: cluster, documents: preview.documents, expected: preview.expected)),
+    func reconcilePlaylists(_ preview: PlaylistReconciliation, cluster: String, attempt: PlaylistUpdateAttempt? = nil) async throws -> Int {
+        guard let response = try await exchangePlaylists(PlaylistRequest(operation: "reconcile", cluster: cluster, documents: preview.documents, expected: preview.expected), attempt: attempt),
               response.status == "imported", let added = response.added else { throw LocalMusicError.invalidData }
         return added
     }
