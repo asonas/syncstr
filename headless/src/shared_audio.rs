@@ -58,6 +58,10 @@ fn required_target<'de, D: serde::Deserializer<'de>>(
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "kind", rename_all = "kebab-case", deny_unknown_fields)]
 pub enum Value {
+    AlbumVisibility {
+        album: String,
+        hidden: bool,
+    },
     Track {
         track: crate::shared_audio::Track,
         evidence: crate::shared_audio::Evidence,
@@ -72,6 +76,7 @@ pub enum Value {
 impl crate::shared_audio::Value {
     pub fn subject(&self) -> String {
         match self {
+            Self::AlbumVisibility { album, .. } => format!("album-visibility:{album}"),
             Self::Track { track, .. } => format!("track:{}", track.id),
             Self::Correspondence { source, .. } => source.subject(),
         }
@@ -138,6 +143,11 @@ pub struct Signed {
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "action", rename_all = "kebab-case", deny_unknown_fields)]
 pub enum Action {
+    AlbumVisibility {
+        album: String,
+        hidden: bool,
+        resolve: bool,
+    },
     Register {
         source: crate::shared_audio::Source,
         track: crate::shared_audio::Track,
@@ -198,6 +208,8 @@ pub struct Baseline {
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct Catalog {
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub album_visibility: std::collections::BTreeMap<String, crate::shared_audio::AlbumVisibility>,
     pub version: u8,
     pub cluster: String,
     pub library: String,
@@ -211,6 +223,24 @@ pub struct Catalog {
     pub heads: std::collections::BTreeMap<String, Vec<String>>,
     pub conflicts: std::collections::BTreeSet<String>,
     pub incomplete: Vec<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AlbumVisibility {
+    pub hidden: bool,
+}
+
+fn canonical_album(organization: &serde_json::Value, album: &str) -> anyhow::Result<String> {
+    let organization: crate::organization::Organization =
+        serde_json::from_value(organization.clone())?;
+    organization.validate()?;
+    let canonical = organization.canonical(album)?;
+    anyhow::ensure!(
+        organization.albums.iter().any(|a| a.id == canonical),
+        "unknown album"
+    );
+    Ok(canonical.into())
 }
 
 fn hash(bytes: &[u8]) -> String {
@@ -1030,6 +1060,42 @@ impl crate::shared_audio::Store {
             );
             let request = prepare(&catalog)?;
             let values = match request.action {
+                crate::shared_audio::Action::AlbumVisibility {
+                    album,
+                    hidden,
+                    resolve,
+                } => {
+                    anyhow::ensure!(
+                        canonical_album(&catalog.legacy_organization, &album)? == album,
+                        "noncanonical album"
+                    );
+                    let subject = format!("album-visibility:{album}");
+                    let current = catalog.heads.get(&subject).cloned().unwrap_or_default();
+                    anyhow::ensure!(
+                        request.expected.contains_key(&subject),
+                        "missing album expectation"
+                    );
+                    anyhow::ensure!(
+                        request.expected.get(&subject) == Some(&current),
+                        crate::shared_audio::CommitFailure::NeedsReview(
+                            std::collections::BTreeMap::from([(subject.clone(), current.clone())])
+                        )
+                    );
+                    if resolve {
+                        anyhow::ensure!(
+                            catalog.conflicts.contains(&subject) && current.len() > 1,
+                            "album has no visibility conflict"
+                        );
+                    } else {
+                        anyhow::ensure!(
+                            !catalog.conflicts.contains(&subject),
+                            crate::shared_audio::CommitFailure::NeedsReview(
+                                std::collections::BTreeMap::from([(subject, current)])
+                            )
+                        );
+                    }
+                    vec![crate::shared_audio::Value::AlbumVisibility { album, hidden }]
+                }
                 crate::shared_audio::Action::Register {
                     source,
                     mut track,
@@ -1411,6 +1477,85 @@ impl crate::shared_audio::Store {
                 )?;
                 transaction.commit()?;
                 Ok(reply)
+            })
+        })();
+        crate::shared_audio::mutation_result(request, result)
+    }
+
+    pub(crate) fn album_visibility_member(
+        &self,
+        signer: &crate::peer::Identity,
+        member: &str,
+        mut mutation: crate::shared_audio_net::MutationRequest,
+        proof: &crate::enrollment::Proof,
+    ) -> crate::shared_audio_net::MutationReply {
+        let request = mutation.request.clone();
+        let result = (|| -> anyhow::Result<_> {
+            let mut edit: crate::shared_audio_net::AlbumVisibility =
+                serde_json::from_value(mutation.payload.clone())?;
+            anyhow::ensure!(mutation.confirmed.is_empty(), "unexpected confirmation");
+            // The activation organization is immutable; normalization must also work on replay
+            // when newer records have made the current projection incomplete.
+            let organization = self.run(|connection, _| {
+                let raw: Vec<u8> =
+                    connection
+                        .query_row("SELECT payload FROM shared_baseline", [], |row| row.get(0))?;
+                let baseline: crate::shared_audio::Baseline = serde_json::from_slice(&raw)?;
+                Ok(baseline.legacy_organization)
+            })?;
+            edit.album = crate::shared_audio::canonical_album(&organization, &edit.album)?;
+            let mut expected = std::collections::BTreeMap::new();
+            for (subject, heads) in &mutation.expected {
+                let album = subject
+                    .strip_prefix("album-visibility:")
+                    .ok_or_else(|| anyhow::anyhow!("unexpected visibility subject"))?;
+                let album = crate::shared_audio::canonical_album(&organization, album)?;
+                anyhow::ensure!(
+                    expected
+                        .insert(format!("album-visibility:{album}"), heads.clone())
+                        .is_none(),
+                    "duplicate canonical subject"
+                );
+            }
+            anyhow::ensure!(
+                expected.len() == 1
+                    && expected.contains_key(&format!("album-visibility:{}", edit.album)),
+                "expected must name the album"
+            );
+            mutation.expected = expected;
+            mutation.payload = serde_json::to_value(&edit)?;
+            let grant = proof
+                .grants
+                .iter()
+                .find(|g| g.member == member && proof.verify(&g.id).is_ok())
+                .ok_or(crate::shared_audio::CommitFailure::Revoked)?;
+            let origin = crate::shared_audio::Origin {
+                member: member.into(),
+                grant: grant.id.clone(),
+            };
+            let digest = crate::shared_audio::hash(&serde_json::to_vec(&(member, &mutation))?);
+            let resolve = mutation.operation == "resolve-album-visibility";
+            let (signed, body) =
+                self.commit_prepared(signer, &request, digest, Some(origin), |_| {
+                    Ok(crate::shared_audio::Request {
+                        id: request.clone(),
+                        expected: mutation.expected,
+                        action: crate::shared_audio::Action::AlbumVisibility {
+                            album: edit.album,
+                            hidden: edit.hidden,
+                            resolve,
+                        },
+                    })
+                })?;
+            Ok(crate::shared_audio_net::MutationReply::Accepted {
+                request: request.clone(),
+                record: signed.id.clone(),
+                host: body.author,
+                heads: body
+                    .edits
+                    .iter()
+                    .map(|e| (e.value.subject(), vec![signed.id.clone()]))
+                    .collect(),
             })
         })();
         crate::shared_audio::mutation_result(request, result)
@@ -1991,6 +2136,12 @@ fn decode(
             "invalid revision parents"
         );
         match &edit.value {
+            crate::shared_audio::Value::AlbumVisibility { album, .. } => {
+                anyhow::ensure!(
+                    crate::shared_audio::identity(album),
+                    "invalid album identity"
+                );
+            }
             crate::shared_audio::Value::Track { track, evidence } => {
                 crate::shared_audio::validate_evidence(evidence)?;
                 anyhow::ensure!(
@@ -2051,6 +2202,7 @@ fn catalog(connection: &rusqlite::Connection) -> anyhow::Result<crate::shared_au
     )?;
     let baseline: crate::shared_audio::Baseline = serde_json::from_slice(&raw)?;
     let mut catalog = crate::shared_audio::Catalog {
+        album_visibility: Default::default(),
         version: 1,
         cluster: baseline.cluster,
         library: baseline.library,
@@ -2095,6 +2247,14 @@ fn catalog(connection: &rusqlite::Connection) -> anyhow::Result<crate::shared_au
         let record: crate::shared_audio::Signed = serde_json::from_slice(&raw)?;
         let body = crate::shared_audio::decode(&record, &proof)?;
         anyhow::ensure!(body.baseline == fingerprint, "different migration baseline");
+        for edit in &body.edits {
+            if let crate::shared_audio::Value::AlbumVisibility { album, .. } = &edit.value {
+                anyhow::ensure!(
+                    canonical_album(&catalog.legacy_organization, album)? == *album,
+                    "unknown or noncanonical album"
+                );
+            }
+        }
         anyhow::ensure!(body.cluster == catalog.cluster, "cross-cluster record");
         bodies.insert(record.id, body);
     }
@@ -2193,6 +2353,12 @@ fn catalog(connection: &rusqlite::Connection) -> anyhow::Result<crate::shared_au
             .collect();
         if heads.len() == 1 {
             match &values[&heads[0]] {
+                crate::shared_audio::Value::AlbumVisibility { album, hidden } => {
+                    catalog.album_visibility.insert(
+                        album.clone(),
+                        crate::shared_audio::AlbumVisibility { hidden: *hidden },
+                    );
+                }
                 crate::shared_audio::Value::Track { track, .. } => {
                     catalog.tracks.insert(track.id.clone(), track.clone());
                 }
@@ -2210,6 +2376,14 @@ fn catalog(connection: &rusqlite::Connection) -> anyhow::Result<crate::shared_au
             catalog.conflicts.insert(subject.clone());
         }
         catalog.heads.insert(subject, heads);
+    }
+    // Incomplete successors must not expose an older override as authoritative.
+    for id in &catalog.incomplete {
+        for edit in &bodies[id].edits {
+            if let crate::shared_audio::Value::AlbumVisibility { album, .. } = &edit.value {
+                catalog.album_visibility.remove(album);
+            }
+        }
     }
     let mut targets: std::collections::BTreeMap<String, Vec<String>> = Default::default();
     for (source, target) in &catalog.correspondences {

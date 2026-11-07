@@ -70,6 +70,13 @@ pub struct EditTrack {
 
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
+pub struct AlbumVisibility {
+    pub album: String,
+    pub hidden: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ResolveTrack {
     pub track: String,
     pub select: String,
@@ -289,6 +296,9 @@ impl crate::shared_audio::Store {
     ) -> crate::shared_audio_net::MutationReply {
         use crate::shared_audio_net::MutationReply;
         match mutation.operation.as_str() {
+            "set-album-visibility" | "resolve-album-visibility" => {
+                self.album_visibility_member(signer, peer, mutation, proof)
+            }
             "edit-track" => self.edit_track_member(signer, peer, mutation, proof),
             "resolve-track" => self.resolve_track_member(signer, peer, mutation, proof),
             "update-playlists" => self.update_playlists_member(signer, peer, mutation, proof),
@@ -516,6 +526,8 @@ async fn serve_connection(
             version: 5,
             proof,
             supported_operations: vec![
+                "set-album-visibility".into(),
+                "resolve-album-visibility".into(),
                 "edit-track".into(),
                 "resolve-track".into(),
                 "update-playlists".into(),
