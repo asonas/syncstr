@@ -37,7 +37,9 @@ if command[1:4] == ["simctl", "list", "runtimes"]:
         {"identifier": "com.apple.CoreSimulator.SimRuntime.iOS-27-1", "version": "27.1", "isAvailable": True}
     ]}))
 if command[1:3] == ["simctl", "create"]:
-    print("owned-simulator")
+    count = sum(json.loads(line)[1:3] == ["simctl", "create"]
+                for line in pathlib.Path(os.environ["CALLS"]).read_text().splitlines())
+    print("owned-simulator" if count == 1 else "owned-simulator-" + str(count))
 if command[1:3] == ["simctl", "get_app_container"]:
     print(os.environ["CONTAINER"])
 if command[0] == "shared_audio_fixture":
@@ -51,6 +53,20 @@ if command[1:5] == ["xcresulttool", "get", "test-results", "summary"]:
     print(json.dumps({"passedTests": 0 if os.environ.get("FAIL") == "empty" else 1, "failedTests": 0}))
 if os.environ.get("FAIL") == "boot" and command[1:3] == ["simctl", "boot"]:
     sys.exit(42)
+if os.environ.get("FAIL") == "boot-once" and command[1:4] == ["simctl", "boot", "owned-simulator"]:
+    sys.exit(42)
+if command[1:4] == ["simctl", "bootstatus", "owned-simulator"]:
+    count = sum(json.loads(line)[1:4] == command[1:4]
+                for line in pathlib.Path(os.environ["CALLS"]).read_text().splitlines())
+    if (os.environ.get("FAIL") == "bootstatus-once" and count == 1 or
+            os.environ.get("FAIL") == "restart-once" and count == 2):
+        sys.exit(42)
+if command[1:4] == ["simctl", "install", "owned-simulator"]:
+    if os.environ.get("FAIL") == "install-once":
+        print("Unable to lookup in current state: Shutdown")
+        sys.exit(149)
+    if os.environ.get("FAIL") == "install-package":
+        sys.exit(1)
 if os.environ.get("FAIL") == "test" and command[0] == "xcodebuild" and "test" in command:
     print("test failed")
     sys.exit(65)
@@ -105,6 +121,8 @@ if os.environ.get("FAIL") == "delete" and command[1:3] == ["simctl", "delete"]:
         builds = [call for call in calls if call[0] == "xcodebuild" and "test" in call]
         self.assertEqual(len(builds), 3)
         for build in builds:
+            self.assertEqual(calls[calls.index(build) - 1],
+                             ["xcrun", "simctl", "bootstatus", "owned-simulator", "-b"])
             self.assertIn("platform=iOS Simulator,id=owned-simulator", build)
             self.assertEqual(build[build.index("-testLanguage") + 1], "ja")
             self.assertEqual(build[build.index("-testRegion") + 1], "JP")
@@ -128,6 +146,7 @@ if os.environ.get("FAIL") == "delete" and command[1:3] == ["simctl", "delete"]:
     def test_failed_test_preserves_failure_and_cleans_up(self):
         result, calls, output = self.run_script("test")
         self.assertEqual(result.returncode, 65)
+        self.assertEqual(sum(call[1:3] == ["simctl", "create"] for call in calls), 1)
         self.assertEqual(calls[-1], ["xcrun", "simctl", "delete", "owned-simulator"])
         self.assertEqual((output / "unit.log").read_text().strip(), "test failed")
         self.assertEqual(json.loads((output / "result.json").read_text())["status"], 65)
@@ -146,6 +165,9 @@ if os.environ.get("FAIL") == "delete" and command[1:3] == ["simctl", "delete"]:
             if command[1:3] == ["simctl", "boot"]:
                 self.assertEqual(options["timeout"], 1200)
                 raise subprocess.TimeoutExpired(command, options["timeout"])
+            if command[1:3] == ["simctl", "shutdown"]:
+                self.assertEqual(options["timeout"], 60)
+                raise subprocess.TimeoutExpired(command, options["timeout"])
             return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
 
         with patch.object(sys, "argv", [str(self.script)]), \
@@ -153,23 +175,67 @@ if os.environ.get("FAIL") == "delete" and command[1:3] == ["simctl", "delete"]:
                     json.dumps(runtime).encode(), "owned-simulator\n"]), \
                 patch.object(runner.subprocess, "run", side_effect=run), \
                 patch.object(runner.time, "monotonic", side_effect=[100.0, 1300.0]):
-            with self.assertRaises(subprocess.TimeoutExpired):
+            with self.assertRaises(runner.SimulatorInfrastructureError):
                 runner.main()
 
         output = next((self.root / ".build/verification").iterdir())
         timings = json.loads((output / "command-timings.json").read_text())
         self.assertEqual(timings["boot"], {
-            "elapsedSeconds": 1200.0, "timeoutSeconds": 1200, "remainingSeconds": 0.0})
-        self.assertEqual(json.loads((output / "result.json").read_text())["status"], 1)
+            "elapsedSeconds": 1200.0, "timeoutSeconds": 1200, "remainingSeconds": 0.0,
+            "outcome": "timed_out"})
+        result = json.loads((output / "result.json").read_text())
+        self.assertEqual(result["status"], 78)
+        self.assertEqual(result["failure"]["kind"], "timeout")
+        self.assertEqual(result["cleanup"][0]["status"], 124)
         self.assertEqual(calls[-2:], [["xcrun", "simctl", action, "owned-simulator"]
                                      for action in ("shutdown", "delete")])
 
     def test_failed_boot_also_cleans_up_without_running_tests(self):
         result, calls, output = self.run_script("boot")
-        self.assertEqual(result.returncode, 42)
-        self.assertEqual(calls[-1], ["xcrun", "simctl", "delete", "owned-simulator"])
+        self.assertEqual(result.returncode, 78)
+        self.assertEqual(calls[-1], ["xcrun", "simctl", "delete", "owned-simulator-2"])
+        self.assertEqual(sum(call[1:3] == ["simctl", "create"] for call in calls), 2)
+        self.assertIn("::error title=Simulator infrastructure::", result.stdout)
         self.assertFalse(any(call[0] == "xcodebuild" for call in calls))
         self.assertTrue((output / "boot.log").exists())
+
+    def test_preparation_failures_retry_once_on_a_new_device(self):
+        for failure in ("boot-once", "bootstatus-once", "restart-once"):
+            with self.subTest(failure=failure):
+                # Each scenario needs its own fake device history and output directory.
+                case = SimulatorRunnerTests()
+                case.setUp()
+                self.addCleanup(case.doCleanups)
+                result, calls, _ = case.run_script(failure)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                creates = [call for call in calls if call[1:3] == ["simctl", "create"]]
+                self.assertEqual(len(creates), 2)
+                first_delete = calls.index(["xcrun", "simctl", "delete", "owned-simulator"])
+                create_indices = [index for index, call in enumerate(calls) if call[1:3] == ["simctl", "create"]]
+                self.assertLess(first_delete, create_indices[1])
+                results = sorted((json.loads(path.read_text()) for path in
+                    (case.root / ".build/verification").glob("*/result.json")), key=lambda item: item["attempt"])
+                self.assertEqual(results[0]["failure"]["classification"], "simulator-infrastructure")
+                self.assertTrue(results[0]["retryScheduled"])
+                self.assertEqual(results[1]["status"], 0)
+                self.assertIn("id=owned-simulator-2", " ".join(" ".join(call) for call in calls))
+
+    def test_install_149_retries_fresh_fixture_and_preserves_both_attempts(self):
+        result, calls, _ = self.run_script("install-once", selection="SyncstrUITests/SharedAudioFlowTests")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        installs = [call for call in calls if call[1:3] == ["simctl", "install"]]
+        self.assertEqual([call[3] for call in installs], ["owned-simulator", "owned-simulator-2"])
+        for install in installs:
+            index = calls.index(install)
+            self.assertEqual(calls[index - 1], ["xcrun", "simctl", "bootstatus", install[3], "-b"])
+        self.assertEqual(len(list((self.root / ".build/verification").glob("*/result.json"))), 2)
+        self.assertIn("v5-install", result.stdout)
+
+    def test_install_package_failure_is_not_retried_as_infrastructure(self):
+        result, calls, output = self.run_script("install-package", selection="SyncstrUITests/SharedAudioFlowTests")
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(sum(call[1:3] == ["simctl", "create"] for call in calls), 1)
+        self.assertIsNone(json.loads((output / "result.json").read_text())["failure"])
 
     def test_failed_cleanup_is_not_reported_as_success(self):
         result, calls, output = self.run_script("delete")

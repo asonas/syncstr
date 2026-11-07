@@ -13,6 +13,18 @@ import tempfile
 import time
 
 
+INFRASTRUCTURE_EXIT = 78
+PREPARATION_STEPS = {"boot", "bootstatus", "migration-shutdown", "restart", "restart-ready",
+                     "v5-ready", "unit-ready", "responsiveness-ready", "ui-ready"}
+
+
+class SimulatorInfrastructureError(RuntimeError):
+    def __init__(self, stage, cause):
+        super().__init__(f"Simulator preparation failed at {stage}: {cause}")
+        self.stage = stage
+        self.cause = cause
+
+
 def prepare_v5_fixture(root, device, run):
     binaries = Path(os.environ.get("SYNCSTR_V5_TEST_BIN_DIR", root / ".build/v5-rust/debug"))
     generator = binaries / "examples/shared_audio_fixture"
@@ -21,6 +33,8 @@ def prepare_v5_fixture(root, device, run):
     app = root / ".build/SimulatorDerivedData/Build/Products/Debug-iphonesimulator/Syncstr.app"
     with (app / "Info.plist").open("rb") as info:
         bundle_id = plistlib.load(info)["CFBundleIdentifier"]
+    # Xcode can leave the requested device shut down after a preceding test phase.
+    run(["xcrun", "simctl", "bootstatus", device, "-b"], "v5-ready")
     run(["xcrun", "simctl", "install", device, str(app)], "v5-install")
     container = Path(subprocess.check_output(
         ["xcrun", "simctl", "get_app_container", device, bundle_id, "data"], text=True).strip())
@@ -36,7 +50,7 @@ def prepare_v5_fixture(root, device, run):
     return "v5-fixture"
 
 
-def main():
+def main(attempt=1):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--device", choices=("iphone", "ipad"), default="iphone")
     parser.add_argument("--only-testing", action="append", default=[], help="UI test filter")
@@ -49,16 +63,23 @@ def main():
     command_timings = {}
 
     def run(command, name, environment=None):
-        timeout = 180 if name in ("bootstatus", "restart-ready") else 1200
+        timeout = 180 if name == "bootstatus" or name.endswith("-ready") else 1200
         started = time.monotonic()
+        outcome = "passed"
         try:
             with (output / (name + ".log")).open("w") as log:
                 subprocess.run(command, cwd=root, stdout=log, stderr=subprocess.STDOUT,
                                check=True, env=environment, timeout=timeout)
+        except (subprocess.TimeoutExpired, subprocess.CalledProcessError) as error:
+            outcome = "timed_out" if isinstance(error, subprocess.TimeoutExpired) else "failed"
+            if name in PREPARATION_STEPS or (name == "v5-install" and
+                    (isinstance(error, subprocess.TimeoutExpired) or error.returncode == 149)):
+                raise SimulatorInfrastructureError(name, error) from error
+            raise
         finally:
             elapsed = time.monotonic() - started
             command_timings[name] = {"elapsedSeconds": elapsed, "timeoutSeconds": timeout,
-                                     "remainingSeconds": timeout - elapsed}
+                                     "remainingSeconds": timeout - elapsed, "outcome": outcome}
             (output / "command-timings.json").write_text(json.dumps(command_timings, indent=2) + "\n")
             print(f"{name}: {elapsed:.3f}s of {timeout}s ({timeout - elapsed:.3f}s remaining)", flush=True)
 
@@ -74,10 +95,11 @@ def main():
         runtime["identifier"],
     ], text=True).strip()
     status = 1
+    failure = None
     try:
         (output / "environment.json").write_text(json.dumps({
             "runtime": runtime, "device": device, "deviceType": device_type,
-            "language": "ja", "locale": "ja_JP", "orientation": "portrait",
+            "language": "ja", "locale": "ja_JP", "orientation": "portrait", "attempt": attempt,
         }, indent=2) + "\n")
         run(["xcrun", "simctl", "boot", device], "boot")
         run(["xcrun", "simctl", "bootstatus", device, "-b"], "bootstatus")
@@ -95,6 +117,7 @@ def main():
             if name == "ui" and (not args.only_testing or any("SharedAudioFlowTests" in item for item in args.only_testing)):
                 fixture = prepare_v5_fixture(root, device, run)
                 environment = dict(os.environ, TEST_RUNNER_SYNCSTR_V5_FIXTURE_ROOT=fixture)
+            run(["xcrun", "simctl", "bootstatus", device, "-b"], name + "-ready")
             command = [
                 "xcodebuild", "-project", "apps/ios/Syncstr.xcodeproj", "-scheme", scheme,
                 "-disableAutomaticPackageResolution", "-onlyUsePackageVersionsFromResolvedFile",
@@ -117,23 +140,47 @@ def main():
             if summary["passedTests"] == 0 or summary["failedTests"] != 0:
                 raise RuntimeError(f"{name} must contain passing tests and no failures")
         status = 0
+    except SimulatorInfrastructureError as error:
+        status = INFRASTRUCTURE_EXIT
+        failure = {"classification": "simulator-infrastructure", "stage": error.stage,
+                   "kind": "timeout" if isinstance(error.cause, subprocess.TimeoutExpired) else "exit",
+                   "returnCode": getattr(error.cause, "returncode", None)}
+        raise
     except subprocess.CalledProcessError as error:
         status = error.returncode
         raise
     finally:
         cleanup = []
         for action in ("shutdown", "delete"):
-            result = subprocess.run(["xcrun", "simctl", action, device], capture_output=True, text=True)
-            cleanup.append({"action": action, "status": result.returncode, "stderr": result.stderr})
+            try:
+                result = subprocess.run(["xcrun", "simctl", action, device], capture_output=True,
+                                        text=True, timeout=60)
+                cleanup.append({"action": action, "status": result.returncode, "stderr": result.stderr})
+            except subprocess.TimeoutExpired:
+                cleanup.append({"action": action, "status": 124, "stderr": "Cleanup exceeded 60 seconds"})
         status = status or cleanup[-1]["status"]
-        (output / "result.json").write_text(json.dumps({"status": status, "cleanup": cleanup}, indent=2) + "\n")
+        (output / "result.json").write_text(json.dumps({"status": status, "cleanup": cleanup,
+            "attempt": attempt, "failure": failure, "retryScheduled": failure is not None and attempt == 1},
+            indent=2) + "\n")
         print(f"Verification {'passed' if status == 0 else 'failed'}: {output}", flush=True)
     return status
 
 
+def verify():
+    for attempt in (1, 2):
+        try:
+            return main(attempt)
+        except SimulatorInfrastructureError as error:
+            level = "warning" if attempt == 1 else "error"
+            print(f"::{level} title=Simulator infrastructure::{error} (attempt {attempt}/2)", flush=True)
+            if attempt == 1:
+                print("Retrying verification once with a fresh disposable Simulator.", flush=True)
+    return INFRASTRUCTURE_EXIT
+
+
 if __name__ == "__main__":
     try:
-        sys.exit(main())
+        sys.exit(verify())
     except subprocess.CalledProcessError as error:
         print(f"Command failed ({error.returncode}): {error.cmd}", file=sys.stderr)
         sys.exit(error.returncode)
