@@ -220,7 +220,7 @@ enum SharedAudioUIFixture {
                 try database.finishMetadataMutation(edit.id, reply: .rejected(request: edit.id, reason: .revoked))
             }
         }
-        if state == "conflict" || state == "incomplete" {
+        if state == "conflict" || state == "incomplete" || state.hasPrefix("resolution") {
             let data = try Data(contentsOf: root.appendingPathComponent("snapshot.json"))
             var snapshot = try JSONSerialization.jsonObject(with: data) as! [String: Any]
             var catalog = snapshot["catalog"] as! [String: Any]
