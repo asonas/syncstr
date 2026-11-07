@@ -278,6 +278,7 @@ struct OfflineSaveControls: View {
         if compact || iconOnly {
             Menu {
                 Text(saveStatus)
+                if tracks.count == 1, let track = tracks.first { TrackMetadataMenu(library: library, track: track) }
                 if !removalPending {
                     if let request, let error = request.error { Text(error) }
                     if pending, let request {

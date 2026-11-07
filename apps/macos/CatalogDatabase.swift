@@ -189,23 +189,102 @@ extension CatalogDatabase {
         }
     }
 
-    private func saveClusterMetadataEdit(_ edit: ClusterMetadataEdit) throws {
+    func saveClusterMetadataEdit(_ edit: ClusterMetadataEdit) throws {
         let payload = try JSONEncoder().encode(edit)
         guard payload.count <= ClusterSignedChange.maximumBytes else { throw LocalMusicError.invalidData }
         try execute("INSERT INTO cluster_metadata_queue VALUES (?, ?) ON CONFLICT(object) DO UPDATE SET payload = excluded.payload",
-            [edit.entry.sha256, String(decoding: payload, as: UTF8.self)])
+            [edit.queueKey, String(decoding: payload, as: UTF8.self)])
     }
 
     func finishClusterMetadataEdit(_ edit: ClusterMetadataEdit, revision: String) throws {
         guard ClusterIdentity.isLowercaseHex256(revision) else { throw LocalMusicError.invalidData }
         try transaction {
-            guard var pending = try clusterMetadataEdits().first(where: { $0.entry.sha256 == edit.entry.sha256 }) else { return }
+            guard var pending = try clusterMetadataEdits().first(where: { $0.mutation == nil && $0.entry.sha256 == edit.entry.sha256 }) else { return }
             if pending.id == edit.id {
                 try execute("DELETE FROM cluster_metadata_queue WHERE object = ?", [edit.entry.sha256])
             } else if pending.parents == edit.parents {
                 pending.parents = [revision]
                 try saveClusterMetadataEdit(pending)
             }
+        }
+    }
+
+    func beginMetadataMutation(_ id: String, host: String) throws -> ClusterMetadataEdit {
+        try transaction {
+            guard var edit = try clusterMetadataEdits().first(where: { $0.mutation?.request == id }),
+                  edit.canRetryMutation, ClusterIdentity.isLowercaseHex256(host),
+                  edit.mutationHost == nil || edit.mutationHost == host else { throw LocalMusicError.invalidData }
+            edit.mutationHost = host
+            edit.mutationState = .sending
+            edit.mutationError = nil
+            try saveClusterMetadataEdit(edit)
+            return edit
+        }
+    }
+
+    func saveMetadataMutation(_ edit: ClusterMetadataEdit, replacing: String?) throws {
+        try transaction {
+            try saveClusterMetadataEdit(edit)
+            if let replacing { try discardMetadataMutation(replacing) }
+        }
+    }
+
+    func finishMetadataMutation(_ id: String, reply: ClusterMutationReply) throws {
+        try transaction {
+            guard var edit = try clusterMetadataEdits().first(where: { $0.mutation?.request == id }),
+                  edit.mutationState == .sending else { throw LocalMusicError.invalidData }
+            _ = try reply.validated(for: id)
+            switch reply {
+            case .accepted(_, _, let host, _):
+                guard host == edit.mutationHost else { throw LocalMusicError.invalidData }
+                edit.mutationState = .accepted
+            case .needsReview: edit.mutationState = .needsReview
+            case .rejected, .unsupported: edit.mutationState = .rejected
+            case .deferred: edit.mutationState = .queued
+            }
+            edit.mutationReply = reply
+            edit.mutationError = nil
+            try saveClusterMetadataEdit(edit)
+        }
+    }
+
+    func metadataMutationUnavailable(_ id: String) throws {
+        guard var edit = try clusterMetadataEdits().first(where: { $0.mutation?.request == id }),
+              let request = edit.mutation, edit.canRetryMutation, edit.mutationHost == nil else { throw LocalMusicError.invalidData }
+        edit.mutationState = .rejected
+        edit.mutationReply = .unsupported(request: id, operation: request.operation.rawValue)
+        try saveClusterMetadataEdit(edit)
+    }
+
+    func metadataMutationInterrupted(_ id: String, reason: String) throws {
+        guard var edit = try clusterMetadataEdits().first(where: { $0.mutation?.request == id }),
+              edit.mutationState != .accepted, edit.mutationState != .needsReview,
+              edit.mutationState != .rejected else { return }
+        edit.mutationState = edit.mutationHost == nil ? .queued : .outcomeUnknown
+        edit.mutationError = reason
+        try saveClusterMetadataEdit(edit)
+    }
+
+    func discardMetadataMutation(_ id: String) throws {
+        guard let edit = try clusterMetadataEdits().first(where: { $0.mutation?.request == id }),
+              edit.mutationState == .needsReview || edit.mutationState == .rejected ||
+                (edit.mutationState == .queued && edit.mutationHost == nil) else { throw LocalMusicError.invalidData }
+        try execute("DELETE FROM cluster_metadata_queue WHERE object = ?", [edit.queueKey])
+    }
+
+    func rejectUnsentMetadataForRevokedMember() throws {
+        guard let registration = try clusterRegistration() else { return }
+        let chain = try registration.membership.chain(registration.localGrant)
+        guard let own = chain.first else { return }
+        let state = try registration.membership.revocationState()
+        guard state.active.contains(where: {
+            let revoked = registration.membership.revocations[$0]
+            return revoked.member == own.member || chain.contains { $0.issuer == revoked.member && !revoked.observed.contains($0.id) }
+        }) else { return }
+        for var edit in try clusterMetadataEdits() where edit.canRetryMutation && edit.mutationHost == nil {
+            edit.mutationState = .rejected
+            edit.mutationReply = .rejected(request: edit.id, reason: .revoked)
+            try saveClusterMetadataEdit(edit)
         }
     }
 
@@ -811,6 +890,10 @@ extension CatalogDatabase {
 
     func recoverClusterJobs() throws {
         try execute("UPDATE cluster_jobs SET state = 'queued' WHERE state = 'running'")
+        for var edit in try clusterMetadataEdits() where edit.mutationState == .sending {
+            edit.mutationState = .queued
+            try saveClusterMetadataEdit(edit)
+        }
     }
 
     func clusterJobs() throws -> [ClusterTransferJob] {

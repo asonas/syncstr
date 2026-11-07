@@ -113,6 +113,45 @@ final class SharedAudioFlowTests: XCTestCase {
     }
 
     @MainActor
+    func testRejectedMetadataSurvivesOfflineRelaunchAndCanBeDiscarded() throws {
+        continueAfterFailure = false
+        let root = try XCTUnwrap(ProcessInfo.processInfo.environment["SYNCSTR_V5_FIXTURE_ROOT"])
+        let app = XCUIApplication()
+        app.launchArguments = ["--v5-fixture", root, "--v5-fixture-state", "metadata"]
+        for launch in 0...1 {
+            app.launch()
+            openSongs(app)
+            let menu = app.buttons["TRACK-Aの保存操作"]
+            XCTAssertTrue(menu.waitForExistence(timeout: 5))
+            menu.tap()
+            let edit = app.buttons["曲の情報を編集…"]
+            XCTAssertTrue(edit.waitForExistence(timeout: 5))
+            XCTAssertFalse(edit.isEnabled, "Offline startup has no verified edit-track capability")
+            let changes = app.buttons["曲情報の変更を確認…"]
+            XCTAssertTrue(changes.exists)
+            changes.tap()
+            XCTAssertTrue(app.staticTexts["Edited fixture title"].waitForExistence(timeout: 5))
+            XCTAssertTrue(app.staticTexts["送信できません"].exists)
+            XCTAssertTrue(app.staticTexts["この端末の登録が無効になりました。変更内容は保持しています。"].exists)
+            if launch == 0 {
+                capture(app, "Rejected metadata keeps the original payload offline")
+                app.terminate()
+                continue
+            }
+            app.buttons["変更を破棄…"].tap()
+            let alert = app.alerts["変更内容を破棄しますか？"]
+            XCTAssertTrue(alert.waitForExistence(timeout: 5))
+            alert.buttons["破棄"].tap()
+            XCTAssertTrue(app.staticTexts["送信待ちの変更はありません。"].waitForExistence(timeout: 5))
+            XCTAssertFalse(app.staticTexts["Edited fixture title"].exists)
+            capture(app, "Explicit discard removes only the retained metadata intent")
+            app.buttons["閉じる"].tap()
+            XCTAssertTrue(menu.waitForExistence(timeout: 5))
+            XCTAssertTrue(app.staticTexts["TRACK-A"].exists)
+        }
+    }
+
+    @MainActor
     func testConflictAndIncompleteNoticesSurviveRelaunch() throws {
         continueAfterFailure = false
         let root = try XCTUnwrap(ProcessInfo.processInfo.environment["SYNCSTR_V5_FIXTURE_ROOT"], "Required isolated v5 fixture is missing")

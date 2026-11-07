@@ -194,6 +194,7 @@ struct PhoneNowPlaying: View {
             }
         }
         .modifier(OfflineSaveRemoval(library: library))
+        .modifier(TrackMetadataEditing(library: library))
         .background(PhoneStyle.graphite)
         .toolbar(.hidden, for: .navigationBar)
     }

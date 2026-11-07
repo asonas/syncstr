@@ -91,6 +91,7 @@ struct PhoneRoot: View {
             if phase == .background, library.transfer.peerConnected { library.transfer.cancel() }
         }
         .modifier(OfflineSaveRemoval(library: library, enabled: !library.showingNowPlaying))
+        .modifier(TrackMetadataEditing(library: library, enabled: !library.showingNowPlaying))
         .sheet(isPresented: $library.showingNowPlaying) {
             PhoneNowPlaying(library: library)
                 .presentationDragIndicator(.visible)
