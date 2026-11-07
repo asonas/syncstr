@@ -174,6 +174,7 @@ private struct ClusterUIState {
     let cellular: Bool
     let sharedAudio: Bool
     let metadataEdits: [ClusterMetadataEdit]
+    let sharedTrackConflicts: [SharedTrackConflict]
 
     init(_ database: CatalogDatabase) throws {
         registration = try database.clusterRegistration()
@@ -186,6 +187,7 @@ private struct ClusterUIState {
         disputed = try registration?.membership.revocationState().disputed.sorted() ?? []
         cellular = try database.clusterAutomaticCellular()
         sharedAudio = try database.sharedAudioSnapshot() != nil
+        sharedTrackConflicts = try database.sharedAudioSnapshot().map { try SharedTrackConflict.project($0.catalog) } ?? []
     }
 }
 
@@ -282,8 +284,24 @@ final class LocalTransfer: ObservableObject {
         clusterMutationsUnavailable && clusterSupportedOperations.contains(.editTrack)
             ? nil : "曲の情報の編集には、対応する保存先への接続が必要です。ライブラリを更新して対応状況を確認してください。"
     }
+    @Published private(set) var sharedTrackConflicts: [SharedTrackConflict] = []
+    @Published private(set) var sharedTrackResolutionAvailable = false
+    @Published private(set) var sharedTrackResolutionDeferred = false
     var clusterMutationNotice: String? {
-        clusterMutationsUnavailable ? LocalMusicError.legacyMutationsUnavailable.localizedDescription : nil
+        guard clusterMutationsUnavailable else { return nil }
+        return sharedTrackResolutionAvailable ? "この接続では利用できない変更操作があります。各操作の案内を確認してください。"
+            : LocalMusicError.legacyMutationsUnavailable.localizedDescription
+    }
+    var sharedTrackResolutionNotice: String? {
+        guard clusterMutationsUnavailable, !sharedTrackResolutionAvailable else { return nil }
+        return "この接続先は曲の競合の解消に対応していません。ライブラリを更新して対応状況を確認してください。"
+    }
+    var clusterAlbumResolutionNotice: String? {
+        clusterMutationsUnavailable ? "この接続ではアルバム名の選択に対応していません。" : nil
+    }
+    var canDeleteSharedTrack: Bool {
+        guard let registration = clusterRegistration else { return false }
+        return (try? registration.membership.verify(registration.localGrant).host) ?? false
     }
     var clusterMutationQueueNotice: String? {
         guard clusterMutationsUnavailable,
@@ -552,7 +570,13 @@ final class LocalTransfer: ObservableObject {
         registrationReadState = state.registration == nil ? "absent" : "present"
         clusterBatches = state.batches
         clusterChanges = state.changes
-        clusterConflicts = state.conflicts
+        clusterConflicts = state.sharedAudio ? [] : state.conflicts
+        sharedTrackConflicts = state.sharedTrackConflicts
+        sharedTrackResolutionAvailable = state.sharedAudio && clusterNetwork.resolveTrackAvailable
+        sharedTrackResolutionDeferred = clusterNetwork.deferredResolution != nil
+#if DEBUG
+        if SharedAudioUIFixture.resolutionEnabled { sharedTrackResolutionAvailable = true }
+#endif
         clusterAlbumConflicts = state.albums
         pendingClusterMetadata = state.pendingMetadata
         clusterMetadataEdits = state.metadataEdits
@@ -690,6 +714,45 @@ final class LocalTransfer: ObservableObject {
                     try? await updateClusterState()
                     status = error.localizedDescription
                 }
+            }
+        }
+    }
+
+    func resolveSharedTrack(_ conflict: SharedTrackConflict, selected: String) {
+        guard !busy, sharedTrackResolutionAvailable, conflict.isComplete,
+              let choice = conflict.choices.first(where: { $0.id == selected }),
+              choice.isAvailable(isHost: canDeleteSharedTrack) else { return }
+        runSharedResolution { try await self.clusterNetwork.resolveSharedTrack(conflict, selected: selected) }
+    }
+
+    func retrySharedResolution() {
+        guard !busy, sharedTrackResolutionDeferred else { return }
+        runSharedResolution { try await self.clusterNetwork.retrySharedResolution() }
+    }
+
+    private func runSharedResolution(_ submit: @escaping @MainActor () async throws -> SharedTrackResolution.Result) {
+        let attempt = generation
+        busy = true
+        status = "選んだ内容を保存先に送信しています…"
+        operation = Task {
+            defer {
+                if generation == attempt {
+                    sharedTrackResolutionDeferred = clusterNetwork.deferredResolution != nil
+                    busy = false
+                }
+            }
+            do {
+                let result = try await submit()
+                try Task.checkCancellation()
+                guard generation == attempt else { return }
+                if let catalog = result.catalog {
+                    try await publishCatalog(catalog, attempt: attempt)
+                    self.catalog = catalog
+                }
+                try await updateClusterState()
+                status = result.notice
+            } catch {
+                if generation == attempt { status = error.localizedDescription }
             }
         }
     }

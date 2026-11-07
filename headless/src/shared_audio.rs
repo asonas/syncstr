@@ -221,6 +221,11 @@ pub struct Catalog {
     pub pins: std::collections::BTreeMap<String, std::collections::BTreeSet<String>>,
     pub correspondences: std::collections::BTreeMap<String, String>,
     pub heads: std::collections::BTreeMap<String, Vec<String>>,
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub candidates: std::collections::BTreeMap<
+        String,
+        std::collections::BTreeMap<String, crate::shared_audio::Track>,
+    >,
     pub conflicts: std::collections::BTreeSet<String>,
     pub incomplete: Vec<String>,
 }
@@ -2214,6 +2219,7 @@ fn catalog(connection: &rusqlite::Connection) -> anyhow::Result<crate::shared_au
         pins: baseline.pins,
         correspondences: Default::default(),
         heads: Default::default(),
+        candidates: Default::default(),
         conflicts: Default::default(),
         incomplete: vec![],
     };
@@ -2374,6 +2380,18 @@ fn catalog(connection: &rusqlite::Connection) -> anyhow::Result<crate::shared_au
             }
         } else {
             catalog.conflicts.insert(subject.clone());
+            if let Some(track) = subject.strip_prefix("track:") {
+                let candidates = heads
+                    .iter()
+                    .filter_map(|head| match &values[head] {
+                        crate::shared_audio::Value::Track { track, .. } => {
+                            Some((head.clone(), track.clone()))
+                        }
+                        _ => None,
+                    })
+                    .collect();
+                catalog.candidates.insert(track.into(), candidates);
+            }
         }
         catalog.heads.insert(subject, heads);
     }

@@ -34,6 +34,7 @@ targets:
       - path: ../macos/ClusterMetadata.swift
       - path: ../macos/TrackMetadataEditor.swift
       - path: ../macos/SharedAudio.swift
+      - path: ../macos/SharedTrackResolution.swift
       - path: ../macos/LocalTransfer.swift
       - path: ../macos/PeerTransfer.swift
       - path: ../macos/PeerSetup.swift
@@ -106,6 +107,7 @@ targets:
       - path: ../macos/ClusterMetadata.swift
       - path: ../macos/TrackMetadataEditor.swift
       - path: ../macos/SharedAudio.swift
+      - path: ../macos/SharedTrackResolution.swift
       - path: ../macos/LocalTransfer.swift
       - path: ../macos/PeerTransfer.swift
       - path: ../macos/PeerSetup.swift
@@ -175,6 +177,7 @@ targets:
       - path: ../macos/Tests/ClusterMutationTests.swift
       - path: ../macos/Tests/PlaylistMutationTests.swift
       - path: ../macos/Tests/ClusterMetadataTests.swift
+      - path: ../macos/Tests/SharedTrackResolutionTests.swift
       - path: ../macos/Tests/Fixtures
         buildPhase: resources
         excludes: [README.md]
@@ -238,6 +241,7 @@ targets:
       - path: ../macos/ClusterMetadata.swift
       - path: ../macos/TrackMetadataEditor.swift
       - path: ../macos/SharedAudio.swift
+      - path: ../macos/SharedTrackResolution.swift
       - path: ../macos/LocalTransfer.swift
       - path: ../macos/PeerTransfer.swift
       - path: ../macos/AlbumOrganization.swift
@@ -274,6 +278,7 @@ targets:
       - path: ../macos/ClusterMetadata.swift
       - path: ../macos/TrackMetadataEditor.swift
       - path: ../macos/SharedAudio.swift
+      - path: ../macos/SharedTrackResolution.swift
       - path: ../macos/LocalTransfer.swift
       - path: ../macos/PeerTransfer.swift
       - path: ../macos/AlbumOrganization.swift
