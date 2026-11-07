@@ -30,6 +30,7 @@ targets:
       - path: ../macos/ClusterChanges.swift
       - path: ../macos/ClusterDiscovery.swift
       - path: ../macos/ClusterTransport.swift
+      - path: ../macos/ClusterMutation.swift
       - path: ../macos/SharedAudio.swift
       - path: ../macos/LocalTransfer.swift
       - path: ../macos/PeerTransfer.swift
@@ -99,6 +100,7 @@ targets:
       - path: ../macos/ClusterChanges.swift
       - path: ../macos/ClusterDiscovery.swift
       - path: ../macos/ClusterTransport.swift
+      - path: ../macos/ClusterMutation.swift
       - path: ../macos/SharedAudio.swift
       - path: ../macos/LocalTransfer.swift
       - path: ../macos/PeerTransfer.swift
@@ -166,6 +168,7 @@ targets:
       - path: ../macos/Tests/PlayerInteractionTests.swift
       - path: ../macos/Tests/OfflineSaveTests.swift
       - path: ../macos/Tests/SharedAudioTests.swift
+      - path: ../macos/Tests/ClusterMutationTests.swift
       - path: ../macos/Tests/Fixtures
         buildPhase: resources
         excludes: [README.md]
@@ -225,6 +228,7 @@ targets:
       - path: ../macos/ClusterChanges.swift
       - path: ../macos/ClusterDiscovery.swift
       - path: ../macos/ClusterTransport.swift
+      - path: ../macos/ClusterMutation.swift
       - path: ../macos/SharedAudio.swift
       - path: ../macos/LocalTransfer.swift
       - path: ../macos/PeerTransfer.swift
@@ -258,6 +262,7 @@ targets:
       - path: ../macos/ClusterChanges.swift
       - path: ../macos/ClusterDiscovery.swift
       - path: ../macos/ClusterTransport.swift
+      - path: ../macos/ClusterMutation.swift
       - path: ../macos/SharedAudio.swift
       - path: ../macos/LocalTransfer.swift
       - path: ../macos/PeerTransfer.swift
