@@ -8,11 +8,16 @@ publish = false
 crate-type = ["lib", "cdylib", "staticlib"]
 
 [dependencies]
-uniffi = { version = "=0.32.2", features = ["cli"] }
+uniffi = { version = "=0.32.2" }
 thiserror = "2"
 tokio = { version = "1", features = ["rt-multi-thread", "time"] }
 fs2 = "0.4"
 
+[features]
+default = ["bindgen"]
+bindgen = ["uniffi/cli"]
+
 [[bin]]
 name = "uniffi-bindgen"
 path = "src/bin.rs"
+required-features = ["bindgen"]
