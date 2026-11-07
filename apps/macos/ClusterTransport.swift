@@ -361,6 +361,17 @@ final class ClusterNetwork {
 
 @TransportActor
 final class ClusterSession {
+    func mutate(_ request: ClusterMutationRequest) async throws -> ClusterMutationReply {
+        guard sharedAudio, supportedOperations.contains(request.operation) else {
+            return .unsupported(request: request.request, operation: request.operation.rawValue)
+        }
+        let stream = try await connection.openBi()
+        try await send(ClusterMutationEnvelope(mutation: request), stream: stream)
+        try await stream.send().finish()
+        let reply = try await receive(ClusterMutationReply.self, stream: stream)
+        return try reply.validated(for: request.request)
+    }
+
     func playlistRequest(_ request: PlaylistRequest) async throws -> PlaylistResponse {
         guard !sharedAudio else { throw LocalMusicError.incompatiblePeer }
         let stream = try await connection.openBi()
@@ -412,6 +423,7 @@ final class ClusterSession {
     }
 
     private(set) var sharedAudio = false
+    private(set) var supportedOperations: Set<ClusterOperation> = []
     nonisolated private let endpoint: IrohLib.Endpoint
     nonisolated private let connection: IrohLib.Connection
     nonisolated let peer: String
@@ -514,13 +526,13 @@ final class ClusterSession {
         }
         if session.sharedAudio {
             do {
-                struct HelloV5: Codable { let version: Int; let proof: ClusterMembership }
                 let stream = try await session.connection.openBi()
-                try await session.send(HelloV5(version: 5, proof: registration.membership), stream: stream)
+                try await session.send(ClusterHelloV5(version: 5, proof: registration.membership), stream: stream)
                 try await stream.send().finish()
-                let hello = try JSONDecoder().decode(HelloV5.self, from: await session.receiveData(stream: stream, limit: 4 * 1024 * 1024))
+                let hello = try JSONDecoder().decode(ClusterHelloV5.self, from: await session.receiveData(stream: stream, limit: 4 * 1024 * 1024))
                 guard hello.version == 5 else { throw LocalMusicError.incompatiblePeer }
                 try database.authenticateClusterPeer(session.peer, membership: hello.proof)
+                session.supportedOperations = hello.supportedOperations
                 return session
             } catch { session.close(); throw error }
         }
