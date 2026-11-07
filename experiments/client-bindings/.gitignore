@@ -1,0 +1,6 @@
+/target/
+/generated/
+/build/
+/.gradle/
+/.kotlin/
+/*.lockfile
