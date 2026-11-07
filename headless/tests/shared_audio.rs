@@ -859,7 +859,13 @@ async fn quic_active_hello_is_unchanged_and_outsiders_get_no_refusal_evidence() 
     assert_eq!(hello.version, 5);
     assert_eq!(
         hello.supported_operations,
-        ["edit-track", "resolve-track", "update-playlists"]
+        [
+            "edit-track",
+            "resolve-track",
+            "update-playlists",
+            "put-object",
+            "register-track"
+        ]
     );
     assert_eq!(hello.proof.root, before.root);
     assert_eq!(hello.proof.grants, before.grants);
