@@ -23,6 +23,9 @@ jobs:
         working-directory: headless
     steps:
       - uses: actions/checkout@v7
+      - name: Simulator runner and reporting regression tests
+        working-directory: .
+        run: python3 -m unittest discover -s apps/ios/scripts/tests -v
       - name: Install Rust
         run: rustup toolchain install 1.99.1 --profile minimal --component clippy
       - name: Focused regression tests

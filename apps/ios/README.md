@@ -136,7 +136,8 @@ the runner checks readiness and boots the same owned device again if Xcode left
 it shut down. Readiness checks retain their 180-second timeout. Boot/restart
 preparation failures and install exit 149 are classified as Simulator infrastructure
 failures; after cleanup, verification retries once with a fresh device. Actual
-test failures rerun once with `-retry-tests-on-failure -test-iterations 2`. Both attempts keep separate logs, timings, and
+test failures rerun once with `-retry-tests-on-failure -test-iterations 2`, with
+both test iterations in the same result bundle. Preparation attempts keep separate logs, timings, and
 `result.json` files, including the failed stage and whether a retry is scheduled.
 Cleanup has a 60-second timeout per command. The CI job allows 60 minutes for the
 bounded recovery; it does not increase the readiness timeout. Existing
@@ -154,7 +155,7 @@ Logs, environment metadata, result status, and `.xcresult` bundles are retained
 under `.build/verification/<run>/`. CI uploads them for seven days, including on
 failure. Local results remain until explicitly removed. DerivedData is reused
 under `.build/SimulatorDerivedData/`. Use `--only-testing
-SyncstrUITests/LibraryExperienceTests` to limit UI tests while retaining unit tests.
+SyncstrUITests/LibraryExperienceTests` to limit UI tests while retaining iPhone unit tests.
 The runner's process-boundary tests are:
 
 ```sh

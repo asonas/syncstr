@@ -4,9 +4,6 @@ on:
   schedule:
     - cron: '0 18 * * 0'
   workflow_dispatch:
-  # Temporary branch trigger for pre-merge acceptance evidence.
-  push:
-    branches: [agent/aso-93-weekly-simulator]
 
 permissions:
   contents: read
@@ -64,6 +61,7 @@ jobs:
           pattern: report-*
           path: .build/verification
       - name: Report persistent failures to Linear
+        if: ${{ !cancelled() }}
         env:
           LINEAR_CLIENT_ID: ${{ secrets.LINEAR_CLIENT_ID }}
           LINEAR_CLIENT_SECRET: ${{ secrets.LINEAR_CLIENT_SECRET }}

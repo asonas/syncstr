@@ -25,6 +25,15 @@ class SimulatorReportTests(unittest.TestCase):
             {"nodeType": "Test Case", "nodeIdentifier": "Suite/clean()", "result": "Passed"}]}
         self.assertEqual(reporter.test_results(tree), (["Suite/broken()"], ["Suite/recovered()"]))
 
+    def test_different_parameter_results_do_not_count_as_a_retry(self):
+        tree = {"testNodes": [{"nodeType": "Test Case", "nodeIdentifier": "Suite/parameterized()",
+            "result": "Failed", "children": [
+                {"nodeType": "Arguments", "name": "one", "result": "Failed", "children": [
+                    {"nodeType": "Repetition", "result": "Failed"}]},
+                {"nodeType": "Arguments", "name": "two", "result": "Passed", "children": [
+                    {"nodeType": "Repetition", "result": "Passed"}]}]}]}
+        self.assertEqual(reporter.test_results(tree), (["Suite/parameterized() [one]"], []))
+
     def notify(self, existing):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

@@ -24,6 +24,12 @@ def test_results(tree):
             return {node.get("result")}
         return set().union(*(repetitions(child) for child in node.get("children", [])))
 
+    def record(name, node, fallback=None):
+        if node.get("result", fallback) == "Failed":
+            failed.add(name)
+        if {"Passed", "Failed"} <= repetitions(node):
+            flaky.add(name)
+
     def visit(node):
         if isinstance(node, list):
             for item in node:
@@ -31,11 +37,13 @@ def test_results(tree):
         elif isinstance(node, dict):
             if node.get("nodeType") == "Test Case":
                 name = node.get("nodeIdentifier") or node["name"]
-                result = node.get("result")
-                if result == "Failed":
-                    failed.add(name)
-                if {"Passed", "Failed"} <= repetitions(node):
-                    flaky.add(name)
+                arguments = [child for child in node.get("children", [])
+                             if child.get("nodeType") == "Arguments"]
+                if arguments:
+                    for argument in arguments:
+                        record(f"{name} [{argument['name']}]", argument, node.get("result"))
+                else:
+                    record(name, node)
             for value in node.values():
                 if isinstance(value, (list, dict)):
                     visit(value)
@@ -95,7 +103,7 @@ def notify(root, job_result):
         if not any(report["device"] == device for report in reports):
             reports.append({"device": device, "outcome": "failure", "failed": [], "flaky": [],
                             "errors": ["Job did not upload its report; inspect workflow logs."]})
-    body = render(reports)
+    body = f"Simulator jobs: {job_result}\n\n" + render(reports)
     with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as summary:
         summary.write(body)
     if job_result == "success" and all(report["outcome"] == "success" for report in reports):
