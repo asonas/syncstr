@@ -124,7 +124,7 @@ Cancel removes a request only while it is Draft or Queued. Cancelling a request 
 | `register-track` | Authenticated, live member | Strict payload `{source: {library, track}, metadata, hash}`, empty `expected`, and exactly `confirmed: [{"audio": hash}]` for explicit audio eligibility. Requires a new source correspondence and a verified Audio Copy. The host generates the logical track ID and addition time and records D2 origin. | Second half of adding audio |
 | `edit-track` | Any member (decision D1) | `expected` heads. Changes only this logical track. | Metadata and album visibility |
 | `resolve-track` | Any member, except a resolution that deletes shared music, which needs a host | `expected` lists every competing head. | Resolve a conflict, album title |
-| `assign-source` | Any member, with explicit confirmation | `expected` heads of the source subject. The confirmation is recorded. | Track Correspondence review |
+| `assign-source` | Any live authenticated member, with explicit confirmation | Strict payload `{source: {library, track}, target}` with a required nullable target. Exactly `confirmed: [{source, target}]` matching that payload. Only the source subject's expected heads are allowed. The host records the approval in signed `Evidence.source_confirmation`. | Track Correspondence review; ASO-41 prerequisite |
 | `update-playlists` | Any member | Today's `PlaylistUpdate` checks, plus a request ID. | XML playlist update |
 
 Adding audio uses two steps. `put-object` is idempotent by hash and can be retried at any host. `register-track` creates the logical track. If registration never happens, the Audio Copy stays on the host. Automatic object garbage collection is deferred (`docs/shared-audio-server-design.md:131-133`), so this contract does not remove it.
@@ -181,6 +181,34 @@ Today the host signs every record, and the member who asked is not recorded anyw
 
 - **A (recommended).** The accepting host adds `origin: {member, grant}` to the signed record body. Hosts are already trusted to sign, and the QUIC session proves the member's identity to the accepting host.
 - **B.** The member also signs the request, and the record carries that signature. Any host can then verify the member's intent independently. This costs a second key operation per request and a larger record. It matters only if hosts are not trusted to report the origin honestly.
+
+### assign-source wire details
+
+The host advertises `assign-source`. The payload names a source and its approved
+logical target; `target: null` explicitly unassigns it, while an omitted target is
+invalid. Supply exactly one matching confirmation, for example
+`confirmed: [{"source":{"library":"example","track":"17"},"target":"T-A"}]`.
+Missing, duplicate, mismatched or extra confirmation fields are invalid. Only
+`Source::subject()` may appear in `expected`; missing/empty heads mean a new source.
+A non-null target must be known, non-retired, non-conflicted, and not owned by a
+different source. Assignment never infers identity from byte equality, creates
+aliases, merges tracks, or revises playlists or audio bindings (ADRs 0006/0007).
+
+The signed correspondence retains `Value::Correspondence {source, target, evidence}`.
+Evidence adds optional `source_confirmation: {source, target}` containing the
+validated approval, alongside host-built catalog/snapshot evidence. The signed
+body records authenticated D2 origin. Old records omit the field without changing
+their bytes or IDs. See the handoff's upgrade warning before sending new records
+to strict older hosts. This operation supplies the host prerequisite for ASO-41;
+it does not implement the migration workflow.
+
+Acceptance uses the existing `accepted` shape with the source subject's head.
+Stale expected heads return `needs-review` and write nothing. D3 A replay returns
+the original acceptance; a different intent/member reusing its ID is invalid.
+Replicated competing correspondences stay conflicted until a confirmed
+`assign-source` names every current head in `expected`; the new revision lists
+all heads as parents. `resolve-track` remains limited to Track subjects/values
+and does not resolve correspondences.
 
 ### D3. Cross-host retry
 
