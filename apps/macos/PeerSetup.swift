@@ -379,6 +379,10 @@ struct PeerSetupView: View {
             }
         }
 #endif
+        // Keep individual actions from sharing the enclosing iOS Form row's tap.
+#if os(iOS)
+        .buttonStyle(.borderless)
+#endif
         .task {
             await transfer.restorePeer()
             if address.isEmpty {
