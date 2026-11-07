@@ -860,6 +860,8 @@ async fn quic_active_hello_is_unchanged_and_outsiders_get_no_refusal_evidence() 
     assert_eq!(
         hello.supported_operations,
         [
+            "set-album-visibility",
+            "resolve-album-visibility",
             "edit-track",
             "resolve-track",
             "update-playlists",
@@ -1178,6 +1180,8 @@ async fn quic_mutation_replies_preserve_session_and_existing_requests() -> anyho
     assert_eq!(
         session.supported_operations,
         [
+            "set-album-visibility",
+            "resolve-album-visibility",
             "edit-track",
             "resolve-track",
             "update-playlists",
@@ -2908,6 +2912,8 @@ async fn quic_legacy_hello_and_invalid_mutations_keep_working_until_revoked() ->
     assert_eq!(
         hello["supported_operations"],
         serde_json::json!([
+            "set-album-visibility",
+            "resolve-album-visibility",
             "edit-track",
             "resolve-track",
             "update-playlists",
@@ -3551,6 +3557,544 @@ async fn quic_member_playlist_updates_reject_conflicted_targets_without_partial_
     Ok(())
 }
 
+fn visibility_mutation(
+    catalog: &syncstr_headless::shared_audio::Catalog,
+    request: &str,
+    album: &str,
+    hidden: bool,
+) -> syncstr_headless::shared_audio_net::MutationRequest {
+    let subject = format!("album-visibility:{album}");
+    syncstr_headless::shared_audio_net::MutationRequest {
+        request: request.into(),
+        cluster: catalog.cluster.clone(),
+        baseline: catalog.baseline.clone(),
+        operation: "set-album-visibility".into(),
+        expected: std::collections::BTreeMap::from([(
+            subject.clone(),
+            catalog.heads.get(&subject).cloned().unwrap_or_default(),
+        )]),
+        payload: serde_json::json!({"album": album, "hidden": hidden}),
+        confirmed: vec![],
+    }
+}
+
+fn visibility_commit(
+    store: &syncstr_headless::shared_audio::Store,
+    signer: &syncstr_headless::peer::Identity,
+    request: &str,
+    album: &str,
+    hidden: bool,
+) -> anyhow::Result<syncstr_headless::shared_audio::Signed> {
+    let mutation = visibility_mutation(&store.catalog()?, request, album, hidden);
+    store.commit(
+        signer,
+        syncstr_headless::shared_audio::Request {
+            id: request.into(),
+            expected: mutation.expected,
+            action: syncstr_headless::shared_audio::Action::AlbumVisibility {
+                album: album.into(),
+                hidden,
+                resolve: false,
+            },
+        },
+    )
+}
+
+#[tokio::test]
+async fn quic_album_visibility_origin_alias_retry_stale_and_revocation() -> anyhow::Result<()> {
+    use syncstr_headless::shared_audio_net::{
+        Hello, MutationRejection, MutationReply, Request, Session,
+    };
+    let fixture = Fixture::new().await?;
+    fixture.visibility_albums()?;
+    let replica = fixture.replica()?;
+    let store = fixture.activate()?;
+    let before = store.catalog()?;
+    let baseline: syncstr_headless::organization::Organization =
+        serde_json::from_value(before.legacy_organization.clone())?;
+    assert!(baseline.is_hidden("chosen-album"));
+    assert!(!baseline.is_hidden("empty-album"));
+    assert!(before.album_visibility.is_empty());
+    assert!(
+        serde_json::to_value(&before)?
+            .get("album_visibility")
+            .is_none()
+    );
+    let reader = syncstr_headless::peer::Identity::from_secret(
+        &fixture.root.path().join("reader"),
+        [43; 32],
+    )?;
+    let proof = store.membership()?;
+    let (host_endpoint, _host_lock) = fixture
+        .host
+        .cluster_endpoint(&["127.0.0.1:0".parse()?])
+        .await?;
+    let (reader_endpoint, _reader_lock) =
+        reader.cluster_endpoint(&["127.0.0.1:0".parse()?]).await?;
+    let mut tasks = tokio::task::JoinSet::new();
+    tasks.spawn(syncstr_headless::shared_audio_net::serve(
+        host_endpoint.clone(),
+        store.clone(),
+        fixture.host.clone(),
+    ));
+    let connection = reader_endpoint
+        .connect(
+            host_endpoint.addr(),
+            syncstr_headless::shared_audio_net::ALPN,
+        )
+        .await?;
+    let hello: Hello = crate::shared_exchange(
+        &connection,
+        &Hello {
+            version: 5,
+            proof: proof.clone(),
+            supported_operations: vec![],
+        },
+    )
+    .await?;
+    for operation in ["set-album-visibility", "resolve-album-visibility"] {
+        assert!(hello.supported_operations.iter().any(|op| op == operation));
+    }
+    let mut edit = visibility_mutation(&before, "lost-visibility-reply", "album-alias", false);
+    let (mut output, input) = connection.open_bi().await?;
+    let bytes = serde_json::to_vec(&Request::Mutation {
+        mutation: edit.clone(),
+    })?;
+    output
+        .write_all(&(bytes.len() as u32).to_be_bytes())
+        .await?;
+    output.write_all(&bytes).await?;
+    output.finish()?;
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            if store.records()?.len() == 1 {
+                break anyhow::Ok(());
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await??;
+    drop(input);
+    connection.close(0u32.into(), b"lost reply");
+    let signed = store.records()?.remove(0);
+    let body: syncstr_headless::shared_audio::Body =
+        serde_json::from_str(signed.payload.split_once('\n').unwrap().1)?;
+    let origin = body.origin.unwrap();
+    assert_eq!(origin.member, reader.id().to_string());
+    assert_eq!(proof.verify(&origin.grant)?.member, origin.member);
+    assert_eq!(body.author, fixture.host.id().to_string());
+    assert_eq!(
+        body.edits[0].value.subject(),
+        "album-visibility:chosen-album"
+    );
+    let expected = MutationReply::Accepted {
+        request: edit.request.clone(),
+        record: signed.id.clone(),
+        host: body.author,
+        heads: std::collections::BTreeMap::from([(
+            "album-visibility:chosen-album".into(),
+            vec![signed.id.clone()],
+        )]),
+    };
+    let session = Session::connect(&reader_endpoint, host_endpoint.addr(), proof.clone()).await?;
+    // Canonical and automatic aliases are the same intent, including on replay.
+    edit.payload["album"] = serde_json::json!("automatic-alias");
+    edit.expected =
+        std::collections::BTreeMap::from([("album-visibility:chosen-album".into(), vec![])]);
+    assert_eq!(
+        session
+            .request::<MutationReply>(Request::Mutation {
+                mutation: edit.clone()
+            })
+            .await?,
+        expected
+    );
+    assert_eq!(store.records()?.len(), 1);
+    assert!(!store.catalog()?.album_visibility["chosen-album"].hidden);
+    let later = visibility_mutation(&store.catalog()?, "later-hide", "chosen-album", true);
+    assert!(matches!(
+        session
+            .request::<MutationReply>(Request::Mutation { mutation: later })
+            .await?,
+        MutationReply::Accepted { .. }
+    ));
+    assert_eq!(
+        session
+            .request::<MutationReply>(Request::Mutation {
+                mutation: edit.clone()
+            })
+            .await?,
+        expected
+    );
+    let parent = visibility_commit(
+        &replica,
+        &fixture.other,
+        "retry-parent",
+        "empty-album",
+        true,
+    )?;
+    let child = visibility_commit(
+        &replica,
+        &fixture.other,
+        "retry-child",
+        "empty-album",
+        false,
+    )?;
+    store.receive(vec![child])?;
+    assert_eq!(
+        session
+            .request::<MutationReply>(Request::Mutation {
+                mutation: edit.clone()
+            })
+            .await?,
+        expected
+    );
+    let blocked = visibility_mutation(
+        &store.catalog()?,
+        "incomplete-visibility",
+        "chosen-album",
+        false,
+    );
+    assert_eq!(
+        session
+            .request::<MutationReply>(Request::Mutation { mutation: blocked })
+            .await?,
+        MutationReply::Deferred {
+            request: "incomplete-visibility".into(),
+            reason: "incomplete-history".into(),
+        }
+    );
+    store.receive(vec![parent])?;
+    let (peer_endpoint, _peer_lock) = fixture
+        .other
+        .cluster_endpoint(&["127.0.0.1:0".parse()?])
+        .await?;
+    let peer = Session::connect(&peer_endpoint, host_endpoint.addr(), store.membership()?).await?;
+    assert_eq!(
+        peer.request::<MutationReply>(Request::Mutation {
+            mutation: edit.clone()
+        })
+        .await?,
+        MutationReply::Rejected {
+            request: edit.request.clone(),
+            reason: MutationRejection::Invalid,
+        }
+    );
+    let records = store.records()?;
+    let after = store.catalog()?;
+    let mut stale = edit.clone();
+    stale.request = "stale-visibility".into();
+    assert_eq!(
+        session
+            .request::<MutationReply>(Request::Mutation { mutation: stale })
+            .await?,
+        MutationReply::NeedsReview {
+            request: "stale-visibility".into(),
+            current: std::collections::BTreeMap::from([(
+                "album-visibility:chosen-album".into(),
+                after.heads["album-visibility:chosen-album"].clone()
+            )]),
+        }
+    );
+    let mut invalids = vec![];
+    let mut different = edit.clone();
+    different.payload["hidden"] = serde_json::json!(true);
+    invalids.push(different);
+    let mut string_boolean = visibility_mutation(&after, "string-boolean", "chosen-album", false);
+    string_boolean.payload["hidden"] = serde_json::json!("false");
+    invalids.push(string_boolean);
+    invalids.push(visibility_mutation(
+        &after,
+        "unknown-album",
+        "missing-album",
+        true,
+    ));
+    let mut duplicate = visibility_mutation(&after, "duplicate-alias", "chosen-album", false);
+    duplicate
+        .expected
+        .insert("album-visibility:album-alias".into(), vec![]);
+    invalids.push(duplicate);
+    let mut no_conflict = visibility_mutation(&after, "resolve-no-conflict", "chosen-album", false);
+    no_conflict.operation = "resolve-album-visibility".into();
+    invalids.push(no_conflict);
+    for mutation in invalids {
+        assert_eq!(
+            session
+                .request::<MutationReply>(Request::Mutation {
+                    mutation: mutation.clone()
+                })
+                .await?,
+            MutationReply::Rejected {
+                request: mutation.request,
+                reason: MutationRejection::Invalid,
+            }
+        );
+    }
+    assert_eq!(store.records()?, records);
+    assert_eq!(fingerprint(&store.catalog()?), fingerprint(&after));
+    store.revoke_member(&fixture.host, &reader.id().to_string())?;
+    let mutation = visibility_mutation(&after, "revoked-visibility", "chosen-album", false);
+    assert_eq!(
+        session
+            .request::<MutationReply>(Request::Mutation { mutation })
+            .await?,
+        MutationReply::Rejected {
+            request: "revoked-visibility".into(),
+            reason: MutationRejection::Revoked,
+        }
+    );
+    assert!(
+        session
+            .request::<syncstr_headless::shared_audio_net::Snapshot>(Request::Catalog)
+            .await
+            .is_err()
+    );
+    assert!(
+        Session::connect(&reader_endpoint, host_endpoint.addr(), proof)
+            .await
+            .is_err()
+    );
+    assert_eq!(store.records()?, records);
+    assert!(store.catalog()?.album_visibility["chosen-album"].hidden);
+    tasks.abort_all();
+    while tasks.join_next().await.is_some() {}
+    host_endpoint.close().await;
+    reader_endpoint.close().await;
+    peer_endpoint.close().await;
+    Ok(())
+}
+
+#[tokio::test]
+async fn quic_album_visibility_conflict_requires_all_heads_and_explicit_resolution()
+-> anyhow::Result<()> {
+    use syncstr_headless::shared_audio_net::{MutationReply, Request, Session};
+    let fixture = Fixture::new().await?;
+    fixture.visibility_albums()?;
+    let replica = fixture.replica()?;
+    let store = fixture.activate()?;
+    let left = visibility_commit(
+        &store,
+        &fixture.host,
+        "left-visibility",
+        "chosen-album",
+        false,
+    )?;
+    let right = visibility_commit(
+        &replica,
+        &fixture.other,
+        "right-visibility",
+        "chosen-album",
+        false,
+    )?;
+    store.receive(vec![right.clone()])?;
+    replica.receive(vec![left.clone()])?;
+    let catalog = store.catalog()?;
+    let subject = "album-visibility:chosen-album";
+    assert!(catalog.conflicts.contains(subject));
+    assert!(!catalog.album_visibility.contains_key("chosen-album"));
+    assert_eq!(fingerprint(&catalog), fingerprint(&replica.catalog()?));
+    let (host_endpoint, _host_lock) = fixture
+        .host
+        .cluster_endpoint(&["127.0.0.1:0".parse()?])
+        .await?;
+    let (peer_endpoint, _peer_lock) = fixture
+        .other
+        .cluster_endpoint(&["127.0.0.1:0".parse()?])
+        .await?;
+    let mut tasks = tokio::task::JoinSet::new();
+    tasks.spawn(syncstr_headless::shared_audio_net::serve(
+        host_endpoint.clone(),
+        store.clone(),
+        fixture.host.clone(),
+    ));
+    let session =
+        Session::connect(&peer_endpoint, host_endpoint.addr(), store.membership()?).await?;
+    let records = store.records()?;
+    let ordinary = visibility_mutation(&catalog, "ordinary-conflict", "chosen-album", true);
+    assert!(matches!(
+        session
+            .request::<MutationReply>(Request::Mutation { mutation: ordinary })
+            .await?,
+        MutationReply::NeedsReview { .. }
+    ));
+    let mut resolution = visibility_mutation(&catalog, "resolve-visibility", "chosen-album", true);
+    resolution.operation = "resolve-album-visibility".into();
+    let mut partial = resolution.clone();
+    partial.request = "partial-visibility".into();
+    partial
+        .expected
+        .insert(subject.into(), vec![left.id.clone()]);
+    assert_eq!(
+        session
+            .request::<MutationReply>(Request::Mutation { mutation: partial })
+            .await?,
+        MutationReply::NeedsReview {
+            request: "partial-visibility".into(),
+            current: std::collections::BTreeMap::from([(
+                subject.into(),
+                catalog.heads[subject].clone()
+            )]),
+        }
+    );
+    assert_eq!(store.records()?, records);
+    let snapshot: syncstr_headless::shared_audio_net::Snapshot =
+        session.request(Request::Catalog).await?;
+    assert!(snapshot.catalog.conflicts.contains(subject));
+    // Conflicted album visibility does not prevent unrelated catalog/playlist reads.
+    assert_eq!(snapshot.catalog.tracks, catalog.tracks);
+    assert_eq!(
+        serde_json::to_value(snapshot.playlists)?,
+        serde_json::to_value(store.playlists()?)?
+    );
+    assert!(matches!(
+        session
+            .request::<MutationReply>(Request::Mutation {
+                mutation: resolution
+            })
+            .await?,
+        MutationReply::Accepted { .. }
+    ));
+    let after = store.catalog()?;
+    assert!(after.album_visibility["chosen-album"].hidden);
+    assert!(!after.conflicts.contains(subject));
+    let signed = store
+        .records()?
+        .into_iter()
+        .find(|r| r.id == after.heads[subject][0])
+        .unwrap();
+    let body: syncstr_headless::shared_audio::Body =
+        serde_json::from_str(signed.payload.split_once('\n').unwrap().1)?;
+    assert_eq!(body.edits[0].parents, catalog.heads[subject]);
+    replica.receive(vec![signed])?;
+    assert_eq!(fingerprint(&after), fingerprint(&replica.catalog()?));
+    tasks.abort_all();
+    while tasks.join_next().await.is_some() {}
+    host_endpoint.close().await;
+    peer_endpoint.close().await;
+    Ok(())
+}
+
+#[tokio::test]
+async fn album_visibility_missing_parents_and_stable_empty_albums_preserve_audio()
+-> anyhow::Result<()> {
+    let fixture = Fixture::new().await?;
+    fixture.visibility_albums()?;
+    let replica = fixture.replica()?;
+    let store = fixture.activate()?;
+    let before = store.catalog()?;
+    let playlists = serde_json::to_value(store.playlists()?)?;
+    let ancestor = visibility_commit(
+        &store,
+        &fixture.host,
+        "visibility-ancestor",
+        "chosen-album",
+        false,
+    )?;
+    let parent = visibility_commit(
+        &store,
+        &fixture.host,
+        "visibility-parent",
+        "chosen-album",
+        true,
+    )?;
+    let child = visibility_commit(
+        &store,
+        &fixture.host,
+        "visibility-child",
+        "chosen-album",
+        false,
+    )?;
+    replica.receive(vec![ancestor, child.clone()])?;
+    let incomplete = replica.catalog()?;
+    assert_eq!(incomplete.incomplete, [child.id.clone()]);
+    assert!(incomplete.album_visibility.is_empty());
+    assert_eq!(incomplete.tracks, before.tracks);
+    replica.receive(vec![parent])?;
+    assert!(!replica.catalog()?.album_visibility["chosen-album"].hidden);
+    visibility_commit(&store, &fixture.host, "chosen-hide", "chosen-album", true)?;
+    visibility_commit(&store, &fixture.host, "empty-hide", "empty-album", true)?;
+    for id in ["visibility-one", "visibility-two"] {
+        store.commit(
+            &fixture.host,
+            crate::register(&store.catalog()?, id, &fixture.entry.sha256),
+        )?;
+    }
+    let catalog = store.catalog()?;
+    let one = catalog.correspondences[&crate::source("visibility-one").subject()].clone();
+    let two = catalog.correspondences[&crate::source("visibility-two").subject()].clone();
+    let mut other = catalog.tracks[&two].clone();
+    other.album_id = Some("chosen-album".into());
+    store.commit(
+        &fixture.host,
+        syncstr_headless::shared_audio::Request {
+            id: "other-album-binding".into(),
+            expected: std::collections::BTreeMap::from([(
+                format!("track:{two}"),
+                catalog.heads[&format!("track:{two}")].clone(),
+            )]),
+            action: syncstr_headless::shared_audio::Action::EditTrack {
+                track: other.clone(),
+                evidence: crate::evidence(&catalog),
+            },
+        },
+    )?;
+    visibility_commit(&store, &fixture.host, "empty-show", "empty-album", false)?;
+    // The only explicitly bound member leaves the empty album, then joins it again.
+    for (i, album) in ["empty-album", "chosen-album", "empty-album"]
+        .iter()
+        .enumerate()
+    {
+        let catalog = store.catalog()?;
+        let mut track = catalog.tracks[&one].clone();
+        track.album_id = Some((*album).into());
+        track
+            .metadata
+            .insert("album".into(), serde_json::json!("Renamed album"));
+        store.commit(
+            &fixture.host,
+            syncstr_headless::shared_audio::Request {
+                id: format!("membership-{i}"),
+                expected: catalog
+                    .heads
+                    .clone()
+                    .into_iter()
+                    .filter(|(s, _)| s == &format!("track:{one}"))
+                    .collect(),
+                action: syncstr_headless::shared_audio::Action::EditTrack {
+                    track,
+                    evidence: crate::evidence(&catalog),
+                },
+            },
+        )?;
+        let current = store.catalog()?;
+        assert!(!current.album_visibility["empty-album"].hidden);
+        assert_eq!(current.tracks[&one].album_id.as_deref(), Some(*album));
+        assert_eq!(
+            current.album_visibility[*album].hidden,
+            *album == "chosen-album"
+        );
+    }
+    let after = store.catalog()?;
+    assert!(after.album_visibility["chosen-album"].hidden);
+    assert!(!after.album_visibility["empty-album"].hidden);
+    assert_eq!(after.tracks[&two], other);
+    assert_eq!(after.tracks[&one].audio, after.tracks[&two].audio);
+    assert_eq!(after.legacy_organization, before.legacy_organization);
+    assert_eq!(after.pins, before.pins);
+    assert_eq!(serde_json::to_value(store.playlists()?)?, playlists);
+    assert_eq!(
+        serde_json::to_value(&after.objects)?,
+        serde_json::to_value(&catalog.objects)?
+    );
+    for locator in &before.objects[&fixture.entry.sha256].locators {
+        assert_eq!(
+            std::fs::read(fixture.data().join("objects").join(locator))?,
+            b"abc"
+        );
+    }
+    Ok(())
+}
+
 struct Fixture {
     root: tempfile::TempDir,
     host: std::sync::Arc<syncstr_headless::peer::Identity>,
@@ -3560,6 +4104,38 @@ struct Fixture {
 }
 
 impl crate::Fixture {
+    fn visibility_albums(&self) -> anyhow::Result<()> {
+        let connection = rusqlite::Connection::open(self.data().join("node.sqlite"))?;
+        let raw: Vec<u8> = connection.query_row(
+            "SELECT payload FROM organization WHERE singleton = 1",
+            [],
+            |row| row.get(0),
+        )?;
+        let mut organization: syncstr_headless::organization::Organization =
+            serde_json::from_slice(&raw)?;
+        organization
+            .albums
+            .push(syncstr_headless::organization::Album {
+                id: "empty-album".into(),
+                title: "User choice".into(),
+                releases: vec![],
+            });
+        organization.set_hidden("chosen-album", true)?;
+        organization
+            .aliases
+            .insert("album-alias".into(), "chosen-album".into());
+        organization
+            .automatic_aliases
+            .get_or_insert_default()
+            .insert("automatic-alias".into(), "chosen-album".into());
+        organization.validate()?;
+        connection.execute(
+            "UPDATE organization SET payload = ? WHERE singleton = 1",
+            [serde_json::to_vec(&organization)?],
+        )?;
+        Ok(())
+    }
+
     async fn new() -> anyhow::Result<Self> {
         let root = tempfile::tempdir()?;
         let host = std::sync::Arc::new(syncstr_headless::peer::Identity::from_secret(

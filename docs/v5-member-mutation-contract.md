@@ -25,6 +25,14 @@ The glossary terms apply: Library Track, Library Host, Playback Device, Audio Co
 
 ## Current state
 
+ASO-91 implements host-side album visibility as separate
+`set-album-visibility` and `resolve-album-visibility` operations. Their published
+wire and projection contract is in the [v5 handoff](shared-audio-v5-handoff.md#album-visibility-mutations-aso-91).
+Both accept any live member, use signed origin and same-accepting-host retry,
+and address canonical album IDs from activation. Visibility remains outside
+`edit-track` and `resolve-track`. Reader/client delivery is separate: update all
+hosts to decode the new value before writes, and reader overlays before controls.
+
 ### Server
 
 Every v5 write is signed by a host with its own key. No path lets a member submit a change.

@@ -20,7 +20,7 @@ and requires live membership for the remote ID and live host authority for itsel
 before storing any presented grants or revocations. Validation, authorization and
 storage share one store lock and transaction; a rejected Hello leaves membership
 unchanged. The server replies with its current proof and
-`"supported_operations":["edit-track","resolve-track","update-playlists","put-object","register-track","assign-source"]`, then finishes. A missing
+`"supported_operations":["set-album-visibility","resolve-album-visibility","edit-track","resolve-track","update-playlists","put-object","register-track","assign-source"]`, then finishes. A missing
 operations field means no member mutations are supported. Clients must keep their known
 revocations when merging the response, validate root and cluster equality, and
 require a live host grant for the actual remote ID.
@@ -121,7 +121,8 @@ request, with ordinary connection failure when evidence cannot be returned.
 Other outcomes keep the session open.
 Incomplete history returns `deferred` with reason `incomplete-history`; unavailable
 storage returns `deferred` with reason `store-unavailable`. Operations other than
-`edit-track`, `resolve-track`, `update-playlists`, `put-object`, `register-track` and `assign-source`
+`set-album-visibility`, `resolve-album-visibility`, `edit-track`, `resolve-track`,
+`update-playlists`, `put-object`, `register-track` and `assign-source`
 remain `unsupported`.
 
 Persist the request ID and original envelope before sending. Retry only at the
@@ -357,6 +358,56 @@ Previously committed pages remain stored. The service does not globally stop,
 but that peer's replication cannot advance past the incompatible record until
 upgrade. Direct `receive` requests also propagate the failure through the request
 handler rather than acknowledging a partially accepted batch.
+
+### Album visibility mutations (ASO-91)
+
+Any live member may send `set-album-visibility` or `resolve-album-visibility`.
+Both use the existing mutation envelope and typed replies. Example initial write:
+
+```json
+{"operation":"mutation","mutation":{"request":"visibility-1","cluster":"example-cluster","baseline":"<baseline-hash>","operation":"set-album-visibility","expected":{"album-visibility:album-a":[]},"payload":{"album":"album-a","hidden":false},"confirmed":[]}}
+```
+
+Require exactly one expected subject, an empty `confirmed`, and a JSON boolean.
+The host resolves the payload album and expected subject through the frozen
+activation organization's explicit and automatic aliases before hashing the
+member's intent, comparing heads or signing. Unknown albums, duplicate canonical
+expected subjects and extra payload fields are invalid. Albums use established
+canonical IDs even after renaming, emptying or changing track membership.
+
+The host signs `{"kind":"album-visibility","album":"album-a","hidden":false}`
+under subject `album-visibility:album-a`, with the usual member/grant `origin`.
+The record changes no track, audio object, pin, playlist or baseline organization.
+Accepted history remains readable after the origin member is revoked. Same-host
+retries return the original accepted record/host/heads, including after later
+changes; an alias and its canonical ID represent the same intent. Different
+intent or a different member under an accepted request ID is invalid.
+
+Stale expected heads return `needs-review` with the canonical subject's current
+heads and no writes. An ordinary set against a conflict also needs review.
+`resolve-album-visibility` has the same payload but requires an existing complete
+conflict and every competing head in expected; it signs the explicit chosen
+boolean with all those parents. A current nonconflicted resolution is invalid.
+`resolve-track` does not resolve album preferences. Incomplete history defers
+writes using the existing `incomplete-history` reply.
+
+`Catalog.album_visibility` is an additive map of canonical album IDs to
+`{"hidden":true}` or `{"hidden":false}`, omitted when empty. Absence means use
+the frozen baseline organization; explicit false overrides baseline hidden.
+Distinct concurrent records conflict even when their booleans match. Conflicted
+or incomplete subjects have no authoritative overlay: preserve baseline
+presentation and expose `conflicts` or `incomplete`, rather than choosing a
+winner or reusing a superseded override. Unrelated catalog and playlist reads
+remain available. Established empty albums retain their setting; tracks follow
+their destination album's setting without deriving another album identity from
+titles or shared audio.
+
+Upgrade every host to read `album-visibility` before any member emits it, and
+upgrade reader projection before enabling visibility controls. Older strict
+`Value` decoders reject the unknown kind: ingest rolls back the whole record
+page, leaves its cursor unchanged, and reconcile stops that peer's pass at the
+page, retrying it on future passes. Earlier committed pages survive. This slice
+does not update Apple, Android or Windows clients.
 
 ### Catalog snapshot
 
