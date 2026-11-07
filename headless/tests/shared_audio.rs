@@ -4080,7 +4080,7 @@ async fn album_visibility_missing_parents_and_stable_empty_albums_preserve_audio
     assert_eq!(after.tracks[&two], other);
     assert_eq!(after.tracks[&one].audio, after.tracks[&two].audio);
     assert_eq!(after.legacy_organization, before.legacy_organization);
-    assert_eq!(after.pins, before.pins);
+    assert_eq!(after.pins, catalog.pins);
     assert_eq!(serde_json::to_value(store.playlists()?)?, playlists);
     assert_eq!(
         serde_json::to_value(&after.objects)?,
