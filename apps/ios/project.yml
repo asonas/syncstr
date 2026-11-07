@@ -169,6 +169,7 @@ targets:
       - path: ../macos/Tests/OfflineSaveTests.swift
       - path: ../macos/Tests/SharedAudioTests.swift
       - path: ../macos/Tests/ClusterMutationTests.swift
+      - path: ../macos/Tests/PlaylistMutationTests.swift
       - path: ../macos/Tests/Fixtures
         buildPhase: resources
         excludes: [README.md]

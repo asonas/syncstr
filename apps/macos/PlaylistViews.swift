@@ -207,6 +207,7 @@ struct PlaylistMigrationView: View {
     @State private var snapshots: [PlaylistSnapshot] = []
     @State private var matchingEntries: [LocalEntry] = []
     @State private var confirmingReplacement = false
+    @State private var updateAttempt: PlaylistUpdateAttempt?
 
     private func reconciliation(_ draft: PlaylistDraft) throws -> PlaylistReconciliation {
         try PlaylistReconciliation(documents: draft.documents(selected: selected, accepted: accepted), snapshots: snapshots, entries: matchingEntries)
@@ -354,6 +355,7 @@ struct PlaylistMigrationView: View {
             }
             snapshots = response.snapshots
             matchingEntries = response.catalog.entries
+            updateAttempt = nil
             accepted = [:]; selected = []; reviewing = false; search = ""
         } catch { errorMessage = "XMLを読み込めませんでした。接続先の更新とXMLファイルを確認してください。\(error.localizedDescription)" }
     }
@@ -363,7 +365,10 @@ struct PlaylistMigrationView: View {
         defer { busy = false }
         do {
             let preview = try reconciliation(draft)
-            _ = try await library.transfer.reconcilePlaylists(preview, cluster: draft.cluster)
+            if updateAttempt?.matches(preview, cluster: draft.cluster, baseline: draft.baseline) != true {
+                updateAttempt = PlaylistUpdateAttempt(preview: preview, cluster: draft.cluster, baseline: draft.baseline)
+            }
+            _ = try await library.transfer.reconcilePlaylists(preview, cluster: draft.cluster, attempt: updateAttempt)
             await library.loadPlaylists()
             completed = selected.count
         } catch { errorMessage = error.localizedDescription }

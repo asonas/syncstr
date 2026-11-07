@@ -4,17 +4,26 @@ import Darwin
 
 @MainActor
 final class ClusterNetwork {
-    func playlistExchange(_ request: PlaylistRequest? = nil) async throws -> PlaylistResponse? {
+    func playlistExchange(_ request: PlaylistRequest? = nil, attempt: PlaylistUpdateAttempt? = nil) async throws -> PlaylistResponse? {
         let files = store
         let database = try await CatalogStorage.shared.perform { try files.database() }
         var failure: Error = LocalMusicError.clusterUnavailable
         var successful = false
         for address in try await addresses(database: database) {
+            if let host = attempt?.host, address.id().description != host { continue }
             do {
                 let current = try await ClusterSession.connect(address: address, secrets: secrets, database: database, playlists: true)
                 defer { current.close() }
                 let response: PlaylistResponse?
-                if let request { response = try await current.playlistRequest(request) }
+                if let request, request.operation == "reconcile", await current.sharedAudio {
+                    guard let attempt else { throw LocalMusicError.invalidData }
+                    let operations = await current.supportedOperations
+                    let added = try await attempt.submit(peer: current.peer, operations: operations) {
+                        try await current.mutate($0)
+                    }
+                    response = PlaylistResponse(status: "imported", cluster: request.cluster, entries: nil,
+                        next: nil, record: nil, added: added, reason: nil, playlists: nil)
+                } else if let request { response = try await current.playlistRequest(request) }
                 else { response = nil }
                 if let response, response.status == "rejected" { throw PlaylistImportError.rejected(response.reason ?? "取り込みを確認してください。") }
                 try await current.reconcilePlaylists(database: database)
@@ -373,7 +382,19 @@ final class ClusterSession {
     }
 
     func playlistRequest(_ request: PlaylistRequest) async throws -> PlaylistResponse {
-        guard !sharedAudio else { throw LocalMusicError.incompatiblePeer }
+        if sharedAudio {
+            try PlaylistUpdateAttempt.requireSupport(supportedOperations)
+            guard request.operation == "catalog" || request.operation == "preview" else { throw PlaylistImportError.updateUnavailable }
+            let stream = try await connection.openBi()
+            try await send(Request(operation: "catalog"), stream: stream)
+            try await stream.send().finish()
+            let snapshot = try await receive(SharedAudioSnapshot.self, stream: stream)
+            guard snapshot.catalog.incomplete.isEmpty else { throw PlaylistImportError.updateDeferred }
+            let entries = try snapshot.catalog.localCatalog(name: "Library").entries.filter { $0.track.unavailable != true }
+            return PlaylistResponse(status: request.operation, cluster: snapshot.catalog.cluster, entries: entries,
+                next: nil, record: nil, added: nil, reason: nil,
+                playlists: request.operation == "preview" ? snapshot.playlists : nil, baseline: snapshot.catalog.baseline)
+        }
         let stream = try await connection.openBi()
         try await send(request, stream: stream)
         try await stream.send().finish()
