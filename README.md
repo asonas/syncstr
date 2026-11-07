@@ -64,7 +64,7 @@ continue to use the existing conflict-resolution flow.
 | Signed endpoint discovery | [Rendezvous setup and protocol](docs/peer-rendezvous.md), [Cloudflare directory](rendezvous/src/index.ts), [headless publisher](headless/src/rendezvous.rs) |
 | Device identity and direct/relay connectivity experiment | [Connectivity probe](headless/connectivity-probe/README.md). Isolated from deployed services; independent-network verification is pending |
 | Xcode Cloud and distribution for both platforms | [project.yml](apps/ios/project.yml), [ci_post_clone.sh](apps/ios/ci_scripts/ci_post_clone.sh). Generate the Xcode project from YAML |
-| Automated regression checks and reproducible Simulators | [Verification workflow](.github/workflows/verification.yml), [Simulator runner and results](apps/ios/README.md#verification), [headless verification](headless/README.md#verification) |
+| Automated regression checks and reproducible Simulators | [PR/push verification](.github/workflows/verification.yml), [weekly and manual Simulator workflow](.github/workflows/weekly-simulator.yml), [Simulator schedule, manual runs, and results](apps/ios/README.md#verification), [headless verification](headless/README.md#verification) |
 | Advisory PR quality and intent review | [Jevlint setup, API key, and review limitations](docs/agents/jevlint.md) |
 | API contract gate design | [OpenAPI contracts, breaking-change rules, and Jev decision rule](docs/api-contract-gate-design.md) |
 | UI and icon design | [DESIGN.md](DESIGN.md), which distinguishes UI colors from icon colors; [current, prototype, reference, and archive index](docs/design-status.md) |

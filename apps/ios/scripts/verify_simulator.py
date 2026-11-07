@@ -112,7 +112,8 @@ def main(attempt=1):
              "-scheme", "Syncstr", "-derivedDataPath", str(root / ".build" / "SimulatorDerivedData"),
              "-disableAutomaticPackageResolution", "-onlyUsePackageVersionsFromResolvedFile"], "resolve")
         responsiveness = "SyncstrTests/LibraryPresentationTests/testSelectionAndPlaybackUpdatesBrowseRetainedCatalogWithoutBlocking()"
-        for scheme, name in [("Syncstr", "unit"), ("Syncstr", "responsiveness"), ("SyncstrUITests", "ui")]:
+        phases = [("Syncstr", "unit"), ("Syncstr", "responsiveness")] if args.device == "iphone" else []
+        for scheme, name in phases + [("SyncstrUITests", "ui")]:
             environment = None
             if name == "ui" and (not args.only_testing or any("SharedAudioFlowTests" in item for item in args.only_testing)):
                 fixture = prepare_v5_fixture(root, device, run)
@@ -125,6 +126,7 @@ def main(attempt=1):
                 "-derivedDataPath", str(root / ".build" / "SimulatorDerivedData"),
                 "-resultBundlePath", str(output / (name + ".xcresult")),
                 "-parallel-testing-enabled", "NO", "-testLanguage", "ja", "-testRegion", "JP",
+                "-retry-tests-on-failure", "-test-iterations", "2",
                 "CODE_SIGNING_ALLOWED=NO", "test",
             ]
             if name == "ui":

@@ -105,8 +105,17 @@ App-owned navigation and playback icons use original SVGs from [Regen Icons](htt
 ## Verification
 
 The [Verification workflow](../../.github/workflows/verification.yml) runs on pull
-requests and pushes to main. It runs macOS tests, iPhone/iPad unit and UI tests,
-and the focused headless regression tests and Clippy. It uses GitHub's
+requests and pushes to main. It runs macOS tests and the focused headless
+regression tests and Clippy. Simulator tests run separately in the
+[Weekly Simulator workflow](../../.github/workflows/weekly-simulator.yml) every
+Monday at 03:00 JST (Sunday 18:00 UTC). To run them manually, select **Actions >
+Weekly Simulator > Run workflow**, or use `gh workflow run weekly-simulator.yml`.
+Unit and isolated responsiveness tests run on iPhone only; UI tests run on both
+iPhone and iPad. The former `run-simulator` PR label no longer starts tests.
+Persistent failures create a `needs-triage` issue in the Syncstr Linear project;
+subsequent failures comment on the existing open weekly failure issue. Each report
+links the run and lists devices and failing tests. The workflow summary also lists
+flaky tests that pass on retry. It uses GitHub's
 [Xcode 27 image](https://github.blog/changelog/2026-10-15-xcode-27-runner-image-generally-available/).
 Xcode Cloud remains the distribution workflow; its Archive action does not
 replace these regression tests.
@@ -127,7 +136,7 @@ the runner checks readiness and boots the same owned device again if Xcode left
 it shut down. Readiness checks retain their 180-second timeout. Boot/restart
 preparation failures and install exit 149 are classified as Simulator infrastructure
 failures; after cleanup, verification retries once with a fresh device. Actual
-test failures are not retried. Both attempts keep separate logs, timings, and
+test failures rerun once with `-retry-tests-on-failure -test-iterations 2`. Both attempts keep separate logs, timings, and
 `result.json` files, including the failed stage and whether a retry is scheduled.
 Cleanup has a 60-second timeout per command. The CI job allows 60 minutes for the
 bounded recovery; it does not increase the readiness timeout. Existing

@@ -1,0 +1,71 @@
+name: Weekly Simulator
+
+on:
+  schedule:
+    - cron: '0 18 * * 0'
+  workflow_dispatch:
+  # Temporary branch trigger for pre-merge acceptance evidence.
+  push:
+    branches: [agent/aso-93-weekly-simulator]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: weekly-simulator
+  cancel-in-progress: false
+
+jobs:
+  simulator:
+    runs-on: xcode-27
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        device: [iphone, ipad]
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install XcodeGen
+        run: brew install xcodegen
+      - name: Build required v5 fixture tools
+        run: |
+          rustup toolchain install 1.99.1 --profile minimal
+          cargo +1.99.1 build --manifest-path headless/Cargo.toml --locked --features p2p --target-dir .build/v5-rust --bin syncstr-headless --example shared_audio_fixture --example shared_audio_fixture_update
+      - name: Runner regression tests
+        run: python3 -m unittest discover -s apps/ios/scripts/tests -v
+      - name: Unit and library UI tests
+        run: python3 apps/ios/scripts/verify_simulator.py --device "${{ matrix.device }}"
+      - name: Collect test and flaky results
+        if: always()
+        env:
+          JOB_STATUS: ${{ job.status }}
+        run: python3 apps/ios/scripts/report_simulator.py collect --device "${{ matrix.device }}" --outcome "$JOB_STATUS"
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: simulator-${{ matrix.device }}
+          path: .build/verification/
+          retention-days: 7
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: report-${{ matrix.device }}
+          path: .build/verification/report.json
+          retention-days: 7
+  report:
+    needs: simulator
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: report-*
+          path: .build/verification
+      - name: Report persistent failures to Linear
+        env:
+          LINEAR_CLIENT_ID: ${{ secrets.LINEAR_CLIENT_ID }}
+          LINEAR_CLIENT_SECRET: ${{ secrets.LINEAR_CLIENT_SECRET }}
+          SIMULATOR_RESULT: ${{ needs.simulator.result }}
+        run: python3 apps/ios/scripts/report_simulator.py notify --outcome "$SIMULATOR_RESULT"

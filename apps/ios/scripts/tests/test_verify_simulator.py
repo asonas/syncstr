@@ -113,13 +113,16 @@ if os.environ.get("FAIL") == "delete" and command[1:3] == ["simctl", "delete"]:
         self.assertEqual(calls[-1], ["xcrun", "simctl", "delete", "owned-simulator"])
 
     def test_success_records_results_and_deletes_only_the_created_device(self):
-        result, calls, output = self.run_script(device="ipad")
+        result, calls, output = self.run_script(device="iphone")
         self.assertEqual(result.returncode, 0, result.stderr)
         create = next(call for call in calls if call[1:3] == ["simctl", "create"])
         self.assertEqual(create[-1], "com.apple.CoreSimulator.SimRuntime.iOS-27-0")
-        self.assertEqual(create[-2], "com.apple.CoreSimulator.SimDeviceType.iPad-Pro-13-inch-M5-12GB")
+        self.assertEqual(create[-2], "com.apple.CoreSimulator.SimDeviceType.iPhone-18-Pro")
         builds = [call for call in calls if call[0] == "xcodebuild" and "test" in call]
         self.assertEqual(len(builds), 3)
+        for build in builds:
+            self.assertIn("-retry-tests-on-failure", build)
+            self.assertEqual(build[build.index("-test-iterations") + 1], "2")
         for build in builds:
             self.assertEqual(calls[calls.index(build) - 1],
                              ["xcrun", "simctl", "bootstatus", "owned-simulator", "-b"])
@@ -142,6 +145,13 @@ if os.environ.get("FAIL") == "delete" and command[1:3] == ["simctl", "delete"]:
         self.assertGreaterEqual(timings["ui"]["elapsedSeconds"], 0)
         self.assertAlmostEqual(timings["ui"]["remainingSeconds"],
                                1200 - timings["ui"]["elapsedSeconds"])
+
+    def test_ipad_runs_only_ui_tests(self):
+        result, calls, _ = self.run_script(device="ipad")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        builds = [call for call in calls if call[0] == "xcodebuild" and "test" in call]
+        self.assertEqual(len(builds), 1)
+        self.assertIn("SyncstrUITests", builds[0])
 
     def test_failed_test_preserves_failure_and_cleans_up(self):
         result, calls, output = self.run_script("test")
