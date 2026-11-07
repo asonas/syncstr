@@ -104,7 +104,7 @@ Run `oasdiff breaking --fail-on ERR` on the base and head specs ([oasdiff breaki
 - **Passes**: a new path, an optional request field, an added response field, description and example changes.
 - **Intended breaks** go through a new versioned path, as `/v4` to `/v5` did. Otherwise they go through an oasdiff ignore file. A change to that file always goes to a human.
 
-**Not yet verified.** The oasdiff docs claim only that `contentSchema` is detected when it is added, removed, or changed. It is unknown whether a removed property inside the rendezvous `contentSchema` reports `ERR`. Slice S1 settles this with two small specs before the rendezvous contract depends on it. If oasdiff misses it, describe the payload as a separate schema in `components` and diff that schema directly.
+**Verified in S1 (ASO-84).** oasdiff 1.35.0 reports changes inside `contentSchema` as `ERR`, whether the inner schema is inline or a `$ref` to `components`. A removed required response property, a new required request property, and a changed property type each exited 1, with paths such as `payload/contentSchema/expires`. Identical specs exited 0. The rendezvous contract can therefore use either form. The experiment did not cover `const` changes or untyped nested objects.
 
 ### D5. What does Jev contribute?
 
