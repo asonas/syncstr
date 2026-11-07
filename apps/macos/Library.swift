@@ -485,6 +485,13 @@ final class Library: ObservableObject {
         }
 #endif
         await transfer.restorePeer()
+#if DEBUG
+        // Isolated UI fixtures have no live host; discovery would disable actions until it times out.
+        if SharedAudioUIFixture.requested {
+            transfer.resumeSaves()
+            return
+        }
+#endif
         if transfer.clusterRegistration != nil && !transfer.busy { transfer.connectCluster() }
         else { transfer.connectionEvent("startup_connect_skipped", fields: ["reason": transfer.busy ? "busy" : "no_in_memory_cluster_registration", "legacy_auto_connect": "not_requested"]) }
         transfer.resumeSaves()
