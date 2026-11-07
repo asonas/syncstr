@@ -36,8 +36,17 @@ final class SharedAudioFlowTests: XCTestCase {
         let b = app.buttons["TRACK-Bの保存操作"]
         XCTAssertTrue(a.waitForExistence(timeout: 5))
         XCTAssertTrue(b.exists)
-        XCTAssertEqual(a.value as? String, "保存済み")
+        let initialSaveState = a.value as? String
+        XCTAssertEqual(initialSaveState, "保存済み")
         XCTAssertEqual(b.value as? String, "保存済み")
+        let observationStarted = ProcessInfo.processInfo.systemUptime
+        var stateHistory = ["t=0.00s Before confirmation: \(initialSaveState ?? "missing value")"]
+        func observeSaveState(_ stage: String) -> String {
+            let value = a.exists ? (a.value as? String ?? "missing value") : "missing element"
+            let elapsed = ProcessInfo.processInfo.systemUptime - observationStarted
+            stateHistory.append(String(format: "t=%.2fs %@: %@", elapsed, stage, value))
+            return value
+        }
         a.tap()
         app.buttons["この端末の保存を解除"].tap()
         let alert = app.alerts["この端末の保存を解除しますか？"]
@@ -45,17 +54,29 @@ final class SharedAudioFlowTests: XCTestCase {
         let confirmationExists = confirmation.waitForExistence(timeout: 5)
         let confirmationDetails = alert.exists ? alert.debugDescription : "Confirmation alert missing"
         if !confirmationExists {
-            captureSaveRemovalFailure(app, confirmation: confirmationDetails, stage: "Before confirmation")
+            captureSaveRemovalFailure(app, confirmation: confirmationDetails, stage: "Before confirmation", stateHistory: stateHistory)
         }
         XCTAssertTrue(confirmationExists)
         confirmation.tap()
         let dismissed = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: alert)
-        let removed = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == true AND value == %@", "未保存"), object: a)
-        let removalCompleted = XCTWaiter.wait(for: [dismissed, removed], timeout: 5)
+        let acknowledged = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+            let value = observeSaveState("Awaiting confirmation acceptance")
+            return value == "保存の解除待ち" || value == "未保存"
+        }, object: nil)
+        let confirmationAccepted = XCTWaiter.wait(for: [dismissed, acknowledged], timeout: 5)
+        if confirmationAccepted != .completed {
+            captureSaveRemovalFailure(app, confirmation: confirmationDetails, stage: "Awaiting confirmation acceptance", stateHistory: stateHistory)
+        }
+        XCTAssertEqual(confirmationAccepted, .completed, "Confirmation must close the alert and queue or finish TRACK-A removal")
+        let removed = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+            observeSaveState("Awaiting removal completion") == "未保存"
+        }, object: nil)
+        // CI evidence shows queued removal completes after the former five-second deadline.
+        let removalCompleted = XCTWaiter.wait(for: [removed], timeout: 15)
         let alertClosed = !alert.exists
         let errorBanner = app.staticTexts["library-error-message"]
         if removalCompleted != .completed || !alertClosed || errorBanner.exists || !b.exists || b.value as? String != "保存済み" {
-            captureSaveRemovalFailure(app, confirmation: confirmationDetails, stage: "After confirmation")
+            captureSaveRemovalFailure(app, confirmation: confirmationDetails, stage: "After confirmation", stateHistory: stateHistory)
         }
         XCTAssertTrue(alertClosed, "The save removal alert must close")
         XCTAssertFalse(errorBanner.exists, errorBanner.exists ? errorBanner.label : "")
@@ -66,11 +87,13 @@ final class SharedAudioFlowTests: XCTestCase {
         app.terminate()
         app.launch()
         openSongs(app)
-        let aRestored = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == true AND value == %@", "未保存"), object: a)
+        let aRestored = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+            observeSaveState("After offline relaunch") == "未保存"
+        }, object: nil)
         let bRestored = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == true AND value == %@", "保存済み"), object: b)
         let restored = XCTWaiter.wait(for: [aRestored, bRestored], timeout: 5)
         if restored != .completed {
-            captureSaveRemovalFailure(app, confirmation: confirmationDetails, stage: "After offline relaunch")
+            captureSaveRemovalFailure(app, confirmation: confirmationDetails, stage: "After offline relaunch", stateHistory: stateHistory)
         }
         XCTAssertEqual(restored, .completed, "TRACK-A must remain unsaved and TRACK-B must remain saved after relaunch")
         searchForB(app)
@@ -288,7 +311,7 @@ final class SharedAudioFlowTests: XCTestCase {
     }
 
     @MainActor
-    private func captureSaveRemovalFailure(_ app: XCUIApplication, confirmation: String, stage: String) {
+    private func captureSaveRemovalFailure(_ app: XCUIApplication, confirmation: String, stage: String, stateHistory: [String]) {
         capture(app, "Save removal failure: " + stage)
         let a = app.buttons["TRACK-Aの保存操作"]
         let b = app.buttons["TRACK-Bの保存操作"]
@@ -299,6 +322,7 @@ final class SharedAudioFlowTests: XCTestCase {
         let errorText = errorBanner.exists ? errorBanner.label : "none"
         let states = [
             ("Alert dismissal", "Current alert exists: \(alertExists)\nPresented confirmation BEFORE the tap:\n\(confirmation)"),
+            ("TRACK-A value history", stateHistory.joined(separator: "\n") + "\nAt failure capture: \(aValue)"),
             ("Track save states", """
             Expected removal target: TRACK-A (TRACK-Aの保存操作), expected value: 未保存
             Expected retained track: TRACK-B (TRACK-Bの保存操作), expected value: 保存済み
