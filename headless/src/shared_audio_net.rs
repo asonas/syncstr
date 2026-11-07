@@ -8,6 +8,25 @@ pub struct Hello {
     pub supported_operations: Vec<String>,
 }
 
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "status", rename_all = "kebab-case", deny_unknown_fields)]
+pub enum HelloRefusal {
+    Rejected {
+        version: u8,
+        reason: crate::shared_audio_net::MutationRejection,
+        member: String,
+        evidence: crate::enrollment::Proof,
+    },
+}
+
+impl std::fmt::Display for crate::shared_audio_net::HelloRefusal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("revoked v5 member")
+    }
+}
+
+impl std::error::Error for crate::shared_audio_net::HelloRefusal {}
+
 #[derive(serde::Serialize, serde::Deserialize)]
 #[serde(tag = "operation", rename_all = "kebab-case", deny_unknown_fields)]
 pub enum Request {
@@ -115,6 +134,58 @@ pub fn authorize(proof: &crate::enrollment::Proof, member: &str, host: bool) -> 
         "unauthorized v5 member"
     );
     Ok(())
+}
+
+fn revoked_hello(
+    combined: &crate::enrollment::Proof,
+    known_grants: usize,
+    known_revocations: usize,
+    peer: &str,
+    own: &str,
+) -> anyhow::Result<Option<crate::shared_audio_net::HelloRefusal>> {
+    if !combined.grants.iter().any(|g| g.member == peer) {
+        return Ok(None);
+    }
+    let mut evidence = crate::enrollment::Proof {
+        root: combined.root.clone(),
+        grants: combined.grants[..known_grants].to_vec(),
+        revocations: combined.revocations[..known_revocations].to_vec(),
+    };
+    crate::shared_audio_net::authorize(&evidence, own, true)?;
+    // Only the peer's verified grant chains may supplement the retained evidence.
+    for grant in combined.grants.iter().filter(|g| g.member == peer) {
+        for record in combined.chain(&grant.id)? {
+            if !evidence.grants.iter().any(|g| g.id == record.id) {
+                evidence.grants.push(record.clone());
+            }
+        }
+    }
+    let (active, disputed) = evidence.revocation_state()?;
+    if disputed.contains(peer) {
+        return Ok(None);
+    }
+    for grant in evidence.grants.iter().filter(|g| g.member == peer) {
+        let chain = evidence.chain(&grant.id)?;
+        if chain.iter().any(|g| disputed.contains(&g.issuer)) {
+            return Ok(None);
+        }
+        let revoked = active.iter().any(|index| {
+            let revocation = &evidence.revocations[*index];
+            revocation.member == peer
+                || chain
+                    .iter()
+                    .any(|g| g.issuer == revocation.member && !revocation.observed.contains(&g.id))
+        });
+        if !revoked {
+            return Ok(None);
+        }
+    }
+    Ok(Some(crate::shared_audio_net::HelloRefusal::Rejected {
+        version: 5,
+        reason: crate::shared_audio_net::MutationRejection::Revoked,
+        member: peer.into(),
+        evidence,
+    }))
 }
 
 impl crate::shared_audio::Store {
@@ -273,10 +344,27 @@ impl crate::shared_audio::Store {
                     combined.grants.push(grant);
                 }
             }
-            if let Some((peer, _)) = presenter {
+            let refusal = if let Some((peer, own)) = presenter {
                 // New members may present an unknown grant chain, but cannot replace retained revocations.
-                crate::shared_audio_net::authorize(&combined, peer, false)?;
-            }
+                match crate::shared_audio_net::authorize(&combined, peer, false) {
+                    Ok(()) => None,
+                    Err(error) => {
+                        let refusal = crate::shared_audio_net::revoked_hello(
+                            &combined,
+                            known_grants,
+                            known_revocations,
+                            peer,
+                            own,
+                        )?;
+                        if refusal.is_none() {
+                            return Err(error);
+                        }
+                        refusal
+                    }
+                }
+            } else {
+                None
+            };
             for revocation in incoming.revocations {
                 anyhow::ensure!(revocation.cluster == cluster, "cross-cluster revocation");
                 if let Some(previous) = combined.revocations.iter().find(|r| r.id == revocation.id)
@@ -290,6 +378,9 @@ impl crate::shared_audio::Store {
                 combined.chain(&grant.id)?;
             }
             combined.revocation_state()?;
+            if let Some(refusal) = refusal {
+                return Err(refusal.into());
+            }
             if let Some((peer, own)) = presenter {
                 crate::shared_audio_net::authorize(&combined, peer, false)?;
                 crate::shared_audio_net::authorize(&combined, own, true)?;
@@ -359,7 +450,30 @@ async fn serve_connection(
     let proof = tokio::task::spawn_blocking(move || -> anyhow::Result<_> {
         check.merge_membership_from(hello.proof, Some((&presenter, &own_check)))
     })
-    .await??;
+    .await?;
+    let proof = match proof {
+        Ok(proof) => proof,
+        Err(error) => {
+            if let Some(refusal) = error.downcast_ref::<crate::shared_audio_net::HelloRefusal>() {
+                let payload = serde_json::to_vec(refusal)?;
+                // Oversized evidence is an ordinary connection failure, never a trusted revocation reply.
+                anyhow::ensure!(payload.len() <= 4 * 1024 * 1024, "Hello refusal too large");
+                let _ = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+                    output
+                        .write_all(&(payload.len() as u32).to_be_bytes())
+                        .await?;
+                    output.write_all(&payload).await?;
+                    output.finish()?;
+                    output.stopped().await?;
+                    anyhow::Ok(())
+                })
+                .await;
+                connection.close(0u32.into(), b"revoked v5 member");
+                return Ok(());
+            }
+            return Err(error);
+        }
+    };
     crate::cluster_net::send(
         &mut output,
         &crate::shared_audio_net::Hello {

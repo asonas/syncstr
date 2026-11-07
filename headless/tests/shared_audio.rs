@@ -696,6 +696,329 @@ async fn quic_authorizes_hello_before_persisting_new_membership() -> anyhow::Res
 }
 
 #[tokio::test]
+async fn quic_revoked_hello_returns_verifiable_retained_evidence() -> anyhow::Result<()> {
+    use syncstr_headless::shared_audio_net::{Hello, HelloRefusal, MutationRejection};
+    let fixture = crate::Fixture::new().await?;
+    let source = fixture.replica()?;
+    let store = fixture.activate()?;
+    let stale = store.membership()?;
+    let reader = syncstr_headless::peer::Identity::from_secret(
+        &fixture.root.path().join("reader"),
+        [43; 32],
+    )?;
+    let grant = stale
+        .grants
+        .iter()
+        .find(|g| g.member == reader.id().to_string())
+        .unwrap();
+    stale.verify(&grant.id)?;
+    let unaccepted = source.revoke_member(&fixture.host, &fixture.other.id().to_string())?;
+    let revoked = store.revoke_member(&fixture.host, &reader.id().to_string())?;
+    let before = store.membership()?;
+    let (host_endpoint, _host_lock) = fixture
+        .host
+        .cluster_endpoint(&["127.0.0.1:0".parse()?])
+        .await?;
+    let (reader_endpoint, _reader_lock) =
+        reader.cluster_endpoint(&["127.0.0.1:0".parse()?]).await?;
+    let mut tasks = tokio::task::JoinSet::new();
+    tasks.spawn(syncstr_headless::shared_audio_net::serve(
+        host_endpoint.clone(),
+        store.clone(),
+        fixture.host.clone(),
+    ));
+    let connection = reader_endpoint
+        .connect(
+            host_endpoint.addr(),
+            syncstr_headless::shared_audio_net::ALPN,
+        )
+        .await?;
+    let wire: serde_json::Value = crate::shared_exchange(
+        &connection,
+        &Hello {
+            version: 5,
+            proof: source.membership()?,
+            supported_operations: vec![],
+        },
+    )
+    .await?;
+    assert!(wire.get("proof").is_none());
+    assert!(serde_json::from_value::<Hello>(wire.clone()).is_err());
+    let HelloRefusal::Rejected {
+        version,
+        reason,
+        member,
+        evidence,
+    } = serde_json::from_value(wire)?;
+    assert_eq!(version, 5);
+    assert_eq!(reason, MutationRejection::Revoked);
+    assert_eq!(member, reader.id().to_string());
+    assert_eq!(evidence.root, stale.root);
+    assert_eq!(evidence.grants, stale.grants);
+    assert_eq!(evidence.revocations, [revoked.clone()]);
+    assert!(!evidence.revocations.contains(&unaccepted));
+    assert_eq!(
+        evidence.grants.iter().find(|g| g.id == grant.id),
+        Some(grant)
+    );
+    // Check the signed revocation independently of the refusal's unsigned reason.
+    let authority = evidence.verify(&revoked.authority)?;
+    assert!(authority.host);
+    assert_eq!(authority.member, connection.remote_id().to_string());
+    assert_eq!(authority.member, revoked.issuer);
+    assert_eq!(revoked.member, member);
+    assert_eq!(revoked.cluster, grant.cluster);
+    let signing_bytes = format!(
+        "syncstr-membership-revocation-v1\n{}",
+        serde_json::to_string(&(
+            revoked.version,
+            &revoked.cluster,
+            &revoked.issuer,
+            &revoked.member,
+            &revoked.authority,
+            &revoked.observed,
+            &revoked.change_heads,
+        ))?
+    )
+    .into_bytes();
+    use sha2::Digest as _;
+    assert_eq!(
+        revoked.id,
+        hex::encode(sha2::Sha256::digest(&signing_bytes))
+    );
+    let signature: [u8; 64] = hex::decode(&revoked.signature)?.try_into().unwrap();
+    let issuer: iroh::EndpointId = revoked.issuer.parse()?;
+    issuer.verify(&signing_bytes, &iroh::Signature::from_bytes(&signature))?;
+    assert!(evidence.verify(&grant.id).is_err());
+    let mut tampered = evidence.clone();
+    tampered.revocations[0].member = fixture.other.id().to_string();
+    assert!(tampered.verify(&revoked.authority).is_err());
+    let after = store.membership()?;
+    assert_eq!(after.grants, before.grants);
+    assert_eq!(after.revocations, before.revocations);
+    tokio::time::timeout(std::time::Duration::from_secs(10), connection.closed()).await?;
+    tasks.abort_all();
+    while tasks.join_next().await.is_some() {}
+    host_endpoint.close().await;
+    reader_endpoint.close().await;
+    Ok(())
+}
+
+#[tokio::test]
+async fn quic_active_hello_is_unchanged_and_outsiders_get_no_refusal_evidence() -> anyhow::Result<()>
+{
+    use syncstr_headless::shared_audio_net::{Hello, Request, Snapshot};
+    let fixture = crate::Fixture::new().await?;
+    let source = fixture.replica()?;
+    let store = fixture.activate()?;
+    let stale = store.membership()?;
+    let reader = stale
+        .grants
+        .iter()
+        .find(|g| !g.host)
+        .unwrap()
+        .member
+        .clone();
+    store.revoke_member(&fixture.host, &reader)?;
+    let before = store.membership()?;
+    source.revoke_member(&fixture.host, &fixture.other.id().to_string())?;
+    let outsider = syncstr_headless::peer::Identity::from_secret(
+        &fixture.root.path().join("outsider"),
+        [44; 32],
+    )?;
+    let (host_endpoint, _host_lock) = fixture
+        .host
+        .cluster_endpoint(&["127.0.0.1:0".parse()?])
+        .await?;
+    let (peer_endpoint, _peer_lock) = fixture
+        .other
+        .cluster_endpoint(&["127.0.0.1:0".parse()?])
+        .await?;
+    let (outsider_endpoint, _outsider_lock) =
+        outsider.cluster_endpoint(&["127.0.0.1:0".parse()?]).await?;
+    let mut tasks = tokio::task::JoinSet::new();
+    tasks.spawn(syncstr_headless::shared_audio_net::serve(
+        host_endpoint.clone(),
+        store.clone(),
+        fixture.host.clone(),
+    ));
+    let connection = peer_endpoint
+        .connect(
+            host_endpoint.addr(),
+            syncstr_headless::shared_audio_net::ALPN,
+        )
+        .await?;
+    let wire: serde_json::Value = crate::shared_exchange(
+        &connection,
+        &serde_json::json!({"version": 5, "proof": stale}),
+    )
+    .await?;
+    assert!(wire.get("status").is_none());
+    assert!(wire.get("evidence").is_none());
+    let hello: Hello = serde_json::from_value(wire)?;
+    assert_eq!(hello.version, 5);
+    assert_eq!(
+        hello.supported_operations,
+        ["edit-track", "resolve-track", "update-playlists"]
+    );
+    assert_eq!(hello.proof.root, before.root);
+    assert_eq!(hello.proof.grants, before.grants);
+    assert_eq!(hello.proof.revocations, before.revocations);
+    let _: Snapshot = crate::shared_exchange(&connection, &Request::Catalog).await?;
+    connection.close(0u32.into(), b"done");
+    let mut cross_cluster = before.clone();
+    cross_cluster.root = outsider.id().to_string();
+    let mut malformed = before.clone();
+    malformed.revocations[0].signature = "00".repeat(64);
+    for (endpoint, proof) in [
+        (&outsider_endpoint, before.clone()),
+        (&peer_endpoint, cross_cluster),
+        (&peer_endpoint, malformed),
+        // An active peer cannot get a refusal by presenting its own unaccepted revocation.
+        (&peer_endpoint, source.membership()?),
+    ] {
+        let connection = endpoint
+            .connect(
+                host_endpoint.addr(),
+                syncstr_headless::shared_audio_net::ALPN,
+            )
+            .await?;
+        let (mut output, mut input) = connection.open_bi().await?;
+        let payload = serde_json::to_vec(&Hello {
+            version: 5,
+            proof,
+            supported_operations: vec![],
+        })?;
+        output
+            .write_all(&(payload.len() as u32).to_be_bytes())
+            .await?;
+        output.write_all(&payload).await?;
+        output.finish()?;
+        let mut first_byte = [0u8; 1];
+        let received = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            input.read(&mut first_byte),
+        )
+        .await?;
+        assert!(
+            !matches!(received, Ok(Some(_))),
+            "rejected peer must not receive any evidence frame"
+        );
+    }
+    let after = store.membership()?;
+    assert_eq!(after.grants, before.grants);
+    assert_eq!(after.revocations, before.revocations);
+    tasks.abort_all();
+    while tasks.join_next().await.is_some() {}
+    host_endpoint.close().await;
+    peer_endpoint.close().await;
+    outsider_endpoint.close().await;
+    Ok(())
+}
+
+#[tokio::test]
+async fn quic_revoked_issuer_evidence_includes_only_missing_peer_grant_chain() -> anyhow::Result<()>
+{
+    use syncstr_headless::shared_audio_net::{Hello, HelloRefusal, MutationRejection};
+    let fixture = crate::Fixture::new().await?;
+    let store = fixture.activate()?;
+    let before = store.membership()?;
+    let enrollment =
+        syncstr_headless::store::Store::open(&fixture.root.path().join("enroller-data"))?;
+    let authority = before
+        .grants
+        .iter()
+        .find(|g| g.member == fixture.other.id().to_string())
+        .unwrap();
+    enrollment
+        .join_cluster(
+            &fixture.other,
+            fixture.host.id(),
+            authority.id.clone(),
+            before.clone(),
+        )
+        .await?;
+    let peer = syncstr_headless::peer::Identity::from_secret(
+        &fixture.root.path().join("new-peer"),
+        [44; 32],
+    )?;
+    let unrelated = syncstr_headless::peer::Identity::from_secret(
+        &fixture.root.path().join("unrelated"),
+        [45; 32],
+    )?;
+    for member in [peer.id(), unrelated.id()] {
+        let invitation = enrollment
+            .create_cluster_invitation(&fixture.other, false, 200, 600)
+            .await?;
+        enrollment
+            .redeem_cluster_invitation(&fixture.other, &invitation.secret, member.to_string(), 201)
+            .await?;
+    }
+    let presented = enrollment.cluster_membership_proof().await?;
+    let grant = presented
+        .grants
+        .iter()
+        .find(|g| g.member == peer.id().to_string())
+        .unwrap();
+    presented.verify(&grant.id)?;
+    let revoked = store.revoke_member(&fixture.host, &fixture.other.id().to_string())?;
+    assert!(!revoked.observed.contains(&grant.id));
+    let retained = store.membership()?;
+    let (host_endpoint, _host_lock) = fixture
+        .host
+        .cluster_endpoint(&["127.0.0.1:0".parse()?])
+        .await?;
+    let (peer_endpoint, _peer_lock) = peer.cluster_endpoint(&["127.0.0.1:0".parse()?]).await?;
+    let mut tasks = tokio::task::JoinSet::new();
+    tasks.spawn(syncstr_headless::shared_audio_net::serve(
+        host_endpoint.clone(),
+        store.clone(),
+        fixture.host.clone(),
+    ));
+    let connection = peer_endpoint
+        .connect(
+            host_endpoint.addr(),
+            syncstr_headless::shared_audio_net::ALPN,
+        )
+        .await?;
+    let HelloRefusal::Rejected {
+        reason,
+        member,
+        evidence,
+        ..
+    } = crate::shared_exchange(
+        &connection,
+        &Hello {
+            version: 5,
+            proof: presented.clone(),
+            supported_operations: vec![],
+        },
+    )
+    .await?;
+    assert_eq!(reason, MutationRejection::Revoked);
+    assert_eq!(member, peer.id().to_string());
+    assert!(evidence.grants.contains(grant));
+    assert!(
+        !evidence
+            .grants
+            .iter()
+            .any(|g| g.member == unrelated.id().to_string())
+    );
+    assert_eq!(evidence.revocations, [revoked.clone()]);
+    evidence.verify(&revoked.authority)?;
+    assert!(evidence.verify(&grant.id).is_err());
+    let after = store.membership()?;
+    assert_eq!(after.grants, retained.grants);
+    assert_eq!(after.revocations, retained.revocations);
+    tokio::time::timeout(std::time::Duration::from_secs(10), connection.closed()).await?;
+    tasks.abort_all();
+    while tasks.join_next().await.is_some() {}
+    host_endpoint.close().await;
+    peer_endpoint.close().await;
+    Ok(())
+}
+
+#[tokio::test]
 async fn quic_rejected_hello_does_not_persist_peer_or_host_revocations() -> anyhow::Result<()> {
     for revoke_host in [false, true] {
         let fixture = crate::Fixture::new().await?;
