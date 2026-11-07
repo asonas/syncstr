@@ -609,6 +609,7 @@ impl crate::shared_audio::Store {
                     }
                 })?;
             if let Some(intent) = &intent {
+                crate::shared_audio::reject_object_request(&transaction, &intent.request)?;
                 // Receipts are local to the accepting host and commit with every batch record.
                 transaction.execute_batch("CREATE TABLE IF NOT EXISTS shared_playlist_requests (id TEXT PRIMARY KEY, records BLOB NOT NULL);")?;
                 let prior: Option<(String, String)> = transaction
@@ -953,6 +954,7 @@ impl crate::shared_audio::Store {
             use rusqlite::OptionalExtension as _;
             anyhow::ensure!(crate::shared_audio::identity(id), "invalid request ID");
             let transaction = connection.transaction()?;
+            crate::shared_audio::reject_object_request(&transaction, id)?;
             let proof = crate::enrollment::read_proof(&transaction)?;
             if let Some(origin) = &origin {
                 anyhow::ensure!(
@@ -1173,6 +1175,161 @@ impl crate::shared_audio::Store {
             transaction.commit()?;
             Ok((signed, body))
         })
+    }
+
+    pub(crate) fn register_track_member(
+        &self,
+        signer: &crate::peer::Identity,
+        member: &str,
+        mutation: crate::shared_audio_net::MutationRequest,
+        proof: &crate::enrollment::Proof,
+    ) -> crate::shared_audio_net::MutationReply {
+        use crate::shared_audio_net::{MutationReply, RegisterTrack};
+        let request = mutation.request.clone();
+        let result = (|| -> anyhow::Result<_> {
+            let registration: RegisterTrack = serde_json::from_value(mutation.payload.clone())?;
+            anyhow::ensure!(
+                mutation.expected.is_empty()
+                    && mutation.confirmed == vec![serde_json::json!({"audio": registration.hash})]
+                    && crate::shared_audio::valid_hash(&registration.hash),
+                "explicit audio eligibility required"
+            );
+            let grant = proof
+                .grants
+                .iter()
+                .find(|g| g.member == member && proof.verify(&g.id).is_ok())
+                .ok_or(crate::shared_audio::CommitFailure::Revoked)?;
+            let digest = crate::shared_audio::hash(&serde_json::to_vec(&(member, &mutation))?);
+            let (signed, body) = self.commit_prepared(
+                signer,
+                &request,
+                digest,
+                Some(crate::shared_audio::Origin {
+                    member: member.into(),
+                    grant: grant.id.clone(),
+                }),
+                |catalog| {
+                    let object = catalog
+                        .objects
+                        .get(&registration.hash)
+                        .ok_or_else(|| anyhow::anyhow!("missing Audio Copy"))?;
+                    anyhow::ensure!(
+                        crate::shared_audio::verified_object(
+                            &self.0.root,
+                            object,
+                            &registration.hash
+                        )?,
+                        "missing or invalid Audio Copy"
+                    );
+                    Ok(crate::shared_audio::Request {
+                        id: request.clone(),
+                        expected: mutation.expected,
+                        action: crate::shared_audio::Action::Register {
+                            source: registration.source,
+                            track: crate::shared_audio::Track {
+                                id: String::new(),
+                                metadata: registration.metadata,
+                                album_id: None,
+                                added_at: None,
+                                retired: false,
+                                audio: vec![registration.hash.clone()],
+                                preferred: Some(registration.hash),
+                            },
+                            evidence: crate::shared_audio::Evidence {
+                                snapshot: catalog.baseline.clone(),
+                                catalog: crate::shared_audio::hash(&serde_json::to_vec(catalog)?),
+                                reason: "Member audio addition".into(),
+                                audio_eligible: true,
+                            },
+                        },
+                    })
+                },
+            )?;
+            Ok(MutationReply::Accepted {
+                request: request.clone(),
+                record: signed.id.clone(),
+                host: body.author,
+                heads: body
+                    .edits
+                    .iter()
+                    .map(|edit| (edit.value.subject(), vec![signed.id.clone()]))
+                    .collect(),
+            })
+        })();
+        crate::shared_audio::mutation_result(request, result)
+    }
+
+    pub(crate) fn prepare_put_object(
+        &self,
+        member: &str,
+        mutation: &crate::shared_audio_net::MutationRequest,
+    ) -> anyhow::Result<crate::shared_audio_net::PutObject> {
+        let put: crate::shared_audio_net::PutObject =
+            serde_json::from_value(mutation.payload.clone())?;
+        anyhow::ensure!(
+            crate::shared_audio::identity(&mutation.request)
+                && mutation.operation == "put-object"
+                && mutation.expected.is_empty()
+                && mutation.confirmed.is_empty()
+                && crate::shared_audio::valid_hash(&put.hash)
+                && put.bytes > 0
+                && put.bytes <= crate::model::MAX_AUDIO,
+            "invalid object upload"
+        );
+        let digest = crate::shared_audio::hash(&serde_json::to_vec(&(member, mutation))?);
+        self.run(|connection, _| {
+            crate::shared_audio::object_receipt(connection, &mutation.request, &digest)?;
+            Ok(())
+        })?;
+        Ok(put)
+    }
+
+    pub(crate) fn finish_put_object(
+        &self,
+        signer: &crate::peer::Identity,
+        member: &str,
+        mutation: crate::shared_audio_net::MutationRequest,
+        staged: tempfile::NamedTempFile,
+    ) -> crate::shared_audio_net::MutationReply {
+        let request = mutation.request.clone();
+        let result = (|| -> anyhow::Result<_> {
+            let put = self.prepare_put_object(member, &mutation)?;
+            let digest = crate::shared_audio::hash(&serde_json::to_vec(&(member, &mutation))?);
+            self.run(|connection, root| {
+                let transaction = connection.transaction()?;
+                let proof = crate::enrollment::read_proof(&transaction)?;
+                anyhow::ensure!(
+                    crate::shared_audio_net::authorize(&proof, member, false).is_ok(),
+                    crate::shared_audio::CommitFailure::Revoked
+                );
+                anyhow::ensure!(
+                    crate::shared_audio_net::authorize(&proof, &signer.id().to_string(), true)
+                        .is_ok(),
+                    crate::shared_audio::CommitFailure::Unauthorized
+                );
+                let prior = crate::shared_audio::object_receipt(&transaction, &request, &digest)?;
+                crate::shared_audio::publish_audio(
+                    &transaction,
+                    root,
+                    &put.hash,
+                    put.bytes,
+                    staged,
+                )?;
+                let reply = prior.unwrap_or(crate::shared_audio_net::MutationReply::ObjectStored {
+                    request: request.clone(),
+                    hash: put.hash,
+                    bytes: put.bytes,
+                    host: signer.id().to_string(),
+                });
+                transaction.execute(
+                    "INSERT OR IGNORE INTO shared_object_requests VALUES (?, ?, ?)",
+                    rusqlite::params![request, digest, serde_json::to_vec(&reply)?],
+                )?;
+                transaction.commit()?;
+                Ok(reply)
+            })
+        })();
+        crate::shared_audio::mutation_result(request, result)
     }
 
     pub(crate) fn edit_track_member(
@@ -1477,42 +1634,29 @@ impl crate::shared_audio::Store {
             "invalid audio hash"
         );
         self.run(|connection, root| {
-            use std::io::Write as _;
             use sha2::Digest as _;
-            let mut staged = tempfile::Builder::new().prefix("shared-").tempfile_in(root.join("staging"))?;
+            use std::io::Write as _;
+            let mut staged = tempfile::Builder::new()
+                .prefix("shared-")
+                .tempfile_in(root.join("staging"))?;
             let mut bytes = 0u64;
             let mut sha = sha2::Sha256::new();
             let mut buffer = vec![0; 1024 * 1024];
             loop {
                 let count = input.read(&mut buffer)?;
-                if count == 0 { break; }
+                if count == 0 {
+                    break;
+                }
                 bytes += count as u64;
                 anyhow::ensure!(bytes <= crate::model::MAX_AUDIO, "audio too large");
                 sha.update(&buffer[..count]);
                 staged.write_all(&buffer[..count])?;
             }
-            anyhow::ensure!(bytes > 0 && hex::encode(sha.finalize()) == expected, "audio hash mismatch");
-            let catalog = crate::shared_audio::catalog(connection)?;
-            if let Some(object) = catalog.objects.get(expected) {
-                anyhow::ensure!(object.bytes.is_none_or(|size| size == bytes), "audio size mismatch");
-                for locator in &object.locators {
-                    if let Ok(mut existing) = std::fs::File::open(root.join("objects").join(locator)) {
-                        let mut existing_hash = sha2::Sha256::new();
-                        loop {
-                            let count = std::io::Read::read(&mut existing, &mut buffer)?;
-                            if count == 0 { break; }
-                            existing_hash.update(&buffer[..count]);
-                        }
-                        if hex::encode(existing_hash.finalize()) == expected { return Ok(()); }
-                    }
-                }
-            }
-            staged.as_file().sync_all()?;
-            let locator = format!("{expected}.audio");
-            crate::platform_fs::persist_replace(staged, &root.join("objects").join(&locator))?;
-            crate::platform_fs::sync_directory(&root.join("objects"))?;
-            connection.execute("INSERT INTO shared_objects VALUES (?, ?, ?) ON CONFLICT(sha256) DO UPDATE SET bytes=excluded.bytes, locator=excluded.locator", rusqlite::params![expected, bytes as i64, locator])?;
-            Ok(())
+            anyhow::ensure!(
+                bytes > 0 && hex::encode(sha.finalize()) == expected,
+                "audio hash mismatch"
+            );
+            crate::shared_audio::publish_audio(connection, root, expected, bytes, staged)
         })
     }
 
@@ -1542,6 +1686,155 @@ impl crate::shared_audio::Store {
             }
             anyhow::bail!("audio unavailable")
         })
+    }
+}
+
+fn object_requests(connection: &rusqlite::Connection) -> anyhow::Result<()> {
+    connection.execute_batch("CREATE TABLE IF NOT EXISTS shared_object_requests (id TEXT PRIMARY KEY, digest TEXT NOT NULL, reply BLOB NOT NULL);")?;
+    Ok(())
+}
+
+fn reject_object_request(connection: &rusqlite::Connection, id: &str) -> anyhow::Result<()> {
+    crate::shared_audio::object_requests(connection)?;
+    let exists: bool = connection.query_row(
+        "SELECT EXISTS(SELECT 1 FROM shared_object_requests WHERE id=?)",
+        [id],
+        |r| r.get(0),
+    )?;
+    anyhow::ensure!(!exists, "request ID belongs to an object upload");
+    Ok(())
+}
+
+fn object_receipt(
+    connection: &rusqlite::Connection,
+    id: &str,
+    digest: &str,
+) -> anyhow::Result<Option<crate::shared_audio_net::MutationReply>> {
+    use rusqlite::OptionalExtension as _;
+    crate::shared_audio::object_requests(connection)?;
+    let signed: bool = connection.query_row(
+        "SELECT EXISTS(SELECT 1 FROM shared_requests WHERE id=?)",
+        [id],
+        |r| r.get(0),
+    )?;
+    anyhow::ensure!(!signed, "request ID belongs to a signed mutation");
+    let prior: Option<(String, Vec<u8>)> = connection
+        .query_row(
+            "SELECT digest, reply FROM shared_object_requests WHERE id=?",
+            [id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .optional()?;
+    prior
+        .map(|(previous, reply)| {
+            anyhow::ensure!(
+                previous == digest,
+                "idempotency key reused with different content"
+            );
+            Ok(serde_json::from_slice(&reply)?)
+        })
+        .transpose()
+}
+
+fn verified_object(
+    root: &std::path::Path,
+    object: &crate::shared_audio::Object,
+    hash: &str,
+) -> anyhow::Result<bool> {
+    use sha2::Digest as _;
+    let mut buffer = vec![0; 65536];
+    for locator in &object.locators {
+        let mut file = match std::fs::File::open(root.join("objects").join(locator)) {
+            Ok(file) => file,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => return Err(error.into()),
+        };
+        let size = file.metadata()?.len();
+        if size == 0
+            || size > crate::model::MAX_AUDIO
+            || object.bytes.is_some_and(|bytes| bytes != size)
+        {
+            continue;
+        }
+        let mut sha = sha2::Sha256::new();
+        loop {
+            let count = std::io::Read::read(&mut file, &mut buffer)?;
+            if count == 0 {
+                break;
+            }
+            sha.update(&buffer[..count]);
+        }
+        if hex::encode(sha.finalize()) == hash {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+fn publish_audio(
+    connection: &rusqlite::Connection,
+    root: &std::path::Path,
+    hash: &str,
+    bytes: u64,
+    staged: tempfile::NamedTempFile,
+) -> anyhow::Result<()> {
+    let catalog = crate::shared_audio::catalog(connection)?;
+    if let Some(object) = catalog.objects.get(hash) {
+        anyhow::ensure!(
+            object.bytes.is_none_or(|size| size == bytes),
+            "audio size mismatch"
+        );
+        if crate::shared_audio::verified_object(root, object, hash)? {
+            return Ok(());
+        }
+    }
+    staged.as_file().sync_all()?;
+    let locator = format!("{hash}.audio");
+    crate::platform_fs::persist_replace(staged, &root.join("objects").join(&locator))?;
+    crate::platform_fs::sync_directory(&root.join("objects"))?;
+    connection.execute("INSERT INTO shared_objects VALUES (?, ?, ?) ON CONFLICT(sha256) DO UPDATE SET bytes=excluded.bytes, locator=excluded.locator", rusqlite::params![hash, bytes as i64, locator])?;
+    Ok(())
+}
+
+pub(crate) fn mutation_result(
+    request: String,
+    result: anyhow::Result<crate::shared_audio_net::MutationReply>,
+) -> crate::shared_audio_net::MutationReply {
+    use crate::shared_audio_net::{MutationRejection, MutationReply};
+    match result {
+        Ok(reply) => reply,
+        Err(error) => match error.downcast_ref::<crate::shared_audio::CommitFailure>() {
+            Some(crate::shared_audio::CommitFailure::NeedsReview(current)) => {
+                MutationReply::NeedsReview {
+                    request,
+                    current: current.clone(),
+                }
+            }
+            Some(crate::shared_audio::CommitFailure::Incomplete) => MutationReply::Deferred {
+                request,
+                reason: "incomplete-history".into(),
+            },
+            Some(crate::shared_audio::CommitFailure::Revoked) => MutationReply::Rejected {
+                request,
+                reason: MutationRejection::Revoked,
+            },
+            Some(crate::shared_audio::CommitFailure::Unauthorized) => MutationReply::Rejected {
+                request,
+                reason: MutationRejection::Unauthorized,
+            },
+            None if error.downcast_ref::<rusqlite::Error>().is_some()
+                || error.downcast_ref::<std::io::Error>().is_some() =>
+            {
+                MutationReply::Deferred {
+                    request,
+                    reason: "store-unavailable".into(),
+                }
+            }
+            None => MutationReply::Rejected {
+                request,
+                reason: MutationRejection::Invalid,
+            },
+        },
     }
 }
 

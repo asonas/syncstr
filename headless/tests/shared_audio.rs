@@ -859,7 +859,13 @@ async fn quic_active_hello_is_unchanged_and_outsiders_get_no_refusal_evidence() 
     assert_eq!(hello.version, 5);
     assert_eq!(
         hello.supported_operations,
-        ["edit-track", "resolve-track", "update-playlists"]
+        [
+            "edit-track",
+            "resolve-track",
+            "update-playlists",
+            "put-object",
+            "register-track"
+        ]
     );
     assert_eq!(hello.proof.root, before.root);
     assert_eq!(hello.proof.grants, before.grants);
@@ -1170,7 +1176,13 @@ async fn quic_mutation_replies_preserve_session_and_existing_requests() -> anyho
     .await?;
     assert_eq!(
         session.supported_operations,
-        ["edit-track", "resolve-track", "update-playlists"]
+        [
+            "edit-track",
+            "resolve-track",
+            "update-playlists",
+            "put-object",
+            "register-track"
+        ]
     );
     let mutation = MutationRequest {
         request: "b6f1c0de-1f2a-4c3b-9d4e-5a6b7c8d9e0f".into(),
@@ -1192,8 +1204,6 @@ async fn quic_mutation_replies_preserve_session_and_existing_requests() -> anyho
         }})
     );
     for operation in [
-        "put-object",
-        "register-track",
         "future-resolution",
         "assign-source",
         "future-playlist-update",
@@ -1938,6 +1948,639 @@ async fn shared_exchange<T: serde::Serialize, R: serde::de::DeserializeOwned>(
     crate::shared_frame(&mut input).await
 }
 
+fn audio_mutation(
+    catalog: &syncstr_headless::shared_audio::Catalog,
+    request: &str,
+    operation: &str,
+    payload: serde_json::Value,
+) -> syncstr_headless::shared_audio_net::MutationRequest {
+    syncstr_headless::shared_audio_net::MutationRequest {
+        request: request.into(),
+        cluster: catalog.cluster.clone(),
+        baseline: catalog.baseline.clone(),
+        operation: operation.into(),
+        expected: Default::default(),
+        payload,
+        confirmed: vec![],
+    }
+}
+
+async fn shared_upload(
+    connection: &iroh::endpoint::Connection,
+    mutation: &syncstr_headless::shared_audio_net::MutationRequest,
+    body: Option<&[u8]>,
+) -> anyhow::Result<syncstr_headless::shared_audio_net::MutationReply> {
+    let (mut output, mut input) = connection.open_bi().await?;
+    let frame = serde_json::to_vec(&syncstr_headless::shared_audio_net::Request::Mutation {
+        mutation: mutation.clone(),
+    })?;
+    output
+        .write_all(&(frame.len() as u32).to_be_bytes())
+        .await?;
+    output.write_all(&frame).await?;
+    if let Some(body) = body {
+        output.write_all(body).await?;
+        output.finish()?;
+    }
+    // None deliberately leaves the body and FIN unsent: header rejection must not read either.
+    crate::shared_frame(&mut input).await
+}
+
+#[tokio::test]
+async fn quic_audio_additions_share_bytes_and_reject_invalid_uploads() -> anyhow::Result<()> {
+    use sha2::Digest as _;
+    use syncstr_headless::shared_audio_net::{
+        Hello, MutationRejection, MutationReply, Request, Session,
+    };
+    let fixture = crate::Fixture::new().await?;
+    let store = fixture.activate()?;
+    let before = store.catalog()?;
+    let reader = syncstr_headless::peer::Identity::from_secret(
+        &fixture.root.path().join("reader"),
+        [43; 32],
+    )?;
+    let (host_endpoint, _host_lock) = fixture
+        .host
+        .cluster_endpoint(&["127.0.0.1:0".parse()?])
+        .await?;
+    let (reader_endpoint, _reader_lock) =
+        reader.cluster_endpoint(&["127.0.0.1:0".parse()?]).await?;
+    let mut tasks = tokio::task::JoinSet::new();
+    tasks.spawn(syncstr_headless::shared_audio_net::serve(
+        host_endpoint.clone(),
+        store.clone(),
+        fixture.host.clone(),
+    ));
+    let connection = reader_endpoint
+        .connect(
+            host_endpoint.addr(),
+            syncstr_headless::shared_audio_net::ALPN,
+        )
+        .await?;
+    let hello: Hello = crate::shared_exchange(
+        &connection,
+        &Hello {
+            version: 5,
+            proof: store.membership()?,
+            supported_operations: vec![],
+        },
+    )
+    .await?;
+    assert!(
+        hello
+            .supported_operations
+            .iter()
+            .any(|op| op == "put-object")
+    );
+    assert!(
+        hello
+            .supported_operations
+            .iter()
+            .any(|op| op == "register-track")
+    );
+    let hash = hex::encode(sha2::Sha256::digest(b"def"));
+    let upload = crate::audio_mutation(
+        &before,
+        "upload-audio",
+        "put-object",
+        serde_json::json!({"hash": hash, "bytes": 3}),
+    );
+    let stored = MutationReply::ObjectStored {
+        request: upload.request.clone(),
+        hash: hash.clone(),
+        bytes: 3,
+        host: fixture.host.id().to_string(),
+    };
+    assert_eq!(
+        crate::shared_upload(&connection, &upload, Some(b"def")).await?,
+        stored
+    );
+    assert!(store.records()?.is_empty());
+    assert_eq!(store.catalog()?.tracks.len(), before.tracks.len());
+    assert_eq!(
+        crate::shared_upload(&connection, &upload, Some(b"def")).await?,
+        stored
+    );
+    let session =
+        Session::connect(&reader_endpoint, host_endpoint.addr(), store.membership()?).await?;
+    let mut first = crate::audio_mutation(
+        &before,
+        "register-audio-a",
+        "register-track",
+        serde_json::json!({"source": crate::source("audio-a"), "metadata": {"title": "Shared bytes"}, "hash": hash}),
+    );
+    assert_eq!(
+        session.register_track(first.clone()).await?,
+        MutationReply::Rejected {
+            request: first.request.clone(),
+            reason: MutationRejection::Invalid
+        }
+    );
+    first.confirmed = vec![serde_json::json!({"audio": hash})];
+    let accepted = session.register_track(first.clone()).await?;
+    assert!(matches!(&accepted, MutationReply::Accepted { .. }));
+    let mut second = first.clone();
+    second.request = "register-audio-b".into();
+    second.payload["source"] = serde_json::to_value(crate::source("audio-b"))?;
+    assert!(matches!(
+        session.register_track(second).await?,
+        MutationReply::Accepted { .. }
+    ));
+    let catalog = store.catalog()?;
+    let a = &catalog.correspondences[&crate::source("audio-a").subject()];
+    let b = &catalog.correspondences[&crate::source("audio-b").subject()];
+    assert_ne!(a, b);
+    assert_eq!(catalog.tracks[a].audio, [hash.clone()]);
+    assert_eq!(catalog.tracks[b].audio, [hash.clone()]);
+    assert_eq!(catalog.objects.len(), before.objects.len() + 1);
+    assert_eq!(
+        std::fs::read_dir(fixture.data().join("objects"))?.count(),
+        before.objects.len() + 1
+    );
+    assert_eq!(
+        std::fs::read(fixture.data().join("objects").join(format!("{hash}.audio")))?,
+        b"def"
+    );
+    for signed in store.records()? {
+        let body: syncstr_headless::shared_audio::Body = serde_json::from_str(
+            signed
+                .payload
+                .strip_prefix("syncstr-shared-audio-v1\n")
+                .unwrap(),
+        )?;
+        assert_eq!(
+            body.origin.as_ref().unwrap().member,
+            reader.id().to_string()
+        );
+        store.membership()?.verify(&body.origin.unwrap().grant)?;
+    }
+    let edit = crate::metadata_edit(
+        &catalog,
+        "edit-added-track",
+        a,
+        serde_json::json!({"title": "Independent edit"}),
+    );
+    assert!(matches!(
+        session.edit_track(edit).await?,
+        MutationReply::Accepted { .. }
+    ));
+    assert_eq!(store.catalog()?.tracks[b].metadata["title"], "Shared bytes");
+    assert_eq!(session.register_track(first.clone()).await?, accepted);
+    let mut reused = first.clone();
+    reused.payload["metadata"]["title"] = "Changed intent".into();
+    assert_eq!(
+        session.register_track(reused).await?,
+        MutationReply::Rejected {
+            request: first.request.clone(),
+            reason: MutationRejection::Invalid
+        }
+    );
+    let mut cross_operation = first.clone();
+    cross_operation.request = upload.request.clone();
+    assert_eq!(
+        session.register_track(cross_operation).await?,
+        MutationReply::Rejected {
+            request: upload.request.clone(),
+            reason: MutationRejection::Invalid
+        }
+    );
+    let mut missing = first.clone();
+    missing.request = "missing-object".into();
+    missing.payload["source"] = serde_json::to_value(crate::source("missing"))?;
+    missing.payload["hash"] = "f".repeat(64).into();
+    missing.confirmed = vec![serde_json::json!({"audio": "f".repeat(64)})];
+    assert_eq!(
+        session.register_track(missing.clone()).await?,
+        MutationReply::Rejected {
+            request: missing.request,
+            reason: MutationRejection::Invalid
+        }
+    );
+    for (id, declared, body) in [
+        ("bad-hash", 3, b"ghi".as_slice()),
+        ("truncated", 4, b"def".as_slice()),
+        ("excess", 2, b"def".as_slice()),
+    ] {
+        let mut invalid = upload.clone();
+        invalid.request = id.into();
+        invalid.payload["bytes"] = declared.into();
+        assert_eq!(
+            crate::shared_upload(&connection, &invalid, Some(body)).await?,
+            MutationReply::Rejected {
+                request: id.into(),
+                reason: MutationRejection::Invalid
+            }
+        );
+        assert_eq!(
+            std::fs::read_dir(fixture.data().join("staging"))?.count(),
+            0
+        );
+    }
+    let mut corrected = upload.clone();
+    corrected.request = "bad-hash".into();
+    assert!(matches!(
+        crate::shared_upload(&connection, &corrected, Some(b"def")).await?,
+        MutationReply::ObjectStored { .. }
+    ));
+    let mut oversized = upload.clone();
+    oversized.request = "oversized".into();
+    oversized.payload["bytes"] = (syncstr_headless::model::MAX_AUDIO + 1).into();
+    assert_eq!(
+        crate::shared_upload(&connection, &oversized, None).await?,
+        MutationReply::Rejected {
+            request: oversized.request,
+            reason: MutationRejection::Invalid
+        }
+    );
+    let mut changed = upload.clone();
+    changed.payload["hash"] = "a".repeat(64).into();
+    assert_eq!(
+        crate::shared_upload(&connection, &changed, None).await?,
+        MutationReply::Rejected {
+            request: changed.request,
+            reason: MutationRejection::Invalid
+        }
+    );
+    let mut signed_id = upload.clone();
+    signed_id.request = first.request.clone();
+    assert_eq!(
+        crate::shared_upload(&connection, &signed_id, None).await?,
+        MutationReply::Rejected {
+            request: signed_id.request,
+            reason: MutationRejection::Invalid
+        }
+    );
+    let _: syncstr_headless::shared_audio_net::Snapshot =
+        crate::shared_exchange(&connection, &Request::Catalog).await?;
+    assert_eq!(store.records()?.len(), 3);
+    let in_flight = reader_endpoint
+        .connect(
+            host_endpoint.addr(),
+            syncstr_headless::shared_audio_net::ALPN,
+        )
+        .await?;
+    let _: Hello = crate::shared_exchange(
+        &in_flight,
+        &Hello {
+            version: 5,
+            proof: store.membership()?,
+            supported_operations: vec![],
+        },
+    )
+    .await?;
+    let mut interrupted = upload.clone();
+    interrupted.request = "revoked-during-upload".into();
+    let interrupted_hash = hex::encode(sha2::Sha256::digest(b"ghi"));
+    interrupted.payload["hash"] = interrupted_hash.clone().into();
+    let (mut body_output, mut reply_input) = in_flight.open_bi().await?;
+    let frame = serde_json::to_vec(&Request::Mutation {
+        mutation: interrupted.clone(),
+    })?;
+    body_output
+        .write_all(&(frame.len() as u32).to_be_bytes())
+        .await?;
+    body_output.write_all(&frame).await?;
+    body_output.write_all(b"g").await?;
+    // Observe actual reception before revoking; the remaining bytes and FIN are withheld.
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            let receiving = std::fs::read_dir(fixture.data().join("staging"))?
+                .collect::<std::io::Result<Vec<_>>>()?
+                .iter()
+                .any(|entry| entry.metadata().is_ok_and(|metadata| metadata.len() > 0));
+            if receiving {
+                break anyhow::Ok(());
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await??;
+    store.revoke_member(&fixture.host, &reader.id().to_string())?;
+    body_output.write_all(b"hi").await?;
+    body_output.finish()?;
+    assert_eq!(
+        crate::shared_frame::<MutationReply>(&mut reply_input).await?,
+        MutationReply::Rejected {
+            request: interrupted.request,
+            reason: MutationRejection::Revoked,
+        }
+    );
+    assert!(!store.catalog()?.objects.contains_key(&interrupted_hash));
+    assert!(
+        !fixture
+            .data()
+            .join("objects")
+            .join(format!("{interrupted_hash}.audio"))
+            .exists()
+    );
+    // No body or FIN: a revoked peer must get its rejection without an upload read.
+    assert_eq!(
+        crate::shared_upload(&connection, &upload, None).await?,
+        MutationReply::Rejected {
+            request: upload.request.clone(),
+            reason: MutationRejection::Revoked
+        }
+    );
+    assert_eq!(
+        std::fs::read_dir(fixture.data().join("staging"))?.count(),
+        0
+    );
+    let stranger = syncstr_headless::peer::Identity::from_secret(
+        &fixture.root.path().join("stranger"),
+        [44; 32],
+    )?;
+    let (stranger_endpoint, _stranger_lock) =
+        stranger.cluster_endpoint(&["127.0.0.1:0".parse()?]).await?;
+    let unauthenticated = stranger_endpoint
+        .connect(
+            host_endpoint.addr(),
+            syncstr_headless::shared_audio_net::ALPN,
+        )
+        .await?;
+    let (mut hello_output, mut hello_input) = unauthenticated.open_bi().await?;
+    let hello = serde_json::to_vec(&Hello {
+        version: 5,
+        proof: store.membership()?,
+        supported_operations: vec![],
+    })?;
+    let frame = serde_json::to_vec(&Request::Mutation {
+        mutation: upload.clone(),
+    })?;
+    // Pipeline an upload header but withhold its body and FIN. Hello must refuse
+    // the identity without waiting for that body or creating a staging file.
+    let (mut upload_output, _upload_input) = unauthenticated.open_bi().await?;
+    hello_output
+        .write_all(&(hello.len() as u32).to_be_bytes())
+        .await?;
+    hello_output.write_all(&hello).await?;
+    hello_output.finish()?;
+    // An immediate connection close is also a valid refusal of the pipelined upload.
+    if upload_output
+        .write_all(&(frame.len() as u32).to_be_bytes())
+        .await
+        .is_ok()
+    {
+        let _ = upload_output.write_all(&frame).await;
+    }
+    let refused = crate::shared_frame::<Hello>(&mut hello_input).await;
+    assert!(
+        refused.is_err(),
+        "an unenrolled uploader must be refused during Hello"
+    );
+    assert_eq!(store.records()?.len(), 3);
+    assert_eq!(store.catalog()?.objects.len(), before.objects.len() + 1);
+    assert_eq!(
+        std::fs::read_dir(fixture.data().join("staging"))?.count(),
+        0
+    );
+    tasks.abort_all();
+    while tasks.join_next().await.is_some() {}
+    host_endpoint.close().await;
+    reader_endpoint.close().await;
+    stranger_endpoint.close().await;
+    Ok(())
+}
+
+#[tokio::test]
+async fn quic_audio_addition_lost_ack_replays_at_accepting_host_after_restart() -> anyhow::Result<()>
+{
+    use syncstr_headless::shared_audio_net::{Hello, MutationReply, Request, Session};
+    let fixture = crate::Fixture::new().await?;
+    let replica = fixture.replica()?;
+    let store = fixture.activate()?;
+    let before = store.catalog()?;
+    let reader = syncstr_headless::peer::Identity::from_secret(
+        &fixture.root.path().join("reader"),
+        [43; 32],
+    )?;
+    let (host_endpoint, _host_lock) = fixture
+        .host
+        .cluster_endpoint(&["127.0.0.1:0".parse()?])
+        .await?;
+    let (reader_endpoint, _reader_lock) =
+        reader.cluster_endpoint(&["127.0.0.1:0".parse()?]).await?;
+    let (other_endpoint, _other_lock) = fixture
+        .other
+        .cluster_endpoint(&["127.0.0.1:0".parse()?])
+        .await?;
+    let mut tasks = tokio::task::JoinSet::new();
+    tasks.spawn(syncstr_headless::shared_audio_net::serve(
+        host_endpoint.clone(),
+        store.clone(),
+        fixture.host.clone(),
+    ));
+    tasks.spawn(syncstr_headless::shared_audio_net::serve(
+        other_endpoint.clone(),
+        replica.clone(),
+        fixture.other.clone(),
+    ));
+    let connection = reader_endpoint
+        .connect(
+            host_endpoint.addr(),
+            syncstr_headless::shared_audio_net::ALPN,
+        )
+        .await?;
+    let _: Hello = crate::shared_exchange(
+        &connection,
+        &Hello {
+            version: 5,
+            proof: store.membership()?,
+            supported_operations: vec![],
+        },
+    )
+    .await?;
+    let upload = crate::audio_mutation(
+        &before,
+        "replay-upload",
+        "put-object",
+        serde_json::json!({"hash": fixture.entry.sha256, "bytes": 3}),
+    );
+    let stored = crate::shared_upload(&connection, &upload, Some(b"abc")).await?;
+    assert!(matches!(&stored, MutationReply::ObjectStored { .. }));
+    // Uploads are independently retryable at another host, without registering a logical track there.
+    let other = reader_endpoint
+        .connect(
+            other_endpoint.addr(),
+            syncstr_headless::shared_audio_net::ALPN,
+        )
+        .await?;
+    let _: Hello = crate::shared_exchange(
+        &other,
+        &Hello {
+            version: 5,
+            proof: replica.membership()?,
+            supported_operations: vec![],
+        },
+    )
+    .await?;
+    assert_eq!(
+        crate::shared_upload(&other, &upload, Some(b"abc")).await?,
+        MutationReply::ObjectStored {
+            request: upload.request.clone(),
+            hash: fixture.entry.sha256.clone(),
+            bytes: 3,
+            host: fixture.other.id().to_string()
+        }
+    );
+    assert!(replica.records()?.is_empty());
+    assert_eq!(
+        std::fs::read_dir(fixture.root.path().join("replica/objects"))?.count(),
+        1
+    );
+    let mut registration = crate::audio_mutation(
+        &before,
+        "lost-registration-ack",
+        "register-track",
+        serde_json::json!({"source": crate::source("lost-ack"), "metadata": {"title": "Accepted once"}, "hash": fixture.entry.sha256}),
+    );
+    registration.confirmed = vec![serde_json::json!({"audio": fixture.entry.sha256})];
+    let (mut output, input) = connection.open_bi().await?;
+    let frame = serde_json::to_vec(&Request::Mutation {
+        mutation: registration.clone(),
+    })?;
+    output
+        .write_all(&(frame.len() as u32).to_be_bytes())
+        .await?;
+    output.write_all(&frame).await?;
+    output.finish()?;
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            if store.records()?.len() == 1 {
+                break anyhow::Ok(());
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await??;
+    // The decision is durable, but the requester never reads its acknowledgment.
+    drop(input);
+    connection.close(0u32.into(), b"lost registration reply");
+    let signed = store.records()?.into_iter().next().unwrap();
+    let body: syncstr_headless::shared_audio::Body = serde_json::from_str(
+        signed
+            .payload
+            .strip_prefix("syncstr-shared-audio-v1\n")
+            .unwrap(),
+    )?;
+    let expected = MutationReply::Accepted {
+        request: registration.request.clone(),
+        record: signed.id.clone(),
+        host: body.author,
+        heads: body
+            .edits
+            .iter()
+            .map(|edit| (edit.value.subject(), vec![signed.id.clone()]))
+            .collect(),
+    };
+    let session =
+        Session::connect(&reader_endpoint, host_endpoint.addr(), store.membership()?).await?;
+    assert_eq!(
+        session.register_track(registration.clone()).await?,
+        expected
+    );
+    let another_member = other_endpoint
+        .connect(
+            host_endpoint.addr(),
+            syncstr_headless::shared_audio_net::ALPN,
+        )
+        .await?;
+    let _: Hello = crate::shared_exchange(
+        &another_member,
+        &Hello {
+            version: 5,
+            proof: store.membership()?,
+            supported_operations: vec![],
+        },
+    )
+    .await?;
+    assert_eq!(
+        crate::shared_upload(&another_member, &upload, None).await?,
+        MutationReply::Rejected {
+            request: upload.request.clone(),
+            reason: syncstr_headless::shared_audio_net::MutationRejection::Invalid,
+        }
+    );
+    let impersonation: MutationReply = crate::shared_exchange(
+        &another_member,
+        &Request::Mutation {
+            mutation: registration.clone(),
+        },
+    )
+    .await?;
+    assert_eq!(
+        impersonation,
+        MutationReply::Rejected {
+            request: registration.request.clone(),
+            reason: syncstr_headless::shared_audio_net::MutationRejection::Invalid,
+        }
+    );
+    let catalog = store.catalog()?;
+    let track = &catalog.correspondences[&crate::source("lost-ack").subject()];
+    let edit = crate::metadata_edit(
+        &catalog,
+        "later-added-track-edit",
+        track,
+        serde_json::json!({"title": "Later revision"}),
+    );
+    assert!(matches!(
+        session.edit_track(edit).await?,
+        MutationReply::Accepted { .. }
+    ));
+    assert_eq!(
+        session.register_track(registration.clone()).await?,
+        expected
+    );
+    assert_eq!(store.records()?.len(), 2);
+    drop(session);
+    other.close(0u32.into(), b"restart");
+    tasks.abort_all();
+    while tasks.join_next().await.is_some() {}
+    drop(store);
+    let store = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            match syncstr_headless::shared_audio::Store::open(&fixture.data()) {
+                Ok(store) => break anyhow::Ok(store),
+                Err(_) => tokio::time::sleep(std::time::Duration::from_millis(10)).await,
+            }
+        }
+    })
+    .await??;
+    tasks.spawn(syncstr_headless::shared_audio_net::serve(
+        host_endpoint.clone(),
+        store.clone(),
+        fixture.host.clone(),
+    ));
+    let session =
+        Session::connect(&reader_endpoint, host_endpoint.addr(), store.membership()?).await?;
+    assert_eq!(session.register_track(registration).await?, expected);
+    let connection = reader_endpoint
+        .connect(
+            host_endpoint.addr(),
+            syncstr_headless::shared_audio_net::ALPN,
+        )
+        .await?;
+    let _: Hello = crate::shared_exchange(
+        &connection,
+        &Hello {
+            version: 5,
+            proof: store.membership()?,
+            supported_operations: vec![],
+        },
+    )
+    .await?;
+    assert_eq!(
+        crate::shared_upload(&connection, &upload, Some(b"abc")).await?,
+        stored
+    );
+    assert_eq!(store.records()?.len(), 2);
+    tasks.abort_all();
+    while tasks.join_next().await.is_some() {}
+    host_endpoint.close().await;
+    reader_endpoint.close().await;
+    other_endpoint.close().await;
+    Ok(())
+}
+
 #[tokio::test]
 async fn quic_legacy_hello_and_invalid_mutations_keep_working_until_revoked() -> anyhow::Result<()>
 {
@@ -1981,7 +2624,13 @@ async fn quic_legacy_hello_and_invalid_mutations_keep_working_until_revoked() ->
     let hello: serde_json::Value = crate::shared_exchange(&connection, &legacy).await?;
     assert_eq!(
         hello["supported_operations"],
-        serde_json::json!(["edit-track", "resolve-track", "update-playlists"])
+        serde_json::json!([
+            "edit-track",
+            "resolve-track",
+            "update-playlists",
+            "put-object",
+            "register-track"
+        ])
     );
     let old_decoder: LegacyHello = serde_json::from_value(hello)?;
     assert_eq!(old_decoder.version, 5);
@@ -2145,11 +2794,20 @@ async fn quic_session_accepts_legacy_host_hello_without_operations() -> anyhow::
 }
 
 #[test]
-fn mutation_reply_wire_has_all_five_typed_outcomes() -> anyhow::Result<()> {
+fn mutation_reply_wire_has_all_typed_outcomes() -> anyhow::Result<()> {
     use syncstr_headless::shared_audio_net::{MutationRejection, MutationReply};
     let heads =
         std::collections::BTreeMap::from([("track:example".into(), vec!["revision".into()])]);
     for (reply, wire) in [
+        (
+            MutationReply::ObjectStored {
+                request: "request".into(),
+                hash: "a".repeat(64),
+                bytes: 3,
+                host: "host".into(),
+            },
+            serde_json::json!({"status":"object-stored", "request":"request", "hash":"a".repeat(64), "bytes":3, "host":"host"}),
+        ),
         (
             MutationReply::Accepted {
                 request: "request".into(),
