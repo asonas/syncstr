@@ -108,6 +108,7 @@ struct LibraryView: View {
         }
         .task { await library.restoreLibrary() }
         .modifier(OfflineSaveRemoval(library: library))
+        .modifier(TrackMetadataEditing(library: library))
         .sheet(isPresented: $showingPeerSetup) {
             ScrollView { PeerSetupView(transfer: library.transfer).padding(24) }
                 .frame(width: 500, height: 600)
@@ -543,6 +544,7 @@ struct LibraryView: View {
         ForEach(Array(tracks.enumerated()), id: \.element.id) { index, track in
             trackRow(track, index: index, tracks: preservingQueue ? nil : tracks, showArtist: showArtist)
                 .contextMenu {
+                    TrackMetadataMenu(library: library, track: track)
                     Button(library.albumVisibilityLabel(track.albumKey)) {
                         library.setAlbumHidden(track.albumKey, hidden: !library.isAlbumHidden(track.albumKey))
                     }.disabled(library.legacyMutationNotice != nil || library.isSavingAlbumVisibility(track.albumKey))

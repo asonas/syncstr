@@ -60,6 +60,7 @@ struct SharedAudioSnapshot: Decodable {
         let conflicts: Set<String>
         let incomplete: [String]
         let legacy_organization: AlbumOrganization?
+        let heads: [String: [String]]?
 
         func entry(_ id: String, hash: String? = nil) throws -> LocalEntry {
             try entry(id, hash: hash, organization: organization())
@@ -185,7 +186,7 @@ enum SharedAudioUIFixture {
         let stateIndex = arguments.firstIndex(of: "--v5-fixture-state")
         let state = stateIndex.flatMap { arguments.indices.contains($0 + 1) ? arguments[$0 + 1] : nil }
             ?? (Bundle.main.object(forInfoDictionaryKey: "SyncstrV5FixtureState") as? String) ?? "normal"
-        guard ["normal", "conflict", "incomplete"].contains(state) else { throw LocalMusicError.invalidData }
+        guard ["normal", "conflict", "incomplete", "metadata"].contains(state) else { throw LocalMusicError.invalidData }
         let store = LocalMusicStore(root: root.appendingPathComponent("apple-ui-" + state))
         let database = try store.database()
         struct Enrollment: Decodable { let grant: String; let proof: ClusterMembership; let member: String }
@@ -201,8 +202,17 @@ enum SharedAudioUIFixture {
                 if !store.hasFile(entry) { try FileManager.default.copyItem(at: root.appendingPathComponent("tone.wav"), to: store.fileURL(entry)) }
                 try database.saveAudioPin(entry)
             }
+            if state == "metadata" {
+                guard let entry = try database.clusterCatalog().entries.first(where: { $0.track.title == "TRACK-A" }) else {
+                    throw LocalMusicError.invalidData
+                }
+                let draft = try database.trackMetadataDraft(entry.track.id)
+                let edit = try database.enqueueTrackMetadata(draft, title: "Edited fixture title", artist: "Edited artist")
+                _ = try database.beginMetadataMutation(edit.id, host: grant.issuer)
+                try database.finishMetadataMutation(edit.id, reply: .rejected(request: edit.id, reason: .revoked))
+            }
         }
-        if state != "normal" {
+        if state == "conflict" || state == "incomplete" {
             let data = try Data(contentsOf: root.appendingPathComponent("snapshot.json"))
             var snapshot = try JSONSerialization.jsonObject(with: data) as! [String: Any]
             var catalog = snapshot["catalog"] as! [String: Any]

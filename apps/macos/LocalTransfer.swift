@@ -173,6 +173,7 @@ private struct ClusterUIState {
     let disputed: [String]
     let cellular: Bool
     let sharedAudio: Bool
+    let metadataEdits: [ClusterMetadataEdit]
 
     init(_ database: CatalogDatabase) throws {
         registration = try database.clusterRegistration()
@@ -180,7 +181,8 @@ private struct ClusterUIState {
         changes = try database.clusterChanges()
         conflicts = try database.clusterObjectStates().filter(\.conflicted)
         albums = try database.clusterAlbumConflicts()
-        pendingMetadata = try !database.clusterMetadataEdits().isEmpty
+        metadataEdits = try database.clusterMetadataEdits()
+        pendingMetadata = metadataEdits.contains { $0.mutation == nil }
         disputed = try registration?.membership.revocationState().disputed.sorted() ?? []
         cellular = try database.clusterAutomaticCellular()
         sharedAudio = try database.sharedAudioSnapshot() != nil
@@ -272,6 +274,14 @@ final class LocalTransfer: ObservableObject {
     @Published private(set) var disputedMembers: [String] = []
     @Published private(set) var clusterAlbumConflicts: [ClusterAlbumConflict] = []
     @Published private(set) var clusterMutationsUnavailable = false
+    @Published private(set) var clusterSupportedOperations: Set<ClusterOperation> = []
+    @Published private(set) var clusterMetadataEdits: [ClusterMetadataEdit] = []
+    var trackMetadataEdits: [ClusterMetadataEdit] { clusterMetadataEdits.filter { $0.mutation?.operation == .editTrack } }
+    private var hasQueuedTrackMetadata: Bool { clusterMetadataEdits.contains(where: \.canRetryMutation) }
+    var trackMetadataNotice: String? {
+        clusterMutationsUnavailable && clusterSupportedOperations.contains(.editTrack)
+            ? nil : "曲の情報の編集には、対応する保存先への接続が必要です。ライブラリを更新して対応状況を確認してください。"
+    }
     var clusterMutationNotice: String? {
         clusterMutationsUnavailable ? LocalMusicError.legacyMutationsUnavailable.localizedDescription : nil
     }
@@ -401,8 +411,9 @@ final class LocalTransfer: ObservableObject {
                     self.status = "自動転送を一時停止しました。音源はこの端末に保持しています。"
                     return
                 }
-                guard !self.busy, permitted, !self.clusterMutationsUnavailable,
-                      self.clusterBatches.contains(where: { $0.items.contains(where: { $0.state == .queued }) }) else { return }
+                guard !self.busy, permitted,
+                      self.hasQueuedTrackMetadata || (!self.clusterMutationsUnavailable &&
+                        self.clusterBatches.contains(where: { $0.items.contains(where: { $0.state == .queued }) })) else { return }
                 self.connectCluster()
             }
         }
@@ -544,6 +555,8 @@ final class LocalTransfer: ObservableObject {
         clusterConflicts = state.conflicts
         clusterAlbumConflicts = state.albums
         pendingClusterMetadata = state.pendingMetadata
+        clusterMetadataEdits = state.metadataEdits
+        clusterSupportedOperations = clusterNetwork.supportedOperations
         clusterMutationsUnavailable = state.sharedAudio || clusterNetwork.sharedAudio
         disputedMembers = state.disputed
         connectionEvent("cluster_registration_read")
@@ -552,6 +565,28 @@ final class LocalTransfer: ObservableObject {
     func organizationChanged(pendingMetadata: Bool) {
         pendingClusterMetadata = pendingMetadata
         scheduleClusterRetry()
+    }
+
+    func trackMetadataDraft(_ track: String, replacing edit: ClusterMetadataEdit? = nil) throws -> TrackMetadataDraft {
+        guard trackMetadataNotice == nil else { throw LocalMusicError.legacyMutationsUnavailable }
+        return try store.database().trackMetadataDraft(track, replacing: edit)
+    }
+
+    func queueTrackMetadata(_ draft: TrackMetadataDraft, title: String, artist: String) throws {
+        guard trackMetadataNotice == nil else { throw LocalMusicError.legacyMutationsUnavailable }
+        let database = try store.database()
+        _ = try database.enqueueTrackMetadata(draft, title: title, artist: artist)
+        clusterMetadataEdits = try database.clusterMetadataEdits()
+        status = "変更内容をこの端末に保存しました。保存先への反映は送信後に確認します。"
+        if !busy { connectCluster() } else { scheduleClusterRetry() }
+    }
+
+    func discardTrackMetadata(_ edit: ClusterMetadataEdit) {
+        do {
+            try store.database().discardMetadataMutation(edit.id)
+            clusterMetadataEdits = try store.database().clusterMetadataEdits()
+            scheduleClusterRetry()
+        } catch { status = error.localizedDescription }
     }
 
     private func permitsClusterMutations() -> Bool {
@@ -564,12 +599,13 @@ final class LocalTransfer: ObservableObject {
 
     private func scheduleClusterRetry() {
         clusterRetry?.cancel()
-        guard !clusterMutationsUnavailable, clusterRegistration != nil, pendingClusterMetadata || clusterBatches.contains(where: { $0.items.contains(where: { $0.state == .queued }) }) else { return }
+        guard clusterRegistration != nil,
+              hasQueuedTrackMetadata || (!clusterMutationsUnavailable &&
+                (pendingClusterMetadata || clusterBatches.contains(where: { $0.items.contains(where: { $0.state == .queued }) }))) else { return }
         clusterRetry = Task { [weak self] in
             do { try await Task.sleep(for: .seconds(15)) } catch { return }
             guard let self else { return }
-            guard !self.clusterMutationsUnavailable else { return }
-            guard !self.busy, self.pendingClusterMetadata || self.permitsAutomaticAudio else { self.scheduleClusterRetry(); return }
+            guard !self.busy, self.pendingClusterMetadata || self.hasQueuedTrackMetadata || self.permitsAutomaticAudio else { self.scheduleClusterRetry(); return }
             self.connectCluster()
         }
     }
@@ -627,10 +663,30 @@ final class LocalTransfer: ObservableObject {
                         status = "ライブラリを更新しました。整理情報の変更は送信待ちです。\(error.localizedDescription)"
                     }
                 }
+                if clusterMutationsUnavailable && hasQueuedTrackMetadata {
+                    try await clusterNetwork.syncTrackMetadata { [weak self] in
+                        guard let self, self.generation == attempt else { return }
+                        try? await self.updateClusterState(database)
+                    }
+                    let updated = try await clusterNetwork.refresh()
+                    try Task.checkCancellation()
+                    guard generation == attempt else { return }
+                    try await publishCatalog(updated, attempt: attempt)
+                    self.catalog = updated
+                }
                 try await updateClusterState(database)
             } catch {
                 if generation == attempt {
                     connectionEvent("connect_cluster", outcome: "failed", fields: ["reason": "connect_or_sync"], error: error, operationID: attempt)
+                    let reason = error.localizedDescription
+                    let files = store
+                    try? await CatalogStorage.shared.perform {
+                        let database = try files.database()
+                        try database.rejectUnsentMetadataForRevokedMember()
+                        for edit in try database.clusterMetadataEdits() where edit.canRetryMutation && edit.mutationHost != nil {
+                            try database.metadataMutationInterrupted(edit.id, reason: reason)
+                        }
+                    }
                     try? await updateClusterState()
                     status = error.localizedDescription
                 }

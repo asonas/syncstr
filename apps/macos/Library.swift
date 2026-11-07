@@ -150,6 +150,7 @@ final class Library: ObservableObject {
     @Published var sidebarVisible = true
     @Published var showingNowPlaying = false
     @Published var localCopiesToRemove: [Track] = []
+    @Published var trackMetadataPresentation: TrackMetadataPresentation?
     @Published private(set) var pendingLocalCopyRemovals: [Track] = []
     private var removalLibraryID: String?
     @Published private(set) var artworkURLs: [String: URL] = [:]
@@ -1167,6 +1168,7 @@ final class Library: ObservableObject {
     }
 
     func closeLibrary() {
+        trackMetadataPresentation = nil
         pendingLocalCopyRemovals = []
         removalLibraryID = nil
         localCopiesToRemove = []

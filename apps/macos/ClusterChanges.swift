@@ -1,10 +1,25 @@
 import Foundation
 
 struct ClusterMetadataEdit: Codable {
+    enum MutationState: String, Codable, Sendable {
+        case queued, sending, accepted, rejected
+        case needsReview = "needs-review"
+        case outcomeUnknown = "outcome-unknown"
+    }
     let id: String
     let entry: LocalEntry
     let organization: AlbumOrganization
     var parents: [String]
+    var mutation: ClusterMutationRequest? = nil
+    var mutationHost: String? = nil
+    var mutationState: MutationState? = nil
+    var mutationReply: ClusterMutationReply? = nil
+    var mutationError: String? = nil
+
+    var queueKey: String { mutation.map { "v5:" + $0.request } ?? entry.sha256 }
+    var canRetryMutation: Bool {
+        mutation?.operation == .editTrack && (mutationState == .queued || mutationState == .outcomeUnknown)
+    }
 }
 
 extension AlbumOrganization {

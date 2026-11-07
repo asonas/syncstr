@@ -653,6 +653,40 @@ struct SharedAudioTests {
         #expect(try database.clusterCatalog().entries.filter { ["TRACK-A", "TRACK-B"].contains($0.track.title) }.count == 2)
         try await reconnected.downloadSharedAudio(entry, store: store) { _ in }
         #expect(try LocalMusicStore.digest(file: store.fileURL(entry)) == hash)
+        // Exercise the member mutation wire against the real host, after the read-only checks.
+        #expect(await reconnected.supportedOperations.contains(.editTrack))
+        let tracks = try database.clusterCatalog().entries
+        let a = try #require(tracks.first(where: { $0.track.title == "TRACK-A" }))
+        let b = try #require(tracks.first(where: { $0.track.title == "TRACK-B" }))
+        #expect(a.sha256 == b.sha256)
+        let draft = try database.trackMetadataDraft(a.track.id)
+        let edit = try database.enqueueTrackMetadata(draft, title: "Member edited A", artist: "Member artist")
+        let stale = try database.enqueueTrackMetadata(draft, title: "Stale member title", artist: "Member artist")
+        var acknowledgment: ClusterMutationReply?
+        do {
+            try await ClusterMetadataDelivery.send(edit, host: nextAddress.id, database: database) {
+                acknowledgment = try await reconnected.mutate($0)
+                throw LocalMusicError.disconnected // Simulate a lost reply after the host committed.
+            }
+            Issue.record("The first delivery must have an unknown outcome")
+        } catch LocalMusicError.disconnected {}
+        #expect(try database.clusterMetadataEdits().first(where: { $0.id == edit.id })?.mutationState == .outcomeUnknown)
+        let retry = try #require(try database.clusterMetadataEdits().first(where: { $0.id == edit.id }))
+        try await ClusterMetadataDelivery.send(retry, host: nextAddress.id, database: database) {
+            let replay = try await reconnected.mutate($0)
+            #expect(replay == acknowledgment)
+            return replay
+        }
+        #expect(try database.clusterMetadataEdits().first(where: { $0.id == edit.id })?.mutationState == .accepted)
+        try await ClusterMetadataDelivery.send(stale, host: nextAddress.id, database: database) {
+            try await reconnected.mutate($0)
+        }
+        let review = try #require(try database.clusterMetadataEdits().first(where: { $0.id == stale.id }))
+        #expect(review.mutationState == .needsReview)
+        #expect(review.metadataValues["title"] == "Stale member title")
+        try await reconnected.reconcile(database: database)
+        #expect(try database.playbackEntry(a.track.id)?.entry.track.title == "Member edited A")
+        #expect(try database.playbackEntry(b.track.id)?.entry.track.title == "TRACK-B")
         reconnected.close()
         restarted.terminate()
         restarted.waitUntilExit()
