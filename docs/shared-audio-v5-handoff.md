@@ -27,6 +27,36 @@ require a live host grant for the actual remote ID.
 They must also verify their own live membership. A successful QUIC transport
 handshake alone is not application authorization.
 
+For a revoked member, the host may instead return this refusal on the first stream:
+
+```json
+{"version":5,"status":"rejected","reason":"revoked","member":"<QUIC-peer-id>","evidence":{"root":"<root-id>","grants":[],"revocations":[]}}
+```
+
+The arrays above stand for signed grants and revocations, not empty evidence.
+There is no top-level `proof`: existing Apple and Rust Hello decoders require
+that field and fail closed. An active member's Hello is unchanged. The host
+discloses evidence only after verifying a grant chain for the actual QUIC peer
+under the same root/cluster and its own live host authority. Outsiders and
+non-revocation failures receive no evidence frame.
+
+`evidence` contains retained membership, including the complete signed revocation
+history and its authorities, plus only the peer's missing verified grant chain.
+The host never persists rejected proof or uses unaccepted incoming revocations
+as refusal evidence. A client must pin root/cluster to its enrollment, match
+`member` to itself, verify host authority against the QUIC remote ID, and merge
+evidence with its retained proof without dropping revocations or accepting
+inconsistent replays. Verify every signature and grant/revocation dependency,
+then evaluate the client's saved grant chain with effective revocations and their
+`observed` boundaries. A dispute alone, or the unsigned reason string, does not
+prove revocation.
+
+The host finishes the refusal stream and closes the connection without serving
+operations; delivery and acknowledgment are bounded to five seconds. The full
+refusal frame must fit the 4 MiB Hello limit. Oversized or unverifiable evidence
+produces an ordinary connection failure with no refusal frame; clients must not
+treat that failure as verified revocation or mark queued edits rejected from it.
+
 Every subsequent bidirectional stream contains one request frame; the requester
 finishes its send side. The server sends the indicated response and finishes.
 Read/replication errors reset or close the stream or connection. Mutation requests
@@ -85,7 +115,8 @@ without storing any part of the edit. Invalid edits and reused request IDs with
 different content return `rejected` with reason `invalid`. On an existing session,
 a revoked member gets reason `revoked`; insufficient authority gets `unauthorized`.
 These two replies are delivered before the connection closes. A revoked member's
-new connection is refused during Hello authorization, before mutation requests.
+new connection can receive the verifiable Hello refusal above before any mutation
+request, with ordinary connection failure when evidence cannot be returned.
 Other outcomes keep the session open.
 Incomplete history returns `deferred` with reason `incomplete-history`; unavailable
 storage returns `deferred` with reason `store-unavailable`. Operations other than
