@@ -122,7 +122,15 @@ DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer \
 ```
 
 Each run creates its own Simulator, reboots it after initial data migration,
-and deletes it on success or failure. Existing
+and deletes it on success or failure. Before each test phase and fixture install,
+the runner checks readiness and boots the same owned device again if Xcode left
+it shut down. Readiness checks retain their 180-second timeout. Boot/restart
+preparation failures and install exit 149 are classified as Simulator infrastructure
+failures; after cleanup, verification retries once with a fresh device. Actual
+test failures are not retried. Both attempts keep separate logs, timings, and
+`result.json` files, including the failed stage and whether a retry is scheduled.
+Cleanup has a 60-second timeout per command. The CI job allows 60 minutes for the
+bounded recovery; it does not increase the readiness timeout. Existing
 Simulators are not reset or reconfigured. Tests run serially in Japanese with the
 Japan region; the library experience test fixes portrait orientation. Fresh iPad
 devices avoid inherited multitasking window sizes. UI queries use album/control
