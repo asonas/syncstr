@@ -80,6 +80,7 @@ struct ClusterImportResults: View {
 struct ClusterConflictsView: View {
     @ObservedObject var transfer: LocalTransfer
     @State private var conflict: ClusterObjectState?
+    @State private var sharedConflict: SharedTrackConflict?
     @State private var selected: String?
     @State private var confirming = false
     @State private var albumConflict: ClusterAlbumConflict?
@@ -88,15 +89,46 @@ struct ClusterConflictsView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            if !transfer.clusterConflicts.isEmpty || !transfer.clusterAlbumConflicts.isEmpty {
+            if !transfer.clusterConflicts.isEmpty || !transfer.clusterAlbumConflicts.isEmpty || !transfer.sharedTrackConflicts.isEmpty {
                 Text("変更が競合しています").font(.headline)
-                Text(transfer.clusterMutationsUnavailable
-                    ? "この接続では競合の解消とアルバム名の選択は利用できません。"
-                    : "自動では内容を選びません。確認して優先する内容を選んでください。")
+                Text("自動では内容を選びません。確認して優先する内容を選んでください。")
                     .foregroundStyle(.secondary)
+            }
+            if let notice = transfer.sharedTrackResolutionNotice, !transfer.sharedTrackConflicts.isEmpty {
+                Text(notice).foregroundStyle(.secondary)
+            }
+            if transfer.sharedTrackResolutionDeferred {
+                Button("競合の解消を再試行") { transfer.retrySharedResolution() }
+                    .disabled(transfer.busy)
+                    .accessibilityIdentifier("shared-resolution-retry")
+            }
+            ForEach(transfer.sharedTrackConflicts) { state in
+                if !state.isComplete {
+                    Text("競合している内容を取得できません。接続先のSyncstrを更新し、ライブラリを更新してください。")
+                        .foregroundStyle(.secondary)
+                }
+                ForEach(state.choices) { choice in
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(choice.title)
+                        if let artist = choice.track.metadata.artist { Text(artist).foregroundStyle(.secondary) }
+                        if let album = choice.track.metadata.album { Text(album).foregroundStyle(.secondary) }
+                        if choice.track.retired { Text("ライブラリから削除する変更").foregroundStyle(.secondary) }
+                        Button("この内容を優先") {
+                            sharedConflict = state; conflict = nil; selected = choice.id; confirming = true
+                        }
+                        .disabled(transfer.busy || !transfer.sharedTrackResolutionAvailable || !choice.isAvailable(isHost: transfer.canDeleteSharedTrack))
+                        .accessibilityIdentifier("shared-resolution-choice-" + choice.id)
+                        if choice.track.retired && !transfer.canDeleteSharedTrack {
+                            Text("削除を優先する場合は、保存先の端末で解消してください。")
+                                .font(.caption).foregroundStyle(.secondary)
+                        }
+                    }
+                }
+                Divider()
             }
             ForEach(transfer.clusterAlbumConflicts) { album in
                 Text("アルバム名の競合（\(album.objects.count)曲）").font(.headline)
+                if let notice = transfer.clusterAlbumResolutionNotice { Text(notice).foregroundStyle(.secondary) }
                 ForEach(album.titles, id: \.self) { title in
                     Button("「\(title)」を優先") {
                         albumConflict = album; albumTitle = title; confirmingAlbum = true
@@ -113,7 +145,7 @@ struct ClusterConflictsView: View {
                             if let artist = entry?.track.artist { Text(artist).foregroundStyle(.secondary) }
                             if let album = entry?.track.album { Text(album).foregroundStyle(.secondary) }
                             Text("変更した端末: \(head.author)").font(.system(.caption, design: .monospaced))
-                            Button("この内容を優先") { conflict = state; selected = head.id; confirming = true }
+                            Button("この内容を優先") { conflict = state; sharedConflict = nil; selected = head.id; confirming = true }
                                 .disabled(transfer.busy || transfer.clusterMutationsUnavailable || (entry == nil && !canDelete))
                             if entry == nil && !canDelete {
                                 Text("削除を優先する場合は、保存先の端末で解消してください。")
@@ -128,7 +160,8 @@ struct ClusterConflictsView: View {
         .alert("選んだ内容で競合を解消しますか？", isPresented: $confirming) {
             Button("キャンセル", role: .cancel) {}
             Button("選んだ内容を優先") {
-                if let conflict, let selected { transfer.resolveCluster(conflict, selected: selected) }
+                if let sharedConflict, let selected { transfer.resolveSharedTrack(sharedConflict, selected: selected) }
+                else if let conflict, let selected { transfer.resolveCluster(conflict, selected: selected) }
             }
         } message: {
             Text("保存先に解消結果を送信します。他の変更履歴は保持します。")
@@ -219,7 +252,7 @@ struct PeerSetupView: View {
                         Text(member).font(.system(.caption, design: .monospaced)).textSelection(.enabled)
                     }
                 }
-                if transfer.disputedMembers.isEmpty && transfer.clusterConflicts.isEmpty && transfer.clusterAlbumConflicts.isEmpty {
+                if transfer.disputedMembers.isEmpty && transfer.clusterConflicts.isEmpty && transfer.clusterAlbumConflicts.isEmpty && transfer.sharedTrackConflicts.isEmpty {
                     Text("確認が必要な競合はありません。表にない端末の追加や権限の変更は、ライブラリの管理者に依頼してください。")
                         .font(.caption).foregroundStyle(.secondary)
                 }

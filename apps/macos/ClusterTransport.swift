@@ -47,6 +47,13 @@ final class ClusterNetwork {
     private(set) var lastPath: String?
     private(set) var sharedAudio = false
     private(set) var supportedOperations: Set<ClusterOperation> = []
+    private(set) var resolveTrackAvailable = false
+    private var resolutionHost: String?
+    struct DeferredResolution {
+        let request: ClusterMutationRequest
+        let host: String
+    }
+    private(set) var deferredResolution: DeferredResolution?
 
     init(store: LocalMusicStore, secrets: CredentialStore, addresses: [PeerAddress]? = nil) {
         self.store = store; self.secrets = secrets; self.explicitAddresses = addresses
@@ -163,6 +170,8 @@ final class ClusterNetwork {
                 if await current.sharedAudio {
                     sharedAudio = true
                     supportedOperations.formUnion(await current.supportedOperations)
+                    resolveTrackAvailable = await current.supportedOperations.contains(.resolveTrack)
+                    resolutionHost = current.peer
                 }
                 try await current.reconcile(database: database)
                 if await current.sharedAudio { successful = true; lastPath = current.selectedPath; continue }
@@ -382,6 +391,53 @@ final class ClusterNetwork {
                 await stateChanged()
             }
         }
+    }
+
+    func resolveSharedTrack(_ conflict: SharedTrackConflict, selected: String) async throws -> SharedTrackResolution.Result {
+        let files = store
+        let database = try await CatalogStorage.shared.perform { try files.database() }
+        guard let snapshot = try await CatalogStorage.shared.perform({ try database.sharedAudioSnapshot() }) else {
+            throw LocalMusicError.invalidData
+        }
+        let request = try conflict.request(catalog: snapshot.catalog, selected: selected)
+        deferredResolution = nil
+        return try await submitSharedResolution(request, database: database, host: resolutionHost)
+    }
+
+    func retrySharedResolution() async throws -> SharedTrackResolution.Result {
+        guard let deferredResolution else { throw LocalMusicError.invalidData }
+        let files = store
+        let database = try await CatalogStorage.shared.perform { try files.database() }
+        return try await submitSharedResolution(deferredResolution.request, database: database, host: deferredResolution.host)
+    }
+
+    private func submitSharedResolution(_ request: ClusterMutationRequest, database: CatalogDatabase,
+                                        host: String?) async throws -> SharedTrackResolution.Result {
+        let candidates = try await addresses(database: database)
+        guard let address = candidates.first(where: { host == nil || $0.id().description == host }) else {
+            throw LocalMusicError.clusterUnavailable
+        }
+        let current = try await ClusterSession.connect(address: address, secrets: secrets, database: database)
+        session = current
+        defer { current.close(); session = nil }
+        let shared = await current.sharedAudio
+        let operations = await current.supportedOperations
+        let supported = shared && operations.contains(.resolveTrack)
+        resolveTrackAvailable = supported
+        resolutionHost = current.peer
+        let files = store
+        let result = try await SharedTrackResolution.perform(request, supported: supported,
+            send: { try await current.mutate($0) }, refresh: {
+                try await current.reconcile(database: database)
+                let catalog = try await CatalogStorage.shared.perform { try database.clusterCatalog() }
+                try await CatalogStorage.shared.perform { try files.save(catalog, clusterEdits: false) }
+                return catalog
+            })
+        if case .deferred = result.reply {
+            deferredResolution = DeferredResolution(request: request, host: current.peer)
+        } else { deferredResolution = nil }
+        lastPath = current.selectedPath
+        return result
     }
 
     func resolve(object: String, selected: String, parents: [String]) async throws -> LocalCatalog {

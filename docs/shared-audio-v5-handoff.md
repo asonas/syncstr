@@ -427,6 +427,24 @@ historical bindings. `objects` describes content independently. Physical
 `locators` are server-local relative names, not download URLs or device paths.
 Unknown byte lengths and missing replicas remain unavailable.
 
+For a conflicted track, `heads["track:<logical-id>"]` lists every competing record
+ID, and `candidates["<logical-id>"]["<head-record-id>"]` contains that head's full
+Track value, including `retired`. `tracks` alone is not a selectable conflict
+candidate: while conflicted it can still contain the baseline value. `candidates`
+is omitted when empty; older catalog JSON without it remains valid. Apple clients
+display these values from the authenticated host and do not add a second record
+signature verifier. Preserve the order in `heads` when submitting `expected`.
+Disable retired choices on devices without host authority. After `needs-review`,
+refresh from the same host and require a new choice; never report resolution.
+
+Apple track resolutions have no persistent queue or automatic retry. A `deferred`
+reply retains the original request and receiving host in memory for an explicit
+retry, with the same request ID and no host failover. Accepted and needs-review
+replies refresh the catalog; other replies do not imply any shared change.
+Album-wide title choice remains unavailable on v5: `resolve-track` selects one
+existing signed Track head and cannot apply a new album title across tracks. The
+legacy `album-title` operation is not sent on v5 sessions.
+
 Track metadata retains supplied values. Migrated metadata has `organization`
 and `legacyEntry` provenance; subsequent explicit metadata keys belong to the
 logical track. Apply ADR 0004 precedence without inventing absent values. Never
