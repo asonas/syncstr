@@ -149,6 +149,7 @@ async fn main() -> anyhow::Result<()> {
                         catalog: hex::encode(sha2::Sha256::digest(serde_json::to_vec(&catalog)?)),
                         reason: "Synthetic fixture approval".into(),
                         audio_eligible: true,
+                        source_confirmation: None,
                     },
                 },
             },

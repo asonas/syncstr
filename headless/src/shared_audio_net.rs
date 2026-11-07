@@ -293,6 +293,7 @@ impl crate::shared_audio::Store {
             "resolve-track" => self.resolve_track_member(signer, peer, mutation, proof),
             "update-playlists" => self.update_playlists_member(signer, peer, mutation, proof),
             "register-track" => self.register_track_member(signer, peer, mutation, proof),
+            "assign-source" => self.assign_source_member(signer, peer, mutation, proof),
             _ => MutationReply::Unsupported {
                 request: mutation.request,
                 operation: mutation.operation,
@@ -520,6 +521,7 @@ async fn serve_connection(
                 "update-playlists".into(),
                 "put-object".into(),
                 "register-track".into(),
+                "assign-source".into(),
             ],
         },
     )

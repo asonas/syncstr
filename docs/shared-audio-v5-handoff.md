@@ -20,7 +20,7 @@ and requires live membership for the remote ID and live host authority for itsel
 before storing any presented grants or revocations. Validation, authorization and
 storage share one store lock and transaction; a rejected Hello leaves membership
 unchanged. The server replies with its current proof and
-`"supported_operations":["edit-track","resolve-track","update-playlists","put-object","register-track"]`, then finishes. A missing
+`"supported_operations":["edit-track","resolve-track","update-playlists","put-object","register-track","assign-source"]`, then finishes. A missing
 operations field means no member mutations are supported. Clients must keep their known
 revocations when merging the response, validate root and cluster equality, and
 require a live host grant for the actual remote ID.
@@ -121,7 +121,7 @@ request, with ordinary connection failure when evidence cannot be returned.
 Other outcomes keep the session open.
 Incomplete history returns `deferred` with reason `incomplete-history`; unavailable
 storage returns `deferred` with reason `store-unavailable`. Operations other than
-`edit-track`, `resolve-track`, `update-playlists`, `put-object` and `register-track`
+`edit-track`, `resolve-track`, `update-playlists`, `put-object`, `register-track` and `assign-source`
 remain `unsupported`.
 
 Persist the request ID and original envelope before sending. Retry only at the
@@ -313,6 +313,50 @@ the same record, host and heads after subsequent edits or restart. Different
 source tracks with equal hashes remain independent logical tracks. This slice
 does not add cross-host registration replay, member-scoped request IDs,
 deterministic track IDs, or projection changes (D3 B).
+
+### Member source correspondence approval
+
+An authenticated live member can use advertised `assign-source` with payload
+`{"source":{"library":"example","track":"17"},"target":"T-A"}` and exactly
+`confirmed: [{"source":{"library":"example","track":"17"},"target":"T-A"}]`.
+Target must be explicitly present; null confirms an unassignment. Missing,
+duplicate, mismatched or extra confirmation fields are invalid. `expected` may
+contain only the canonical source subject (`source:` followed by serialized
+Source JSON), with every observed head. Missing/empty heads mean a new source.
+The host validates target existence, retirement, track conflicts, and exclusive
+source ownership using the existing `Action::Assign` rules.
+
+The host signs the unchanged `Value::Correspondence {source, target, evidence}`
+shape, with host-built Evidence and authenticated D2 origin. Evidence now has
+optional `source_confirmation: {source, target}` recording the exact approved
+assignment. Replication validates that it matches the signed correspondence;
+Track values cannot carry a source confirmation. Older records omit this field
+and retain their original bytes and IDs. No client-supplied Evidence is accepted.
+
+Acceptance returns `accepted {request, record, host, heads}` for the source subject.
+Stale heads return `needs-review` without a partial write. Reuse the original
+envelope and accepting host under D3 A: exact replay returns the original result,
+while altered content or another origin member reusing the ID is invalid.
+Two hosts' competing correspondences remain conflicted after replication. A new
+explicitly confirmed assignment resolves them only with every current head as
+an expected head and parent. `resolve-track` is Track-only and is not a source
+correspondence resolver. Equal audio bytes never choose a target, create an alias
+or merge tracks; track metadata, bindings, pins and playlist occurrences remain
+unchanged. ASO-41 can build reviewed migration on this operation; migration and
+app client changes are outside this host slice.
+
+Upgrade all hosts before emitting records containing `source_confirmation`.
+Like D2 origin, the new field fails older `Evidence` decoders using
+`deny_unknown_fields`. This does not merely discard one record: `Store::ingest`
+decodes each record with `?` inside the page transaction, so failure rolls back
+the entire page and leaves its cursor unchanged. `receive_page` propagates the
+error, and `Session::reconcile` aborts that peer's pass before subsequent record
+pages, playlist synchronization and audio download. `synchronize` logs the error
+and continues serving other peers; future passes retry the same blocked page.
+Previously committed pages remain stored. The service does not globally stop,
+but that peer's replication cannot advance past the incompatible record until
+upgrade. Direct `receive` requests also propagate the failure through the request
+handler rather than acknowledging a partially accepted batch.
 
 ### Catalog snapshot
 

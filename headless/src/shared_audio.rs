@@ -37,6 +37,22 @@ pub struct Evidence {
     pub catalog: String,
     pub reason: String,
     pub audio_eligible: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_confirmation: Option<crate::shared_audio::SourceConfirmation>,
+}
+
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SourceConfirmation {
+    pub source: crate::shared_audio::Source,
+    #[serde(deserialize_with = "crate::shared_audio::required_target")]
+    pub target: Option<String>,
+}
+
+fn required_target<'de, D: serde::Deserializer<'de>>(
+    decoder: D,
+) -> Result<Option<String>, D::Error> {
+    serde::Deserialize::deserialize(decoder)
 }
 
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -1177,6 +1193,73 @@ impl crate::shared_audio::Store {
         })
     }
 
+    pub(crate) fn assign_source_member(
+        &self,
+        signer: &crate::peer::Identity,
+        member: &str,
+        mutation: crate::shared_audio_net::MutationRequest,
+        proof: &crate::enrollment::Proof,
+    ) -> crate::shared_audio_net::MutationReply {
+        use crate::shared_audio_net::MutationReply;
+        let request = mutation.request.clone();
+        let result = (|| -> anyhow::Result<_> {
+            let assignment: crate::shared_audio::SourceConfirmation =
+                serde_json::from_value(mutation.payload.clone())?;
+            let subject = assignment.source.subject();
+            anyhow::ensure!(
+                mutation.confirmed == vec![serde_json::to_value(&assignment)?],
+                "explicit source confirmation required"
+            );
+            anyhow::ensure!(
+                mutation.expected.keys().all(|key| key == &subject),
+                "unexpected source subject"
+            );
+            let grant = proof
+                .grants
+                .iter()
+                .find(|g| g.member == member && proof.verify(&g.id).is_ok())
+                .ok_or(crate::shared_audio::CommitFailure::Revoked)?;
+            let digest = crate::shared_audio::hash(&serde_json::to_vec(&(member, &mutation))?);
+            let (signed, body) = self.commit_prepared(
+                signer,
+                &request,
+                digest,
+                Some(crate::shared_audio::Origin {
+                    member: member.into(),
+                    grant: grant.id.clone(),
+                }),
+                |catalog| {
+                    Ok(crate::shared_audio::Request {
+                        id: request.clone(),
+                        expected: mutation.expected,
+                        action: crate::shared_audio::Action::Assign {
+                            source: assignment.source.clone(),
+                            target: assignment.target.clone(),
+                            evidence: crate::shared_audio::Evidence {
+                                snapshot: catalog.baseline.clone(),
+                                catalog: crate::shared_audio::hash(&serde_json::to_vec(catalog)?),
+                                reason: "Member source correspondence approval".into(),
+                                audio_eligible: true,
+                                source_confirmation: Some(assignment),
+                            },
+                        },
+                    })
+                },
+            )?;
+            Ok(MutationReply::Accepted {
+                request: request.clone(),
+                record: signed.id.clone(),
+                host: body.author,
+                heads: body
+                    .edits
+                    .iter()
+                    .map(|edit| (edit.value.subject(), vec![signed.id.clone()]))
+                    .collect(),
+            })
+        })();
+        crate::shared_audio::mutation_result(request, result)
+    }
+
     pub(crate) fn register_track_member(
         &self,
         signer: &crate::peer::Identity,
@@ -1240,6 +1323,7 @@ impl crate::shared_audio::Store {
                                 catalog: crate::shared_audio::hash(&serde_json::to_vec(catalog)?),
                                 reason: "Member audio addition".into(),
                                 audio_eligible: true,
+                                source_confirmation: None,
                             },
                         },
                     })
@@ -1386,6 +1470,7 @@ impl crate::shared_audio::Store {
                                 catalog: crate::shared_audio::hash(&serde_json::to_vec(catalog)?),
                                 reason: "Member metadata edit".into(),
                                 audio_eligible: false,
+                                source_confirmation: None,
                             },
                         },
                     })
@@ -1510,6 +1595,7 @@ impl crate::shared_audio::Store {
                                 reason: "Member track conflict resolution".into(),
                                 // The selected signed head already approved these audio bindings.
                                 audio_eligible: true,
+                                source_confirmation: None,
                             },
                         },
                     })
@@ -1908,6 +1994,10 @@ fn decode(
             crate::shared_audio::Value::Track { track, evidence } => {
                 crate::shared_audio::validate_evidence(evidence)?;
                 anyhow::ensure!(
+                    evidence.source_confirmation.is_none(),
+                    "source confirmation on a track"
+                );
+                anyhow::ensure!(
                     crate::shared_audio::identity(&track.id)
                         && track.audio.len() <= 32
                         && track
@@ -1930,6 +2020,14 @@ fn decode(
                 target,
                 evidence,
             } => {
+                if let Some(confirmation) = &evidence.source_confirmation {
+                    anyhow::ensure!(
+                        confirmation.source == *source
+                            && confirmation.target == *target
+                            && (target.is_none() || evidence.audio_eligible),
+                        "source confirmation mismatch"
+                    );
+                }
                 anyhow::ensure!(
                     crate::shared_audio::identity(&source.library)
                         && crate::shared_audio::identity(&source.track)
