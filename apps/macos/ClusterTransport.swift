@@ -378,6 +378,13 @@ final class ClusterNetwork {
                 } catch {
                     try Task.checkCancellation()
                     failure = error
+                    if try await CatalogStorage.shared.perform({
+                        guard let registration = try database.clusterRegistration() else { return false }
+                        return try registration.membership.isEffectivelyRevoked(registration.localGrant)
+                    }) {
+                        await stateChanged()
+                        return
+                    }
                     if sent || edit.mutationHost != nil { break }
                 }
             }
@@ -648,6 +655,7 @@ final class ClusterSession {
 
     static func connect(address: IrohLib.EndpointAddr, secrets: CredentialStore, database: CatalogDatabase, diagnostic: PlaybackDiagnosticContext? = nil, playlists: Bool = false) async throws -> ClusterSession {
         guard let registration = try database.clusterRegistration() else { throw LocalMusicError.unauthorized }
+        _ = try registration.membership.verify(registration.localGrant)
         diagnostic?.record("connection", "start", fields: ["path": "unknown", "reason": "not_established", "reused": "false"])
         let session: ClusterSession
         do {
@@ -663,7 +671,12 @@ final class ClusterSession {
                 let stream = try await session.connection.openBi()
                 try await session.send(ClusterHelloV5(version: 5, proof: registration.membership), stream: stream)
                 try await stream.send().finish()
-                let hello = try JSONDecoder().decode(ClusterHelloV5.self, from: await session.receiveData(stream: stream, limit: 4 * 1024 * 1024))
+                let data = try await session.receiveData(stream: stream, limit: 4 * 1024 * 1024)
+                if let frame = try JSONSerialization.jsonObject(with: data) as? [String: Any], frame["status"] != nil {
+                    try database.receiveClusterHelloRefusal(data, peer: session.peer)
+                    throw LocalMusicError.unauthorized
+                }
+                let hello = try JSONDecoder().decode(ClusterHelloV5.self, from: data)
                 guard hello.version == 5 else { throw LocalMusicError.incompatiblePeer }
                 try database.authenticateClusterPeer(session.peer, membership: hello.proof)
                 session.supportedOperations = hello.supportedOperations

@@ -623,7 +623,8 @@ final class LocalTransfer: ObservableObject {
 
     private func scheduleClusterRetry() {
         clusterRetry?.cancel()
-        guard clusterRegistration != nil,
+        guard let registration = clusterRegistration,
+              (try? registration.membership.verify(registration.localGrant)) != nil,
               hasQueuedTrackMetadata || (!clusterMutationsUnavailable &&
                 (pendingClusterMetadata || clusterBatches.contains(where: { $0.items.contains(where: { $0.state == .queued }) }))) else { return }
         clusterRetry = Task { [weak self] in

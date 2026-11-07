@@ -158,6 +158,27 @@ enum ClusterMutationReply: Codable, Sendable, Equatable {
     }
 }
 
+struct ClusterHelloRefusalV5: Codable {
+    let version: Int
+    let status: String
+    let reason: String
+    let member: String
+    let evidence: ClusterMembership
+
+    func verifiedMembership(registration: ClusterRegistration, peer: String) throws -> ClusterMembership {
+        let own = try registration.membership.chain(registration.localGrant)[0]
+        guard version == 5, status == "rejected", reason == "revoked", member == own.member else {
+            throw LocalMusicError.invalidData
+        }
+        let merged = try registration.membership.merging(evidence, presenter: peer)
+        let host = try merged.authorize(peer, host: true)
+        guard host.cluster == own.cluster, try merged.isEffectivelyRevoked(registration.localGrant) else {
+            throw LocalMusicError.unauthorized
+        }
+        return merged
+    }
+}
+
 struct ClusterHelloV5: Codable {
     let version: Int
     let proof: ClusterMembership

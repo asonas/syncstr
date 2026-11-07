@@ -25,6 +25,93 @@ struct ClusterMetadataTests {
         try #require(try database.clusterMetadataEdits().first(where: { $0.id == id }))
     }
 
+    private func refusal(_ f: SharedAudioTests.Fixture) throws -> ClusterHelloRefusalV5 {
+        var registration = try #require(try f.database.clusterRegistration())
+        let member = try registration.membership.verify(registration.localGrant).member
+        let root = try registration.membership.authorize(registration.membership.root, host: true)
+        let key = try Curve25519.Signing.PrivateKey(rawRepresentation: Data(repeating: 7, count: 32))
+        let payload = try ClusterCrypto.payload("syncstr-membership-revocation-v1",
+            [1, f.cluster, root.member, member, root.id, [String](), [String]()])
+        registration.membership.revocations.append(ClusterRevocation(version: 1,
+            id: LocalMusicStore.digest(payload), cluster: f.cluster, issuer: root.member, member: member,
+            authority: root.id, observed: [], changeHeads: [],
+            signature: try key.signature(for: payload).map { String(format: "%02x", $0) }.joined()))
+        return ClusterHelloRefusalV5(version: 5, status: "rejected", reason: "revoked", member: member,
+            evidence: registration.membership)
+    }
+
+    @Test
+    func helloRefusalRejectsUnsentAndPreventsReconnectWithoutChangingSentOutcome() async throws {
+        let f = try prepare()
+        defer { try? FileManager.default.removeItem(at: f.store.root) }
+        let unsent = try queued(f)
+        let sent = try queued(f, track: "B")
+        _ = try f.database.beginMetadataMutation(sent.id, host: f.host)
+        try f.database.metadataMutationInterrupted(sent.id, reason: "Lost reply")
+        let data = try JSONEncoder().encode(refusal(f))
+        try f.database.receiveClusterHelloRefusal(data, peer: f.host)
+        // Replayed evidence is idempotent and cannot revive queued work.
+        try f.database.receiveClusterHelloRefusal(data, peer: f.host)
+        let registration = try #require(try f.database.clusterRegistration())
+        #expect(registration.membership.revocations.count == 1)
+        #expect(throws: LocalMusicError.self) {
+            _ = try registration.membership.verify(registration.localGrant)
+        }
+        #expect(try stored(f.database, unsent.id).mutationReply == .rejected(request: unsent.id, reason: .revoked))
+        #expect(try stored(f.database, unsent.id).mutation == unsent.mutation)
+        #expect(try stored(f.database, unsent.id).canRetryMutation == false)
+        #expect(try stored(f.database, unsent.id).mutationDetail?.contains("登録が無効") == true)
+        #expect(try stored(f.database, sent.id).mutationState == .outcomeUnknown)
+        #expect(try stored(f.database, sent.id).mutationHost == f.host)
+        try f.database.metadataMutationInterrupted(unsent.id, reason: "Connection failed")
+        #expect(try stored(f.database, unsent.id).mutationState == .rejected)
+        try f.database.discardMetadataMutation(unsent.id)
+        #expect(try f.database.clusterMetadataEdits().map(\.id) == [sent.id])
+    }
+
+    @Test(arguments: ["tampered", "member", "host", "unknown-host", "revoked-host", "root", "cluster", "reason", "status", "version", "no-revocation", "oversized", "malformed"])
+    func unverifiableHelloRefusalDoesNotChangeMembershipOrEdits(_ failure: String) throws {
+        let f = try prepare()
+        defer { try? FileManager.default.removeItem(at: f.store.root) }
+        let edit = try queued(f)
+        let before = try #require(try f.database.clusterRegistration())
+        var wire = try #require(JSONSerialization.jsonObject(with: JSONEncoder().encode(refusal(f))) as? [String: Any])
+        var evidence = try #require(wire["evidence"] as? [String: Any])
+        var revocations = try #require(evidence["revocations"] as? [[String: Any]])
+        var peer = f.host
+        switch failure {
+        case "tampered": revocations[0]["signature"] = String(repeating: "0", count: 128)
+        case "member": wire["member"] = f.host
+        case "host": peer = try before.membership.chain(before.localGrant)[0].member
+        case "unknown-host": peer = String(repeating: "0", count: 64)
+        case "revoked-host":
+            let root = try before.membership.authorize(before.membership.root, host: true)
+            let payload = try ClusterCrypto.payload("syncstr-membership-revocation-v1",
+                [1, f.cluster, root.member, f.host, root.id, [String](), [String]()])
+            let key = try Curve25519.Signing.PrivateKey(rawRepresentation: Data(repeating: 7, count: 32))
+            let revoked = ClusterRevocation(version: 1, id: LocalMusicStore.digest(payload), cluster: f.cluster,
+                issuer: root.member, member: f.host, authority: root.id, observed: [], changeHeads: [],
+                signature: try key.signature(for: payload).map { String(format: "%02x", $0) }.joined())
+            revocations.append(try #require(JSONSerialization.jsonObject(with: JSONEncoder().encode(revoked)) as? [String: Any]))
+        case "root": evidence["root"] = String(repeating: "0", count: 64)
+        case "cluster": revocations[0]["cluster"] = UUID().uuidString
+        case "reason": wire["reason"] = "unauthorized"
+        case "status": wire["status"] = "unknown"
+        case "version": wire["version"] = 4
+        case "no-revocation": revocations = []
+        case "oversized": wire["padding"] = String(repeating: "x", count: 4 * 1024 * 1024)
+        case "malformed": wire["member"] = 42
+        default: Issue.record("Unknown failure case")
+        }
+        evidence["revocations"] = revocations
+        wire["evidence"] = evidence
+        let data = try JSONSerialization.data(withJSONObject: wire)
+        #expect(throws: (any Error).self) { try f.database.receiveClusterHelloRefusal(data, peer: peer) }
+        #expect(try f.database.clusterRegistration()?.membership == before.membership)
+        #expect(try stored(f.database, edit.id).mutationState == .queued)
+        #expect(try stored(f.database, edit.id).mutation == edit.mutation)
+    }
+
     @Test
     func staleReviewKeepsTextAndRequiresExplicitNewRequest() async throws {
         let f = try prepare()
