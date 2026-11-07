@@ -44,6 +44,15 @@ jobs:
       - uses: actions/checkout@v7
       - run: brew install xcodegen
       - run: xcodegen generate --spec apps/ios/project.yml
+      - name: Cache v5 interoperability tools
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            .build/v5-rust
+          key: macos-fixtures-1.99.1-${{ hashFiles('headless/Cargo.lock', 'headless/src/**', 'headless/examples/**') }}
+          restore-keys: macos-fixtures-1.99.1-
       - name: Build required v5 interoperability tools
         run: |
           rustup toolchain install 1.99.1 --profile minimal

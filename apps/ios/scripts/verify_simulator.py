@@ -116,6 +116,13 @@ def main(attempt=1):
         for scheme, name in phases + [("SyncstrUITests", "ui")]:
             environment = None
             if name == "ui" and (not args.only_testing or any("SharedAudioFlowTests" in item for item in args.only_testing)):
+                if args.device == "ipad":
+                    # iPhone's unit phase builds the app before fixture installation.
+                    run(["xcodebuild", "-project", "apps/ios/Syncstr.xcodeproj", "-scheme", "SyncstrUITests",
+                         "-disableAutomaticPackageResolution", "-onlyUsePackageVersionsFromResolvedFile",
+                         "-destination", "platform=iOS Simulator,id=" + device,
+                         "-derivedDataPath", str(root / ".build" / "SimulatorDerivedData"),
+                         "CODE_SIGNING_ALLOWED=NO", "build-for-testing"], "ui-build")
                 fixture = prepare_v5_fixture(root, device, run)
                 environment = dict(os.environ, TEST_RUNNER_SYNCSTR_V5_FIXTURE_ROOT=fixture)
             run(["xcrun", "simctl", "bootstatus", device, "-b"], name + "-ready")

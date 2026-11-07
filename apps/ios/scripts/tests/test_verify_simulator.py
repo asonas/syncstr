@@ -147,11 +147,14 @@ if os.environ.get("FAIL") == "delete" and command[1:3] == ["simctl", "delete"]:
                                1200 - timings["ui"]["elapsedSeconds"])
 
     def test_ipad_runs_only_ui_tests(self):
-        result, calls, _ = self.run_script(device="ipad")
+        result, calls, _ = self.run_script(device="ipad", selection="SyncstrUITests/SharedAudioFlowTests")
         self.assertEqual(result.returncode, 0, result.stderr)
         builds = [call for call in calls if call[0] == "xcodebuild" and "test" in call]
         self.assertEqual(len(builds), 1)
         self.assertIn("SyncstrUITests", builds[0])
+        build_index = next(index for index, call in enumerate(calls) if "build-for-testing" in call)
+        install_index = next(index for index, call in enumerate(calls) if call[1:3] == ["simctl", "install"])
+        self.assertLess(build_index, install_index)
 
     def test_failed_test_preserves_failure_and_cleans_up(self):
         result, calls, output = self.run_script("test")

@@ -19,6 +19,11 @@ def test_results(tree):
     """Return final failures and recovered retries from xcresulttool's test tree."""
     failed, flaky = set(), set()
 
+    def repetitions(node):
+        if node.get("nodeType") == "Repetition":
+            return {node.get("result")}
+        return set().union(*(repetitions(child) for child in node.get("children", [])))
+
     def visit(node):
         if isinstance(node, list):
             for item in node:
@@ -29,7 +34,7 @@ def test_results(tree):
                 result = node.get("result")
                 if result == "Failed":
                     failed.add(name)
-                elif result in ("Flaky", "Passed with retries"):
+                if {"Passed", "Failed"} <= repetitions(node):
                     flaky.add(name)
             for value in node.values():
                 if isinstance(value, (list, dict)):
