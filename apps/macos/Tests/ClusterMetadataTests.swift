@@ -38,7 +38,8 @@ struct ClusterMetadataTests {
             displayedStates.append(try? stored(f.database, edit.id).mutationState)
         }) {
             #expect($0 == request)
-            #expect(try stored(f.database, edit.id).mutationState == .sending)
+            let sending = try stored(f.database, edit.id)
+            #expect(sending.mutationState == .sending)
             return .needsReview(request: $0.request, current: current)
         }
         let review = try stored(f.database, edit.id)
