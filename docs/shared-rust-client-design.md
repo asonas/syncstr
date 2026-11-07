@@ -6,7 +6,11 @@ Use one Rust client module for authenticated protocol handling, logical catalog 
 
 This follows the direction already agreed in ASO-48. It does not move Apple off SwiftUI or make the gpui development target a replacement for the macOS app.
 
-## Current implementation to preserve
+## Current merge decision packet
+
+The [merge decision packet](native-client-merge-decisions.md) refreshes this proposal against main `e214f9b` with the merged Windows/Android ASO-68 evidence, four recommendations, alternatives and separate adoption gates. Those recommendations await owner agreement. The implementation inventory below retains its original dated assessment; it is not a current feature-completion claim.
+
+## Original implementation inventory to preserve
 
 | Implementation | Finding | Design consequence |
 | --- | --- | --- |
@@ -122,12 +126,12 @@ The existing Swift tests become behavioral reference cases, not mocks of the Rus
 | [ASO-70](https://linear.app/asonas/issue/ASO-70) | Shared logical catalog and exact playlist projection | ASO-48 agreement |
 | [ASO-71](https://linear.app/asonas/issue/ASO-71) | Verified audio acquisition, protected assets and durable save ownership | ASO-48 agreement and ASO-70 identity/projection |
 
-All four are Backlog work. Existing ASO-10/11 own Android/Windows integration, and ASO-12 owns cross-platform identity acceptance. The [playback support contract](windows-android-playback-support.md#published-implementation-issues) links the separate daily-player follow-ups. Production Apple migration still needs an agreed import/rollback contract and a bounded implementation issue; the packaging experiment does not authorize that migration.
+ASO-68 is In Progress with Windows and Android execution recorded; ASO-69–71 remain Backlog in the 2026-11-07 tracking snapshot. Existing ASO-10/11 own Android/Windows integration, and ASO-12 owns cross-platform identity acceptance. The [playback support contract](windows-android-playback-support.md#published-implementation-issues) links the separate daily-player follow-ups. Production Apple migration still needs an agreed import/rollback contract and a bounded implementation issue; the packaging experiment does not authorize that migration.
 
 ## Decisions and completion evidence still required
 
 - The owner has already chosen a shared Rust protocol/projection/save core with native UI/audio. The proposed typed interface, staged queue migration and UniFFI choice need review as concrete details of that direction.
-- Execute the binding experiment and Apple A/B/C measurements before deciding when IrohLib can be removed. In particular, account for legacy `PeerTransfer`, not only v5.
+- Complete the remaining Apple binding experiment and A/B/C measurements before deciding when IrohLib can be removed. Windows/Android probe execution has passed; it does not establish Apple packaging cost. Account for legacy `PeerTransfer`, not only v5.
 - Agree on profile import/rollback rules and implementation ownership with ASO-10/11. Use the published follow-ups above, and scope production Apple migration separately rather than expanding the platform tickets implicitly.
 
-This pass produced a source-backed proposal and checked the official binding documentation. No Rust/Swift/Kotlin implementation, dependency installation, profile migration or device playback verification was performed. ASO-48 remains open until the required decisions and evidence are agreed.
+This PR contains design documents only. The separately merged binding experiment is described in the decision packet; no production profile migration or device audio acceptance was performed by this design. ASO-48 remains open for its outstanding decisions and Apple evidence.

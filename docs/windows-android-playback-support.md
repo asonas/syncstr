@@ -6,6 +6,12 @@ Deliver v5 identity and save compatibility first, then require the daily-use con
 
 The source assessment uses revision `fd50ab9bf604d415571ef35b5ad855b5b01d932a`. Before publication, main advanced to `50d4d95`: ASO-53's Apple mutation guards and ASO-60's typed mutation transport are now merged. These changes prevent unsupported legacy writes and provide transport infrastructure; they do not complete the individual v5 mutation features. The [v5 completion design](v5-completion-design.md), accepted [player specification](player-interaction-spec.md) and [cluster interaction specification](cluster-ui-review.md) provide the reference contracts. The inventory below checks their implementation and evidence rather than treating every Apple specification as delivered macOS functionality. This Windows session did not run a macOS app.
 
+## Current merge decision packet
+
+The [merge decision packet](native-client-merge-decisions.md) separates the agreed product direction from four recommendations still awaiting owner agreement. It includes the merged Windows/Android binding evidence and proposes a delivery order without weakening the daily-use or full-parity targets. This document's source/status tables retain their dated assessment.
+
+Since that assessment, PRs #41–43 delivered Apple playlist updates, conflict resolution and durable metadata editing, and PR #47 delivered host-side album visibility. The [v5 handoff](shared-audio-v5-handoff.md) records current wire behavior. Host visibility support alone does not establish client projection or enabled controls. Preserve those distinctions when implementing the platform slices rather than treating the historical gap inventory below as the latest feature list.
+
 ## macOS reference inventory
 
 The target is equivalent user behavior with platform-native controls, not identical SwiftUI layout. Preserve each feature's supported context: local/legacy operations do not prove v5 support.
