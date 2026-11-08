@@ -51,6 +51,20 @@ jobs:
         run: |
           rustup toolchain install 1.99.1 --profile minimal
           cargo +1.99.1 build --manifest-path headless/Cargo.toml --locked --features p2p --target-dir .build/v5-rust --bin syncstr-headless --example shared_audio_fixture --example shared_audio_fixture_update
+      - name: Cache locked Iroh binary
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # Use the release API when the browser download endpoint returns 504.
+          gh release download v1.1.0 --repo n0-computer/iroh-ffi \
+            --pattern IrohLib.xcframework.zip --dir "$RUNNER_TEMP/iroh-binary"
+          archive="$RUNNER_TEMP/iroh-binary/IrohLib.xcframework.zip"
+          # Pinned by the upstream v1.1.0 Package.swift; SwiftPM checks it again.
+          printf '%s  %s\n' ad46dadf09f9224157512992923562931ed60f252414230d50893a4d515c5776 "$archive" \
+            | shasum -a 256 --check
+          cache="$HOME/Library/Caches/org.swift.swiftpm/artifacts"
+          mkdir -p "$cache"
+          command cp "$archive" "$cache/https___github_com_n0_computer_iroh_ffi_releases_download_v1_1_0_IrohLib_xcframework_zip"
       - name: Resolve locked packages
         run: |
           # GitHub release assets can return transient gateway errors.
