@@ -154,8 +154,8 @@ The 1800-second limit gives the largest completed phase about 60% headroom.
 The CI job allows 100 minutes. Across those three weekly runs, the largest
 measured non-UI job duration was 1480.530 seconds (iPhone run 42454766252:
 2607 seconds total minus 1126.470 seconds UI). Subtract both UI and UI fallback
-execution when computing this baseline. The budget is 1480.530 + 1800 + 1800
-+ 900 seconds of headroom = 5980.530 seconds (99.676 minutes), rounded up to
+execution when computing this baseline. The budget is 1480.530 + 1800 + 1800 +
+900 seconds of headroom = 5980.530 seconds (99.676 minutes), rounded up to
 100 minutes. Per-command limits detect hangs; the outer job limit covers this
 measured recovery budget rather than the sum of every command ceiling firing
 at once. Non-UI timings include setup, cleanup, and artifact handling; fresh-device
