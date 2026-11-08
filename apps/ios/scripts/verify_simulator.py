@@ -25,6 +25,24 @@ class SimulatorInfrastructureError(RuntimeError):
         self.cause = cause
 
 
+def test_attempts(tree):
+    def repetitions(node):
+        return (1 if node.get("nodeType") == "Repetition" else
+                sum(repetitions(child) for child in node.get("children", [])))
+
+    def visit(node):
+        if isinstance(node, list):
+            return {test: attempts for child in node for test, attempts in visit(child).items()}
+        if isinstance(node, dict):
+            if node.get("nodeType") == "Test Case":
+                return {node["nodeIdentifier"]: (node.get("result"), max(1, repetitions(node)))}
+            return {test: attempts for value in node.values() if isinstance(value, (dict, list))
+                    for test, attempts in visit(value).items()}
+        return {}
+
+    return visit(tree)
+
+
 def prepare_v5_fixture(root, device, run):
     binaries = Path(os.environ.get("SYNCSTR_V5_TEST_BIN_DIR", root / ".build/v5-rust/debug"))
     generator = binaries / "examples/shared_audio_fixture"
@@ -142,9 +160,37 @@ def main(attempt=1):
                 command += ["-only-testing:" + responsiveness]
             else:
                 command += ["-skip-testing:" + responsiveness]
-            run(command, name, environment)
+            bundle = output / (name + ".xcresult")
+            try:
+                run(command, name, environment)
+            except subprocess.CalledProcessError:
+                # Xcode can restart a crashed runner at the next test, skipping its retry.
+                if "Restarting after unexpected exit, crash, or test timeout" not in (output / (name + ".log")).read_text():
+                    raise
+                run(["xcrun", "xcresulttool", "get", "test-results", "tests", "--path",
+                     str(bundle)], name + "-tests")
+                failures = {test: attempts for test, (result, attempts) in test_attempts(
+                    json.loads((output / (name + "-tests.log")).read_text())).items() if result == "Failed"}
+                tests = sorted(test for test, attempts in failures.items() if attempts < 2)
+                if not tests:
+                    raise
+                (output / (name + "-retry.json")).write_text(json.dumps({"tests": tests}) + "\n")
+                retry = [arg for arg in command if arg != "-retry-tests-on-failure"
+                         and not arg.startswith("-only-testing:")]
+                retry[retry.index("-test-iterations") + 1] = "1"
+                bundle = output / (name + "-retry.xcresult")
+                retry[retry.index("-resultBundlePath") + 1] = str(bundle)
+                retry += ["-only-testing:" + test for test in tests]
+                run(retry, name + "-retry", environment)
+                run(["xcrun", "xcresulttool", "get", "test-results", "tests", "--path",
+                     str(bundle)], name + "-retry-tests")
+                retried = test_attempts(json.loads((output / (name + "-retry-tests.log")).read_text()))
+                if any(retried.get(test, (None, 0))[0] != "Passed" for test in tests):
+                    raise RuntimeError("Every fallback test must run and pass")
+                if set(failures) - set(tests):
+                    raise
             run(["xcrun", "xcresulttool", "get", "test-results", "summary", "--path",
-                 str(output / (name + ".xcresult"))], name + "-summary")
+                 str(bundle)], name + "-summary")
             summary = json.loads((output / (name + "-summary.log")).read_text())
             if summary["passedTests"] == 0 or summary["failedTests"] != 0:
                 raise RuntimeError(f"{name} must contain passing tests and no failures")

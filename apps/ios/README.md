@@ -139,6 +139,11 @@ failures; after cleanup, verification retries once with a fresh device. Actual
 test failures rerun once with `-retry-tests-on-failure -test-iterations 2`, with
 both test iterations in the same result bundle. Preparation attempts keep separate logs, timings, and
 `result.json` files, including the failed stage and whether a retry is scheduled.
+If XCTest exits unexpectedly and skips a failed test's second iteration, the
+runner reruns only failed tests with fewer than two recorded attempts, once,
+on the same Simulator. The fallback has its own result bundle and retry metadata.
+Passing fallback tests appear as flaky; a repeated crash, failure, skipped test,
+or another test that already exhausted its retry still fails the run.
 Cleanup has a 60-second timeout per command. The CI job allows 60 minutes for the
 bounded recovery; it does not increase the readiness timeout. Existing
 Simulators are not reset or reconfigured. Tests run serially in Japanese with the

@@ -17,7 +17,7 @@ TEAM = "5b63ab0c-c50e-4d8a-b895-1ddc27fe09b4"
 
 def test_results(tree):
     """Return final failures and recovered retries from xcresulttool's test tree."""
-    failed, flaky = set(), set()
+    failed, flaky, passed = set(), set(), set()
 
     def repetitions(node):
         if node.get("nodeType") == "Repetition":
@@ -27,6 +27,8 @@ def test_results(tree):
     def record(name, node, fallback=None):
         if node.get("result", fallback) == "Failed":
             failed.add(name)
+        elif node.get("result", fallback) == "Passed":
+            passed.add(name)
         if {"Passed", "Failed"} <= repetitions(node):
             flaky.add(name)
 
@@ -49,22 +51,33 @@ def test_results(tree):
                     visit(value)
 
     visit(tree)
-    return sorted(failed), sorted(flaky)
+    return sorted(failed), sorted(flaky), sorted(passed)
 
 
 def collect(device, outcome, root):
     failed, flaky, errors = set(), set(), []
+    results = {}
     for bundle in sorted(root.glob("**/*.xcresult")):
         try:
             raw = subprocess.check_output([
                 "xcrun", "xcresulttool", "get", "test-results", "tests", "--path", str(bundle)
             ], text=True, stderr=subprocess.PIPE, timeout=60)
             (bundle.parent / (bundle.stem + "-tests.json")).write_text(raw)
-            failures, recovered = test_results(json.loads(raw))
-            failed.update(failures)
-            flaky.update(recovered)
+            failures, recovered, passed = test_results(json.loads(raw))
+            results[bundle] = (set(failures), set(recovered), set(passed))
         except (subprocess.SubprocessError, ValueError) as error:
             errors.append(f"Could not read {bundle.name}: {type(error).__name__}")
+    for metadata in root.glob("**/*-retry.json"):
+        phase = metadata.name.removesuffix("-retry.json")
+        original = results.get(metadata.parent / (phase + ".xcresult"))
+        retry = results.get(metadata.parent / (phase + "-retry.xcresult"))
+        if original is not None and retry is not None:
+            recovered = set(json.loads(metadata.read_text())["tests"]) & retry[2]
+            original[0].difference_update(recovered)
+            original[1].update(recovered)
+    for failures, recovered, _passed in results.values():
+        failed.update(failures)
+        flaky.update(recovered)
     # Earlier preparation attempts remain diagnostic artifacts, not final failures.
     if outcome != "success" and not failed:
         errors.append("Verification failed before test results were available; inspect job logs and artifacts.")

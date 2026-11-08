@@ -4,6 +4,9 @@ on:
   schedule:
     - cron: '0 18 * * 0'
   workflow_dispatch:
+  # Temporary trigger for the full pre-merge retry acceptance run.
+  push:
+    branches: [agent/aso-93-weekly-simulator]
 
 permissions:
   contents: read

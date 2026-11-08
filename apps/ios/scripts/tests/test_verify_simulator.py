@@ -51,6 +51,16 @@ if command[0] == "xcodebuild" and "SyncstrUITests" in command and "test" in comm
     print(os.environ.get("TEST_RUNNER_SYNCSTR_V5_FIXTURE_ROOT", ""))
 if command[1:5] == ["xcresulttool", "get", "test-results", "summary"]:
     print(json.dumps({"passedTests": 0 if os.environ.get("FAIL") == "empty" else 1, "failedTests": 0}))
+if command[1:5] == ["xcresulttool", "get", "test-results", "tests"]:
+    failed = {"nodeType": "Test Case", "nodeIdentifier": "SyncstrTests/Crash/testExample()", "result": "Failed"}
+    exhausted = dict(failed, nodeIdentifier="SyncstrTests/Crash/testExhausted()", children=[
+        {"nodeType": "Repetition", "result": "Failed"}, {"nodeType": "Repetition", "result": "Failed"}])
+    nodes = [exhausted] if os.environ.get("FAIL") == "already-retried" else [failed]
+    if os.environ.get("FAIL") == "mixed-retries":
+        nodes.append(exhausted)
+    if command[-1].endswith("unit-retry.xcresult"):
+        nodes = [dict(failed, result="Skipped" if os.environ.get("FAIL") == "crash-skipped" else "Passed")]
+    print(json.dumps({"testNodes": nodes}))
 if os.environ.get("FAIL") == "boot" and command[1:3] == ["simctl", "boot"]:
     sys.exit(42)
 if os.environ.get("FAIL") == "boot-once" and command[1:4] == ["simctl", "boot", "owned-simulator"]:
@@ -70,6 +80,11 @@ if command[1:4] == ["simctl", "install", "owned-simulator"]:
 if os.environ.get("FAIL") == "test" and command[0] == "xcodebuild" and "test" in command:
     print("test failed")
     sys.exit(65)
+if os.environ.get("FAIL") in ("crash-once", "crash-always", "crash-skipped", "already-retried", "mixed-retries") and command[0] == "xcodebuild" and "test" in command:
+    bundle = pathlib.Path(command[command.index("-resultBundlePath") + 1]).stem
+    if bundle == "unit" or (bundle == "unit-retry" and os.environ.get("FAIL") == "crash-always"):
+        print("Restarting after unexpected exit, crash, or test timeout; summary will include totals from previous launches.")
+        sys.exit(65)
 if os.environ.get("FAIL") == "delete" and command[1:3] == ["simctl", "delete"]:
     sys.exit(43)
 '''
@@ -164,6 +179,40 @@ if os.environ.get("FAIL") == "delete" and command[1:3] == ["simctl", "delete"]:
         self.assertEqual((output / "unit.log").read_text().strip(), "test failed")
         self.assertEqual(json.loads((output / "result.json").read_text())["status"], 65)
         self.assertIn("unit", json.loads((output / "command-timings.json").read_text()))
+
+    def test_runner_exit_retries_only_unretried_test_once(self):
+        result, calls, output = self.run_script("crash-once")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        retries = [call for call in calls if call[0] == "xcodebuild" and
+                   any(argument.endswith("unit-retry.xcresult") for argument in call)]
+        self.assertEqual(len(retries), 1)
+        self.assertIn("-only-testing:SyncstrTests/Crash/testExample()", retries[0])
+        self.assertNotIn("-retry-tests-on-failure", retries[0])
+        self.assertEqual(retries[0][retries[0].index("-test-iterations") + 1], "1")
+        self.assertEqual(json.loads((output / "unit-retry.json").read_text())["tests"],
+                         ["SyncstrTests/Crash/testExample()"])
+        self.assertEqual(sum(call[1:3] == ["simctl", "create"] for call in calls), 1)
+
+    def test_second_runner_exit_fails_without_another_retry(self):
+        result, calls, _ = self.run_script("crash-always")
+        self.assertEqual(result.returncode, 65)
+        self.assertEqual(sum(call[0] == "xcodebuild" and "test" in call for call in calls), 2)
+        self.assertEqual(sum(call[1:3] == ["simctl", "create"] for call in calls), 1)
+
+    def test_skipped_fallback_test_cannot_turn_a_failure_green(self):
+        result, _calls, _ = self.run_script("crash-skipped")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("Every fallback test must run and pass", result.stderr)
+
+    def test_exhausted_failures_are_not_retried_or_hidden(self):
+        for failure, expected_builds in (("already-retried", 1), ("mixed-retries", 2)):
+            with self.subTest(failure=failure):
+                case = SimulatorRunnerTests()
+                case.setUp()
+                self.addCleanup(case.doCleanups)
+                result, calls, _ = case.run_script(failure)
+                self.assertEqual(result.returncode, 65)
+                self.assertEqual(sum(call[0] == "xcodebuild" and "test" in call for call in calls), expected_builds)
 
     def test_timeout_keeps_elapsed_time_and_still_cleans_up(self):
         spec = importlib.util.spec_from_file_location("verification", self.script)

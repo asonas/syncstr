@@ -23,7 +23,9 @@ class SimulatorReportTests(unittest.TestCase):
                 {"nodeType": "Repetition", "result": "Passed"}]}]},
             {"nodeType": "Test Case", "nodeIdentifier": "Suite/broken()", "result": "Failed"},
             {"nodeType": "Test Case", "nodeIdentifier": "Suite/clean()", "result": "Passed"}]}
-        self.assertEqual(reporter.test_results(tree), (["Suite/broken()"], ["Suite/recovered()"]))
+        self.assertEqual(
+            reporter.test_results(tree),
+            (["Suite/broken()"], ["Suite/recovered()"], ["Suite/clean()", "Suite/recovered()"] ))
 
     def test_different_parameter_results_do_not_count_as_a_retry(self):
         tree = {"testNodes": [{"nodeType": "Test Case", "nodeIdentifier": "Suite/parameterized()",
@@ -32,7 +34,26 @@ class SimulatorReportTests(unittest.TestCase):
                     {"nodeType": "Repetition", "result": "Failed"}]},
                 {"nodeType": "Arguments", "name": "two", "result": "Passed", "children": [
                     {"nodeType": "Repetition", "result": "Passed"}]}]}]}
-        self.assertEqual(reporter.test_results(tree), (["Suite/parameterized() [one]"], []))
+        self.assertEqual(reporter.test_results(tree),
+                         (["Suite/parameterized() [one]"], [], ["Suite/parameterized() [two]"]))
+
+    def test_fallback_pass_is_flaky_and_does_not_hide_other_failures(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / "ui.xcresult").mkdir()
+            (root / "ui-retry.xcresult").mkdir()
+            (root / "ui-retry.json").write_text(json.dumps({"tests": ["Suite/recovered()", "Suite/broken()"]}))
+            def tree(command, **_options):
+                retry = command[-1].endswith("ui-retry.xcresult")
+                return json.dumps({"testNodes": [
+                    {"nodeType": "Test Case", "nodeIdentifier": "Suite/recovered()", "result": "Passed" if retry else "Failed"},
+                    {"nodeType": "Test Case", "nodeIdentifier": "Suite/broken()", "result": "Failed"}]})
+            with patch.dict(os.environ, GITHUB_STEP_SUMMARY=str(root / "summary.md")), \
+                    patch.object(reporter.subprocess, "check_output", side_effect=tree):
+                reporter.collect("iphone", "failure", root)
+            report = json.loads((root / "report.json").read_text())
+            self.assertEqual(report["failed"], ["Suite/broken()"])
+            self.assertEqual(report["flaky"], ["Suite/recovered()"])
 
     def notify(self, existing):
         with tempfile.TemporaryDirectory() as temporary:
