@@ -15,10 +15,11 @@ struct ClusterMetadataEdit: Codable {
     var mutationState: MutationState? = nil
     var mutationReply: ClusterMutationReply? = nil
     var mutationError: String? = nil
+    var addition: ClusterAudioAddition? = nil
 
     var queueKey: String { mutation.map { "v5:" + $0.request } ?? entry.sha256 }
     var canRetryMutation: Bool {
-        (mutation?.operation == .editTrack || mutation?.operation == .setAlbumVisibility)
+        (mutation?.operation == .editTrack || mutation?.operation == .setAlbumVisibility || addition != nil)
             && (mutationState == .queued || mutationState == .outcomeUnknown)
     }
 }

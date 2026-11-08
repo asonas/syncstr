@@ -1,4 +1,159 @@
 import Foundation
+import CryptoKit
+import Darwin
+
+struct ClusterAudioAddition: Codable {
+    static let maximumBytes: UInt64 = 20 * 1024 * 1024 * 1024
+    let upload: ClusterMutationRequest
+    var receipt: ClusterMutationReply?
+
+    static func supported(by operations: Set<ClusterOperation>) -> Bool {
+        operations.contains(.putObject) && operations.contains(.registerTrack)
+    }
+
+    static func stagedFile(root: URL, request: String) throws -> URL {
+        guard UUID(uuidString: request) != nil else { throw LocalMusicError.invalidData }
+        return root.appendingPathComponent(".addition-" + request + ".audio")
+    }
+
+    static func validateSize(_ bytes: UInt64) throws {
+        guard bytes > 0, bytes <= maximumBytes else { throw LocalMusicError.invalidData }
+    }
+
+    @TransportActor
+    static func prepare(_ original: URL, store: LocalMusicStore, sourceLibrary: String) async throws -> ClusterMetadataEdit {
+        let scoped = original.startAccessingSecurityScopedResource()
+        defer { if scoped { original.stopAccessingSecurityScopedResource() } }
+        let size = try original.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0
+        guard size > 0 else { throw LocalMusicError.invalidData }
+        try validateSize(UInt64(size))
+        let id = UUID().uuidString.lowercased()
+        let temporary = store.root.appendingPathComponent(".import-" + id).appendingPathExtension(original.pathExtension)
+        let staged = try stagedFile(root: store.root, request: id)
+        defer { try? FileManager.default.removeItem(at: temporary) }
+        try FileManager.default.copyItem(at: original, to: temporary)
+        let entry = try await UploadedMusic.entry(file: temporary, original: original)
+        try Task.checkCancellation()
+        try FileManager.default.moveItem(at: temporary, to: staged)
+        do {
+            let file = try FileHandle(forWritingTo: staged)
+            defer { try? file.close() }
+            try file.synchronize()
+            let directory = Darwin.open(store.root.path, O_RDONLY)
+            guard directory >= 0 else { throw LocalMusicError.invalidData }
+            defer { Darwin.close(directory) }
+            guard fsync(directory) == 0 else { throw LocalMusicError.invalidData }
+            return try store.database().enqueueAudioAddition(entry, requestID: id, sourceLibrary: sourceLibrary)
+        } catch {
+            try? FileManager.default.removeItem(at: staged)
+            throw error
+        }
+    }
+
+    static func stream(file: URL, hash: String, bytes: UInt64,
+                       write: (Data) async throws -> Void, finish: () async throws -> Void) async throws {
+        try validateSize(bytes)
+        let input = try FileHandle(forReadingFrom: file)
+        defer { try? input.close() }
+        var digest = SHA256()
+        var sent: UInt64 = 0
+        while let chunk = try input.read(upToCount: 65536), !chunk.isEmpty {
+            try Task.checkCancellation()
+            guard UInt64(chunk.count) <= bytes - sent else { throw LocalMusicError.changedFile }
+            digest.update(data: chunk)
+            try await write(chunk)
+            sent += UInt64(chunk.count)
+        }
+        guard sent == bytes, digest.finalize().map({ String(format: "%02x", $0) }).joined() == hash else {
+            throw LocalMusicError.changedFile
+        }
+        try await finish()
+    }
+}
+
+extension CatalogDatabase {
+    func enqueueAudioAddition(_ entry: LocalEntry, requestID: String, sourceLibrary: String) throws -> ClusterMetadataEdit {
+        guard let shared = try sharedAudioSnapshot(), let bytes = entry.track.size,
+              ClusterIdentity.isLowercaseHex256(entry.sha256), UUID(uuidString: requestID) != nil,
+              !sourceLibrary.isEmpty else {
+            throw LocalMusicError.invalidData
+        }
+        try ClusterAudioAddition.validateSize(bytes)
+        let upload = try ClusterMutationRequest(cluster: shared.catalog.cluster, baseline: shared.catalog.baseline,
+            operation: .putObject, expected: [:],
+            payload: JSONValue.object(["hash": .string(entry.sha256), "bytes": .unsignedInteger(bytes)]), confirmed: [String]())
+        struct Source: Encodable { let library: String; let track: String }
+        struct Metadata: Encodable {
+            let title: String; let artist: String?; let album: String?; let suffix: String?
+            let duration: Double?; let track: Int?; let discNumber: Int?
+        }
+        struct Payload: Encodable { let source: Source; let metadata: Metadata; let hash: String }
+        let track = entry.track
+        let registration = try ClusterMutationRequest(request: requestID, cluster: shared.catalog.cluster,
+            baseline: shared.catalog.baseline, operation: .registerTrack, expected: [:],
+            payload: Payload(source: Source(library: sourceLibrary, track: UUID().uuidString.lowercased()),
+                metadata: Metadata(title: track.title, artist: track.artist, album: track.album, suffix: track.suffix,
+                    duration: track.duration, track: track.track, discNumber: track.discNumber), hash: entry.sha256),
+            confirmed: [["audio": entry.sha256]])
+        let edit = ClusterMetadataEdit(id: requestID, entry: entry, organization: AlbumOrganization(), parents: [],
+            mutation: registration, mutationState: .queued, addition: ClusterAudioAddition(upload: upload))
+        guard try !clusterMetadataEdits().contains(where: { $0.id == requestID }) else { throw LocalMusicError.invalidData }
+        try saveMetadataMutation(edit, replacing: nil)
+        return edit
+    }
+
+    func finishAudioUpload(_ id: String, reply: ClusterMutationReply, peer: String) throws {
+        try transaction {
+            guard var edit = try clusterMetadataEdits().first(where: { $0.id == id }),
+                  var addition = edit.addition, addition.receipt == nil,
+                  edit.mutationState == .sending, edit.mutationHost == peer else { throw LocalMusicError.invalidData }
+            _ = try reply.validated(for: addition.upload.request)
+            switch reply {
+            case .objectStored(_, let hash, let bytes, let host):
+                guard hash == edit.entry.sha256, bytes == edit.entry.track.size, host == peer else {
+                    throw LocalMusicError.invalidData
+                }
+                addition.receipt = reply
+                edit.addition = addition
+                edit.mutationState = .queued
+                edit.mutationReply = nil
+            case .accepted: throw LocalMusicError.invalidData
+            case .needsReview: edit.mutationState = .needsReview; edit.mutationReply = reply
+            case .rejected, .unsupported: edit.mutationState = .rejected; edit.mutationReply = reply
+            case .deferred: edit.mutationState = .queued; edit.mutationReply = reply
+            }
+            edit.mutationError = nil
+            try saveClusterMetadataEdit(edit)
+        }
+    }
+}
+
+@MainActor
+enum ClusterAudioDelivery {
+    static func send(_ original: ClusterMetadataEdit, host: String, database: CatalogDatabase,
+                     stateChanged: () async -> Void = {},
+                     upload: (ClusterMutationRequest) async throws -> ClusterMutationReply,
+                     register: (ClusterMutationRequest) async throws -> ClusterMutationReply) async throws {
+        do {
+            guard let addition = original.addition else { throw LocalMusicError.invalidData }
+            if addition.receipt == nil {
+                _ = try await CatalogStorage.shared.perform { try database.beginMetadataMutation(original.id, host: host) }
+                await stateChanged()
+                let reply = try await upload(addition.upload)
+                try await Task { @TransportActor in try database.finishAudioUpload(original.id, reply: reply, peer: host) }.value
+                await stateChanged()
+            }
+            guard let ready = try await CatalogStorage.shared.perform({ try database.clusterMetadataEdits().first { $0.id == original.id } }),
+                  ready.addition?.receipt != nil, ready.canRetryMutation else { return }
+            try await ClusterMetadataDelivery.send(ready, host: host, database: database, stateChanged: stateChanged, exchange: register)
+        } catch {
+            let reason = error.localizedDescription
+            try? await Task { @TransportActor in try database.metadataMutationInterrupted(original.id, reason: reason) }.value
+            await stateChanged()
+            throw error
+        }
+    }
+}
 
 struct TrackMetadataDraft: Identifiable {
     let id = UUID()
@@ -30,7 +185,11 @@ extension ClusterMetadataEdit {
     }
 
     var mutationLabel: String {
-        switch mutationState {
+        if addition != nil {
+            if mutationState == .queued { return addition?.receipt == nil ? "音源の送信待ち" : "曲の登録待ち" }
+            if mutationState == .sending { return addition?.receipt == nil ? "音源を送信中" : "曲を登録中" }
+        }
+        return switch mutationState {
         case .queued: "送信待ち"
         case .sending: "送信中"
         case .accepted: "反映済み"
@@ -56,6 +215,7 @@ extension ClusterMetadataEdit {
             case .invalid: return "変更内容を送信できませんでした。入力した内容は保持しています。"
             }
         case .unsupported:
+            if addition != nil { return "接続先は音源の追加に対応していません。音源はこの端末に保持しています。" }
             if albumVisibility != nil {
                 return "接続先はアルバムの表示変更に対応していません。変更内容は保持しています。"
             }

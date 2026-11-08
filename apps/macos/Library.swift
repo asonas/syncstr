@@ -319,6 +319,11 @@ final class Library: ObservableObject {
             ? LocalMusicError.legacyMutationsUnavailable.localizedDescription : nil
     }
 
+    var audioAdditionNotice: String? {
+        (localCatalog?.logicalAudio == true || transfer.clusterMutationsUnavailable) && !transfer.clusterAudioAdditionAvailable
+            ? LocalMusicError.legacyMutationsUnavailable.localizedDescription : nil
+    }
+
     private func albumVisibilityEdit(_ id: String) -> ClusterMetadataEdit? {
         let canonical = localCatalog?.organization?.canonical(id) ?? id
         return transfer.clusterMetadataEdits.last { $0.albumVisibility?.album == canonical }
@@ -1324,7 +1329,7 @@ final class Library: ObservableObject {
     }
 
     func addMusic(_ files: [URL]) async {
-        if let notice = legacyMutationNotice {
+        if let notice = audioAdditionNotice {
             message = notice
             return
         }

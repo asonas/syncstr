@@ -203,8 +203,8 @@ struct LibraryView: View {
                     .padding(.horizontal, 8)
                     .contentShape(Rectangle())
             }
-            .buttonStyle(.plain).disabled(library.transfer.busy)
-            .help("ライブラリに音源を追加します。未登録の場合もこの端末で再生できます")
+            .buttonStyle(.plain).disabled(library.transfer.busy || library.audioAdditionNotice != nil)
+            .help(library.audioAdditionNotice ?? "ライブラリに音源を追加します。未登録の場合もこの端末で再生できます")
             if showingUploadStatus && library.transfer.busy {
                 ProgressView(value: library.transfer.progress).padding(.horizontal, 8)
                 Button("中断する") { library.transfer.cancel() }.buttonStyle(.plain).padding(.horizontal, 8)

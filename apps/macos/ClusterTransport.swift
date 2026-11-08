@@ -47,6 +47,7 @@ final class ClusterNetwork {
     private(set) var lastPath: String?
     private(set) var sharedAudio = false
     private(set) var supportedOperations: Set<ClusterOperation> = []
+    private(set) var audioAdditionAvailable = false
     private(set) var resolveTrackAvailable = false
     private var resolutionHost: String?
     struct DeferredResolution {
@@ -157,6 +158,7 @@ final class ClusterNetwork {
 
     func refresh() async throws -> LocalCatalog {
         supportedOperations = []
+        audioAdditionAvailable = false
         let files = store
         let database = try await CatalogStorage.shared.perform { try files.database() }
         var successful = false
@@ -170,6 +172,7 @@ final class ClusterNetwork {
                 if await current.sharedAudio {
                     sharedAudio = true
                     supportedOperations.formUnion(await current.supportedOperations)
+                    if ClusterAudioAddition.supported(by: await current.supportedOperations) { audioAdditionAvailable = true }
                     resolveTrackAvailable = await current.supportedOperations.contains(.resolveTrack)
                     resolutionHost = current.peer
                 }
@@ -346,7 +349,7 @@ final class ClusterNetwork {
         let database = try await CatalogStorage.shared.perform { try files.database() }
         try await CatalogStorage.shared.perform { try database.rejectUnsentMetadataForRevokedMember() }
         await stateChanged()
-        let pending = try await CatalogStorage.shared.perform { try database.clusterMetadataEdits().filter(\.canRetryMutation) }
+        let pending = try await CatalogStorage.shared.perform { try database.clusterMetadataEdits().filter { $0.canRetryMutation && $0.addition == nil } }
         guard !pending.isEmpty else { return }
         let available = try await addresses(database: database)
         for edit in pending {
@@ -464,6 +467,57 @@ final class ClusterNetwork {
         return catalog
     }
 
+    func syncAudioAdditions(stateChanged: () async -> Void = {}) async throws {
+        let files = store
+        let database = try await CatalogStorage.shared.perform { try files.database() }
+        try await CatalogStorage.shared.perform { try database.rejectUnsentMetadataForRevokedMember() }
+        let pending = try await CatalogStorage.shared.perform {
+            try database.clusterMetadataEdits().filter { $0.addition != nil && $0.canRetryMutation }
+        }
+        guard !pending.isEmpty else { return }
+        let available = try await addresses(database: database)
+        for edit in pending {
+            try Task.checkCancellation()
+            let candidates = available.filter { edit.mutationHost == nil || $0.id().description == edit.mutationHost }
+            var sent = false
+            var unsupported = false
+            var failure: Error?
+            for address in candidates {
+                do {
+                    let current = try await ClusterSession.connect(address: address, secrets: secrets, database: database)
+                    session = current
+                    defer { current.close(); session = nil }
+                    guard await current.sharedAudio,
+                          ClusterAudioAddition.supported(by: await current.supportedOperations) else {
+                        unsupported = true
+                        continue
+                    }
+                    let file = try ClusterAudioAddition.stagedFile(root: files.root, request: edit.id)
+                    sent = true
+                    try await ClusterAudioDelivery.send(edit, host: current.peer, database: database, stateChanged: stateChanged,
+                        upload: { try await current.putObject($0, entry: edit.entry, file: file) },
+                        register: { try await current.mutate($0) })
+                    // A failed refresh must never erase a durable acceptance.
+                    try await current.reconcile(database: database)
+                    break
+                } catch {
+                    try Task.checkCancellation()
+                    failure = error
+                    if sent || edit.mutationHost != nil { break }
+                }
+            }
+            if !sent {
+                if unsupported && failure == nil && edit.mutationHost == nil {
+                    try await CatalogStorage.shared.perform { try database.metadataMutationUnavailable(edit.id) }
+                } else {
+                    let reason = failure?.localizedDescription ?? LocalMusicError.clusterUnavailable.localizedDescription
+                    try await CatalogStorage.shared.perform { try database.metadataMutationInterrupted(edit.id, reason: reason) }
+                }
+                await stateChanged()
+            }
+        }
+    }
+
     func resolveAlbum(_ conflict: ClusterAlbumConflict, title: String) async throws -> LocalCatalog {
         let files = store
         let database = try await CatalogStorage.shared.perform { try files.database() }
@@ -498,7 +552,47 @@ final class ClusterSession {
         try await send(ClusterMutationEnvelope(mutation: request), stream: stream)
         try await stream.send().finish()
         let reply = try await receive(ClusterMutationReply.self, stream: stream)
+        if case .objectStored = reply { throw LocalMusicError.invalidData }
         return try reply.validated(for: request.request)
+    }
+
+    func putObject(_ request: ClusterMutationRequest, entry: LocalEntry, file: URL) async throws -> ClusterMutationReply {
+        guard sharedAudio, ClusterAudioAddition.supported(by: supportedOperations) else {
+            return .unsupported(request: request.request, operation: request.operation.rawValue)
+        }
+        guard request.operation == .putObject, let bytes = entry.track.size else { throw LocalMusicError.invalidData }
+        try ClusterAudioAddition.validateSize(bytes)
+        let stream = try await connection.openBi()
+        do {
+            try await send(ClusterMutationEnvelope(mutation: request), stream: stream)
+            try await ClusterAudioAddition.stream(file: file, hash: entry.sha256, bytes: bytes,
+                write: { chunk in
+                    // Bound stalled writes, not total duration of a 20 GiB upload.
+                    let timeout = Task {
+                        do { try await Task.sleep(for: .seconds(120)) } catch { return }
+                        self.close()
+                    }
+                    defer { timeout.cancel() }
+                    try await stream.send().writeAll(buf: chunk)
+                },
+                finish: { try await stream.send().finish() })
+        } catch {
+            let uploadError = error
+            if !(error is IrohLib.IrohError) {
+                close()
+                throw uploadError
+            }
+            // The host can reject before reading the body and stop our sending side.
+            if let reply = try? await receive(ClusterMutationReply.self, stream: stream).validated(for: request.request) {
+                switch reply {
+                case .rejected, .unsupported, .deferred, .needsReview: return reply
+                default: break
+                }
+            }
+            close()
+            throw uploadError
+        }
+        return try await receive(ClusterMutationReply.self, stream: stream).validated(for: request.request)
     }
 
     func playlistRequest(_ request: PlaylistRequest) async throws -> PlaylistResponse {

@@ -10,6 +10,8 @@ struct ClusterImportResults: View {
     @Environment(\.dismiss) private var dismiss
     @State private var restoration: (batch: String, item: String)?
     @State private var confirmingRestore = false
+    @State private var discardedAddition: ClusterMetadataEdit?
+    @State private var confirmingAdditionDiscard = false
 
     var body: some View {
         NavigationStack {
@@ -19,6 +21,23 @@ struct ClusterImportResults: View {
                 }
                 if let notice = transfer.clusterMutationQueueNotice {
                     Text(notice).foregroundStyle(.secondary)
+                }
+                ForEach(transfer.audioAdditions, id: \.id) { edit in
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(edit.entry.track.title)
+                        Text(edit.mutationLabel).foregroundStyle(.secondary)
+                        if let detail = edit.mutationDetail { Text(detail).font(.caption).foregroundStyle(.secondary) }
+                        if edit.canRetryMutation {
+                            Button(edit.mutationHost == nil ? "音源を送信" : "同じ保存先に再送") { transfer.connectCluster() }
+                                .disabled(transfer.busy)
+                        }
+                        if edit.mutationState == .needsReview || edit.mutationState == .rejected ||
+                            (edit.mutationState == .queued && edit.mutationHost == nil) {
+                            Button("追加内容を破棄…", role: .destructive) {
+                                discardedAddition = edit; confirmingAdditionDiscard = true
+                            }.disabled(transfer.busy)
+                        }
+                    }
                 }
                 ForEach(transfer.clusterBatches) { batch in
                     Section {
@@ -62,6 +81,14 @@ struct ClusterImportResults: View {
             }
             .navigationTitle("音源の追加結果")
             .toolbar { Button("閉じる") { dismiss() } }
+            .confirmationDialog("追加内容を破棄しますか？", isPresented: $confirmingAdditionDiscard, titleVisibility: .visible) {
+                Button("破棄", role: .destructive) {
+                    if let discardedAddition { transfer.discardTrackMetadata(discardedAddition) }
+                }
+                Button("キャンセル", role: .cancel) {}
+            } message: {
+                Text("この端末の追加待ちの音源を削除します。元のファイルは保持します。保存先への音源の送信だけが完了している場合、その音源は保存先に残ります。")
+            }
             .alert("削除された音源を再追加しますか？", isPresented: $confirmingRestore) {
                 Button("キャンセル", role: .cancel) {}
                 Button("ライブラリに再追加") {
@@ -232,14 +259,14 @@ struct PeerSetupView: View {
                     updatingRegistration = true
                 }.disabled(transfer.busy)
                 Button("音源ファイルを追加") { importing = true }
-                    .disabled(transfer.busy || transfer.clusterMutationsUnavailable)
-                if let notice = transfer.clusterMutationNotice {
+                    .disabled(transfer.busy || transfer.audioAdditionNotice != nil)
+                if let notice = transfer.audioAdditionNotice {
                     Text(notice).font(.caption).foregroundStyle(.secondary)
                 }
                 if let notice = transfer.clusterMutationQueueNotice {
                     Text(notice).font(.caption).foregroundStyle(.secondary)
                 }
-                if !transfer.clusterBatches.isEmpty {
+                if !transfer.clusterBatches.isEmpty || !transfer.audioAdditions.isEmpty {
                     Button("音源の追加結果") { showingResults = true }
                 }
                 DisclosureGroup("変更の競合と端末の権限") {

@@ -235,6 +235,7 @@ extension CatalogDatabase {
                   edit.mutationState == .sending else { throw LocalMusicError.invalidData }
             _ = try reply.validated(for: id)
             switch reply {
+            case .objectStored: throw LocalMusicError.invalidData
             case .accepted(_, _, let host, _):
                 guard host == edit.mutationHost else { throw LocalMusicError.invalidData }
                 edit.mutationState = .accepted
@@ -245,6 +246,9 @@ extension CatalogDatabase {
             edit.mutationReply = reply
             edit.mutationError = nil
             try saveClusterMetadataEdit(edit)
+        }
+        if let edit = try clusterMetadataEdits().first(where: { $0.id == id }), edit.mutationState == .accepted {
+            try removeAdditionStaging(edit)
         }
     }
 
@@ -260,6 +264,8 @@ extension CatalogDatabase {
         guard var edit = try clusterMetadataEdits().first(where: { $0.mutation?.request == id }),
               edit.mutationState != .accepted, edit.mutationState != .needsReview,
               edit.mutationState != .rejected else { return }
+        // Uploads are safe to replay elsewhere until a receipt pins registration.
+        if let addition = edit.addition, addition.receipt == nil { edit.mutationHost = nil }
         edit.mutationState = edit.mutationHost == nil ? .queued : .outcomeUnknown
         edit.mutationError = reason
         try saveClusterMetadataEdit(edit)
@@ -269,7 +275,14 @@ extension CatalogDatabase {
         guard let edit = try clusterMetadataEdits().first(where: { $0.mutation?.request == id }),
               edit.mutationState == .needsReview || edit.mutationState == .rejected ||
                 (edit.mutationState == .queued && edit.mutationHost == nil) else { throw LocalMusicError.invalidData }
+        try removeAdditionStaging(edit)
         try execute("DELETE FROM cluster_metadata_queue WHERE object = ?", [edit.queueKey])
+    }
+
+    private func removeAdditionStaging(_ edit: ClusterMetadataEdit) throws {
+        guard edit.addition != nil else { return }
+        let file = try ClusterAudioAddition.stagedFile(root: root, request: edit.id)
+        if FileManager.default.fileExists(atPath: file.path) { try FileManager.default.removeItem(at: file) }
     }
 
     func rejectUnsentMetadataForRevokedMember() throws {
@@ -529,8 +542,10 @@ extension CatalogDatabase {
 final class CatalogDatabase {
     private var connection: OpaquePointer?
     private var operation = "open"
+    private let root: URL
 
     init(_ url: URL) throws {
+        root = url.deletingLastPathComponent()
         guard sqlite3_open_v2(url.path, &connection, SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_FULLMUTEX, nil) == SQLITE_OK else {
             let error = failure()
             sqlite3_close(connection)
@@ -621,7 +636,7 @@ final class CatalogDatabase {
         }
     }
 
-    private func transaction<T>(_ action: () throws -> T) throws -> T {
+    func transaction<T>(_ action: () throws -> T) throws -> T {
         try execute("BEGIN IMMEDIATE")
         do {
             let result = try action()
@@ -896,8 +911,12 @@ extension CatalogDatabase {
     func recoverClusterJobs() throws {
         try execute("UPDATE cluster_jobs SET state = 'queued' WHERE state = 'running'")
         for var edit in try clusterMetadataEdits() where edit.mutationState == .sending {
+            if let addition = edit.addition, addition.receipt == nil { edit.mutationHost = nil }
             edit.mutationState = .queued
             try saveClusterMetadataEdit(edit)
+        }
+        for edit in try clusterMetadataEdits() where edit.mutationState == .accepted {
+            try removeAdditionStaging(edit)
         }
     }
 

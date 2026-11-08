@@ -10,7 +10,7 @@ import VisionKit
 struct AddMusicButton: View {
     @ObservedObject var library: Library
     @State private var importing = false
-    private var unavailable: Bool { library.legacyMutationNotice != nil }
+    private var unavailable: Bool { library.audioAdditionNotice != nil }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
@@ -22,7 +22,7 @@ struct AddMusicButton: View {
                     case .failure(let error): library.message = error.localizedDescription
                     }
                 }
-            if let notice = library.legacyMutationNotice {
+            if let notice = library.audioAdditionNotice {
                 Text(notice)
                     .font(.caption).foregroundStyle(.secondary)
             }
