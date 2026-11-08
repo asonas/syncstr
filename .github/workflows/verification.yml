@@ -47,27 +47,15 @@ jobs:
       - uses: actions/checkout@v7
       - run: brew install xcodegen
       - run: xcodegen generate --spec apps/ios/project.yml
-      - name: Cache v5 interoperability tools
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            .build/v5-rust
-          key: macos-fixtures-1.99.1-${{ hashFiles('headless/Cargo.lock', 'headless/src/**', 'headless/examples/**') }}
-          restore-keys: macos-fixtures-1.99.1-
-      - name: Build v5 tools and resolve locked packages
+      - name: Build required v5 interoperability tools
         run: |
           rustup toolchain install 1.99.1 --profile minimal
-          # Package resolution and Rust compilation do not depend on each other.
-          cargo +1.99.1 build --manifest-path headless/Cargo.toml --locked --features p2p --target-dir .build/v5-rust --bin syncstr-headless --example shared_audio_fixture --example shared_audio_fixture_update &
-          fixture_build=$!
-          trap 'kill "$fixture_build" 2>/dev/null || true' EXIT
-          xcodebuild -resolvePackageDependencies -project apps/ios/Syncstr.xcodeproj \
-            -scheme SyncstrMac -derivedDataPath .build/MacDerivedData \
-            -disableAutomaticPackageResolution -onlyUsePackageVersionsFromResolvedFile
-          wait "$fixture_build"
-          trap - EXIT
+          cargo +1.99.1 build --manifest-path headless/Cargo.toml --locked --features p2p --target-dir .build/v5-rust --bin syncstr-headless --example shared_audio_fixture --example shared_audio_fixture_update
+      - name: Resolve locked packages
+        run: >-
+          xcodebuild -resolvePackageDependencies -project apps/ios/Syncstr.xcodeproj
+          -scheme SyncstrMac -derivedDataPath .build/MacDerivedData
+          -disableAutomaticPackageResolution -onlyUsePackageVersionsFromResolvedFile
       - name: macOS regression tests
         run: >-
           xcodebuild -project apps/ios/Syncstr.xcodeproj -scheme SyncstrMac
