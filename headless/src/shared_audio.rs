@@ -2413,8 +2413,8 @@ fn effective_bodies(
             continue;
         }
         for edit in &body.edits {
-            if let Value::Track { track, .. } = &edit.value {
-                if let Some(canonical) = bodies[winner].edits.iter().find_map(|e| match &e.value {
+            if let Value::Track { track, .. } = &edit.value
+                && let Some(canonical) = bodies[winner].edits.iter().find_map(|e| match &e.value {
                     Value::Track {
                         track: canonical, ..
                     } if canonical.id == track.id
@@ -2424,12 +2424,12 @@ fn effective_bodies(
                         Some(canonical)
                     }
                     _ => None,
-                }) {
-                    let times = addition_times
-                        .entry(&track.id)
-                        .or_insert((canonical.added_at, Default::default()));
-                    times.1.extend([canonical.added_at, track.added_at]);
-                }
+                })
+            {
+                let times = addition_times
+                    .entry(&track.id)
+                    .or_insert((canonical.added_at, Default::default()));
+                times.1.extend([canonical.added_at, track.added_at]);
             }
         }
     }
@@ -2456,14 +2456,14 @@ fn effective_bodies(
             }
             edit.parents.sort();
             edit.parents.dedup();
-            if let Value::Track { track, .. } = &mut edit.value {
-                if let Some((canonical, times)) = addition_times.get(track.id.as_str()) {
-                    anyhow::ensure!(
-                        times.contains(&track.added_at),
-                        "addition time is immutable"
-                    );
-                    track.added_at = *canonical;
-                }
+            if let Value::Track { track, .. } = &mut edit.value
+                && let Some((canonical, times)) = addition_times.get(track.id.as_str())
+            {
+                anyhow::ensure!(
+                    times.contains(&track.added_at),
+                    "addition time is immutable"
+                );
+                track.added_at = *canonical;
             }
         }
         effective.insert(id.clone(), body);
