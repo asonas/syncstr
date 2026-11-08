@@ -52,8 +52,8 @@ if command[0] == "xcodebuild" and "SyncstrUITests" in command and "test" in comm
 if command[1:5] == ["xcresulttool", "get", "test-results", "summary"]:
     print(json.dumps({"passedTests": 0 if os.environ.get("FAIL") == "empty" else 1, "failedTests": 0}))
 if command[1:5] == ["xcresulttool", "get", "test-results", "tests"]:
-    failed = {"nodeType": "Test Case", "nodeIdentifier": "SyncstrTests/Crash/testExample()", "result": "Failed"}
-    exhausted = dict(failed, nodeIdentifier="SyncstrTests/Crash/testExhausted()", children=[
+    failed = {"nodeType": "Test Case", "nodeIdentifier": "Crash/testExample()", "result": "Failed"}
+    exhausted = dict(failed, nodeIdentifier="Crash/testExhausted()", children=[
         {"nodeType": "Repetition", "result": "Failed"}, {"nodeType": "Repetition", "result": "Failed"}])
     nodes = [exhausted] if os.environ.get("FAIL") == "already-retried" else [failed]
     if os.environ.get("FAIL") == "mixed-retries":
@@ -190,7 +190,7 @@ if os.environ.get("FAIL") == "delete" and command[1:3] == ["simctl", "delete"]:
         self.assertNotIn("-retry-tests-on-failure", retries[0])
         self.assertEqual(retries[0][retries[0].index("-test-iterations") + 1], "1")
         self.assertEqual(json.loads((output / "unit-retry.json").read_text())["tests"],
-                         ["SyncstrTests/Crash/testExample()"])
+                         ["Crash/testExample()"])
         self.assertEqual(sum(call[1:3] == ["simctl", "create"] for call in calls), 1)
 
     def test_second_runner_exit_fails_without_another_retry(self):

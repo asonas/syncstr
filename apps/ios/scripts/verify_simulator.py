@@ -180,7 +180,9 @@ def main(attempt=1):
                 retry[retry.index("-test-iterations") + 1] = "1"
                 bundle = output / (name + "-retry.xcresult")
                 retry[retry.index("-resultBundlePath") + 1] = str(bundle)
-                retry += ["-only-testing:" + test for test in tests]
+                target = "SyncstrUITests" if name == "ui" else "SyncstrTests"
+                retry += ["-only-testing:" + (test if test.startswith(target + "/") else target + "/" + test)
+                          for test in tests]
                 run(retry, name + "-retry", environment)
                 run(["xcrun", "xcresulttool", "get", "test-results", "tests", "--path",
                      str(bundle)], name + "-retry-tests")
