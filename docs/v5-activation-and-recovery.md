@@ -1,16 +1,16 @@
 # v5 activation and recovery gates
 
-Status: design draft for owner review (ASO-43 and the remaining ASO-98 activation scope). Only explicit cluster activation was selected previously; the recommendations below still need confirmation. This document authorizes no implementation or production operation.
+Status: Accepted 2026-11-08: the owner accepted the recommended option for D1–D7. This document still authorizes no implementation or production operation; D5 destinations and custodian are confirmed before a rollout.
 
-## Decisions needed
+## Decisions
 
-- **D1: authority.** Recommend one owner-designated, currently authorized Library Host coordinates an activation, with signed readiness from every authorized host. A coordinator alone cannot override missing readiness.
-- **D2: durable contract.** Recommend a separate signed control journal bound to cluster, baseline, membership revision and a monotonic projection epoch. Do not add an activation kind to the existing music record streams.
-- **D3: membership and old hosts.** Recommend a maintenance freeze and unanimous host preparation. An offline or unknown authorized host blocks activation; exclusion requires verified revocation and operational isolation, not merely removing it from discovery.
-- **D4: writer and client order.** Recommend upgrade readers and hosts first, establish the common baseline, then release writes by feature. Keep old uncertain registrations on D3 A even after D3 B activation.
-- **D5: backup custody.** Recommend a complete encrypted backup on separate storage plus an offline copy; keep its decryption key separately under owner custody. Confirm the actual destinations and custodian before a rollout.
-- **D6: repair and restore.** Recommend forward repair after any new-epoch write; permit coordinated pre-activation restore only after all later writes and uncertain requests have an explicit disposition.
-- **D7: lost authority.** Recommend fresh identity for playback replacement; restore final-host authority only from verified recovery material with the original fenced. Without it, preserve evidence and propose a separately approved new cluster rather than fabricate continuity.
+- **D1: authority.** Accepted: one owner-designated, currently authorized Library Host coordinates an activation, with signed readiness from every authorized host. A coordinator alone cannot override missing readiness.
+- **D2: durable contract.** Accepted: a separate signed control journal bound to cluster, baseline, membership revision and a monotonic projection epoch. Do not add an activation kind to the existing music record streams.
+- **D3: membership and old hosts.** Accepted: a maintenance freeze and unanimous host preparation. An offline or unknown authorized host blocks activation; exclusion requires verified revocation and operational isolation, not merely removing it from discovery.
+- **D4: writer and client order.** Accepted: upgrade readers and hosts first, establish the common baseline, then release writes by feature. Keep old uncertain registrations on D3 A even after D3 B activation.
+- **D5: backup custody.** Accepted: a complete encrypted backup on separate storage plus an offline copy; keep its decryption key separately under owner custody. Confirm the actual destinations and custodian before a rollout.
+- **D6: repair and restore.** Accepted: forward repair after any new-epoch write; permit coordinated pre-activation restore only after all later writes and uncertain requests have an explicit disposition.
+- **D7: lost authority.** Accepted: fresh identity for playback replacement; restore final-host authority only from verified recovery material with the original fenced. Without it, preserve evidence and propose a separately approved new cluster rather than fabricate continuity.
 
 ## Background and evidence
 
