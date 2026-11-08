@@ -79,10 +79,6 @@ jobs:
             .build/MacDerivedData/SourcePackages
           key: swift-packages-v1-${{ runner.os }}-${{ runner.arch }}-${{ steps.swift.outputs.version }}-${{ hashFiles('apps/ios/**/Package.resolved') }}
           restore-keys: swift-packages-v1-${{ runner.os }}-${{ runner.arch }}-${{ steps.swift.outputs.version }}-
-      - name: Build required v5 interoperability tools
-        run: |
-          rustup toolchain install 1.99.1 --profile minimal
-          cargo +1.99.1 build --manifest-path headless/Cargo.toml --locked --features p2p --target-dir .build/v5-rust --bin syncstr-headless --example shared_audio_fixture --example shared_audio_fixture_update
       - name: Cache locked Iroh binary
         env:
           GH_TOKEN: ${{ github.token }}
@@ -118,19 +114,32 @@ jobs:
             fi
             sleep 10
           done
+      - name: Build macOS tests and interoperability tools
+        run: |
+          rustup toolchain install 1.99.1 --profile minimal
+          # Swift compilation does not need the Rust fixtures; test execution does.
+          cargo +1.99.1 build --manifest-path headless/Cargo.toml --locked --features p2p --target-dir .build/v5-rust --bin syncstr-headless --example shared_audio_fixture --example shared_audio_fixture_update &
+          fixture_build=$!
+          trap 'kill "$fixture_build" 2>/dev/null || true' EXIT
+          xcodebuild -project apps/ios/Syncstr.xcodeproj -scheme SyncstrMac \
+            -disableAutomaticPackageResolution -onlyUsePackageVersionsFromResolvedFile \
+            -destination 'platform=macOS' -derivedDataPath .build/MacDerivedData \
+            CODE_SIGNING_ALLOWED=NO build-for-testing
+          wait "$fixture_build"
+          trap - EXIT
       - name: macOS regression tests
         run: >-
           xcodebuild -project apps/ios/Syncstr.xcodeproj -scheme SyncstrMac
           -disableAutomaticPackageResolution -onlyUsePackageVersionsFromResolvedFile
           -destination 'platform=macOS' -derivedDataPath .build/MacDerivedData
-          -resultBundlePath .build/mac-tests.xcresult CODE_SIGNING_ALLOWED=NO test
+          -resultBundlePath .build/mac-tests.xcresult CODE_SIGNING_ALLOWED=NO test-without-building
           '-skip-testing:LocalMusicTests/LibraryPresentationTests/testSelectionAndPlaybackUpdatesBrowseRetainedCatalogWithoutBlocking()'
       - name: Isolated macOS responsiveness test
         run: >-
           xcodebuild -project apps/ios/Syncstr.xcodeproj -scheme SyncstrMac
           -disableAutomaticPackageResolution -onlyUsePackageVersionsFromResolvedFile
           -destination 'platform=macOS' -derivedDataPath .build/MacDerivedData
-          -resultBundlePath .build/mac-responsiveness.xcresult CODE_SIGNING_ALLOWED=NO test
+          -resultBundlePath .build/mac-responsiveness.xcresult CODE_SIGNING_ALLOWED=NO test-without-building
           '-only-testing:LocalMusicTests/LibraryPresentationTests/testSelectionAndPlaybackUpdatesBrowseRetainedCatalogWithoutBlocking()'
       - uses: actions/upload-artifact@v7
         if: always()
