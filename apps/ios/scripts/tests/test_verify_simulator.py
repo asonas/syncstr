@@ -188,7 +188,7 @@ if os.environ.get("FAIL") == "delete" and command[1:3] == ["simctl", "delete"]:
         self.assertEqual(len(retries), 1)
         self.assertIn("-only-testing:SyncstrTests/Crash/testExample()", retries[0])
         self.assertNotIn("-retry-tests-on-failure", retries[0])
-        self.assertEqual(retries[0][retries[0].index("-test-iterations") + 1], "1")
+        self.assertNotIn("-test-iterations", retries[0])
         self.assertEqual(json.loads((output / "unit-retry.json").read_text())["tests"],
                          ["Crash/testExample()"])
         self.assertEqual(sum(call[1:3] == ["simctl", "create"] for call in calls), 1)

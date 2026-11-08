@@ -177,7 +177,8 @@ def main(attempt=1):
                 (output / (name + "-retry.json")).write_text(json.dumps({"tests": tests}) + "\n")
                 retry = [arg for arg in command if arg != "-retry-tests-on-failure"
                          and not arg.startswith("-only-testing:")]
-                retry[retry.index("-test-iterations") + 1] = "1"
+                iterations = retry.index("-test-iterations")
+                del retry[iterations:iterations + 2]
                 bundle = output / (name + "-retry.xcresult")
                 retry[retry.index("-resultBundlePath") + 1] = str(bundle)
                 target = "SyncstrUITests" if name == "ui" else "SyncstrTests"
