@@ -2,6 +2,7 @@ import Foundation
 
 enum ClusterOperation: String, Codable, Sendable {
     case editTrack = "edit-track"
+    case setAlbumVisibility = "set-album-visibility"
     case resolveTrack = "resolve-track"
     case updatePlaylists = "update-playlists"
 }

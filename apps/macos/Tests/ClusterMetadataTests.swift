@@ -8,6 +8,115 @@ import Combine
 
 @MainActor
 struct ClusterMetadataTests {
+    private func visibilityFixture(conflict: Bool = false, resolved: Bool = true) throws -> SharedAudioTests.Fixture {
+        let f = try SharedAudioTests.Fixture()
+        var organization = AlbumOrganization(albums: [OrganizationAlbum(id: "album-A", title: "First"),
+            OrganizationAlbum(id: "album-B", title: "Second")], aliases: ["alias-A": "album-A"])
+        organization.set(subject: "album-A", kind: "visibility", value: "true")
+        let legacy = try JSONSerialization.jsonObject(with: JSONEncoder().encode(organization))
+        try f.database.receiveSharedAudio(f.changedSnapshot { catalog in
+            var tracks = catalog["tracks"] as! [String: [String: Any]]
+            tracks["A"]?["album_id"] = "album-A"
+            tracks["B"]?["album_id"] = "album-B"
+            catalog["tracks"] = tracks
+            catalog["legacy_organization"] = legacy
+            catalog["heads"] = ["album-visibility:album-A": [String(repeating: "1", count: 64)]]
+            if resolved { catalog["album_visibility"] = ["album-A": ["hidden": false], "album-B": ["hidden": true]] }
+            catalog["conflicts"] = conflict ? ["album-visibility:album-A"] : []
+        }, peer: f.host)
+        return f
+    }
+
+    @Test func visibilityProjectionPreservesBaselineAliasesAndIndependentSharedAudio() throws {
+        let f = try visibilityFixture()
+        defer { try? FileManager.default.removeItem(at: f.store.root) }
+        let catalog = try f.database.clusterCatalog()
+        let organization = try #require(catalog.organization)
+        #expect(!organization.isHidden("alias-A"))
+        #expect(organization.isHidden("album-B"))
+        #expect(organization.heads(subject: "album-A", kind: "visibility").first?.value == "true")
+        #expect(catalog.entries.first { $0.track.id == "A" }?.sha256 == catalog.entries.first { $0.track.id == "B" }?.sha256)
+        let reopened = try CatalogDatabase(f.store.root.appendingPathComponent("catalog.sqlite"))
+        #expect(try reopened.clusterCatalog().organization == organization)
+    }
+
+    @Test func visibilityConflictAndAbsentOverlayKeepBaseline() throws {
+        for (conflict, resolved) in [(true, true), (false, false)] {
+            let f = try visibilityFixture(conflict: conflict, resolved: resolved)
+            defer { try? FileManager.default.removeItem(at: f.store.root) }
+            #expect(try f.database.clusterCatalog().organization?.isHidden("alias-A") == true)
+            #expect(try f.database.clusterCatalog().organization?.isHidden("album-B") == resolved)
+            if conflict {
+                #expect(try f.database.albumVisibilityNotice("alias-A", operations: [.setAlbumVisibility])?.contains("競合") == true)
+                #expect(throws: LocalMusicError.self) { try f.database.enqueueAlbumVisibility("alias-A", hidden: false) }
+            }
+        }
+    }
+
+    @Test func visibilityQueueRestoresIntentAndPinsUnknownOutcomeToOneHost() async throws {
+        let f = try visibilityFixture()
+        defer { try? FileManager.default.removeItem(at: f.store.root) }
+        let edit = try f.database.enqueueAlbumVisibility("alias-A", hidden: true)
+        #expect(edit.mutation?.operation == .setAlbumVisibility)
+        #expect(edit.albumVisibility?.album == "album-A")
+        #expect(edit.albumVisibility?.hidden == true)
+        #expect(edit.mutation?.expected == ["album-visibility:album-A": [String(repeating: "1", count: 64)]])
+        #expect(edit.mutation?.confirmed.isEmpty == true)
+        let offline = try CatalogDatabase(f.store.root.appendingPathComponent("catalog.sqlite"))
+        #expect(try stored(offline, edit.id).mutationState == .queued)
+        #expect(try stored(offline, edit.id).mutation == edit.mutation)
+        _ = try f.database.beginMetadataMutation(edit.id, host: f.host)
+        try f.database.metadataMutationInterrupted(edit.id, reason: "Lost reply")
+        let reopened = try CatalogDatabase(f.store.root.appendingPathComponent("catalog.sqlite"))
+        let retry = try stored(reopened, edit.id)
+        #expect(retry.mutation == edit.mutation)
+        #expect(retry.canRetryMutation)
+        #expect(retry.mutationState == .outcomeUnknown)
+        #expect(throws: LocalMusicError.self) {
+            try reopened.beginMetadataMutation(edit.id, host: String(repeating: "b", count: 64))
+        }
+        try await ClusterMetadataDelivery.send(retry, host: f.host, database: reopened) { request in
+            .accepted(request: request.request, record: String(repeating: "2", count: 64), host: f.host,
+                heads: ["album-visibility:album-A": [String(repeating: "2", count: 64)]])
+        }
+        // A refresh failure must not erase the accepted outcome or resend it.
+        try reopened.metadataMutationInterrupted(edit.id, reason: "Catalog refresh failed")
+        let accepted = try stored(reopened, edit.id)
+        #expect(accepted.mutationState == .accepted)
+        #expect(!accepted.canRetryMutation)
+        #expect(accepted.mutationReply != nil)
+        #expect(try reopened.clusterCatalog().organization?.isHidden("album-A") == false)
+        #expect(throws: LocalMusicError.self) { try reopened.enqueueAlbumVisibility("album-A", hidden: false) }
+        let library = Library(localStore: f.store)
+        defer { library.closeLibrary(); library.transfer.cancel() }
+        try library.openLocal(reopened.clusterCatalog())
+        // Restore database state without touching the identity keychain or connecting.
+        await library.transfer.restorePeer(readIdentity: { throw LocalMusicError.clusterUnavailable })
+        #expect(library.albumVisibilityStatus("alias-A")?.contains("保存先で受理済み") == true)
+        #expect(library.albumVisibilityNotice("alias-A")?.contains("受理済み") == true)
+        #expect(!library.isSavingAlbumVisibility("alias-A"))
+        #expect(try stored(reopened, edit.id).mutationState == .accepted)
+    }
+
+    @Test func visibilityUnsupportedHostAndPartialBatchNeverUseLegacyMutation() async throws {
+        let f = try visibilityFixture(conflict: true)
+        defer { try? FileManager.default.removeItem(at: f.store.root) }
+        #expect(try f.database.albumVisibilityNotice("album-B", operations: []) != nil)
+        let unsupported = f.database.enqueueAlbumsVisibility(["album-A", "album-B"], hidden: false, operations: [])
+        #expect(unsupported.saved == 0)
+        #expect(unsupported.failures.count == 2)
+        #expect(try f.database.clusterMetadataEdits().isEmpty)
+        let batch = f.database.enqueueAlbumsVisibility(["album-A", "album-B"], hidden: false, operations: [.setAlbumVisibility])
+        #expect(batch.saved == 1)
+        #expect(batch.failures.count == 1)
+        let accepted = try #require(try f.database.clusterMetadataEdits().first)
+        #expect(accepted.albumVisibility?.hidden == false)
+        #expect(try f.database.clusterMetadataEdits().allSatisfy { $0.mutation?.operation == .setAlbumVisibility })
+        try f.database.metadataMutationUnavailable(accepted.id)
+        #expect(try stored(f.database, accepted.id).mutationDetail?.contains("表示変更") == true)
+        #expect(try f.database.clusterCatalog().organization?.isHidden("album-B") == true)
+    }
+
     private func prepare() throws -> SharedAudioTests.Fixture {
         let fixture = try SharedAudioTests.Fixture()
         try fixture.database.receiveSharedAudio(fixture.changedSnapshot {

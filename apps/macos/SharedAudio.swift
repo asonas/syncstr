@@ -62,6 +62,8 @@ struct SharedAudioSnapshot: Decodable {
         let legacy_organization: AlbumOrganization?
         let heads: [String: [String]]?
         let candidates: [String: [String: LogicalTrack]]?
+        struct AlbumVisibility: Decodable { let hidden: Bool }
+        let album_visibility: [String: AlbumVisibility]?
 
         func entry(_ id: String, hash: String? = nil) throws -> LocalEntry {
             try entry(id, hash: hash, organization: organization())
@@ -101,6 +103,11 @@ struct SharedAudioSnapshot: Decodable {
 
         private func organization() throws -> AlbumOrganization {
             var result = legacy_organization ?? AlbumOrganization()
+            result.sharedAlbumVisibility = (album_visibility ?? [:]).filter {
+                !conflicts.contains("album-visibility:" + result.canonical($0.key))
+            }.mapValues(\.hidden)
+            result.sharedVisibilityHeads = (heads ?? [:]).filter { $0.key.hasPrefix("album-visibility:") }
+            result.sharedVisibilityConflicts = Set(conflicts.filter { $0.hasPrefix("album-visibility:") })
             for id in tracks.keys.sorted() {
                 guard let logical = tracks[id], logical.id == id else { throw LocalMusicError.invalidData }
                 let metadata = logical.metadata

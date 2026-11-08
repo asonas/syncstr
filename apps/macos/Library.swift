@@ -319,7 +319,47 @@ final class Library: ObservableObject {
             ? LocalMusicError.legacyMutationsUnavailable.localizedDescription : nil
     }
 
-    func isSavingAlbumVisibility(_ id: String) -> Bool { visibilityRequests[id, default: 0] > 0 }
+    private func albumVisibilityEdit(_ id: String) -> ClusterMetadataEdit? {
+        let canonical = localCatalog?.organization?.canonical(id) ?? id
+        return transfer.clusterMetadataEdits.last { $0.albumVisibility?.album == canonical }
+    }
+
+    func albumVisibilityNotice(_ id: String) -> String? {
+        guard localCatalog?.logicalAudio == true else { return legacyMutationNotice }
+        if let organization = localCatalog?.organization {
+            if let edit = albumVisibilityEdit(id), edit.mutationState == .accepted,
+               case .accepted? = edit.mutationReply,
+               (organization.sharedVisibilityHeads?["album-visibility:" + (edit.albumVisibility?.album ?? id)] ?? [])
+                == (edit.mutation?.expected["album-visibility:" + (edit.albumVisibility?.album ?? id)] ?? []),
+               organization.sharedAlbumVisibility?[edit.albumVisibility?.album ?? id] != edit.albumVisibility?.hidden {
+                return "表示変更は保存先で受理済みです。ライブラリを更新して反映を確認してください。"
+            }
+            return organization.albumVisibilityNotice(id, operations: transfer.clusterSupportedOperations)
+        }
+        return "アルバムの表示設定を読み込めません。ライブラリを更新してください。"
+    }
+
+    func albumsVisibilityNotice(_ ids: Set<String>) -> String? {
+        let notices = ids.sorted().compactMap(albumVisibilityNotice)
+        return notices.count == ids.count ? notices.first : nil
+    }
+
+    func albumsVisibilityUnavailable(_ ids: Set<String>) -> Bool {
+        ids.isEmpty || ids.allSatisfy { albumVisibilityNotice($0) != nil || isSavingAlbumVisibility($0) }
+    }
+
+    func albumVisibilityStatus(_ id: String) -> String? {
+        guard let edit = albumVisibilityEdit(id), let visibility = edit.albumVisibility else { return nil }
+        let action = visibility.hidden ? "非表示" : "非表示の解除"
+        let state = edit.mutationState == .accepted ? "保存先で受理済み" : edit.mutationLabel
+        return "\(action)：\(state)" + (edit.mutationDetail.map { "。" + $0 } ?? "")
+    }
+
+    func isSavingAlbumVisibility(_ id: String) -> Bool {
+        visibilityRequests[id, default: 0] > 0 || albumVisibilityEdit(id).map {
+            $0.canRetryMutation || $0.mutationState == .sending
+        } == true
+    }
 
     func albumVisibilityLabel(_ id: String) -> String {
         if isSavingAlbumVisibility(id) { return "保存しています…" }
@@ -333,6 +373,12 @@ final class Library: ObservableObject {
 
     @discardableResult
     func setAlbumsHidden(_ ids: Set<String>, hidden: Bool) -> Task<Void, Never> {
+        if localCatalog?.logicalAudio == true {
+            let result = transfer.queueAlbumVisibility(ids, hidden: hidden)
+            message = "\(ids.count)枚中\(result.saved)枚の表示変更をこの端末に保存しました。"
+                + (result.failures.first.map { " \(result.failures.count)枚は保存できませんでした。" + $0 } ?? "")
+            return Task {}
+        }
         if let notice = legacyMutationNotice {
             message = notice
             return Task {}

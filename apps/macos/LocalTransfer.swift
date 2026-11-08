@@ -605,6 +605,22 @@ final class LocalTransfer: ObservableObject {
         if !busy { connectCluster() } else { scheduleClusterRetry() }
     }
 
+    func queueAlbumVisibility(_ ids: Set<String>, hidden: Bool) -> (saved: Int, failures: [String]) {
+        var saved = 0
+        var failures: [String] = []
+        do {
+            let database = try store.database()
+            let result = database.enqueueAlbumsVisibility(ids, hidden: hidden, operations: clusterSupportedOperations)
+            saved = result.saved
+            failures = result.failures
+            clusterMetadataEdits = try database.clusterMetadataEdits()
+            if saved > 0 {
+                if !busy { connectCluster() } else { scheduleClusterRetry() }
+            }
+        } catch { failures.append(error.localizedDescription) }
+        return (saved, failures)
+    }
+
     func discardTrackMetadata(_ edit: ClusterMetadataEdit) {
         do {
             try store.database().discardMetadataMutation(edit.id)
