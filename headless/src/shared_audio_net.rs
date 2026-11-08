@@ -146,7 +146,7 @@ pub enum MutationReply {
     },
 }
 
-#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct Snapshot {
     pub catalog: crate::shared_audio::Catalog,
     pub playlists: Vec<crate::playlists::Snapshot>,
