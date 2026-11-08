@@ -1229,7 +1229,7 @@ final class Library: ObservableObject {
     func canRemoveLocalCopy(_ track: Track) -> Bool {
         guard hasManagedCopy(track) else { return false }
         if let registration = transfer.clusterRegistration {
-            return (try? registration.membership.verify(registration.localGrant).host) == false
+            return (try? registration.membership.chain(registration.localGrant)[0].host) == false
         }
         return true
     }

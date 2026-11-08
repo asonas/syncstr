@@ -136,7 +136,7 @@ extension CatalogDatabase {
         let cluster: String
         if let registration = try clusterRegistration() {
             membership = registration.membership
-            cluster = try membership.verify(registration.localGrant).cluster
+            cluster = try membership.chain(registration.localGrant)[0].cluster
         } else if let authority = try playlistAuthority() {
             membership = authority.membership
             cluster = try membership.authorize(authority.peer, host: true).cluster
@@ -274,17 +274,22 @@ extension CatalogDatabase {
 
     func rejectUnsentMetadataForRevokedMember() throws {
         guard let registration = try clusterRegistration() else { return }
-        let chain = try registration.membership.chain(registration.localGrant)
-        guard let own = chain.first else { return }
-        let state = try registration.membership.revocationState()
-        guard state.active.contains(where: {
-            let revoked = registration.membership.revocations[$0]
-            return revoked.member == own.member || chain.contains { $0.issuer == revoked.member && !revoked.observed.contains($0.id) }
-        }) else { return }
+        guard try registration.membership.isEffectivelyRevoked(registration.localGrant) else { return }
         for var edit in try clusterMetadataEdits() where edit.canRetryMutation && edit.mutationHost == nil {
             edit.mutationState = .rejected
             edit.mutationReply = .rejected(request: edit.id, reason: .revoked)
             try saveClusterMetadataEdit(edit)
+        }
+    }
+
+    func receiveClusterHelloRefusal(_ data: Data, peer: String) throws {
+        guard data.count <= 4 * 1024 * 1024 else { throw LocalMusicError.invalidData }
+        let refusal = try JSONDecoder().decode(ClusterHelloRefusalV5.self, from: data)
+        try transaction {
+            guard var registration = try clusterRegistration() else { throw LocalMusicError.unauthorized }
+            registration.membership = try refusal.verifiedMembership(registration: registration, peer: peer)
+            try execute("UPDATE cluster_registration SET payload = ? WHERE singleton = 1", [String(decoding: try JSONEncoder().encode(registration), as: UTF8.self)])
+            try rejectUnsentMetadataForRevokedMember()
         }
     }
 

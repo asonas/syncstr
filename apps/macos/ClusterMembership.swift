@@ -189,6 +189,17 @@ struct ClusterMembership: Codable, Equatable {
         return member
     }
 
+    func isEffectivelyRevoked(_ id: String) throws -> Bool {
+        let chain = try chain(id)
+        let state = try revocationState()
+        return state.active.contains {
+            let revoked = revocations[$0]
+            return revoked.member == chain[0].member || chain.contains {
+                $0.issuer == revoked.member && !revoked.observed.contains($0.id)
+            }
+        }
+    }
+
     func authorize(_ member: String, host: Bool = false) throws -> ClusterGrant {
         for grant in grants where grant.member == member && (!host || grant.host) {
             if let valid = try? verify(grant.id) { return valid }
