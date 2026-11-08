@@ -61,6 +61,7 @@ continue to use the existing conflict-resolution flow.
 | Windows and Android playback scope | [macOS reference inventory and accepted support contract](docs/windows-android-playback-support.md); full-parity follow-up scope remains in ASO-45 |
 | Shared Rust client design | [Module ownership and migration design](docs/shared-rust-client-design.md), [accepted staged decisions](docs/native-client-merge-decisions.md); Apple adoption/measurements remain gated |
 | Shared Rust catalog | [Read-only v5 client API and verification](docs/shared-rust-catalog.md), [implementation](headless/src/catalog_client.rs); native app integration follows separately |
+| Shared Rust audio and offline saves | [Protected assets, durable jobs and Windows verification](docs/shared-rust-audio.md); native player/binding integration follows separately |
 | App-to-node P2P transfer | [P2P setup and protocol](docs/p2p-music-transfer.md), [Rust transport](headless/src/peer.rs), [native transport](apps/macos/PeerTransfer.swift), [setup controls](apps/macos/PeerSetup.swift) |
 | Signed endpoint discovery | [Rendezvous setup and protocol](docs/peer-rendezvous.md), [Cloudflare directory](rendezvous/src/index.ts), [headless publisher](headless/src/rendezvous.rs) |
 | Device identity and direct/relay connectivity experiment | [Connectivity probe](headless/connectivity-probe/README.md). Isolated from deployed services; independent-network verification is pending |

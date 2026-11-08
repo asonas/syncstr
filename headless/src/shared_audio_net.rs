@@ -1,5 +1,14 @@
 pub const ALPN: &[u8] = b"syncstr/cluster/5";
 
+#[derive(Debug)]
+pub(crate) struct AudioIntegrityFailure;
+impl std::fmt::Display for crate::shared_audio_net::AudioIntegrityFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("audio integrity failure")
+    }
+}
+impl std::error::Error for crate::shared_audio_net::AudioIntegrityFailure {}
+
 #[derive(serde::Serialize, serde::Deserialize)]
 pub struct Hello {
     pub version: u8,
@@ -946,6 +955,27 @@ impl crate::shared_audio_net::Session {
         hash: &str,
         destination: &std::path::Path,
     ) -> anyhow::Result<()> {
+        self.download_audio(track, hash, destination, None).await
+    }
+
+    pub(crate) async fn download_exact(
+        &self,
+        track: &str,
+        hash: &str,
+        destination: &std::path::Path,
+        bytes: u64,
+    ) -> anyhow::Result<()> {
+        self.download_audio(track, hash, destination, Some(bytes))
+            .await
+    }
+
+    async fn download_audio(
+        &self,
+        track: &str,
+        hash: &str,
+        destination: &std::path::Path,
+        bytes: Option<u64>,
+    ) -> anyhow::Result<()> {
         use sha2::Digest as _;
         use tokio::io::AsyncWriteExt as _;
         let (mut output, mut input) = self.connection.open_bi().await?;
@@ -963,10 +993,12 @@ impl crate::shared_audio_net::Session {
             crate::cluster_net::receive(&mut input, 128),
         )
         .await??;
-        anyhow::ensure!(
-            expected > 0 && expected <= crate::model::MAX_AUDIO,
-            "invalid audio size"
-        );
+        if expected == 0
+            || expected > crate::model::MAX_AUDIO
+            || bytes.is_some_and(|bytes| bytes != expected)
+        {
+            return Err(crate::shared_audio_net::AudioIntegrityFailure.into());
+        }
         let parent = destination
             .parent()
             .ok_or_else(|| anyhow::anyhow!("missing audio directory"))?;
@@ -980,14 +1012,15 @@ impl crate::shared_audio_net::Session {
                 .await??
         {
             received += count as u64;
-            anyhow::ensure!(received <= expected, "audio too large");
+            if received > expected {
+                return Err(crate::shared_audio_net::AudioIntegrityFailure.into());
+            }
             digest.update(&buffer[..count]);
             file.write_all(&buffer[..count]).await?;
         }
-        anyhow::ensure!(
-            received == expected && hex::encode(digest.finalize()) == hash,
-            "audio integrity failure"
-        );
+        if received != expected || hex::encode(digest.finalize()) != hash {
+            return Err(crate::shared_audio_net::AudioIntegrityFailure.into());
+        }
         file.sync_all().await?;
         drop(file);
         crate::platform_fs::persist_replace(staged, destination)?;
