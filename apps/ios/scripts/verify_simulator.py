@@ -25,6 +25,12 @@ class SimulatorInfrastructureError(RuntimeError):
         self.cause = cause
 
 
+def command_timeout(name):
+    if name == "bootstatus" or name.endswith("-ready"):
+        return 180
+    return 1800 if name in ("ui", "ui-retry") else 1200
+
+
 def test_attempts(tree):
     def repetitions(node):
         return (1 if node.get("nodeType") == "Repetition" else
@@ -81,7 +87,7 @@ def main(attempt=1):
     command_timings = {}
 
     def run(command, name, environment=None):
-        timeout = 180 if name == "bootstatus" or name.endswith("-ready") else 1200
+        timeout = command_timeout(name)
         started = time.monotonic()
         outcome = "passed"
         try:

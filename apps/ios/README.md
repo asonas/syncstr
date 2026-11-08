@@ -144,8 +144,22 @@ runner reruns only failed tests with fewer than two recorded attempts, once,
 on the same Simulator. The fallback has its own result bundle and retry metadata.
 Passing fallback tests appear as flaky; a repeated crash, failure, skipped test,
 or another test that already exhausted its retry still fails the run.
-Cleanup has a 60-second timeout per command. The CI job allows 60 minutes for the
-bounded recovery; it does not increase the readiness timeout. Existing
+Cleanup has a 60-second timeout per command. UI execution and its crash fallback
+each allow 1800 seconds; unit, responsiveness, and other commands retain their
+1200-second limits, and readiness checks retain 180 seconds. Completed UI phases
+in weekly runs 42438084095 and 42454766252 took 901.740–1126.470 seconds;
+run 42434464322 hit the old 1200-second UI limit without a readable result.
+The 1800-second limit gives the largest completed phase about 60% headroom.
+
+The CI job allows 100 minutes. Across those three weekly runs, the largest
+measured non-UI job duration was 1480.530 seconds (iPhone run 42454766252:
+2607 seconds total minus 1126.470 seconds UI). Subtract both UI and UI fallback
+execution when computing this baseline. The budget is 1480.530 + 1800 + 1800 +
+900 seconds of headroom = 5980.530 seconds (99.676 minutes), rounded up to
+100 minutes. Per-command limits detect hangs; the outer job limit covers this
+measured recovery budget rather than the sum of every command ceiling firing
+at once. Non-UI timings include setup, cleanup, and artifact handling; fresh-device
+recovery remains subject to the outer guard. Existing
 Simulators are not reset or reconfigured. Tests run serially in Japanese with the
 Japan region; the library experience test fixes portrait orientation. Fresh iPad
 devices avoid inherited multitasking window sizes. UI queries use album/control
