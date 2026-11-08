@@ -2,8 +2,9 @@
 
 `syncstr_headless::catalog_client` provides a read-only catalog boundary for the
 Windows and Android client work. It reuses authenticated v5 sessions and signed
-playlist contracts. It does not download audio, send legacy writes, or migrate an
-installed application's profile.
+playlist contracts. Catalog refresh sends no legacy writes and does not migrate
+an installed application's profile. The client also provides separately described
+[verified audio and offline-save operations](shared-rust-audio.md).
 
 ## Ownership and calls
 
@@ -21,7 +22,8 @@ The Rust owner must run open and refresh on its application worker using its
 retained Tokio runtime. Exclusive `&mut Client` access serializes refreshes and
 cache commits. A cloned `Operation` cancels an in-flight refresh without committing
 its response. Await completion or cancellation before calling the idempotent
-`shutdown()`, which releases the database and profile lock. Dropping an operation
+`shutdown().await`, which drains transfers and the writer, waits for active audio
+handles, and releases the database and profile lock. Dropping an operation
 handle does not cancel it.
 
 This is the direct Rust boundary. Kotlin bindings, the foreign-language runtime
@@ -94,5 +96,6 @@ incomplete-notice recovery, and cache restoration after the host stops. No real
 application profile or audio library was used.
 
 Native Apple execution, Android ARM64 packaging, Kotlin bindings, application UI,
-and production-profile migration are not covered by these Rust tests. Audio
-acquisition and offline-save jobs are ASO-71.
+and production-profile migration are not covered by these catalog tests. See the
+[ASO-71 audio implementation and verification](shared-rust-audio.md) for acquisition
+and offline-save jobs.

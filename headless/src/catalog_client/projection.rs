@@ -17,7 +17,7 @@ pub struct CatalogView {
     objects: std::collections::BTreeMap<String, Option<u64>>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ExactTrack {
     pub track_id: String,
     pub sha256: String,

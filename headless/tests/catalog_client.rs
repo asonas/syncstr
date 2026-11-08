@@ -245,8 +245,8 @@ async fn authenticated_v5_catalog_restores_without_credentials_or_audio() -> any
         syncstr_headless::catalog_client::Client::open(&fixture.client_root),
         Err(syncstr_headless::catalog_client::Error::ProfileBusy)
     ));
-    client.shutdown();
-    client.shutdown();
+    client.shutdown().await?;
+    client.shutdown().await?;
     assert_eq!(
         client.catalog(),
         Err(syncstr_headless::catalog_client::Error::Closed)

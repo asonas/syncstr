@@ -60,6 +60,13 @@ pub fn persist_replace(
     temporary: tempfile::NamedTempFile,
     destination: &Path,
 ) -> anyhow::Result<()> {
+    crate::platform_fs::persist_path_replace(temporary.into_temp_path(), destination)
+}
+
+pub(crate) fn persist_path_replace(
+    temporary: tempfile::TempPath,
+    destination: &Path,
+) -> anyhow::Result<()> {
     #[cfg(unix)]
     {
         temporary.persist(destination)?;
@@ -68,14 +75,15 @@ pub fn persist_replace(
     #[cfg(windows)]
     {
         use std::os::windows::ffi::OsStrExt as _;
-        let mut temporary = temporary.into_temp_path();
+        let mut temporary = temporary;
         let source: Vec<u16> = temporary.as_os_str().encode_wide().chain([0]).collect();
         let destination: Vec<u16> = destination.as_os_str().encode_wide().chain([0]).collect();
         let result = unsafe {
             windows_sys::Win32::Storage::FileSystem::MoveFileExW(
                 source.as_ptr(),
                 destination.as_ptr(),
-                windows_sys::Win32::Storage::FileSystem::MOVEFILE_REPLACE_EXISTING,
+                windows_sys::Win32::Storage::FileSystem::MOVEFILE_REPLACE_EXISTING
+                    | windows_sys::Win32::Storage::FileSystem::MOVEFILE_WRITE_THROUGH,
             )
         };
         if result == 0 {

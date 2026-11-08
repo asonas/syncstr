@@ -1,12 +1,17 @@
-//! Read-only v5 client catalog. Open an enrolled, disposable profile before supplying a key.
+//! v5 catalog, verified audio acquisition and durable offline-save ownership.
 
+mod audio;
+mod audio_storage;
 mod projection;
+mod saves;
+pub use audio::{Policy, TransferPolicy, VerifiedAudio};
 pub use projection::{
     Album, ArtworkCandidate, CatalogView, ExactTrack, Occurrence, OrganizationChoice, Playlist,
     Track,
 };
+pub use saves::{SaveItem, SaveItemState, SaveJob, SaveState};
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum Error {
     ProfileBusy,
     Storage,
@@ -18,6 +23,12 @@ pub enum Error {
     Transport,
     Cancelled,
     Closed,
+    InvalidPin,
+    AuthenticationRequired,
+    UnavailableSource,
+    Integrity,
+    InsufficientStorage,
+    PolicyRestricted,
 }
 
 impl std::fmt::Display for crate::catalog_client::Error {
@@ -63,8 +74,11 @@ struct Retained {
 pub struct Client {
     root: std::path::PathBuf,
     connection: Option<rusqlite::Connection>,
-    lock: Option<crate::node_lock::NodeLock>,
+    lock: Option<std::sync::Arc<crate::node_lock::NodeLock>>,
     retained: crate::catalog_client::Retained,
+    audio: std::sync::Arc<crate::catalog_client::audio_storage::Storage>,
+    closing: bool,
+    shutdown_writer: Option<tokio::task::JoinHandle<Result<(), crate::catalog_client::Error>>>,
 }
 
 impl crate::catalog_client::Client {
@@ -146,11 +160,16 @@ impl crate::catalog_client::Client {
             .proof
             .verify(&local_grant)
             .map_err(|_| crate::catalog_client::Error::MembershipMismatch)?;
+        let audio = crate::catalog_client::audio_storage::Storage::open(root, &connection)?;
+        crate::catalog_client::saves::restore(&connection)?;
         let client = Self {
             root: root.to_owned(),
             connection: Some(connection),
-            lock: Some(lock),
+            lock: Some(std::sync::Arc::new(lock)),
             retained,
+            audio: std::sync::Arc::new(audio),
+            closing: false,
+            shutdown_writer: None,
         };
         client.catalog()?;
         Ok(client)
@@ -222,13 +241,41 @@ impl crate::catalog_client::Client {
         self.catalog()
     }
 
-    /// Exclusive ownership ensures an in-flight refresh finishes or is cancelled before shutdown.
-    pub fn shutdown(&mut self) {
-        self.connection.take();
+    /// Release native players first. Shutdown drains the writer and waits for active assets.
+    pub async fn shutdown(&mut self) -> Result<(), crate::catalog_client::Error> {
+        self.closing = true;
+        self.audio.cancel_transfers()?;
+        while self.audio.active()? {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        if let Some(connection) = self.connection.take() {
+            let writer_lock = self.lock.clone();
+            self.shutdown_writer = Some(tokio::task::spawn_blocking(move || {
+                let _writer_lock = writer_lock;
+                connection
+                    .execute_batch("PRAGMA wal_checkpoint(FULL)")
+                    .map_err(|_| crate::catalog_client::Error::Storage)?;
+                connection
+                    .close()
+                    .map_err(|_| crate::catalog_client::Error::Storage)
+            }));
+        }
+        let result = match self.shutdown_writer.as_mut() {
+            Some(writer) => writer
+                .await
+                .map_err(|_| crate::catalog_client::Error::Storage)
+                .and_then(|result| result),
+            None => Ok(()),
+        };
+        self.shutdown_writer.take();
         self.lock.take();
+        result
     }
 
     fn ensure_open(&self) -> Result<(), crate::catalog_client::Error> {
+        if self.closing {
+            return Err(crate::catalog_client::Error::Closed);
+        }
         self.connection
             .as_ref()
             .map(|_| ())
