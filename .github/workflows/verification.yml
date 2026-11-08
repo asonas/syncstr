@@ -104,13 +104,12 @@ jobs:
           # Retain dependency products, not application or test binaries.
           path: |
             .build/MacDerivedData/Build/Intermediates.noindex/IrohLib.build
-            .build/MacDerivedData/Build/Intermediates.noindex/XCBuildData
+            .build/MacDerivedData/Build/Intermediates.noindex/ExplicitPrecompiledModules
+            .build/MacDerivedData/Build/Intermediates.noindex/SwiftExplicitPrecompiledModules
             .build/MacDerivedData/Build/Products/Debug/IrohLib*
             .build/MacDerivedData/Build/Products/Debug/PackageFrameworks
-            .build/MacDerivedData/ModuleCache.noindex
-          key: swift-products-v1-${{ runner.os }}-${{ runner.arch }}-${{ steps.swift.outputs.version }}-${{ hashFiles('apps/ios/**/Package.resolved') }}
-      - name: Probe dependency cache without build database
-        run: command rm -rf .build/MacDerivedData/Build/Intermediates.noindex/XCBuildData
+            .build/MacDerivedData/SDKExplicitPrecompiledModules
+          key: swift-products-v2-${{ runner.os }}-${{ runner.arch }}-${{ steps.swift.outputs.version }}-${{ hashFiles('apps/ios/**/Package.resolved') }}
       - name: Resolve locked packages
         run: |
           # GitHub release assets can return transient gateway errors.
