@@ -69,6 +69,54 @@ struct ClusterMetadataTests {
         #expect(try f.database.clusterMetadataEdits().map(\.id) == [sent.id])
     }
 
+    @Test
+    func retainedRevocationKeepsLocalPlaylistsPlaybackAndCopyRemovalAvailable() async throws {
+        let f = try prepare()
+        defer { try? FileManager.default.removeItem(at: f.store.root) }
+        let registration = try #require(try f.database.clusterRegistration())
+        let root = try registration.membership.authorize(registration.membership.root, host: true)
+        let document = PlaylistDocument(id: "source:mix", sourceLibrary: "source", sourcePlaylist: "mix",
+            sourceFingerprint: String(repeating: "a", count: 64), name: "Saved playlist", kind: "manual",
+            parent: nil, definition: [:], items: [PlaylistItem(id: "item", sourceTrack: "A", title: "A",
+                artist: nil, album: nil, trackId: "A", sha256: f.hash)])
+        let body = PlaylistRecord.Body(version: 1, cluster: f.cluster, author: root.member, grant: root.id,
+            document: document)
+        var payload = Data("syncstr-playlist-v1\n".utf8)
+        payload.append(try JSONEncoder().encode(body))
+        let key = try Curve25519.Signing.PrivateKey(rawRepresentation: Data(repeating: 7, count: 32))
+        let record = PlaylistRecord(id: LocalMusicStore.digest(payload), payload: String(decoding: payload, as: UTF8.self),
+            signature: try key.signature(for: payload).map { String(format: "%02x", $0) }.joined())
+        var snapshot = try #require(JSONSerialization.jsonObject(with: f.snapshot()) as? [String: Any])
+        snapshot["playlist_history"] = [try JSONSerialization.jsonObject(with: JSONEncoder().encode(record))]
+        try f.database.receiveSharedAudio(JSONSerialization.data(withJSONObject: snapshot), peer: f.host)
+        let entry = try #require(try f.database.playbackEntry("A")?.entry)
+        try Data("abc".utf8).write(to: f.store.fileURL(entry))
+        try f.database.saveAudioPin(entry)
+        try f.database.receiveClusterHelloRefusal(JSONEncoder().encode(refusal(f)), peer: f.host)
+
+        // Exercise the persisted state as on relaunch, not a pre-refusal in-memory playlist.
+        let reopened = try CatalogDatabase(f.store.root.appendingPathComponent("catalog.sqlite"))
+        #expect(try reopened.playlistDocuments().documents == [document])
+        #expect(try reopened.clusterCatalog().entries.contains { $0.track.id == "A" })
+        #expect(throws: LocalMusicError.self) {
+            _ = try reopened.receiveSharedAudio(f.snapshot(), peer: f.host)
+        }
+        let library = Library(localStore: f.store)
+        defer { library.transfer.cancel(); library.transfer.stopSaveWorker() }
+        try library.openLocal(reopened.clusterCatalog())
+        await library.transfer.restorePeer(readIdentity: { throw LocalMusicError.unauthorized })
+        await library.loadPlaylists()
+        #expect(library.playlists == [document])
+        #expect(!library.transfer.canDeleteSharedTrack)
+        #expect(library.canRemoveLocalCopy(entry.track))
+        #expect(try await library.transfer.playbackFile(entry.track) == f.store.fileURL(entry))
+        try library.transfer.removeClusterCopy(entry)
+        #expect(try !reopened.hasAudioPin(entry))
+        #expect(!f.store.hasFile(entry))
+        #expect(!library.canRemoveLocalCopy(entry.track))
+        #expect(try reopened.playlistDocuments().documents == [document])
+    }
+
     @Test(arguments: ["tampered", "member", "host", "unknown-host", "revoked-host", "root", "cluster", "reason", "status", "version", "no-revocation", "oversized", "malformed"])
     func unverifiableHelloRefusalDoesNotChangeMembershipOrEdits(_ failure: String) throws {
         let f = try prepare()

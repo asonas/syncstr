@@ -636,6 +636,10 @@ final class LocalTransfer: ObservableObject {
     }
 
     func connectCluster(invitation: String? = nil, name: String = "ライブラリ") {
+#if DEBUG
+        // UI fixtures have no live host, including when scene activation requests a reconnect.
+        if SharedAudioUIFixture.requested { return }
+#endif
         guard invitation != nil || !peerIdentityRestoreFailed else {
             status = "この端末の識別情報を読み込めないため、ライブラリに接続できません。もう一度お試しください。"
             return
@@ -957,7 +961,7 @@ final class LocalTransfer: ObservableObject {
         guard LocalMusicStore.valid(entry) else { throw LocalMusicError.invalidData }
         let database = try store.database()
         if let registration = try database.clusterRegistration(),
-           try registration.membership.verify(registration.localGrant).host { throw LocalMusicError.unauthorized }
+           try registration.membership.chain(registration.localGrant)[0].host { throw LocalMusicError.unauthorized }
         if try database.sharedAudioSnapshot() != nil {
             let retained = try database.removeAudioPin(entry)
             let pending = saveRequests.contains { request in

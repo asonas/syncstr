@@ -136,7 +136,7 @@ extension CatalogDatabase {
         let cluster: String
         if let registration = try clusterRegistration() {
             membership = registration.membership
-            cluster = try membership.verify(registration.localGrant).cluster
+            cluster = try membership.chain(registration.localGrant)[0].cluster
         } else if let authority = try playlistAuthority() {
             membership = authority.membership
             cluster = try membership.authorize(authority.peer, host: true).cluster
