@@ -1,0 +1,28 @@
+name: ASO-93 temporary main baseline
+on:
+  push:
+    branches: [agent/aso-93-weekly-simulator]
+    paths: [.github/workflows/aso93-main-baseline.yml]
+permissions:
+  contents: read
+jobs:
+  baseline:
+    runs-on: xcode-27
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: c8a329234d3dd9aef3c71f6218c664d84b6a7a8f
+      - run: brew install xcodegen
+      - name: Build required v5 fixture tools
+        run: |
+          rustup toolchain install 1.99.1 --profile minimal
+          cargo +1.99.1 build --manifest-path headless/Cargo.toml --locked --features p2p --target-dir .build/v5-rust --bin syncstr-headless --example shared_audio_fixture --example shared_audio_fixture_update
+      - name: Run unchanged main runner and resolution UI test
+        run: python3 apps/ios/scripts/verify_simulator.py --device iphone --only-testing SyncstrUITests/SharedAudioFlowTests/testTrackResolutionCapabilityGateAndNonHostDeletionChoice
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: main-baseline
+          path: .build/verification/
+          retention-days: 7
