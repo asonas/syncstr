@@ -1,6 +1,8 @@
 import Foundation
 
 enum ClusterOperation: String, Codable, Sendable {
+    case putObject = "put-object"
+    case registerTrack = "register-track"
     case editTrack = "edit-track"
     case setAlbumVisibility = "set-album-visibility"
     case resolveTrack = "resolve-track"
@@ -90,6 +92,7 @@ enum ClusterMutationRejection: String, Codable, Sendable {
 }
 
 enum ClusterMutationReply: Codable, Sendable, Equatable {
+    case objectStored(request: String, hash: String, bytes: UInt64, host: String)
     case accepted(request: String, record: String, host: String, heads: [String: [String]])
     case needsReview(request: String, current: [String: [String]])
     case rejected(request: String, reason: ClusterMutationRejection)
@@ -97,16 +100,17 @@ enum ClusterMutationReply: Codable, Sendable, Equatable {
     case unsupported(request: String, operation: String)
 
     private enum Status: String, Codable {
+        case objectStored = "object-stored"
         case accepted, rejected, deferred, unsupported
         case needsReview = "needs-review"
     }
     private enum CodingKeys: String, CodingKey {
-        case status, request, record, host, heads, current, reason, operation
+        case status, request, record, host, heads, current, reason, operation, hash, bytes
     }
 
     var request: String {
         switch self {
-        case .accepted(let request, _, _, _), .needsReview(let request, _),
+        case .objectStored(let request, _, _, _), .accepted(let request, _, _, _), .needsReview(let request, _),
              .rejected(let request, _), .deferred(let request, _), .unsupported(let request, _): request
         }
     }
@@ -120,6 +124,9 @@ enum ClusterMutationReply: Codable, Sendable, Equatable {
         let values = try decoder.container(keyedBy: CodingKeys.self)
         let request = try values.decode(String.self, forKey: .request)
         switch try values.decode(Status.self, forKey: .status) {
+        case .objectStored:
+            self = .objectStored(request: request, hash: try values.decode(String.self, forKey: .hash),
+                bytes: try values.decode(UInt64.self, forKey: .bytes), host: try values.decode(String.self, forKey: .host))
         case .accepted:
             self = .accepted(request: request, record: try values.decode(String.self, forKey: .record),
                 host: try values.decode(String.self, forKey: .host), heads: try values.decode([String: [String]].self, forKey: .heads))
@@ -138,6 +145,11 @@ enum ClusterMutationReply: Codable, Sendable, Equatable {
         var values = encoder.container(keyedBy: CodingKeys.self)
         try values.encode(request, forKey: .request)
         switch self {
+        case .objectStored(_, let hash, let bytes, let host):
+            try values.encode(Status.objectStored, forKey: .status)
+            try values.encode(hash, forKey: .hash)
+            try values.encode(bytes, forKey: .bytes)
+            try values.encode(host, forKey: .host)
         case .accepted(_, let record, let host, let heads):
             try values.encode(Status.accepted, forKey: .status)
             try values.encode(record, forKey: .record)

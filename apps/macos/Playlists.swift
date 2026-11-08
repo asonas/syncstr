@@ -219,6 +219,7 @@ final class PlaylistUpdateAttempt {
         request = mutation; host = peer
         let reply = try await send(mutation)
         switch reply {
+        case .objectStored: throw LocalMusicError.invalidData
         case .accepted(let id, _, let host, let heads):
             guard id == requestID, host == peer else { throw LocalMusicError.invalidData }
             return heads.count

@@ -7,6 +7,418 @@ import Combine
 #endif
 
 @MainActor
+struct ClusterAudioAdditionTests {
+    private func fixture() throws -> SharedAudioTests.Fixture {
+        let f = try SharedAudioTests.Fixture()
+        try f.database.receiveSharedAudio(f.snapshot(), peer: f.host)
+        return f
+    }
+
+    private func queue(_ f: SharedAudioTests.Fixture) throws -> ClusterMetadataEdit {
+        let id = UUID().uuidString.lowercased()
+        let file = try ClusterAudioAddition.stagedFile(root: f.store.root, request: id)
+        try Data("abc".utf8).write(to: file)
+        let entry = LocalEntry(track: Track(id: UUID().uuidString, title: "Example", artist: "Artist", suffix: "wav", size: 3),
+            sha256: f.hash, artwork: nil)
+        return try f.database.enqueueAudioAddition(entry, requestID: id, sourceLibrary: "local-library")
+    }
+
+    private func stored(_ database: CatalogDatabase, _ id: String) throws -> ClusterMetadataEdit {
+        try #require(database.clusterMetadataEdits().first { $0.id == id })
+    }
+
+    private func receipt(_ edit: ClusterMetadataEdit, host: String) throws -> ClusterMutationReply {
+        .objectStored(request: try #require(edit.addition?.upload.request), hash: edit.entry.sha256, bytes: 3, host: host)
+    }
+
+    private func accepted(_ request: ClusterMutationRequest, host: String) -> ClusterMutationReply {
+        .accepted(request: request.request, record: "record", host: host,
+            heads: ["track:new-track": ["record"], "source:local-library:new-source": ["record"]])
+    }
+
+    @Test func additionRequiresBothOperationsFromOneHost() {
+        #expect(!ClusterAudioAddition.supported(by: []))
+        #expect(!ClusterAudioAddition.supported(by: [.putObject]))
+        #expect(!ClusterAudioAddition.supported(by: [.registerTrack]))
+        #expect(ClusterAudioAddition.supported(by: [.putObject, .registerTrack]))
+        let hosts: [Set<ClusterOperation>] = [[.putObject], [.registerTrack]]
+        #expect(!hosts.contains { ClusterAudioAddition.supported(by: $0) })
+    }
+
+    @Test func unsupportedV5AdditionKeepsTheExplanationAndNeverUsesLegacyImport() async throws {
+        let f = try fixture()
+        defer { try? FileManager.default.removeItem(at: f.store.root) }
+        let library = Library(localStore: f.store)
+        defer { library.closeLibrary(); library.transfer.cancel() }
+        try library.openLocal(f.database.clusterCatalog())
+        await library.transfer.restorePeer(readIdentity: { throw LocalMusicError.clusterUnavailable })
+        #expect(library.audioAdditionNotice == LocalMusicError.legacyMutationsUnavailable.localizedDescription)
+        let missing = f.store.root.appendingPathComponent("missing.wav")
+        library.transfer.importCluster([missing])
+        await library.addMusic([missing])
+        #expect(library.message == LocalMusicError.legacyMutationsUnavailable.localizedDescription)
+        #expect(!library.transfer.busy)
+        #expect(try f.database.clusterMetadataEdits().isEmpty)
+        #expect(try f.database.clusterBatches().isEmpty)
+    }
+
+    @Test func equalAudioCreatesSeparateSourceIdentitiesAndOriginalEnvelopes() throws {
+        let f = try fixture()
+        defer { try? FileManager.default.removeItem(at: f.store.root) }
+        let first = try queue(f), second = try queue(f)
+        let a = try #require(first.mutation), b = try #require(second.mutation)
+        let upload = try #require(first.addition?.upload)
+        #expect(a.operation == .registerTrack && upload.operation == .putObject)
+        #expect(a.expected.isEmpty && upload.expected.isEmpty && upload.confirmed.isEmpty)
+        #expect(a.confirmed == [.object(["audio": .string(f.hash)])])
+        // JSON integers decode as signed values when representable.
+        #expect(upload.payload == .object(["hash": .string(f.hash), "bytes": .integer(3)]))
+        guard case .object(let left) = a.payload, case .object(let right) = b.payload,
+              case .object(let source)? = left["source"] else { Issue.record("Missing source"); return }
+        #expect(source["library"] == .string("local-library"))
+        #expect(left["source"] != right["source"])
+        #expect(left["hash"] == right["hash"])
+        #expect(a.request != b.request && a.request != upload.request)
+        #expect(try f.database.clusterMetadataEdits().count == 2)
+    }
+
+    @Test func equalAudioUploadsStillSendTwoIndependentRegistrations() async throws {
+        let f = try fixture()
+        defer { try? FileManager.default.removeItem(at: f.store.root) }
+        let first = try queue(f), second = try queue(f)
+        var registrations: [ClusterMutationRequest] = []
+        var storedHashes = Set<String>()
+        for edit in [first, second] {
+            try await ClusterAudioDelivery.send(edit, host: f.host, database: f.database, upload: { _ in
+                storedHashes.insert(edit.entry.sha256)
+                return try receipt(edit, host: f.host)
+            }, register: { request in
+                registrations.append(request)
+                return accepted(request, host: f.host)
+            })
+        }
+        #expect(storedHashes.count == 1 && registrations.count == 2)
+        #expect(registrations[0].request != registrations[1].request)
+        #expect(registrations[0].payload != registrations[1].payload)
+        #expect(try stored(f.database, first.id).mutationState == .accepted)
+        #expect(try stored(f.database, second.id).mutationState == .accepted)
+    }
+
+    @Test func restartKeepsEditAndTwoAdditionsWithOriginalRequestIDs() throws {
+        let f = try fixture()
+        defer { try? FileManager.default.removeItem(at: f.store.root) }
+        let draft = try f.database.trackMetadataDraft("A")
+        let edit = try f.database.enqueueTrackMetadata(draft, title: "Edited", artist: "Artist")
+        let first = try queue(f), second = try queue(f)
+        for item in [edit, first, second] { _ = try f.database.beginMetadataMutation(item.id, host: f.host) }
+        let reopened = try CatalogDatabase(f.store.root.appendingPathComponent("catalog.sqlite"))
+        try reopened.recoverClusterJobs()
+        for original in [edit, first, second] {
+            let restored = try stored(reopened, original.id)
+            #expect(restored.mutationState == .queued)
+            #expect(restored.mutation == original.mutation)
+            #expect(restored.addition?.upload == original.addition?.upload)
+            #expect(restored.mutationHost == (original.addition == nil ? f.host : nil))
+        }
+    }
+
+    @Test func receiptIsDurableBeforeRegistrationAndAcceptanceRemovesStaging() async throws {
+        let f = try fixture()
+        defer { try? FileManager.default.removeItem(at: f.store.root) }
+        let edit = try queue(f)
+        let file = try ClusterAudioAddition.stagedFile(root: f.store.root, request: edit.id)
+        var order: [String] = []
+        try await ClusterAudioDelivery.send(edit, host: f.host, database: f.database, upload: { request in
+            order.append("upload")
+            #expect(request == edit.addition?.upload)
+            #expect(try stored(f.database, edit.id).mutationState == .sending)
+            return try receipt(edit, host: f.host)
+        }, register: { request in
+            order.append("register")
+            let reopened = try CatalogDatabase(f.store.root.appendingPathComponent("catalog.sqlite"))
+            let sending = try stored(reopened, edit.id)
+            #expect(try sending.addition?.receipt == receipt(edit, host: f.host))
+            #expect(sending.mutationHost == f.host && sending.mutationState == .sending)
+            #expect(request == edit.mutation)
+            return accepted(request, host: f.host)
+        })
+        #expect(order == ["upload", "register"])
+        #expect(try stored(f.database, edit.id).mutationState == .accepted)
+        #expect(!FileManager.default.fileExists(atPath: file.path))
+        try f.database.metadataMutationInterrupted(edit.id, reason: "Refresh failed")
+        #expect(try stored(f.database, edit.id).mutationState == .accepted)
+    }
+
+    @Test(arguments: ["request", "hash", "bytes", "host", "accepted"])
+    func invalidUploadReceiptNeverRegisters(_ field: String) async throws {
+        let f = try fixture()
+        defer { try? FileManager.default.removeItem(at: f.store.root) }
+        let edit = try queue(f)
+        var registrations = 0
+        do {
+            try await ClusterAudioDelivery.send(edit, host: f.host, database: f.database, upload: { request in
+                if field == "accepted" { return accepted(request, host: f.host) }
+                return .objectStored(request: field == "request" ? "other" : request.request,
+                    hash: field == "hash" ? String(repeating: "c", count: 64) : f.hash,
+                    bytes: field == "bytes" ? 4 : 3, host: field == "host" ? String(repeating: "b", count: 64) : f.host)
+            }, register: { request in registrations += 1; return accepted(request, host: f.host) })
+            Issue.record("Invalid receipt was accepted")
+        } catch LocalMusicError.invalidData {}
+        #expect(registrations == 0)
+        let pending = try stored(f.database, edit.id)
+        #expect(pending.addition?.receipt == nil && pending.mutationState == .queued)
+        #expect(pending.mutationHost == nil)
+    }
+
+    @Test func uploadInterruptionRequeuesWithoutHostOrRegistration() async throws {
+        let f = try fixture()
+        defer { try? FileManager.default.removeItem(at: f.store.root) }
+        let edit = try queue(f)
+        var registrations = 0
+        do {
+            try await ClusterAudioDelivery.send(edit, host: f.host, database: f.database,
+                upload: { request in
+                    #expect(request == edit.addition?.upload)
+                    throw LocalMusicError.clusterUnavailable
+                }, register: { request in
+                    registrations += 1
+                    return accepted(request, host: f.host)
+                })
+            Issue.record("Interrupted upload must not succeed")
+        } catch LocalMusicError.clusterUnavailable {}
+        let reopened = try CatalogDatabase(f.store.root.appendingPathComponent("catalog.sqlite"))
+        let pending = try stored(reopened, edit.id)
+        #expect(pending.mutationState == .queued && pending.mutationHost == nil)
+        #expect(pending.addition?.receipt == nil && registrations == 0)
+        #expect(pending.mutation == edit.mutation && pending.addition?.upload == edit.addition?.upload)
+        let otherHost = String(repeating: "b", count: 64)
+        #expect(try reopened.beginMetadataMutation(edit.id, host: otherHost).mutationHost == otherHost)
+    }
+
+    @Test func lostRegistrationReplyRetriesOnlyOriginalHostAfterRestart() async throws {
+        let f = try fixture()
+        defer { try? FileManager.default.removeItem(at: f.store.root) }
+        let edit = try queue(f)
+        do {
+            try await ClusterAudioDelivery.send(edit, host: f.host, database: f.database,
+                upload: { _ in try receipt(edit, host: f.host) }, register: { request in
+                    #expect(request == edit.mutation)
+                    throw LocalMusicError.clusterUnavailable
+                })
+            Issue.record("Lost reply must remain unknown")
+        } catch LocalMusicError.clusterUnavailable {}
+        let reopened = try CatalogDatabase(f.store.root.appendingPathComponent("catalog.sqlite"))
+        try reopened.recoverClusterJobs()
+        let retry = try stored(reopened, edit.id)
+        #expect(retry.mutationState == .outcomeUnknown && retry.canRetryMutation)
+        #expect(retry.mutation == edit.mutation && retry.addition?.upload == edit.addition?.upload)
+        var sends = 0
+        do {
+            try await ClusterAudioDelivery.send(retry, host: String(repeating: "b", count: 64), database: reopened,
+                upload: { request in sends += 1; return accepted(request, host: f.host) },
+                register: { request in sends += 1; return accepted(request, host: f.host) })
+            Issue.record("Another host received a pinned registration")
+        } catch LocalMusicError.invalidData {}
+        #expect(sends == 0)
+        let originalAcceptance = accepted(try #require(edit.mutation), host: f.host)
+        try await ClusterAudioDelivery.send(try stored(reopened, edit.id), host: f.host, database: reopened,
+            upload: { request in sends += 1; return accepted(request, host: f.host) }, register: { request in
+                sends += 1
+                #expect(request == edit.mutation)
+                return originalAcceptance
+            })
+        #expect(sends == 1)
+        #expect(try stored(reopened, edit.id).mutationReply == originalAcceptance)
+    }
+
+    @Test(arguments: ["host", "request", "object-stored"])
+    func invalidRegistrationAcknowledgmentDoesNotCompleteAddition(_ field: String) async throws {
+        let f = try fixture()
+        defer { try? FileManager.default.removeItem(at: f.store.root) }
+        let edit = try queue(f)
+        do {
+            try await ClusterAudioDelivery.send(edit, host: f.host, database: f.database,
+                upload: { _ in try receipt(edit, host: f.host) }, register: { request in
+                    if field == "object-stored" {
+                        return .objectStored(request: request.request, hash: f.hash, bytes: 3, host: f.host)
+                    }
+                    return .accepted(request: field == "request" ? "other" : request.request,
+                        record: "record", host: field == "host" ? String(repeating: "b", count: 64) : f.host, heads: [:])
+                })
+            Issue.record("Invalid acknowledgment must not complete addition")
+        } catch LocalMusicError.invalidData {}
+        let pending = try stored(f.database, edit.id)
+        #expect(pending.mutationState == .outcomeUnknown && pending.addition?.receipt != nil)
+    }
+
+    @Test func uploadReplayAfterCrashPreservesTheOriginalEnvelope() async throws {
+        let f = try fixture()
+        defer { try? FileManager.default.removeItem(at: f.store.root) }
+        let edit = try queue(f)
+        _ = try f.database.beginMetadataMutation(edit.id, host: f.host)
+        let reopened = try CatalogDatabase(f.store.root.appendingPathComponent("catalog.sqlite"))
+        try reopened.recoverClusterJobs()
+        try await ClusterAudioDelivery.send(try stored(reopened, edit.id), host: f.host, database: reopened, upload: { request in
+            #expect(request == edit.addition?.upload)
+            return try receipt(edit, host: f.host)
+        }, register: { request in accepted(request, host: f.host) })
+        #expect(try stored(reopened, edit.id).mutationState == .accepted)
+    }
+
+    @Test func cancelledRegistrationRetainsTheReceiptAndUnknownOutcome() async throws {
+        let f = try fixture()
+        defer { try? FileManager.default.removeItem(at: f.store.root) }
+        let edit = try queue(f)
+        do {
+            try await ClusterAudioDelivery.send(edit, host: f.host, database: f.database,
+                upload: { _ in try receipt(edit, host: f.host) }, register: { _ in throw CancellationError() })
+            Issue.record("Cancelled registration must not report success")
+        } catch is CancellationError {}
+        let pending = try stored(f.database, edit.id)
+        #expect(pending.mutationState == .outcomeUnknown && pending.addition?.receipt != nil)
+        #expect(pending.mutationHost == f.host && pending.mutation == edit.mutation)
+        #expect(throws: LocalMusicError.self) { try f.database.discardMetadataMutation(edit.id) }
+    }
+
+    @Test func restartAfterReceiptSkipsUploadAndCleansAcceptedStaging() async throws {
+        let f = try fixture()
+        defer { try? FileManager.default.removeItem(at: f.store.root) }
+        let edit = try queue(f)
+        _ = try f.database.beginMetadataMutation(edit.id, host: f.host)
+        try f.database.finishAudioUpload(edit.id, reply: receipt(edit, host: f.host), peer: f.host)
+        let reopened = try CatalogDatabase(f.store.root.appendingPathComponent("catalog.sqlite"))
+        try reopened.recoverClusterJobs()
+        let ready = try stored(reopened, edit.id)
+        #expect(ready.mutationState == .queued && ready.addition?.receipt != nil)
+        try await ClusterAudioDelivery.send(ready, host: f.host, database: reopened,
+            upload: { request in Issue.record("A durable receipt skips upload"); return accepted(request, host: f.host) },
+            register: { accepted($0, host: f.host) })
+        // Simulate a crash after saving acceptance but before unlinking staging.
+        let file = try ClusterAudioAddition.stagedFile(root: f.store.root, request: edit.id)
+        try Data("abc".utf8).write(to: file)
+        try reopened.recoverClusterJobs()
+        #expect(!FileManager.default.fileExists(atPath: file.path))
+        #expect(try stored(reopened, edit.id).mutationState == .accepted)
+    }
+
+    @Test(arguments: ["needs-review", "rejected", "deferred", "unsupported"])
+    func typedUploadOutcomesDoNotStartRegistration(_ status: String) async throws {
+        let f = try fixture()
+        defer { try? FileManager.default.removeItem(at: f.store.root) }
+        let edit = try queue(f)
+        var registrations = 0
+        try await ClusterAudioDelivery.send(edit, host: f.host, database: f.database, upload: { request in
+            switch status {
+            case "needs-review": return .needsReview(request: request.request, current: [:])
+            case "rejected": return .rejected(request: request.request, reason: .invalid)
+            case "deferred": return .deferred(request: request.request, reason: "busy")
+            default: return .unsupported(request: request.request, operation: "put-object")
+            }
+        }, register: { request in registrations += 1; return accepted(request, host: f.host) })
+        let pending = try stored(f.database, edit.id)
+        #expect(registrations == 0 && pending.addition?.receipt == nil)
+        let expected: ClusterMetadataEdit.MutationState = status == "needs-review" ? .needsReview : status == "deferred" ? .queued : .rejected
+        #expect(pending.mutationState == expected)
+        #expect(pending.mutation == edit.mutation && pending.addition?.upload == edit.addition?.upload)
+        if expected == .needsReview || expected == .rejected {
+            let file = try ClusterAudioAddition.stagedFile(root: f.store.root, request: edit.id)
+            try f.database.discardMetadataMutation(edit.id)
+            #expect(!FileManager.default.fileExists(atPath: file.path))
+        }
+    }
+
+    @Test(arguments: ["needs-review", "rejected", "deferred", "unsupported"])
+    func typedRegistrationOutcomesRetainOriginalIntent(_ status: String) async throws {
+        let f = try fixture()
+        defer { try? FileManager.default.removeItem(at: f.store.root) }
+        let edit = try queue(f)
+        try await ClusterAudioDelivery.send(edit, host: f.host, database: f.database,
+            upload: { _ in try receipt(edit, host: f.host) }, register: { request in
+                switch status {
+                case "needs-review": return .needsReview(request: request.request, current: ["source:example": ["prior"]])
+                case "rejected": return .rejected(request: request.request, reason: .invalid)
+                case "deferred": return .deferred(request: request.request, reason: "busy")
+                default: return .unsupported(request: request.request, operation: "register-track")
+                }
+            })
+        let pending = try stored(f.database, edit.id)
+        #expect(pending.addition?.receipt != nil && pending.mutation == edit.mutation)
+        let expected: ClusterMetadataEdit.MutationState = status == "needs-review" ? .needsReview : status == "deferred" ? .queued : .rejected
+        #expect(pending.mutationState == expected)
+        #expect(FileManager.default.fileExists(atPath: try ClusterAudioAddition.stagedFile(root: f.store.root, request: edit.id).path))
+    }
+
+    @Test func rejectedRequestIDReuseKeepsTheOriginalIntentAndOtherResult() async throws {
+        let f = try fixture()
+        defer { try? FileManager.default.removeItem(at: f.store.root) }
+        let first = try queue(f), second = try queue(f)
+        try await ClusterAudioDelivery.send(first, host: f.host, database: f.database,
+            upload: { _ in try receipt(first, host: f.host) }, register: { accepted($0, host: f.host) })
+        let original = try stored(f.database, first.id).mutationReply
+        try await ClusterAudioDelivery.send(second, host: f.host, database: f.database,
+            upload: { _ in try receipt(second, host: f.host) }, register: { .rejected(request: $0.request, reason: .invalid) })
+        #expect(try stored(f.database, first.id).mutationReply == original)
+        #expect(try stored(f.database, second.id).mutation == second.mutation)
+        #expect(try stored(f.database, second.id).mutationState == .rejected)
+        #expect(throws: LocalMusicError.self) {
+            try f.database.enqueueAudioAddition(second.entry, requestID: first.id, sourceLibrary: "different")
+        }
+        #expect(try stored(f.database, first.id).mutationReply == original)
+    }
+
+    @Test func discardRemovesStagingButSentUnknownIntentCannotBeDiscarded() throws {
+        let f = try fixture()
+        defer { try? FileManager.default.removeItem(at: f.store.root) }
+        let unsent = try queue(f), sent = try queue(f)
+        let file = try ClusterAudioAddition.stagedFile(root: f.store.root, request: unsent.id)
+        try f.database.discardMetadataMutation(unsent.id)
+        #expect(!FileManager.default.fileExists(atPath: file.path))
+        _ = try f.database.beginMetadataMutation(sent.id, host: f.host)
+        try f.database.finishAudioUpload(sent.id, reply: receipt(sent, host: f.host), peer: f.host)
+        _ = try f.database.beginMetadataMutation(sent.id, host: f.host)
+        try f.database.metadataMutationInterrupted(sent.id, reason: "Cancelled")
+        #expect(throws: LocalMusicError.self) { try f.database.discardMetadataMutation(sent.id) }
+        let sentFile = try ClusterAudioAddition.stagedFile(root: f.store.root, request: sent.id)
+        #expect(FileManager.default.fileExists(atPath: sentFile.path))
+    }
+
+    @Test func streamedUploadBoundsChunksAndFinFollowsVerifiedBytes() async throws {
+        let file = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: file) }
+        let data = Data(repeating: 42, count: 65536 * 2 + 13)
+        try data.write(to: file)
+        var count = 0, chunks = 0, finished = false
+        try await ClusterAudioAddition.stream(file: file, hash: LocalMusicStore.digest(data), bytes: UInt64(data.count), write: { chunk in
+            #expect(!finished && chunk.count <= 65536)
+            count += chunk.count; chunks += 1
+        }, finish: { #expect(count == data.count); finished = true })
+        #expect(finished && chunks == 3)
+    }
+
+    @Test(arguments: ["short", "long", "hash"])
+    func changedFileNeverFinishesTheUpload(_ change: String) async throws {
+        let file = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: file) }
+        try Data("abc".utf8).write(to: file)
+        var finished = false
+        do {
+            try await ClusterAudioAddition.stream(file: file, hash: change == "hash" ? "wrong" : LocalMusicStore.digest(Data("abc".utf8)),
+                bytes: change == "short" ? 4 : change == "long" ? 2 : 3, write: { _ in }, finish: { finished = true })
+            Issue.record("Changed file was accepted")
+        } catch LocalMusicError.changedFile {}
+        #expect(!finished)
+    }
+
+    @Test func uploadSizeLimitsAreCheckedWithoutAllocatingTheObject() throws {
+        #expect(throws: LocalMusicError.self) { try ClusterAudioAddition.validateSize(0) }
+        try ClusterAudioAddition.validateSize(1)
+        try ClusterAudioAddition.validateSize(20 * 1024 * 1024 * 1024)
+        #expect(throws: LocalMusicError.self) { try ClusterAudioAddition.validateSize(20 * 1024 * 1024 * 1024 + 1) }
+        #expect(throws: LocalMusicError.self) { try ClusterAudioAddition.stagedFile(root: URL(fileURLWithPath: "/example"), request: "../outside") }
+    }
+}
+
+@MainActor
 struct ClusterMetadataTests {
     private func visibilityFixture(conflict: Bool = false, resolved: Bool = true) throws -> SharedAudioTests.Fixture {
         let f = try SharedAudioTests.Fixture()

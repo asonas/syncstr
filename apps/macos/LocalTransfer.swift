@@ -277,9 +277,16 @@ final class LocalTransfer: ObservableObject {
     @Published private(set) var clusterAlbumConflicts: [ClusterAlbumConflict] = []
     @Published private(set) var clusterMutationsUnavailable = false
     @Published private(set) var clusterSupportedOperations: Set<ClusterOperation> = []
+    @Published private(set) var clusterAudioAdditionAvailable = false
+    var audioAdditionNotice: String? {
+        clusterMutationsUnavailable && !clusterAudioAdditionAvailable
+            ? LocalMusicError.legacyMutationsUnavailable.localizedDescription : nil
+    }
+    var audioAdditions: [ClusterMetadataEdit] { clusterMetadataEdits.filter { $0.addition != nil } }
+    private var hasQueuedAudioAdditions: Bool { audioAdditions.contains(where: \.canRetryMutation) }
     @Published private(set) var clusterMetadataEdits: [ClusterMetadataEdit] = []
     var trackMetadataEdits: [ClusterMetadataEdit] { clusterMetadataEdits.filter { $0.mutation?.operation == .editTrack } }
-    private var hasQueuedTrackMetadata: Bool { clusterMetadataEdits.contains(where: \.canRetryMutation) }
+    private var hasQueuedTrackMetadata: Bool { clusterMetadataEdits.contains { $0.addition == nil && $0.canRetryMutation } }
     var trackMetadataNotice: String? {
         clusterMutationsUnavailable && clusterSupportedOperations.contains(.editTrack)
             ? nil : "曲の情報の編集には、対応する保存先への接続が必要です。ライブラリを更新して対応状況を確認してください。"
@@ -289,7 +296,7 @@ final class LocalTransfer: ObservableObject {
     @Published private(set) var sharedTrackResolutionDeferred = false
     var clusterMutationNotice: String? {
         guard clusterMutationsUnavailable else { return nil }
-        return sharedTrackResolutionAvailable ? "この接続では利用できない変更操作があります。各操作の案内を確認してください。"
+        return sharedTrackResolutionAvailable || clusterAudioAdditionAvailable ? "この接続では利用できない変更操作があります。各操作の案内を確認してください。"
             : LocalMusicError.legacyMutationsUnavailable.localizedDescription
     }
     var sharedTrackResolutionNotice: String? {
@@ -305,7 +312,7 @@ final class LocalTransfer: ObservableObject {
     }
     var clusterMutationQueueNotice: String? {
         guard clusterMutationsUnavailable,
-              pendingClusterMetadata || clusterBatches.contains(where: { $0.items.contains(where: { $0.state != .stored }) }) else { return nil }
+              pendingClusterMetadata || hasQueuedAudioAdditions || clusterBatches.contains(where: { $0.items.contains(where: { $0.state != .stored }) }) else { return nil }
         return "送信待ちの音源と変更はこの端末に保持しています。"
     }
     private var pendingClusterMetadata = false
@@ -430,7 +437,7 @@ final class LocalTransfer: ObservableObject {
                     return
                 }
                 guard !self.busy, permitted,
-                      self.hasQueuedTrackMetadata || (!self.clusterMutationsUnavailable &&
+                      self.hasQueuedTrackMetadata || self.hasQueuedAudioAdditions || (!self.clusterMutationsUnavailable &&
                         self.clusterBatches.contains(where: { $0.items.contains(where: { $0.state == .queued }) })) else { return }
                 self.connectCluster()
             }
@@ -581,6 +588,7 @@ final class LocalTransfer: ObservableObject {
         pendingClusterMetadata = state.pendingMetadata
         clusterMetadataEdits = state.metadataEdits
         clusterSupportedOperations = clusterNetwork.supportedOperations
+        clusterAudioAdditionAvailable = clusterNetwork.audioAdditionAvailable
         clusterMutationsUnavailable = state.sharedAudio || clusterNetwork.sharedAudio
         disputedMembers = state.disputed
         connectionEvent("cluster_registration_read")
@@ -641,7 +649,7 @@ final class LocalTransfer: ObservableObject {
         clusterRetry?.cancel()
         guard let registration = clusterRegistration,
               (try? registration.membership.verify(registration.localGrant)) != nil,
-              hasQueuedTrackMetadata || (!clusterMutationsUnavailable &&
+              hasQueuedTrackMetadata || (hasQueuedAudioAdditions && permitsAutomaticAudio) || (!clusterMutationsUnavailable &&
                 (pendingClusterMetadata || clusterBatches.contains(where: { $0.items.contains(where: { $0.state == .queued }) }))) else { return }
         clusterRetry = Task { [weak self] in
             do { try await Task.sleep(for: .seconds(15)) } catch { return }
@@ -708,7 +716,15 @@ final class LocalTransfer: ObservableObject {
                         status = "ライブラリを更新しました。整理情報の変更は送信待ちです。\(error.localizedDescription)"
                     }
                 }
-                if clusterMutationsUnavailable && hasQueuedTrackMetadata {
+                if clusterMutationsUnavailable && permitsAutomaticAudio && hasQueuedAudioAdditions {
+                    automaticAudioOperation = true
+                    defer { if generation == attempt { automaticAudioOperation = false } }
+                    try await clusterNetwork.syncAudioAdditions { [weak self] in
+                        guard let self, self.generation == attempt else { return }
+                        try? await self.updateClusterState(database)
+                    }
+                }
+                if clusterMutationsUnavailable && (hasQueuedTrackMetadata || !audioAdditions.isEmpty) {
                     try await clusterNetwork.syncTrackMetadata { [weak self] in
                         guard let self, self.generation == attempt else { return }
                         try? await self.updateClusterState(database)
@@ -823,6 +839,10 @@ final class LocalTransfer: ObservableObject {
     }
 
     func importCluster(_ files: [URL]) {
+        if clusterMutationsUnavailable || clusterNetwork.sharedAudio || (try? store.database().sharedAudioSnapshot()) != nil {
+            importClusterAudio(files)
+            return
+        }
         guard !busy, clusterRegistration != nil, permitsClusterMutations() else { return }
         let attempt = generation
         busy = true; completed = 0; total = files.count; progress = 0
@@ -871,6 +891,48 @@ final class LocalTransfer: ObservableObject {
                 else { status = "音源をこの端末に保持しました。Wi-Fiに接続すると保存先へ追加します。" }
             } catch {
                 if generation == attempt { status = error.localizedDescription }
+            }
+        }
+    }
+
+    private func importClusterAudio(_ files: [URL]) {
+        guard !busy, clusterRegistration != nil else { return }
+        guard clusterAudioAdditionAvailable else { status = LocalMusicError.legacyMutationsUnavailable.localizedDescription; return }
+        let attempt = generation
+        let filesStore = store
+        let sourceLibrary = peerID
+        busy = true; completed = 0; total = files.count; progress = 0
+        status = "音源の情報を確認しています…"
+        operation = Task {
+            defer { if generation == attempt { busy = false; scheduleClusterRetry() } }
+            do {
+                for file in files {
+                    try Task.checkCancellation()
+                    _ = try await ClusterAudioAddition.prepare(file, store: filesStore, sourceLibrary: sourceLibrary)
+                    try await updateClusterState()
+                    completed += 1
+                    progress = Double(completed) / Double(max(1, total))
+                }
+                clusterResultsPending = true
+                if permitsAutomaticAudio {
+                    automaticAudioOperation = true
+                    defer { if generation == attempt { automaticAudioOperation = false } }
+                    try await clusterNetwork.syncAudioAdditions { [weak self] in
+                        guard let self, self.generation == attempt else { return }
+                        try? await self.updateClusterState()
+                    }
+                    let updated = try await clusterNetwork.refresh()
+                    try await publishCatalog(updated, attempt: attempt)
+                    catalog = updated
+                    try await updateClusterState()
+                    onSaved?()
+                    status = "音源の追加結果を確認してください。"
+                } else { status = "音源をこの端末に保持しました。Wi-Fiに接続すると保存先へ追加します。" }
+            } catch {
+                if generation == attempt {
+                    try? await updateClusterState()
+                    status = error.localizedDescription
+                }
             }
         }
     }

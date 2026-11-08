@@ -84,6 +84,7 @@ struct SharedTrackResolutionTests {
         #expect(sends == 1)
         #expect(result.reply == reply)
         switch reply {
+        case .objectStored: Issue.record("An upload receipt cannot resolve a track")
         case .accepted:
             #expect(refreshes == 1)
             #expect(result.catalog?.id == "refreshed")

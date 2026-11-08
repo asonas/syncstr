@@ -90,6 +90,8 @@ struct ClusterMutationTests {
     @Test func everyHostReplyUsesTheExactTaggedWireShapeAndValidatesTheRequest() throws {
         // Tags and fields are defined by shared_audio_net::MutationReply's serde representation.
         let fixtures: [(String, ClusterMutationReply)] = [
+            (#"{"status":"object-stored","request":"b6f1c0de-1f2a-4c3b-9d4e-5a6b7c8d9e0f","hash":"abc","bytes":3,"host":"host-a"}"#,
+                .objectStored(request: requestID, hash: "abc", bytes: 3, host: "host-a")),
             (#"{"status":"accepted","request":"b6f1c0de-1f2a-4c3b-9d4e-5a6b7c8d9e0f","record":"record-1","host":"host-a","heads":{"track:track-a":["record-1"]}}"#,
                 .accepted(request: requestID, record: "record-1", host: "host-a", heads: ["track:track-a": ["record-1"]])),
             (#"{"status":"needs-review","request":"b6f1c0de-1f2a-4c3b-9d4e-5a6b7c8d9e0f","current":{"track:track-a":["revision-2","revision-3"]}}"#,

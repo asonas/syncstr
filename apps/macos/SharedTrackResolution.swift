@@ -46,6 +46,7 @@ enum SharedTrackResolution {
 
         var notice: String {
             switch reply {
+            case .objectStored: return "保存先からの応答を確認できません。ライブラリを更新してください。"
             case .accepted:
                 return refreshFailed ? "競合の解消は受け付けられました。ライブラリを更新して結果を確認してください。"
                     : "選んだ内容を保存先に反映しました。"
