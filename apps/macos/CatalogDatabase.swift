@@ -636,7 +636,7 @@ final class CatalogDatabase {
         }
     }
 
-    private func transaction<T>(_ action: () throws -> T) throws -> T {
+    func transaction<T>(_ action: () throws -> T) throws -> T {
         try execute("BEGIN IMMEDIATE")
         do {
             let result = try action()
