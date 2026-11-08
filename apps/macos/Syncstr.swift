@@ -152,7 +152,7 @@ struct LibraryView: View {
                     if !selectedAlbums.isEmpty {
                         Text("\(selectedAlbums.count)枚を選択中").foregroundStyle(.secondary)
                         Button(albumVisibilityLabel) { changeAlbumVisibility(selectedAlbums) }
-                            .disabled(library.legacyMutationNotice != nil || selectedAlbums.contains(where: library.isSavingAlbumVisibility))
+                            .disabled(library.albumsVisibilityUnavailable(selectedAlbums))
                     }
                     if library.destination != .recentlyAdded { albumSortMenu }
                 }
@@ -160,8 +160,13 @@ struct LibraryView: View {
                     .frame(minWidth: 120, idealWidth: 240, maxWidth: 240)
                     .layoutPriority(-1)
             }
-            if showingAlbumGrid, !selectedAlbums.isEmpty, let notice = library.legacyMutationNotice {
+            if showingAlbumGrid, !selectedAlbums.isEmpty, let notice = library.albumsVisibilityNotice(selectedAlbums) {
                 Text(notice).font(.caption).foregroundStyle(.secondary)
+            }
+            if showingAlbumGrid {
+                ForEach(selectedAlbums.sorted(), id: \.self) { id in
+                    if let status = library.albumVisibilityStatus(id) { Text(status).font(.caption).foregroundStyle(.secondary) }
+                }
             }
         }
         .padding(.horizontal, 8).padding(.vertical, 8)
@@ -326,8 +331,11 @@ struct LibraryView: View {
                 let action = library.destination == .hiddenAlbums ? "非表示を解除する" : "非表示にする"
                 Button(saving ? "保存しています…" : targets.count > 1 ? "選択した\(targets.count)枚を\(action)" : action) {
                     changeAlbumVisibility(targets)
-                }.disabled(library.legacyMutationNotice != nil || saving)
-                if let notice = library.legacyMutationNotice { Text(notice) }
+                }.disabled(library.albumsVisibilityUnavailable(targets))
+                if let notice = library.albumsVisibilityNotice(targets) { Text(notice) }
+                ForEach(targets.sorted(), id: \.self) { id in
+                    if let status = library.albumVisibilityStatus(id) { Text(status) }
+                }
                 Button("アルバムを開く") { openAlbum(album.id) }
             }
         }
@@ -547,8 +555,9 @@ struct LibraryView: View {
                     TrackMetadataMenu(library: library, track: track)
                     Button(library.albumVisibilityLabel(track.albumKey)) {
                         library.setAlbumHidden(track.albumKey, hidden: !library.isAlbumHidden(track.albumKey))
-                    }.disabled(library.legacyMutationNotice != nil || library.isSavingAlbumVisibility(track.albumKey))
-                    if let notice = library.legacyMutationNotice { Text(notice) }
+                    }.disabled(library.albumVisibilityNotice(track.albumKey) != nil || library.isSavingAlbumVisibility(track.albumKey))
+                    if let notice = library.albumVisibilityNotice(track.albumKey) { Text(notice) }
+                    if let status = library.albumVisibilityStatus(track.albumKey) { Text(status) }
                 }
                 .overlay(alignment: .bottom) { rule }
         }

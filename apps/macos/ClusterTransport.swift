@@ -362,7 +362,7 @@ final class ClusterNetwork {
                     session = current
                     defer { current.close(); session = nil }
                     let operations = await current.supportedOperations
-                    guard await current.sharedAudio, operations.contains(.editTrack) else {
+                    guard await current.sharedAudio, operations.contains(request.operation) else {
                         unsupported = true
                         continue
                     }

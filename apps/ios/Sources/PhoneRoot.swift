@@ -326,8 +326,9 @@ struct PhoneRoot: View {
             .contextMenu {
                 Button(library.albumVisibilityLabel(album.id)) {
                     library.setAlbumHidden(album.id, hidden: !library.isAlbumHidden(album.id))
-                }.disabled(library.legacyMutationNotice != nil || library.isSavingAlbumVisibility(album.id))
-                if let notice = library.legacyMutationNotice { Text(notice) }
+                }.disabled(library.albumVisibilityNotice(album.id) != nil || library.isSavingAlbumVisibility(album.id))
+                if let notice = library.albumVisibilityNotice(album.id) { Text(notice) }
+                if let status = library.albumVisibilityStatus(album.id) { Text(status) }
             }
         }
     }

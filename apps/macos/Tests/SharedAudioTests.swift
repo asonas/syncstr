@@ -178,7 +178,7 @@ struct SharedAudioTests {
         await library.setAlbumHidden(projectedAlbum, hidden: false).value
         #expect(library.albums.map(\.id) == visible)
         #expect(!library.isSavingAlbumVisibility(projectedAlbum))
-        #expect(library.message == library.legacyMutationNotice)
+        #expect(library.message?.contains("対応する保存先") == true)
         #expect(try f.database.clusterCatalog().organization?.isHidden(projectedAlbum) == false)
         let reopened = try f.store.database()
         #expect(try encoder.encode(reopened.clusterBatches()) == batches)

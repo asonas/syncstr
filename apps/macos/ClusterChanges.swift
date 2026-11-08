@@ -18,7 +18,8 @@ struct ClusterMetadataEdit: Codable {
 
     var queueKey: String { mutation.map { "v5:" + $0.request } ?? entry.sha256 }
     var canRetryMutation: Bool {
-        mutation?.operation == .editTrack && (mutationState == .queued || mutationState == .outcomeUnknown)
+        (mutation?.operation == .editTrack || mutation?.operation == .setAlbumVisibility)
+            && (mutationState == .queued || mutationState == .outcomeUnknown)
     }
 }
 
