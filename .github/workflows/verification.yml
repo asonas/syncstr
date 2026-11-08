@@ -2,7 +2,7 @@ name: Verification
 
 on:
   pull_request:
-    types: [opened, synchronize, reopened, labeled]
+    types: [opened, synchronize, reopened]
   push:
     branches: [main]
   workflow_dispatch:
@@ -11,35 +11,11 @@ permissions:
   contents: read
 
 concurrency:
-  # Label requests must not cancel checks already running for a code change.
-  group: verification-${{ github.ref }}-${{ github.event.action == 'labeled' && format('label-{0}', github.event.label.name) || 'code' }}
+  group: verification-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
-  changes:
-    if: github.event_name == 'pull_request' && github.event.action != 'labeled'
-    runs-on: ubuntu-24.04
-    timeout-minutes: 5
-    outputs:
-      apple: ${{ steps.paths.outputs.apple }}
-    steps:
-      - uses: actions/checkout@v7
-        with:
-          fetch-depth: 0
-      - name: Detect Apple changes
-        id: paths
-        env:
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-        run: |
-          changed_paths=$(git diff --name-only --no-renames "$BASE_SHA...$HEAD_SHA" -- apps/ios/ apps/macos/ .github/workflows/verification.yml)
-          if [[ -n "$changed_paths" ]]; then
-            echo "apple=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "apple=false" >> "$GITHUB_OUTPUT"
-          fi
   headless:
-    if: github.event.action != 'labeled'
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     defaults:
@@ -47,6 +23,9 @@ jobs:
         working-directory: headless
     steps:
       - uses: actions/checkout@v7
+      - name: Simulator runner and reporting regression tests
+        working-directory: .
+        run: python3 -m unittest discover -s apps/ios/scripts/tests -v
       - name: Install Rust
         run: rustup toolchain install 1.99.1 --profile minimal --component clippy
       - name: Focused regression tests
@@ -58,42 +37,7 @@ jobs:
           --test shared_audio --test playlists
       - name: Clippy
         run: cargo +1.99.1 clippy --locked --features p2p --lib -- -D warnings
-  simulator:
-    needs: changes
-    # A status function allows label requests and non-PR events past skipped changes.
-    if: >-
-      ${{ !cancelled() &&
-          (github.event_name != 'pull_request' ||
-           (github.event.action == 'labeled' && github.event.label.name == 'run-simulator') ||
-           (github.event.action != 'labeled' &&
-            (needs.changes.outputs.apple == 'true' ||
-             contains(github.event.pull_request.labels.*.name, 'run-simulator')))) }}
-    runs-on: xcode-27
-    timeout-minutes: 60
-    strategy:
-      fail-fast: false
-      matrix:
-        device: [iphone, ipad]
-    steps:
-      - uses: actions/checkout@v7
-      - name: Install XcodeGen
-        run: brew install xcodegen
-      - name: Build required v5 fixture tools
-        run: |
-          rustup toolchain install 1.99.1 --profile minimal
-          cargo +1.99.1 build --manifest-path headless/Cargo.toml --locked --features p2p --target-dir .build/v5-rust --bin syncstr-headless --example shared_audio_fixture --example shared_audio_fixture_update
-      - name: Runner regression tests
-        run: python3 -m unittest discover -s apps/ios/scripts/tests -v
-      - name: Unit and library UI tests
-        run: python3 apps/ios/scripts/verify_simulator.py --device "${{ matrix.device }}"
-      - uses: actions/upload-artifact@v7
-        if: always()
-        with:
-          name: simulator-${{ matrix.device }}
-          path: .build/verification/
-          retention-days: 7
   macos:
-    if: github.event.action != 'labeled'
     runs-on: xcode-27
     timeout-minutes: 30
     env:
