@@ -12,6 +12,19 @@ from unittest.mock import patch
 
 
 class SimulatorRunnerTests(unittest.TestCase):
+    def test_command_timeout_preserves_non_ui_limits(self):
+        spec = importlib.util.spec_from_file_location(
+            "verification", Path(__file__).resolve().parents[1] / "verify_simulator.py")
+        runner = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(runner)
+        for name, expected in (("ui", 1800), ("ui-retry", 1800), ("unit", 1200),
+                               ("unit-retry", 1200), ("responsiveness", 1200),
+                               ("boot", 1200), ("ui-build", 1200), ("ui-summary", 1200),
+                               ("ui-tests", 1200), ("ui-retry-tests", 1200),
+                               ("bootstatus", 180), ("ui-ready", 180), ("v5-ready", 180)):
+            with self.subTest(name=name):
+                self.assertEqual(runner.command_timeout(name), expected)
+
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory()
         self.addCleanup(self.temporary.cleanup)
@@ -155,11 +168,11 @@ if os.environ.get("FAIL") == "delete" and command[1:3] == ["simctl", "delete"]:
         self.assertTrue((output / "unit.log").exists())
         self.assertTrue((output / "ui.log").exists())
         timings = json.loads((output / "command-timings.json").read_text())
-        self.assertEqual(timings["ui"]["timeoutSeconds"], 1200)
+        self.assertEqual(timings["ui"]["timeoutSeconds"], 1800)
         self.assertEqual(timings["bootstatus"]["timeoutSeconds"], 180)
         self.assertGreaterEqual(timings["ui"]["elapsedSeconds"], 0)
         self.assertAlmostEqual(timings["ui"]["remainingSeconds"],
-                               1200 - timings["ui"]["elapsedSeconds"])
+                               1800 - timings["ui"]["elapsedSeconds"])
 
     def test_ipad_runs_only_ui_tests(self):
         result, calls, _ = self.run_script(device="ipad", selection="SyncstrUITests/SharedAudioFlowTests")
