@@ -1891,9 +1891,12 @@ async fn quic_member_metadata_retry_after_lost_reply_returns_original_acceptance
     let peer = Session::connect(&peer_endpoint, host_endpoint.addr(), store.membership()?).await?;
     assert_eq!(
         peer.edit_track(edit.clone()).await?,
-        MutationReply::Rejected {
+        MutationReply::NeedsReview {
             request: edit.request.clone(),
-            reason: MutationRejection::Invalid,
+            current: std::collections::BTreeMap::from([(
+                format!("track:{}", fixture.logical),
+                vec![signed.id.clone()],
+            )]),
         }
     );
     assert_eq!(store.records()?, [signed.clone()]);
@@ -3340,6 +3343,22 @@ async fn quic_member_playlist_updates_record_origin_and_replay_atomically() -> a
     }
     let after = serde_json::to_value(store.snapshot()?.playlist_history)?;
     assert_eq!(session.update_playlists(mutation.clone()).await?, accepted);
+    // Emulate returning to this binary after an older version wrote the batch receipt.
+    let legacy_db = rusqlite::Connection::open(fixture.data().join("node.sqlite"))?;
+    legacy_db.execute(
+        "DELETE FROM shared_member_playlist_requests WHERE id=?",
+        [&mutation.request],
+    )?;
+    legacy_db.execute(
+        "DELETE FROM shared_member_requests WHERE id=?",
+        [&mutation.request],
+    )?;
+    legacy_db.execute(
+        "DELETE FROM shared_request_index_positions WHERE stream='shared_playlists'",
+        [],
+    )?;
+    assert_eq!(session.update_playlists(mutation.clone()).await?, accepted);
+    drop(legacy_db);
     assert_eq!(
         serde_json::to_value(store.snapshot()?.playlist_history)?,
         after
@@ -3454,12 +3473,61 @@ async fn quic_member_playlist_updates_record_origin_and_replay_atomically() -> a
         serde_json::to_value(store.snapshot()?.playlist_history)?,
         later_history
     );
+    let (other_endpoint, _other_lock) = fixture
+        .other
+        .cluster_endpoint(&["127.0.0.1:0".parse()?])
+        .await?;
+    let other_session =
+        Session::connect(&other_endpoint, host_endpoint.addr(), store.membership()?).await?;
+    let mut separate_documents = vec![original.document.clone(), original.document.clone()];
+    for (index, document) in separate_documents.iter_mut().enumerate() {
+        document.source_playlist = format!("other-member-{index}");
+        document.id = format!("{}:{}", document.source_library, document.source_playlist);
+    }
+    let mut separate_batch = crate::audio_mutation(
+        &catalog,
+        "member-playlist-batch",
+        "update-playlists",
+        serde_json::to_value(UpdatePlaylists {
+            documents: separate_documents.clone(),
+        })?,
+    );
+    separate_batch.confirmed = separate_documents
+        .iter()
+        .map(|d| serde_json::json!(format!("playlist:{}", d.id)))
+        .collect();
+    let separate_reply = other_session
+        .update_playlists(separate_batch.clone())
+        .await?;
+    assert!(matches!(&separate_reply, MutationReply::Accepted { heads, .. } if heads.len() == 2));
+    assert_eq!(
+        other_session.update_playlists(separate_batch).await?,
+        separate_reply
+    );
+    let db = rusqlite::Connection::open(fixture.data().join("node.sqlite"))?;
+    assert_eq!(
+        db.query_row(
+            "SELECT COUNT(*) FROM shared_member_requests WHERE id='member-playlist-batch'",
+            [],
+            |r| r.get::<_, i64>(0)
+        )?,
+        2
+    );
+    assert_eq!(
+        db.query_row(
+            "SELECT COUNT(*) FROM shared_playlist_requests WHERE id='member-playlist-batch'",
+            [],
+            |r| r.get::<_, i64>(0)
+        )?,
+        1
+    );
     store.revoke_member(&fixture.host, &reader.id().to_string())?;
-    assert_eq!(store.playlists()?.len(), 2);
+    assert_eq!(store.playlists()?.len(), 4);
     tasks.abort_all();
     while tasks.join_next().await.is_some() {}
     host_endpoint.close().await;
     reader_endpoint.close().await;
+    other_endpoint.close().await;
     Ok(())
 }
 
@@ -4265,6 +4333,538 @@ impl crate::Fixture {
         let baseline = syncstr_headless::shared_audio::Store::inspect(&path)?;
         syncstr_headless::shared_audio::Store::activate(&path, &baseline)
     }
+}
+
+fn resign_audio(
+    signed: &syncstr_headless::shared_audio::Signed,
+    signer: &syncstr_headless::peer::Identity,
+    change: impl FnOnce(&mut syncstr_headless::shared_audio::Body),
+) -> anyhow::Result<syncstr_headless::shared_audio::Signed> {
+    use sha2::Digest as _;
+    let mut body = audio_body(signed)?;
+    change(&mut body);
+    let payload = format!("syncstr-shared-audio-v1\n{}", serde_json::to_string(&body)?);
+    Ok(syncstr_headless::shared_audio::Signed {
+        id: hex::encode(sha2::Sha256::digest(payload.as_bytes())),
+        signature: hex::encode(signer.sign(payload.as_bytes())),
+        payload,
+    })
+}
+
+fn audio_body(
+    signed: &syncstr_headless::shared_audio::Signed,
+) -> anyhow::Result<syncstr_headless::shared_audio::Body> {
+    Ok(serde_json::from_str(
+        signed
+            .payload
+            .strip_prefix("syncstr-shared-audio-v1\n")
+            .unwrap(),
+    )?)
+}
+
+#[tokio::test]
+async fn receipt_index_picks_up_legacy_append_on_next_mutation() -> anyhow::Result<()> {
+    use sha2::Digest as _;
+    use syncstr_headless::shared_audio::{Action, Edit, Request, Value};
+    let fixture = crate::Fixture::new().await?;
+    let store = fixture.activate()?;
+    let seed = store.commit(
+        &fixture.host,
+        crate::register(&store.catalog()?, "index-seed", &fixture.entry.sha256),
+    )?;
+    store.commit(
+        &fixture.host,
+        crate::register(&store.catalog()?, "index-ready", &fixture.entry.sha256),
+    )?;
+    let db = rusqlite::Connection::open(fixture.data().join("node.sqlite"))?;
+    let before: i64 = db.query_row(
+        "SELECT position FROM shared_request_index_positions WHERE stream='shared_records'",
+        [],
+        |r| r.get(0),
+    )?;
+    assert_eq!(before, 1);
+    let catalog = store.catalog()?;
+    let mut track = catalog.tracks[&fixture.logical].clone();
+    track
+        .metadata
+        .insert("title".into(), "Written by an older binary".into());
+    let evidence = crate::evidence(&catalog);
+    let subject = format!("track:{}", fixture.logical);
+    let parents = catalog.heads.get(&subject).cloned().unwrap_or_default();
+    let request = Request {
+        id: "legacy-after-index".into(),
+        expected: std::collections::BTreeMap::from([(subject, parents.clone())]),
+        action: Action::EditTrack {
+            track: track.clone(),
+            evidence: evidence.clone(),
+        },
+    };
+    let digest = hex::encode(sha2::Sha256::digest(serde_json::to_vec(&request)?));
+    let appended = resign_audio(&seed, &fixture.host, |body| {
+        body.request = request.id.clone();
+        body.request_digest = digest.clone();
+        body.edits = vec![Edit {
+            parents,
+            value: Value::Track { track, evidence },
+        }];
+    })?;
+    // The old binary knows only the original record and global receipt tables.
+    db.execute(
+        "INSERT INTO shared_records VALUES (?, ?)",
+        rusqlite::params![appended.id, serde_json::to_vec(&appended)?],
+    )?;
+    db.execute(
+        "INSERT INTO shared_requests VALUES (?, ?, ?)",
+        rusqlite::params![request.id, digest, appended.id],
+    )?;
+    assert_eq!(
+        db.query_row(
+            "SELECT COUNT(*) FROM shared_member_requests WHERE id=?",
+            [&request.id],
+            |r| r.get::<_, i64>(0)
+        )?,
+        0
+    );
+    assert_eq!(store.commit(&fixture.host, request.clone())?, appended);
+    let indexed: (i64, String) = db.query_row("SELECT position, record FROM shared_request_index_positions CROSS JOIN shared_member_requests WHERE stream='shared_records' AND member=? AND id=?", rusqlite::params![fixture.host.id().to_string(), request.id], |r| Ok((r.get(0)?, r.get(1)?)))?;
+    assert_eq!(indexed, (3, appended.id.clone()));
+    assert_eq!(store.commit(&fixture.host, request)?, appended);
+    assert_eq!(store.records()?.len(), 3);
+    // No new rows means there is nothing to decode or verify again for this index.
+    assert_eq!(
+        db.query_row(
+            "SELECT position FROM shared_request_index_positions WHERE stream='shared_records'",
+            [],
+            |r| r.get::<_, i64>(0)
+        )?,
+        3
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn member_registration_cross_host_lost_ack_converges() -> anyhow::Result<()> {
+    use syncstr_headless::shared_audio_net::{Hello, MutationReply, Request, Session};
+    let fixture = crate::Fixture::new().await?;
+    let replica = fixture.replica()?;
+    let store = fixture.activate()?;
+    let reader = syncstr_headless::peer::Identity::from_secret(
+        &fixture.root.path().join("reader"),
+        [43; 32],
+    )?;
+    let (a, _a_lock) = fixture
+        .host
+        .cluster_endpoint(&["127.0.0.1:0".parse()?])
+        .await?;
+    let (b, _b_lock) = fixture
+        .other
+        .cluster_endpoint(&["127.0.0.1:0".parse()?])
+        .await?;
+    let (client, _client_lock) = reader.cluster_endpoint(&["127.0.0.1:0".parse()?]).await?;
+    let mut tasks = tokio::task::JoinSet::new();
+    tasks.spawn(syncstr_headless::shared_audio_net::serve(
+        a.clone(),
+        store.clone(),
+        fixture.host.clone(),
+    ));
+    tasks.spawn(syncstr_headless::shared_audio_net::serve(
+        b.clone(),
+        replica.clone(),
+        fixture.other.clone(),
+    ));
+    let mut registration = crate::audio_mutation(
+        &store.catalog()?,
+        "cross-host-registration",
+        "register-track",
+        serde_json::json!({"source": crate::source("cross-host"), "metadata": {"title": "One intent"}, "hash": fixture.entry.sha256}),
+    );
+    registration.confirmed = vec![serde_json::json!({"audio": fixture.entry.sha256})];
+    for endpoint in [&a, &b] {
+        let connection = client
+            .connect(endpoint.addr(), syncstr_headless::shared_audio_net::ALPN)
+            .await?;
+        let hello: Hello = crate::shared_exchange(
+            &connection,
+            &Hello {
+                version: 5,
+                proof: store.membership()?,
+                supported_operations: vec![],
+            },
+        )
+        .await?;
+        assert!(
+            !hello
+                .supported_operations
+                .iter()
+                .any(|op| op == "register-track-cross-host-v1")
+        );
+        let upload = crate::audio_mutation(
+            &store.catalog()?,
+            "cross-host-upload",
+            "put-object",
+            serde_json::json!({"hash": fixture.entry.sha256, "bytes": 3}),
+        );
+        assert!(matches!(
+            crate::shared_upload(&connection, &upload, Some(b"abc")).await?,
+            MutationReply::ObjectStored { .. }
+        ));
+        let reply: MutationReply = crate::shared_exchange(
+            &connection,
+            &Request::Mutation {
+                mutation: registration.clone(),
+            },
+        )
+        .await?;
+        assert!(matches!(reply, MutationReply::Accepted { .. }));
+        // The fixture exercises projection readiness directly; clients still have no enabling token.
+        connection.close(0u32.into(), b"acknowledgment discarded");
+    }
+    let first = store.records()?.remove(0);
+    let second = replica.records()?.remove(0);
+    let left = store.catalog()?;
+    let right = replica.catalog()?;
+    let track = left.correspondences[&crate::source("cross-host").subject()].clone();
+    assert_eq!(
+        right.correspondences[&crate::source("cross-host").subject()],
+        track
+    );
+    assert_eq!(track.len(), 64);
+    assert!(
+        track
+            .bytes()
+            .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
+    );
+    let first_body = audio_body(&first)?;
+    let second_body = audio_body(&second)?;
+    assert_eq!(first_body.request_digest, second_body.request_digest);
+
+    // A child can be signed before its host learns about the other acceptance.
+    let mut edited = left.tracks[&track].clone();
+    edited
+        .metadata
+        .insert("title".into(), "After registration".into());
+    let subject = format!("track:{track}");
+    let child = store.commit(
+        &fixture.host,
+        syncstr_headless::shared_audio::Request {
+            id: "child-before-replication".into(),
+            expected: std::collections::BTreeMap::from([(subject.clone(), vec![first.id.clone()])]),
+            action: syncstr_headless::shared_audio::Action::EditTrack {
+                track: edited,
+                evidence: crate::evidence(&left),
+            },
+        },
+    )?;
+    store.receive_page("peer-b", 0, vec![(1, second.clone())])?;
+    replica.receive_page("peer-a", 0, vec![(1, child.clone())])?;
+    assert!(!replica.catalog()?.incomplete.is_empty());
+    replica.receive_page("peer-a", 1, vec![(2, first.clone())])?;
+    let canonical = std::cmp::min(first.id.clone(), second.id.clone());
+    let catalog = store.catalog()?;
+    assert_eq!(catalog.heads[&subject], vec![child.id]);
+    assert_eq!(
+        catalog.heads[&crate::source("cross-host").subject()],
+        vec![canonical.clone()]
+    );
+    assert_eq!(catalog.tracks.len(), left.tracks.len());
+    assert!(catalog.incomplete.is_empty() && catalog.conflicts.is_empty());
+    assert_eq!(
+        serde_json::to_value(&catalog)?,
+        serde_json::to_value(replica.catalog()?)?
+    );
+    assert_eq!(store.cursor("peer-b")?, 1);
+    assert_eq!(replica.cursor("peer-a")?, 2);
+    let session = Session::connect(&client, b.addr(), replica.membership()?).await?;
+    assert!(
+        matches!(session.register_track(registration.clone()).await?, MutationReply::Accepted { record, .. } if record == canonical)
+    );
+    let before = store.records()?;
+    let changed = resign_audio(&second, &fixture.other, |body| {
+        body.request_digest = "f".repeat(64)
+    })?;
+    assert!(
+        store
+            .receive_page("bad-peer", 0, vec![(1, changed)])
+            .is_err()
+    );
+    assert_eq!(store.cursor("bad-peer")?, 0);
+    assert_eq!(store.records()?, before);
+    assert_eq!(
+        serde_json::to_value(&catalog)?,
+        serde_json::to_value(store.catalog()?)?
+    );
+    // The same request string belongs to a separate namespace for another member.
+    let connection = b
+        .connect(a.addr(), syncstr_headless::shared_audio_net::ALPN)
+        .await?;
+    let _: Hello = crate::shared_exchange(
+        &connection,
+        &Hello {
+            version: 5,
+            proof: store.membership()?,
+            supported_operations: vec![],
+        },
+    )
+    .await?;
+    let upload = crate::audio_mutation(
+        &catalog,
+        "cross-host-upload",
+        "put-object",
+        serde_json::json!({"hash": fixture.entry.sha256, "bytes": 3}),
+    );
+    assert!(matches!(
+        crate::shared_upload(&connection, &upload, Some(b"abc")).await?,
+        MutationReply::ObjectStored { .. }
+    ));
+    let mut separate = registration.clone();
+    separate.payload["source"] = serde_json::to_value(crate::source("another-member"))?;
+    let accepted: MutationReply = crate::shared_exchange(
+        &connection,
+        &Request::Mutation {
+            mutation: separate.clone(),
+        },
+    )
+    .await?;
+    assert!(matches!(&accepted, MutationReply::Accepted { .. }));
+    assert_eq!(
+        crate::shared_exchange::<_, MutationReply>(
+            &connection,
+            &Request::Mutation {
+                mutation: separate.clone()
+            }
+        )
+        .await?,
+        accepted
+    );
+    let scoped = store.catalog()?;
+    let another = &scoped.correspondences[&crate::source("another-member").subject()];
+    assert_ne!(another, &track);
+    assert_eq!(scoped.tracks[another].audio, scoped.tracks[&track].audio);
+    assert_eq!(scoped.tracks.len(), catalog.tracks.len() + 1);
+    assert_eq!(scoped.objects.len(), catalog.objects.len());
+    separate.request = upload.request;
+    assert!(matches!(
+        crate::shared_exchange::<_, MutationReply>(
+            &connection,
+            &Request::Mutation { mutation: separate }
+        )
+        .await?,
+        MutationReply::Rejected { .. }
+    ));
+    // Legacy readers still have their original schema and shadow receipts.
+    let db = rusqlite::Connection::open(fixture.data().join("node.sqlite"))?;
+    assert_eq!(
+        db.query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0))?,
+        5
+    );
+    let legacy: (String, String) = db.query_row(
+        "SELECT digest, record FROM shared_requests WHERE id=?",
+        [&registration.request],
+        |r| Ok((r.get(0)?, r.get(1)?)),
+    )?;
+    assert_eq!(legacy, (first_body.request_digest, first.id));
+    assert_eq!(
+        db.query_row(
+            "SELECT COUNT(*) FROM shared_member_requests WHERE id=?",
+            [&registration.request],
+            |r| r.get::<_, i64>(0)
+        )?,
+        2
+    );
+    // An older acceptance has a random UUID, unchanged digest and no scoped index.
+    let mut legacy_request = registration.clone();
+    legacy_request.request = "legacy-random-registration".into();
+    legacy_request.payload["source"] = serde_json::to_value(crate::source("legacy-random"))?;
+    let legacy_reply: MutationReply = crate::shared_exchange(
+        &connection,
+        &Request::Mutation {
+            mutation: legacy_request.clone(),
+        },
+    )
+    .await?;
+    let MutationReply::Accepted { record, .. } = legacy_reply else {
+        anyhow::bail!("legacy fixture registration failed")
+    };
+    let raw: Vec<u8> = db.query_row(
+        "SELECT payload FROM shared_records WHERE id=?",
+        [&record],
+        |r| r.get(0),
+    )?;
+    let prior: syncstr_headless::shared_audio::Signed = serde_json::from_slice(&raw)?;
+    let random_id = "12345678-1234-4234-8234-123456789abc";
+    let legacy_record = resign_audio(&prior, &fixture.host, |body| {
+        for edit in &mut body.edits {
+            match &mut edit.value {
+                syncstr_headless::shared_audio::Value::Track { track, .. } => {
+                    track.id = random_id.into()
+                }
+                syncstr_headless::shared_audio::Value::Correspondence { target, .. } => {
+                    *target = Some(random_id.into())
+                }
+                _ => {}
+            }
+        }
+    })?;
+    db.execute("DELETE FROM shared_records WHERE id=?", [&record])?;
+    db.execute(
+        "INSERT INTO shared_records VALUES (?, ?)",
+        rusqlite::params![legacy_record.id, serde_json::to_vec(&legacy_record)?],
+    )?;
+    db.execute(
+        "UPDATE shared_requests SET record=? WHERE id=?",
+        rusqlite::params![legacy_record.id, legacy_request.request],
+    )?;
+    db.execute(
+        "DELETE FROM shared_member_requests WHERE id=?",
+        [&legacy_request.request],
+    )?;
+    let retry: MutationReply = crate::shared_exchange(
+        &connection,
+        &Request::Mutation {
+            mutation: legacy_request,
+        },
+    )
+    .await?;
+    assert!(matches!(retry, MutationReply::Accepted { record, .. } if record == legacy_record.id));
+    assert_eq!(
+        store.catalog()?.correspondences[&crate::source("legacy-random").subject()],
+        random_id
+    );
+    assert!(!store.records()?.iter().any(|signed| signed.id == prior.id));
+    tasks.abort_all();
+    while tasks.join_next().await.is_some() {}
+    a.close().await;
+    b.close().await;
+    client.close().await;
+    drop(db);
+    drop(store);
+    let reopened = syncstr_headless::shared_audio::Store::open(&fixture.data())?;
+    let restored = reopened.catalog()?;
+    assert_eq!(
+        restored.correspondences[&crate::source("cross-host").subject()],
+        track
+    );
+    assert_eq!(
+        restored.correspondences[&crate::source("legacy-random").subject()],
+        random_id
+    );
+    assert!(restored.incomplete.is_empty() && restored.conflicts.is_empty());
+    Ok(())
+}
+
+#[tokio::test]
+async fn duplicate_registration_aliases_preserve_children_and_immutable_time() -> anyhow::Result<()>
+{
+    use syncstr_headless::shared_audio::{Action, Origin, Request, Value};
+    let fixture = crate::Fixture::new().await?;
+    let replica = fixture.replica()?;
+    let store = fixture.activate()?;
+    let first = store.commit(
+        &fixture.host,
+        crate::register(&store.catalog()?, "alias-parent", &fixture.entry.sha256),
+    )?;
+    let proof = store.membership()?;
+    let other_grant = proof
+        .grants
+        .iter()
+        .find(|g| g.member == fixture.other.id().to_string())
+        .unwrap();
+    let first_body = audio_body(&first)?;
+    let second = resign_audio(&first, &fixture.other, |body| {
+        body.author = fixture.other.id().to_string();
+        body.grant = other_grant.id.clone();
+        body.origin = Some(Origin {
+            member: first_body.author.clone(),
+            grant: first_body.grant.clone(),
+        });
+        for edit in &mut body.edits {
+            if let Value::Track { track, .. } = &mut edit.value {
+                track.added_at = Some(track.added_at.unwrap() + 10);
+            }
+            match &mut edit.value {
+                Value::Track { evidence, .. } | Value::Correspondence { evidence, .. } => {
+                    evidence.reason = "Other accepting host".into();
+                }
+                _ => {}
+            }
+        }
+    })?;
+    replica.receive(vec![second.clone()])?;
+    let (winner, loser_store, loser_signer, winner_store) = if first.id < second.id {
+        (&first, &replica, &fixture.other, &store)
+    } else {
+        (&second, &store, &fixture.host, &replica)
+    };
+    let preview = loser_store.catalog()?;
+    let track_id = preview.correspondences[&crate::source("alias-parent").subject()].clone();
+    let mut track = preview.tracks[&track_id].clone();
+    track
+        .metadata
+        .insert("title".into(), "Child of losing result".into());
+    let subject = format!("track:{track_id}");
+    let child = loser_store.commit(
+        loser_signer,
+        Request {
+            id: "alias-child".into(),
+            expected: std::collections::BTreeMap::from([(
+                subject.clone(),
+                preview.heads[&subject].clone(),
+            )]),
+            action: Action::EditTrack {
+                track,
+                evidence: crate::evidence(&preview),
+            },
+        },
+    )?;
+    winner_store.receive(vec![child.clone()])?;
+    assert_eq!(winner_store.catalog()?.incomplete, vec![child.id.clone()]);
+    winner_store.receive(loser_store.records()?)?;
+    loser_store.receive(vec![winner.clone()])?;
+    let projected = winner_store.catalog()?;
+    assert!(projected.incomplete.is_empty() && projected.conflicts.is_empty());
+    assert_eq!(projected.heads[&subject], vec![child.id.clone()]);
+    assert_eq!(
+        projected.tracks[&track_id].metadata["title"],
+        "Child of losing result"
+    );
+    let winner_time = audio_body(winner)?
+        .edits
+        .into_iter()
+        .find_map(|e| match e.value {
+            Value::Track { track, .. } => track.added_at,
+            _ => None,
+        });
+    assert_eq!(projected.tracks[&track_id].added_at, winner_time);
+    assert_eq!(
+        serde_json::to_value(&projected)?,
+        serde_json::to_value(loser_store.catalog()?)?
+    );
+    let tampered = resign_audio(&child, loser_signer, |body| {
+        body.request = "invalid-addition-time".into();
+        body.request_digest = "e".repeat(64);
+        for edit in &mut body.edits {
+            if let Value::Track { track, .. } = &mut edit.value {
+                track.added_at = Some(0);
+            }
+        }
+    })?;
+    assert!(winner_store.receive(vec![tampered]).is_err());
+    assert_eq!(
+        serde_json::to_value(&projected)?,
+        serde_json::to_value(winner_store.catalog()?)?
+    );
+    let wrong_parent = resign_audio(&first, &fixture.host, |body| {
+        body.edits[0].parents = vec![child.id.clone()];
+    })?;
+    assert!(winner_store.receive(vec![wrong_parent]).is_err());
+    // Repeated pages retain both signatures without adding another effective revision.
+    winner_store.receive(vec![first, second])?;
+    assert_eq!(winner_store.records()?.len(), 3);
+    assert_eq!(
+        serde_json::to_value(projected)?,
+        serde_json::to_value(winner_store.catalog()?)?
+    );
+    Ok(())
 }
 
 fn fingerprint(catalog: &syncstr_headless::shared_audio::Catalog) -> String {

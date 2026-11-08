@@ -264,6 +264,133 @@ fn identity(value: &str) -> bool {
     !value.trim().is_empty() && value.len() <= 256 && !value.chars().any(char::is_control)
 }
 
+fn request_member<'a>(author: &'a str, origin: Option<&'a Origin>) -> &'a str {
+    origin.map_or(author, |origin| origin.member.as_str())
+}
+
+fn registration_track_id(member: &str, request: &str) -> anyhow::Result<String> {
+    let mut bytes = b"syncstr-register-track-id-v1\n".to_vec();
+    bytes.extend(serde_json::to_vec(&(member, request))?);
+    Ok(hash(&bytes))
+}
+
+fn scoped_requests(connection: &rusqlite::Connection) -> anyhow::Result<()> {
+    connection.execute_batch("CREATE TABLE IF NOT EXISTS shared_member_requests (member TEXT NOT NULL, id TEXT NOT NULL, digest TEXT NOT NULL, record TEXT NOT NULL, kind TEXT NOT NULL, PRIMARY KEY(member, id));
+        CREATE TABLE IF NOT EXISTS shared_member_playlist_requests (member TEXT NOT NULL, id TEXT NOT NULL, records BLOB NOT NULL, PRIMARY KEY(member, id));
+        CREATE TABLE IF NOT EXISTS shared_member_object_requests (member TEXT NOT NULL, id TEXT NOT NULL, digest TEXT NOT NULL, reply BLOB NOT NULL, PRIMARY KEY(member, id));
+        CREATE TABLE IF NOT EXISTS shared_request_index_positions (stream TEXT PRIMARY KEY, position INTEGER NOT NULL);")?;
+    connection.execute_batch("SAVEPOINT shared_request_index")?;
+    let result = index_new_requests(connection);
+    if result.is_err() {
+        connection.execute_batch("ROLLBACK TO shared_request_index")?;
+    }
+    connection.execute_batch("RELEASE shared_request_index")?;
+    result
+}
+
+fn unindexed_requests(
+    connection: &rusqlite::Connection,
+    table: &str,
+) -> anyhow::Result<Vec<(i64, Vec<u8>)>> {
+    use rusqlite::OptionalExtension as _;
+    let exists: bool = connection.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name=?)",
+        [table],
+        |r| r.get(0),
+    )?;
+    if !exists {
+        return Ok(vec![]);
+    }
+    let position: i64 = connection
+        .query_row(
+            "SELECT position FROM shared_request_index_positions WHERE stream=?",
+            [table],
+            |r| r.get(0),
+        )
+        .optional()?
+        .unwrap_or(0);
+    let mut statement = connection.prepare(&format!(
+        "SELECT rowid, payload FROM {table} WHERE rowid>? ORDER BY rowid"
+    ))?;
+    Ok(statement
+        .query_map([position], |r| Ok((r.get(0)?, r.get(1)?)))?
+        .collect::<Result<_, _>>()?)
+}
+
+fn index_new_requests(connection: &rusqlite::Connection) -> anyhow::Result<()> {
+    // Both streams are append-only, including writes made by an older binary.
+    let audio = unindexed_requests(connection, "shared_records")?;
+    let playlists = unindexed_requests(connection, "shared_playlists")?;
+    if audio.is_empty() && playlists.is_empty() {
+        return Ok(());
+    }
+    let proof = crate::enrollment::read_proof(connection)?;
+    for (_, raw) in &audio {
+        let record: Signed = serde_json::from_slice(raw)?;
+        let body = decode(&record, &proof)?;
+        index_request(
+            connection,
+            request_member(&body.author, body.origin.as_ref()),
+            &body.request,
+            &body.request_digest,
+            &record.id,
+            "audio",
+        )?;
+    }
+    for (_, raw) in &playlists {
+        let record: crate::playlists::Signed = serde_json::from_slice(raw)?;
+        let body = record.decode(&proof)?;
+        if let (Some(id), Some(digest)) = (&body.request, &body.request_digest) {
+            index_request(
+                connection,
+                request_member(&body.author, body.origin.as_ref()),
+                id,
+                digest,
+                &record.id,
+                "playlist",
+            )?;
+        }
+    }
+    for (stream, rows) in [("shared_records", &audio), ("shared_playlists", &playlists)] {
+        if let Some((position, _)) = rows.last() {
+            connection.execute("INSERT INTO shared_request_index_positions VALUES (?, ?) ON CONFLICT(stream) DO UPDATE SET position=excluded.position", rusqlite::params![stream, position])?;
+        }
+    }
+    Ok(())
+}
+
+fn index_request(
+    connection: &rusqlite::Connection,
+    member: &str,
+    id: &str,
+    digest: &str,
+    record: &str,
+    kind: &str,
+) -> anyhow::Result<()> {
+    use rusqlite::OptionalExtension as _;
+    let prior: Option<(String, String)> = connection
+        .query_row(
+            "SELECT digest, kind FROM shared_member_requests WHERE member=? AND id=?",
+            rusqlite::params![member, id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .optional()?;
+    if let Some((previous, previous_kind)) = prior {
+        anyhow::ensure!(
+            previous == digest && previous_kind == kind,
+            "idempotency key reused with different content"
+        );
+    }
+    let object: bool = connection.query_row(
+        "SELECT EXISTS(SELECT 1 FROM shared_member_object_requests WHERE member=? AND id=?)",
+        rusqlite::params![member, id],
+        |r| r.get(0),
+    )?;
+    anyhow::ensure!(!object, "request ID belongs to an object upload");
+    connection.execute("INSERT INTO shared_member_requests VALUES (?, ?, ?, ?, ?) ON CONFLICT(member, id) DO UPDATE SET record=min(record, excluded.record)", rusqlite::params![member, id, digest, record, kind])?;
+    Ok(())
+}
+
 fn rows(connection: &rusqlite::Connection, table: &str) -> anyhow::Result<Vec<Vec<u8>>> {
     let exists: bool = connection.query_row(
         "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name=?)",
@@ -660,13 +787,14 @@ impl crate::shared_audio::Store {
                     }
                 })?;
             if let Some(intent) = &intent {
-                crate::shared_audio::reject_object_request(&transaction, &intent.request)?;
+                crate::shared_audio::scoped_requests(&transaction)?;
+                crate::shared_audio::reject_object_request(&transaction, &intent.origin.member, &intent.request)?;
                 // Receipts are local to the accepting host and commit with every batch record.
                 transaction.execute_batch("CREATE TABLE IF NOT EXISTS shared_playlist_requests (id TEXT PRIMARY KEY, records BLOB NOT NULL);")?;
                 let prior: Option<(String, String)> = transaction
                     .query_row(
-                        "SELECT digest, record FROM shared_requests WHERE id=?",
-                        [&intent.request],
+                        "SELECT digest, record FROM shared_member_requests WHERE member=? AND id=?",
+                        rusqlite::params![intent.origin.member, intent.request],
                         |r| Ok((r.get(0)?, r.get(1)?)),
                     )
                     .optional()?;
@@ -675,14 +803,18 @@ impl crate::shared_audio::Store {
                         digest == intent.digest,
                         "idempotency key reused with different content"
                     );
-                    let raw: Vec<u8> = transaction.query_row(
-                        "SELECT records FROM shared_playlist_requests WHERE id=?",
-                        [&intent.request],
+                    let scoped: Option<Vec<u8>> = transaction.query_row(
+                        "SELECT records FROM shared_member_playlist_requests WHERE member=? AND id=?",
+                        rusqlite::params![intent.origin.member, intent.request],
                         |r| r.get(0),
-                    )?;
+                    ).optional()?;
+                    let raw = match scoped {
+                        Some(raw) => raw,
+                        None => transaction.query_row("SELECT records FROM shared_playlist_requests WHERE id=?", [&intent.request], |r| r.get::<_, Vec<u8>>(0))?,
+                    };
                     let ids: Vec<String> = serde_json::from_slice(&raw)?;
-                    anyhow::ensure!(ids.first() == Some(&first), "invalid playlist receipt");
-                    return ids
+                    anyhow::ensure!(ids.contains(&first), "invalid playlist receipt");
+                    let records = ids
                         .into_iter()
                         .map(|id| {
                             let raw: Vec<u8> = transaction.query_row(
@@ -700,7 +832,9 @@ impl crate::shared_audio::Store {
                             );
                             Ok(signed)
                         })
-                        .collect();
+                        .collect::<anyhow::Result<Vec<_>>>()?;
+                    transaction.commit()?;
+                    return Ok(records);
                 }
             }
             let mut records = crate::shared_audio::playlist_records(&transaction)?;
@@ -825,13 +959,15 @@ impl crate::shared_audio::Store {
             if let Some(intent) = &intent {
                 let ids = result.iter().map(|r| r.id.clone()).collect::<Vec<_>>();
                 transaction.execute(
-                    "INSERT INTO shared_requests VALUES (?, ?, ?)",
+                    "INSERT OR IGNORE INTO shared_requests VALUES (?, ?, ?)",
                     rusqlite::params![intent.request, intent.digest, ids[0]],
                 )?;
                 transaction.execute(
-                    "INSERT INTO shared_playlist_requests VALUES (?, ?)",
+                    "INSERT OR IGNORE INTO shared_playlist_requests VALUES (?, ?)",
                     rusqlite::params![intent.request, serde_json::to_vec(&ids)?],
                 )?;
+                crate::shared_audio::scoped_requests(&transaction)?;
+                transaction.execute("INSERT INTO shared_member_playlist_requests VALUES (?, ?, ?)", rusqlite::params![intent.origin.member, intent.request, serde_json::to_vec(&ids)?])?;
             }
             transaction.commit()?;
             Ok(result)
@@ -963,6 +1099,7 @@ impl crate::shared_audio::Store {
             let catalog = crate::shared_audio::catalog(&transaction)?;
             let current: i64 = transaction.query_row("SELECT sequence FROM shared_cursors WHERE peer=?", [peer], |r| r.get(0)).optional()?.unwrap_or(0);
             anyhow::ensure!(current == after, "playlist cursor changed");
+            crate::shared_audio::scoped_requests(&transaction)?;
             let mut next = after;
             for (sequence, signed) in page {
                 anyhow::ensure!(sequence > next, "nonmonotonic playlist page");
@@ -970,6 +1107,11 @@ impl crate::shared_audio::Store {
                 anyhow::ensure!(body.cluster == catalog.cluster, "cross-cluster playlist");
                 let known: bool = transaction.query_row("SELECT EXISTS(SELECT 1 FROM shared_playlists WHERE id=?)", [&signed.id], |r| r.get(0))?;
                 if !known { proof.verify(&body.grant)?; }
+                if let (Some(id), Some(digest)) = (&body.request, &body.request_digest) {
+                    let member = crate::shared_audio::request_member(&body.author, body.origin.as_ref());
+                    crate::shared_audio::reject_object_request(&transaction, member, id)?;
+                    crate::shared_audio::index_request(&transaction, member, id, digest, &signed.id, "playlist")?;
+                }
                 transaction.execute("INSERT OR IGNORE INTO shared_playlists VALUES (?, ?)", rusqlite::params![signed.id, serde_json::to_vec(&signed)?])?;
                 next = sequence;
             }
@@ -1005,7 +1147,11 @@ impl crate::shared_audio::Store {
             use rusqlite::OptionalExtension as _;
             anyhow::ensure!(crate::shared_audio::identity(id), "invalid request ID");
             let transaction = connection.transaction()?;
-            crate::shared_audio::reject_object_request(&transaction, id)?;
+            let member =
+                crate::shared_audio::request_member(&signer.id().to_string(), origin.as_ref())
+                    .to_owned();
+            crate::shared_audio::scoped_requests(&transaction)?;
+            crate::shared_audio::reject_object_request(&transaction, &member, id)?;
             let proof = crate::enrollment::read_proof(&transaction)?;
             if let Some(origin) = &origin {
                 anyhow::ensure!(
@@ -1024,8 +1170,8 @@ impl crate::shared_audio::Store {
                 .ok_or(crate::shared_audio::CommitFailure::Unauthorized)?;
             let prior: Option<(String, String)> = transaction
                 .query_row(
-                    "SELECT digest, record FROM shared_requests WHERE id=?",
-                    [id],
+                    "SELECT digest, record FROM shared_member_requests WHERE member=? AND id=?",
+                    rusqlite::params![member, id],
                     |r| Ok((r.get(0)?, r.get(1)?)),
                 )
                 .optional()?;
@@ -1034,17 +1180,6 @@ impl crate::shared_audio::Store {
                     previous == digest,
                     "idempotency key reused with different content"
                 );
-                let matching = crate::shared_audio::rows(&transaction, "shared_records")?
-                    .into_iter()
-                    .map(|raw| -> anyhow::Result<bool> {
-                        let signed: crate::shared_audio::Signed = serde_json::from_slice(&raw)?;
-                        Ok(crate::shared_audio::decode(&signed, &proof)?.request == id)
-                    })
-                    .collect::<anyhow::Result<Vec<_>>>()?;
-                anyhow::ensure!(
-                    matching.into_iter().filter(|matches| *matches).count() == 1,
-                    "request has competing host results"
-                );
                 let raw: Vec<u8> = transaction.query_row(
                     "SELECT payload FROM shared_records WHERE id=?",
                     [record],
@@ -1052,6 +1187,7 @@ impl crate::shared_audio::Store {
                 )?;
                 let signed = serde_json::from_slice(&raw)?;
                 let body = crate::shared_audio::decode(&signed, &proof)?;
+                transaction.commit()?;
                 return Ok((signed, body));
             }
             let catalog = crate::shared_audio::catalog(&transaction)?;
@@ -1115,7 +1251,11 @@ impl crate::shared_audio::Store {
                         track.audio.is_empty() || evidence.audio_eligible,
                         "audio eligibility requires approval"
                     );
-                    track.id = uuid::Uuid::new_v4().to_string();
+                    track.id = if origin.is_some() {
+                        crate::shared_audio::registration_track_id(&member, id)?
+                    } else {
+                        uuid::Uuid::new_v4().to_string()
+                    };
                     track.added_at = Some(crate::model::addition_time());
                     vec![
                         crate::shared_audio::Value::Correspondence {
@@ -1256,8 +1396,16 @@ impl crate::shared_audio::Store {
                 );
             }
             transaction.execute(
-                "INSERT INTO shared_requests VALUES (?, ?, ?)",
+                "INSERT OR IGNORE INTO shared_requests VALUES (?, ?, ?)",
                 rusqlite::params![request.id, digest, signed.id],
+            )?;
+            crate::shared_audio::index_request(
+                &transaction,
+                &member,
+                id,
+                &body.request_digest,
+                &signed.id,
+                "audio",
             )?;
             transaction.commit()?;
             Ok((signed, body))
@@ -1433,7 +1581,7 @@ impl crate::shared_audio::Store {
         );
         let digest = crate::shared_audio::hash(&serde_json::to_vec(&(member, mutation))?);
         self.run(|connection, _| {
-            crate::shared_audio::object_receipt(connection, &mutation.request, &digest)?;
+            crate::shared_audio::object_receipt(connection, member, &mutation.request, &digest)?;
             Ok(())
         })?;
         Ok(put)
@@ -1462,7 +1610,8 @@ impl crate::shared_audio::Store {
                         .is_ok(),
                     crate::shared_audio::CommitFailure::Unauthorized
                 );
-                let prior = crate::shared_audio::object_receipt(&transaction, &request, &digest)?;
+                let prior =
+                    crate::shared_audio::object_receipt(&transaction, member, &request, &digest)?;
                 crate::shared_audio::publish_audio(
                     &transaction,
                     root,
@@ -1479,6 +1628,10 @@ impl crate::shared_audio::Store {
                 transaction.execute(
                     "INSERT OR IGNORE INTO shared_object_requests VALUES (?, ?, ?)",
                     rusqlite::params![request, digest, serde_json::to_vec(&reply)?],
+                )?;
+                transaction.execute(
+                    "INSERT OR IGNORE INTO shared_member_object_requests VALUES (?, ?, ?, ?)",
+                    rusqlite::params![member, request, digest, serde_json::to_vec(&reply)?],
                 )?;
                 transaction.commit()?;
                 Ok(reply)
@@ -1842,6 +1995,7 @@ impl crate::shared_audio::Store {
             let transaction = connection.transaction()?;
             let proof = crate::enrollment::read_proof(&transaction)?;
             let catalog = crate::shared_audio::catalog(&transaction)?;
+            crate::shared_audio::scoped_requests(&transaction)?;
             if let Some((peer, expected, _)) = cursor {
                 use rusqlite::OptionalExtension as _;
                 let current: i64 = transaction.query_row("SELECT sequence FROM shared_cursors WHERE peer=?", [peer], |r| r.get(0)).optional()?.unwrap_or(0);
@@ -1852,6 +2006,9 @@ impl crate::shared_audio::Store {
                 anyhow::ensure!(body.baseline == catalog.baseline, "different migration baseline");
                 let known: bool = transaction.query_row("SELECT EXISTS(SELECT 1 FROM shared_records WHERE id=?)", [&record.id], |r| r.get(0))?;
                 if !known { proof.verify(&body.grant)?; }
+                let member = crate::shared_audio::request_member(&body.author, body.origin.as_ref());
+                crate::shared_audio::reject_object_request(&transaction, member, &body.request)?;
+                crate::shared_audio::index_request(&transaction, member, &body.request, &body.request_digest, &record.id, "audio")?;
                 transaction.execute("INSERT OR IGNORE INTO shared_records VALUES (?, ?)", rusqlite::params![record.id, serde_json::to_vec(&record)?])?;
                 transaction.execute("INSERT OR IGNORE INTO shared_requests VALUES (?, ?, ?)", rusqlite::params![body.request, body.request_digest, record.id])?;
             }
@@ -1930,11 +2087,15 @@ fn object_requests(connection: &rusqlite::Connection) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn reject_object_request(connection: &rusqlite::Connection, id: &str) -> anyhow::Result<()> {
+fn reject_object_request(
+    connection: &rusqlite::Connection,
+    member: &str,
+    id: &str,
+) -> anyhow::Result<()> {
     crate::shared_audio::object_requests(connection)?;
     let exists: bool = connection.query_row(
-        "SELECT EXISTS(SELECT 1 FROM shared_object_requests WHERE id=?)",
-        [id],
+        "SELECT EXISTS(SELECT 1 FROM shared_member_object_requests WHERE member=?1 AND id=?2) OR EXISTS(SELECT 1 FROM shared_object_requests old WHERE old.id=?2 AND NOT EXISTS(SELECT 1 FROM shared_member_object_requests scoped WHERE scoped.id=old.id AND scoped.digest=old.digest))",
+        rusqlite::params![member, id],
         |r| r.get(0),
     )?;
     anyhow::ensure!(!exists, "request ID belongs to an object upload");
@@ -1943,24 +2104,36 @@ fn reject_object_request(connection: &rusqlite::Connection, id: &str) -> anyhow:
 
 fn object_receipt(
     connection: &rusqlite::Connection,
+    member: &str,
     id: &str,
     digest: &str,
 ) -> anyhow::Result<Option<crate::shared_audio_net::MutationReply>> {
     use rusqlite::OptionalExtension as _;
     crate::shared_audio::object_requests(connection)?;
+    crate::shared_audio::scoped_requests(connection)?;
     let signed: bool = connection.query_row(
-        "SELECT EXISTS(SELECT 1 FROM shared_requests WHERE id=?)",
-        [id],
+        "SELECT EXISTS(SELECT 1 FROM shared_member_requests WHERE member=? AND id=?)",
+        rusqlite::params![member, id],
         |r| r.get(0),
     )?;
     anyhow::ensure!(!signed, "request ID belongs to a signed mutation");
-    let prior: Option<(String, Vec<u8>)> = connection
+    let mut prior: Option<(String, Vec<u8>)> = connection
         .query_row(
-            "SELECT digest, reply FROM shared_object_requests WHERE id=?",
-            [id],
+            "SELECT digest, reply FROM shared_member_object_requests WHERE member=? AND id=?",
+            rusqlite::params![member, id],
             |r| Ok((r.get(0)?, r.get(1)?)),
         )
         .optional()?;
+    if prior.is_none() {
+        prior = connection.query_row("SELECT digest, reply FROM shared_object_requests old WHERE old.id=? AND NOT EXISTS(SELECT 1 FROM shared_member_object_requests scoped WHERE scoped.id=old.id AND scoped.digest=old.digest)", [id], |r| Ok((r.get(0)?, r.get(1)?))).optional()?;
+        if let Some((previous, reply)) = &prior {
+            anyhow::ensure!(previous == digest, "legacy object request ID is reserved");
+            connection.execute(
+                "INSERT INTO shared_member_object_requests VALUES (?, ?, ?, ?)",
+                rusqlite::params![member, id, digest, reply],
+            )?;
+        }
+    }
     prior
         .map(|(previous, reply)| {
             anyhow::ensure!(
@@ -2199,6 +2372,105 @@ fn decode(
     Ok(body)
 }
 
+fn effective_bodies(
+    bodies: std::collections::BTreeMap<String, Body>,
+) -> anyhow::Result<std::collections::BTreeMap<String, Body>> {
+    let mut outcomes: std::collections::BTreeMap<(&str, &str), (&str, &str)> = Default::default();
+    let mut aliases = std::collections::BTreeMap::new();
+    for (id, body) in &bodies {
+        for edit in &body.edits {
+            for parent in &edit.parents {
+                if let Some(previous) = bodies.get(parent) {
+                    anyhow::ensure!(
+                        previous
+                            .edits
+                            .iter()
+                            .any(|e| e.value.subject() == edit.value.subject()),
+                        "wrong revision parent"
+                    );
+                }
+            }
+        }
+        let key = (
+            request_member(&body.author, body.origin.as_ref()),
+            body.request.as_str(),
+        );
+        let (digest, winner) = outcomes.entry(key).or_insert((&body.request_digest, id));
+        anyhow::ensure!(
+            *digest == body.request_digest,
+            "idempotency key reused with different content"
+        );
+        aliases.insert(id.as_str(), *winner);
+    }
+    // Different accepting hosts timestamp the same registration independently.
+    let mut addition_times: std::collections::BTreeMap<
+        &str,
+        (Option<i64>, std::collections::BTreeSet<Option<i64>>),
+    > = Default::default();
+    for (id, body) in &bodies {
+        let winner = aliases[id.as_str()];
+        if winner == id {
+            continue;
+        }
+        for edit in &body.edits {
+            if let Value::Track { track, .. } = &edit.value {
+                if let Some(canonical) = bodies[winner].edits.iter().find_map(|e| match &e.value {
+                    Value::Track {
+                        track: canonical, ..
+                    } if canonical.id == track.id
+                        && e.parents.is_empty()
+                        && edit.parents.is_empty() =>
+                    {
+                        Some(canonical)
+                    }
+                    _ => None,
+                }) {
+                    let times = addition_times
+                        .entry(&track.id)
+                        .or_insert((canonical.added_at, Default::default()));
+                    times.1.extend([canonical.added_at, track.added_at]);
+                }
+            }
+        }
+    }
+    let mut effective = std::collections::BTreeMap::new();
+    for (id, body) in &bodies {
+        if aliases[id.as_str()] != id {
+            continue;
+        }
+        let mut body = body.clone();
+        for edit in &mut body.edits {
+            let subject = edit.value.subject();
+            for parent in &mut edit.parents {
+                if bodies.contains_key(parent) {
+                    let winner = aliases[parent.as_str()];
+                    anyhow::ensure!(
+                        bodies[winner]
+                            .edits
+                            .iter()
+                            .any(|e| e.value.subject() == subject),
+                        "wrong canonical revision parent"
+                    );
+                    *parent = winner.to_owned();
+                }
+            }
+            edit.parents.sort();
+            edit.parents.dedup();
+            if let Value::Track { track, .. } = &mut edit.value {
+                if let Some((canonical, times)) = addition_times.get(track.id.as_str()) {
+                    anyhow::ensure!(
+                        times.contains(&track.added_at),
+                        "addition time is immutable"
+                    );
+                    track.added_at = *canonical;
+                }
+            }
+        }
+        effective.insert(id.clone(), body);
+    }
+    Ok(effective)
+}
+
 fn catalog(connection: &rusqlite::Connection) -> anyhow::Result<crate::shared_audio::Catalog> {
     let (fingerprint, raw): (String, Vec<u8>) = connection.query_row(
         "SELECT fingerprint, payload FROM shared_baseline",
@@ -2264,6 +2536,7 @@ fn catalog(connection: &rusqlite::Connection) -> anyhow::Result<crate::shared_au
         anyhow::ensure!(body.cluster == catalog.cluster, "cross-cluster record");
         bodies.insert(record.id, body);
     }
+    let bodies = effective_bodies(bodies)?;
     let mut complete = std::collections::BTreeSet::new();
     loop {
         let before = complete.len();
@@ -2450,4 +2723,134 @@ fn playlist_records(
         .chain(crate::shared_audio::rows(connection, "shared_playlists")?)
         .map(|raw| Ok(serde_json::from_slice(&raw)?))
         .collect()
+}
+
+#[cfg(test)]
+mod request_tests {
+    use super::*;
+
+    #[test]
+    fn deterministic_registration_id_vectors_and_legacy_identity_shape() -> anyhow::Result<()> {
+        assert_eq!(
+            registration_track_id("member", "request")?,
+            "0befc26cd0e097fa1897ce59a9380bd0a7fa55408214db3cd40dade1a037169b"
+        );
+        assert_eq!(
+            registration_track_id("a\"b", "request\\id")?,
+            "929c21e032b7827165f4cf9fff93003a90f1626a8beabac73c7f2dc4df7e82e9"
+        );
+        assert!(identity(&registration_track_id("member", "request")?));
+        assert_ne!(
+            registration_track_id("member", "request")?,
+            registration_track_id("other", "request")?
+        );
+        assert_ne!(
+            registration_track_id("member", "request")?,
+            registration_track_id("member", "other")?
+        );
+        Ok(())
+    }
+
+    fn receipt_connection() -> anyhow::Result<rusqlite::Connection> {
+        let connection = rusqlite::Connection::open_in_memory()?;
+        connection.execute_batch("CREATE TABLE cluster_trust (singleton INTEGER PRIMARY KEY, root TEXT); INSERT INTO cluster_trust VALUES (1, 'fixture-root');
+            CREATE TABLE cluster_enrollment_grants (id TEXT PRIMARY KEY, payload BLOB);
+            CREATE TABLE cluster_revocations (id TEXT PRIMARY KEY, payload BLOB);
+            CREATE TABLE shared_requests (id TEXT PRIMARY KEY, digest TEXT NOT NULL, record TEXT NOT NULL);")?;
+        scoped_requests(&connection)?;
+        object_requests(&connection)?;
+        Ok(connection)
+    }
+
+    #[test]
+    fn legacy_object_receipt_reserves_id_until_digest_claims_member() -> anyhow::Result<()> {
+        let connection = receipt_connection()?;
+        let reply = crate::shared_audio_net::MutationReply::ObjectStored {
+            request: "upload".into(),
+            hash: "a".repeat(64),
+            bytes: 3,
+            host: "accepting-host".into(),
+        };
+        connection.execute(
+            "INSERT INTO shared_object_requests VALUES (?, ?, ?)",
+            rusqlite::params!["upload", "original-digest", serde_json::to_vec(&reply)?],
+        )?;
+        assert!(object_receipt(&connection, "outsider", "upload", "different-digest").is_err());
+        assert!(reject_object_request(&connection, "outsider", "upload").is_err());
+        assert_eq!(
+            object_receipt(&connection, "origin", "upload", "original-digest")?,
+            Some(reply.clone())
+        );
+        assert!(reject_object_request(&connection, "origin", "upload").is_err());
+        assert!(object_receipt(&connection, "origin", "upload", "changed").is_err());
+        assert_eq!(
+            object_receipt(&connection, "other", "upload", "different-digest")?,
+            None
+        );
+        reject_object_request(&connection, "other", "upload")?;
+        index_request(
+            &connection,
+            "other",
+            "upload",
+            "signed-digest",
+            "record",
+            "audio",
+        )?;
+        assert!(object_receipt(&connection, "other", "upload", "different-digest").is_err());
+        assert_eq!(
+            object_receipt(&connection, "origin", "upload", "original-digest")?,
+            Some(reply)
+        );
+        let retained: String = connection.query_row(
+            "SELECT digest FROM shared_object_requests WHERE id='upload'",
+            [],
+            |r| r.get(0),
+        )?;
+        assert_eq!(retained, "original-digest");
+        Ok(())
+    }
+
+    #[test]
+    fn scoped_receipts_choose_smallest_result_and_reject_cross_operation_reuse()
+    -> anyhow::Result<()> {
+        let connection = receipt_connection()?;
+        index_request(&connection, "one", "request", "digest", "b", "audio")?;
+        index_request(&connection, "one", "request", "digest", "a", "audio")?;
+        index_request(
+            &connection,
+            "two",
+            "request",
+            "other-digest",
+            "c",
+            "playlist",
+        )?;
+        assert!(index_request(&connection, "one", "request", "changed", "d", "audio").is_err());
+        assert!(index_request(&connection, "one", "request", "digest", "d", "playlist").is_err());
+        let result: String = connection.query_row(
+            "SELECT record FROM shared_member_requests WHERE member='one' AND id='request'",
+            [],
+            |r| r.get(0),
+        )?;
+        assert_eq!(result, "a");
+        // An old reader's global receipt is retained, not repurposed as a scoped key.
+        connection.execute(
+            "INSERT INTO shared_requests VALUES ('request', 'legacy', 'legacy-record')",
+            [],
+        )?;
+        index_request(
+            &connection,
+            "three",
+            "request",
+            "third-digest",
+            "e",
+            "audio",
+        )?;
+        let legacy: String = connection.query_row(
+            "SELECT record FROM shared_requests WHERE id='request'",
+            [],
+            |r| r.get(0),
+        )?;
+        assert_eq!(legacy, "legacy-record");
+        Ok(())
+    }
 }

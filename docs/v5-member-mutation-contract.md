@@ -230,6 +230,8 @@ Request IDs also share one namespace across the cluster. Replication copies them
 
 B needs a projection change, which affects ASO-43 and ASO-12. A works with today's projection and can ship first. Decision: ship A in the first slice, and adopt B before audio addition is offered from more than one host.
 
+ASO-98 implements host-side collapse of equivalent results; cross-host retry remains disabled pending explicit cluster activation with ASO-43.
+
 ### D4. Edits from a member revoked later
 
 - An edit accepted before the member was revoked stays in history and stays readable.
