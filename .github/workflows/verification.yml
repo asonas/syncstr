@@ -18,6 +18,8 @@ jobs:
   headless:
     runs-on: ubuntu-24.04
     timeout-minutes: 30
+    env:
+      CARGO_INCREMENTAL: '0'
     defaults:
       run:
         working-directory: headless
@@ -28,6 +30,15 @@ jobs:
         run: python3 -m unittest discover -s apps/ios/scripts/tests -v
       - name: Install Rust
         run: rustup toolchain install 1.99.1 --profile minimal --component clippy
+      - name: Cache headless Cargo build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            headless/target
+          key: headless-v1-${{ runner.os }}-${{ runner.arch }}-1.99.1-${{ hashFiles('headless/Cargo.lock') }}
+          restore-keys: headless-v1-${{ runner.os }}-${{ runner.arch }}-1.99.1-
       - name: Focused regression tests
         run: >-
           cargo +1.99.1 test --locked --features p2p --lib
@@ -41,12 +52,33 @@ jobs:
     runs-on: xcode-27
     timeout-minutes: 30
     env:
+      CARGO_INCREMENTAL: '0'
       # Both legacy and v5 Apple interoperability tests require this binary.
       TEST_RUNNER_SYNCSTR_V5_TEST_BIN_DIR: ${{ github.workspace }}/.build/v5-rust/debug
     steps:
       - uses: actions/checkout@v7
       - run: brew install xcodegen
       - run: xcodegen generate --spec apps/ios/project.yml
+      - name: Cache interoperability Cargo build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            .build/v5-rust
+          key: macos-fixtures-v1-${{ runner.os }}-${{ runner.arch }}-1.99.1-${{ hashFiles('headless/Cargo.lock') }}
+          restore-keys: macos-fixtures-v1-${{ runner.os }}-${{ runner.arch }}-1.99.1-
+      - name: Identify Swift toolchain
+        id: swift
+        run: echo "version=$(xcodebuild -version | tr '\n' '-')" >> "$GITHUB_OUTPUT"
+      - name: Cache locked Swift packages
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/Library/Caches/org.swift.swiftpm
+            .build/MacDerivedData/SourcePackages
+          key: swift-packages-v1-${{ runner.os }}-${{ runner.arch }}-${{ steps.swift.outputs.version }}-${{ hashFiles('apps/ios/**/Package.resolved') }}
+          restore-keys: swift-packages-v1-${{ runner.os }}-${{ runner.arch }}-${{ steps.swift.outputs.version }}-
       - name: Build required v5 interoperability tools
         run: |
           rustup toolchain install 1.99.1 --profile minimal
@@ -55,6 +87,12 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          cache="$HOME/Library/Caches/org.swift.swiftpm/artifacts"
+          cached_archive="$cache/https___github_com_n0_computer_iroh_ffi_releases_download_v1_1_0_IrohLib_xcframework_zip"
+          if [ -f "$cached_archive" ]; then
+            printf '%s  %s\n' ad46dadf09f9224157512992923562931ed60f252414230d50893a4d515c5776 "$cached_archive" \
+              | shasum -a 256 --check && exit 0
+          fi
           # Use the release API when the browser download endpoint returns 504.
           gh release download v1.1.0 --repo n0-computer/iroh-ffi \
             --pattern IrohLib.xcframework.zip --dir "$RUNNER_TEMP/iroh-binary"
@@ -62,9 +100,8 @@ jobs:
           # Pinned by the upstream v1.1.0 Package.swift; SwiftPM checks it again.
           printf '%s  %s\n' ad46dadf09f9224157512992923562931ed60f252414230d50893a4d515c5776 "$archive" \
             | shasum -a 256 --check
-          cache="$HOME/Library/Caches/org.swift.swiftpm/artifacts"
           mkdir -p "$cache"
-          command cp "$archive" "$cache/https___github_com_n0_computer_iroh_ffi_releases_download_v1_1_0_IrohLib_xcframework_zip"
+          command cp "$archive" "$cached_archive"
       - name: Resolve locked packages
         run: |
           # GitHub release assets can return transient gateway errors.
