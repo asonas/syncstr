@@ -2653,6 +2653,7 @@ async fn quic_audio_additions_share_bytes_and_reject_invalid_uploads() -> anyhow
 #[tokio::test]
 async fn quic_audio_addition_lost_ack_replays_at_accepting_host_after_restart() -> anyhow::Result<()>
 {
+    use anyhow::Context as _;
     use syncstr_headless::shared_audio_net::{Hello, MutationReply, Request, Session};
     let fixture = crate::Fixture::new().await?;
     let replica = fixture.replica()?;
@@ -2803,10 +2804,15 @@ async fn quic_audio_addition_lost_ack_replays_at_accepting_host_after_restart() 
     )
     .await?;
     assert_eq!(
-        crate::shared_upload(&another_member, &upload, None).await?,
-        MutationReply::Rejected {
+        // A different member owns a separate upload intent and must send its body.
+        crate::shared_upload(&another_member, &upload, Some(b"abc"))
+            .await
+            .context("another member uploads the same raw request ID")?,
+        MutationReply::ObjectStored {
             request: upload.request.clone(),
-            reason: syncstr_headless::shared_audio_net::MutationRejection::Invalid,
+            hash: fixture.entry.sha256.clone(),
+            bytes: 3,
+            host: fixture.host.id().to_string(),
         }
     );
     let impersonation: MutationReply = crate::shared_exchange(
@@ -2840,6 +2846,14 @@ async fn quic_audio_addition_lost_ack_replays_at_accepting_host_after_restart() 
         expected
     );
     assert_eq!(store.records()?.len(), 2);
+    let db = rusqlite::Connection::open(fixture.data().join("node.sqlite"))?;
+    let index_before: (i64, String) = db.query_row(
+        "SELECT position, record FROM shared_request_index_positions CROSS JOIN shared_member_requests WHERE stream='shared_records' AND member=? AND id=?",
+        rusqlite::params![reader.id().to_string(), registration.request],
+        |r| Ok((r.get(0)?, r.get(1)?)),
+    )?;
+    assert_eq!(index_before, (2, signed.id.clone()));
+    drop(db);
     drop(session);
     other.close(0u32.into(), b"restart");
     tasks.abort_all();
@@ -2853,7 +2867,8 @@ async fn quic_audio_addition_lost_ack_replays_at_accepting_host_after_restart() 
             }
         }
     })
-    .await??;
+    .await
+    .context("reopen the accepting host after releasing its store lock")??;
     tasks.spawn(syncstr_headless::shared_audio_net::serve(
         host_endpoint.clone(),
         store.clone(),
@@ -2861,7 +2876,26 @@ async fn quic_audio_addition_lost_ack_replays_at_accepting_host_after_restart() 
     ));
     let session =
         Session::connect(&reader_endpoint, host_endpoint.addr(), store.membership()?).await?;
-    assert_eq!(session.register_track(registration).await?, expected);
+    assert_eq!(
+        session.register_track(registration.clone()).await?,
+        expected
+    );
+    let db = rusqlite::Connection::open(fixture.data().join("node.sqlite"))?;
+    let index_after: (i64, String) = db.query_row(
+        "SELECT position, record FROM shared_request_index_positions CROSS JOIN shared_member_requests WHERE stream='shared_records' AND member=? AND id=?",
+        rusqlite::params![reader.id().to_string(), registration.request],
+        |r| Ok((r.get(0)?, r.get(1)?)),
+    )?;
+    assert_eq!(index_after, index_before);
+    assert_eq!(
+        db.query_row(
+            "SELECT COUNT(*) FROM shared_member_object_requests WHERE id=?",
+            [&upload.request],
+            |r| r.get::<_, i64>(0)
+        )?,
+        2
+    );
+    drop(db);
     let connection = reader_endpoint
         .connect(
             host_endpoint.addr(),
@@ -3862,9 +3896,12 @@ async fn quic_album_visibility_origin_alias_retry_stale_and_revocation() -> anyh
             mutation: edit.clone()
         })
         .await?,
-        MutationReply::Rejected {
+        MutationReply::NeedsReview {
             request: edit.request.clone(),
-            reason: MutationRejection::Invalid,
+            current: std::collections::BTreeMap::from([(
+                "album-visibility:chosen-album".into(),
+                store.catalog()?.heads["album-visibility:chosen-album"].clone(),
+            )]),
         }
     );
     let records = store.records()?;
@@ -4568,10 +4605,21 @@ async fn member_registration_cross_host_lost_ack_converges() -> anyhow::Result<(
     );
     assert_eq!(catalog.tracks.len(), left.tracks.len());
     assert!(catalog.incomplete.is_empty() && catalog.conflicts.is_empty());
-    assert_eq!(
-        serde_json::to_value(&catalog)?,
-        serde_json::to_value(replica.catalog()?)?
-    );
+    for host in [&store, &replica] {
+        let mut file = host.audio(&track, &fixture.entry.sha256)?;
+        let mut bytes = vec![];
+        std::io::Read::read_to_end(&mut file, &mut bytes)?;
+        assert_eq!(bytes, b"abc");
+    }
+    // Locators describe host-local storage, not replicated catalog identity.
+    let mut local = catalog.clone();
+    let mut remote = replica.catalog()?;
+    for snapshot in [&mut local, &mut remote] {
+        for object in snapshot.objects.values_mut() {
+            object.locators.clear();
+        }
+    }
+    assert_eq!(serde_json::to_value(local)?, serde_json::to_value(remote)?);
     assert_eq!(store.cursor("peer-b")?, 1);
     assert_eq!(replica.cursor("peer-a")?, 2);
     let session = Session::connect(&client, b.addr(), replica.membership()?).await?;
@@ -5168,7 +5216,16 @@ async fn incomplete_history_waits_for_parents_and_rejects_tampering() -> anyhow:
     forged.signature = "00".repeat(64);
     assert!(replica.receive(vec![forged]).is_err());
     replica.receive(vec![first.clone()])?;
-    assert_eq!(replica.commit(&fixture.other, request)?, first);
+    let before_retry = replica.records()?;
+    // Without origin, the signing host is the member in the request key.
+    let different_member = replica.commit(&fixture.other, request.clone()).unwrap_err();
+    assert_eq!(
+        different_member.to_string(),
+        "source already registered; review its correspondence"
+    );
+    assert_eq!(replica.records()?, before_retry);
+    // The original member still gets its receipt before source/history checks.
+    assert_eq!(replica.commit(&fixture.host, request)?, first);
     assert!(replica.catalog()?.incomplete.is_empty());
     assert!(!replica.catalog()?.correspondences.contains_key(&subject));
     assert_eq!(replica.catalog()?.tracks.len(), 2);
