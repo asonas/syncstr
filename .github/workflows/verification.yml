@@ -52,10 +52,21 @@ jobs:
           rustup toolchain install 1.99.1 --profile minimal
           cargo +1.99.1 build --manifest-path headless/Cargo.toml --locked --features p2p --target-dir .build/v5-rust --bin syncstr-headless --example shared_audio_fixture --example shared_audio_fixture_update
       - name: Resolve locked packages
-        run: >-
-          xcodebuild -resolvePackageDependencies -project apps/ios/Syncstr.xcodeproj
-          -scheme SyncstrMac -derivedDataPath .build/MacDerivedData
-          -disableAutomaticPackageResolution -onlyUsePackageVersionsFromResolvedFile
+        run: |
+          # GitHub release assets can return transient gateway errors.
+          for attempt in 1 2 3; do
+            if xcodebuild -resolvePackageDependencies -project apps/ios/Syncstr.xcodeproj \
+              -scheme SyncstrMac -derivedDataPath .build/MacDerivedData \
+              -disableAutomaticPackageResolution -onlyUsePackageVersionsFromResolvedFile; then
+              exit 0
+            else
+              result=$?
+            fi
+            if [ "$attempt" -eq 3 ]; then
+              exit "$result"
+            fi
+            sleep 10
+          done
       - name: macOS regression tests
         run: >-
           xcodebuild -project apps/ios/Syncstr.xcodeproj -scheme SyncstrMac
