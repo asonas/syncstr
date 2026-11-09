@@ -406,7 +406,9 @@ fn rows(connection: &rusqlite::Connection, table: &str) -> anyhow::Result<Vec<Ve
         .collect::<Result<_, _>>()?)
 }
 
-fn legacy(connection: &rusqlite::Connection) -> anyhow::Result<crate::shared_audio::Baseline> {
+pub(crate) fn legacy(
+    connection: &rusqlite::Connection,
+) -> anyhow::Result<crate::shared_audio::Baseline> {
     let organization = crate::store::read_organization(connection)?;
     let organization_raw: Vec<u8> = connection.query_row(
         "SELECT payload FROM organization WHERE singleton=1",
@@ -2247,7 +2249,7 @@ pub(crate) fn mutation_result(
     }
 }
 
-fn decode(
+pub(crate) fn decode(
     record: &crate::shared_audio::Signed,
     proof: &crate::enrollment::Proof,
 ) -> anyhow::Result<crate::shared_audio::Body> {
@@ -2471,7 +2473,9 @@ fn effective_bodies(
     Ok(effective)
 }
 
-fn catalog(connection: &rusqlite::Connection) -> anyhow::Result<crate::shared_audio::Catalog> {
+pub(crate) fn catalog(
+    connection: &rusqlite::Connection,
+) -> anyhow::Result<crate::shared_audio::Catalog> {
     let (fingerprint, raw): (String, Vec<u8>) = connection.query_row(
         "SELECT fingerprint, payload FROM shared_baseline",
         [],
