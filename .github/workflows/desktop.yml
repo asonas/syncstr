@@ -4,12 +4,14 @@ on:
   pull_request:
     paths:
       - apps/desktop/**
-      - .github/workflows/desktop.yml
+      - .cargo/**
+      - Cargo.toml
+      - Cargo.lock
+      - rust-toolchain
+      - rust-toolchain.toml
+      - .github/workflows/**
   push:
     branches: [main]
-    paths:
-      - apps/desktop/**
-      - .github/workflows/desktop.yml
   workflow_dispatch:
 
 permissions:

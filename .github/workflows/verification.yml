@@ -15,7 +15,41 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  changes:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      headless: ${{ steps.paths.outputs.headless }}
+      macos: ${{ steps.paths.outputs.macos }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - name: Detect job inputs
+        id: paths
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          # Shared Rust sources and fixtures also build the Apple interoperability tools.
+          shared=(headless/ contracts/ fixtures/ Cargo.toml Cargo.lock rust-toolchain rust-toolchain.toml .cargo/ .github/workflows/)
+          headless_paths=$(git diff --name-only --no-renames "$BASE_SHA...$HEAD_SHA" -- "${shared[@]}" apps/ios/scripts/)
+          macos_paths=$(git diff --name-only --no-renames "$BASE_SHA...$HEAD_SHA" -- "${shared[@]}" apps/macos/ apps/ios/)
+          if [[ -n "$headless_paths" ]]; then
+            echo "headless=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "headless=false" >> "$GITHUB_OUTPUT"
+          fi
+          if [[ -n "$macos_paths" ]]; then
+            echo "macos=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "macos=false" >> "$GITHUB_OUTPUT"
+          fi
   headless:
+    needs: changes
+    # Non-PR events must run even though changes is skipped; detection failures fail closed.
+    if: ${{ !cancelled() && (github.event_name != 'pull_request' || needs.changes.result != 'success' || needs.changes.outputs.headless == 'true') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     env:
@@ -44,11 +78,12 @@ jobs:
           cargo +1.99.1 test --locked --features p2p --lib
           --test catalog_client --test catalog_audio --test cluster_changes --test cluster_client --test cluster_remote
           --test cluster_replication --test contracts --test node --test cli_process
-          --test shared_audio
           --test shared_audio --test playlists
       - name: Clippy
         run: cargo +1.99.1 clippy --locked --features p2p --lib -- -D warnings
   macos:
+    needs: changes
+    if: ${{ !cancelled() && (github.event_name != 'pull_request' || needs.changes.result != 'success' || needs.changes.outputs.macos == 'true') }}
     runs-on: xcode-27
     timeout-minutes: 30
     env:
