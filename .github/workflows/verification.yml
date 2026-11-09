@@ -34,7 +34,7 @@ jobs:
         run: |
           # Shared Rust sources and fixtures also build the Apple interoperability tools.
           shared=(headless/ contracts/ fixtures/ Cargo.toml Cargo.lock rust-toolchain rust-toolchain.toml .cargo/ .github/workflows/)
-          headless_paths=$(git diff --name-only --no-renames "$BASE_SHA...$HEAD_SHA" -- "${shared[@]}" apps/ios/scripts/)
+          headless_paths=$(git diff --name-only --no-renames "$BASE_SHA...$HEAD_SHA" -- "${shared[@]}" apps/ios/scripts/ apps/macos/Tests/Fixtures/)
           macos_paths=$(git diff --name-only --no-renames "$BASE_SHA...$HEAD_SHA" -- "${shared[@]}" apps/macos/ apps/ios/)
           if [[ -n "$headless_paths" ]]; then
             echo "headless=true" >> "$GITHUB_OUTPUT"
