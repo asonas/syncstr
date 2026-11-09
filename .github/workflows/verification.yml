@@ -98,6 +98,18 @@ jobs:
             | shasum -a 256 --check
           mkdir -p "$cache"
           command cp "$archive" "$cached_archive"
+      - name: Cache compiled Swift packages
+        uses: actions/cache@v4
+        with:
+          # Retain dependency products, not application or test binaries.
+          path: |
+            .build/MacDerivedData/Build/Intermediates.noindex/IrohLib.build
+            .build/MacDerivedData/Build/Intermediates.noindex/ExplicitPrecompiledModules
+            .build/MacDerivedData/Build/Intermediates.noindex/SwiftExplicitPrecompiledModules
+            .build/MacDerivedData/Build/Products/Debug/IrohLib*
+            .build/MacDerivedData/Build/Products/Debug/PackageFrameworks
+            .build/MacDerivedData/SDKExplicitPrecompiledModules
+          key: swift-products-v2-${{ runner.os }}-${{ runner.arch }}-${{ steps.swift.outputs.version }}-${{ hashFiles('apps/ios/**/Package.resolved') }}
       - name: Resolve locked packages
         run: |
           # GitHub release assets can return transient gateway errors.
