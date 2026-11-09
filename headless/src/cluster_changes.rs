@@ -54,7 +54,7 @@ impl crate::cluster_changes::Change {
         .into_bytes())
     }
 
-    fn validate(&self, proof: &crate::enrollment::Proof) -> anyhow::Result<()> {
+    pub(crate) fn validate(&self, proof: &crate::enrollment::Proof) -> anyhow::Result<()> {
         use sha2::Digest as _;
         anyhow::ensure!(
             self.version == 1

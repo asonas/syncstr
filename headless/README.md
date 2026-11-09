@@ -74,6 +74,10 @@ The node deduplicates exact byte content with the same suffix. A retry from any 
 
 ## Storage and recovery
 
+For stopped, read-only host inventory and offline comparison with device intent
+exports, see [Offline activation inventory](activation-inventory.md). These
+commands collect evidence only; they do not activate or verify a recovery set.
+
 - `node.sqlite` stores the node library UUID and track entries. Its schema version is 4, including organization records and verified artwork assets independent of audio entries.
 - `objects/<sha256>.<suffix>` stores original bytes. Only committed catalog entries are accessible through the API.
 - `staging/upload-*` holds incomplete uploads, removed on failure or at the next exclusive startup.

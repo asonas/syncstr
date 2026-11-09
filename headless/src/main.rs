@@ -22,6 +22,11 @@ async fn wait_for_shutdown() {
 #[derive(clap::Subcommand)]
 enum Command {
     #[cfg(feature = "p2p")]
+    ActivationInventory {
+        #[command(subcommand)]
+        command: syncstr_headless::activation_inventory::Command,
+    },
+    #[cfg(feature = "p2p")]
     SharedAudioInspect {
         #[arg(long)]
         data: std::path::PathBuf,
@@ -304,6 +309,10 @@ async fn main() {
 
 async fn run(cli: crate::Cli) -> anyhow::Result<()> {
     match cli.command {
+        #[cfg(feature = "p2p")]
+        crate::Command::ActivationInventory { command } => {
+            syncstr_headless::activation_inventory::run(command)?;
+        }
         #[cfg(feature = "p2p")]
         crate::Command::SharedAudioInspect { data } => {
             println!("{}", syncstr_headless::shared_audio::Store::inspect(&data)?);
