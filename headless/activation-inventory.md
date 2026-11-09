@@ -155,6 +155,7 @@ nonzero error; never interpret an absent report as a clean inventory.
 Each JSON input is limited to 32 MiB; an oversized collection/report requires a
 separately reviewed format change rather than silently truncating evidence.
 
-`backup-manifest`, backup copying/encryption/custody, decryption and restore
-verification are deferred to a second PR after this slice merges. Do not use
-these reports as D5 backup verification.
+For a file manifest and semantic evidence from an operator-created stopped
+backup, see [Stopped backup manifest](backup-manifest.md). Backup copying,
+encryption, custody operations, decryption and restore verification remain
+separate operations. Inventory reports alone do not verify a D5 backup.

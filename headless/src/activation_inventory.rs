@@ -6,6 +6,8 @@ use sha2::{Digest as _, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Component, Path, PathBuf};
 
+mod backup_manifest;
+
 const VERSION: u8 = 1;
 const MAX_JSON: u64 = 32 * 1024 * 1024;
 
@@ -21,12 +23,20 @@ pub enum Command {
         #[arg(long)]
         input: PathBuf,
     },
+    /// Manifest an operator-created stopped backup; never copies or restores it.
+    BackupManifest {
+        #[arg(long)]
+        input: PathBuf,
+    },
 }
 
 pub fn run(command: Command) -> anyhow::Result<()> {
     let value = match command {
         Command::Host { input } => serde_json::to_value(host(read_json(&input)?)?)?,
         Command::Compare { input } => serde_json::to_value(compare(read_json(&input)?)?)?,
+        Command::BackupManifest { input } => {
+            serde_json::to_value(backup_manifest::manifest(read_json(&input)?)?)?
+        }
     };
     println!("{}", canonical(&value)?);
     Ok(())
@@ -899,6 +909,15 @@ fn client_files(client: &ClientExport, root: &Path, blocking: &mut BTreeSet<Stri
 }
 
 pub fn compare(input: Collection) -> anyhow::Result<Comparison> {
+    let reports = input
+        .hosts
+        .iter()
+        .map(|path| read_json(path))
+        .collect::<anyhow::Result<Vec<HostReport>>>()?;
+    compare_reports(input, reports)
+}
+
+fn compare_reports(input: Collection, host_reports: Vec<HostReport>) -> anyhow::Result<Comparison> {
     anyhow::ensure!(
         input.version == VERSION && !input.expected_hosts.is_empty(),
         "version 1 and explicit host roster required"
@@ -916,8 +935,7 @@ pub fn compare(input: Collection) -> anyhow::Result<Comparison> {
     let mut roots = BTreeSet::new();
     let mut grants = BTreeMap::new();
     let mut revocations = BTreeMap::new();
-    for path in &input.hosts {
-        let mut report: HostReport = read_json(path)?;
+    for mut report in host_reports {
         report.proof.grants.sort_by(|a, b| a.id.cmp(&b.id));
         report.proof.revocations.sort_by(|a, b| a.id.cmp(&b.id));
         anyhow::ensure!(
@@ -1091,7 +1109,7 @@ mod tests {
 
     const CLUSTER: &str = "00000000-0000-4000-8000-000000000001";
 
-    fn fixture(root: &Path) -> anyhow::Result<HostInput> {
+    pub(super) fn fixture(root: &Path) -> anyhow::Result<HostInput> {
         let data = root.join("data");
         drop(crate::store::Store::open(&data)?);
         let secret = iroh::SecretKey::from_bytes(&[7; 32]);
