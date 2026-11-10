@@ -4,6 +4,7 @@ on:
   pull_request:
     paths:
       - apps/desktop/**
+      - headless/**
       - .cargo/**
       - Cargo.toml
       - Cargo.lock

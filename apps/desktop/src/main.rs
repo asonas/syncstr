@@ -1,6 +1,14 @@
+#[cfg(windows)]
+mod backend;
 mod model;
+#[cfg(windows)]
+mod profile;
 mod text_input;
 mod ui;
+#[cfg(windows)]
+mod windows_identity;
+#[cfg(windows)]
+mod windows_player;
 
 use gpui::{App, AppContext, Bounds, WindowBounds, WindowOptions, px, size};
 
@@ -10,6 +18,8 @@ fn main() {
         ui::bind_keys(cx);
         cx.on_window_closed(|cx, _| {
             if cx.windows().is_empty() {
+                #[cfg(windows)]
+                backend::shutdown_all();
                 cx.quit();
             }
         })
@@ -30,4 +40,6 @@ fn main() {
         .expect("could not open Syncstr Desktop window");
         cx.activate(true);
     });
+    #[cfg(windows)]
+    backend::drain_workers();
 }

@@ -1,15 +1,75 @@
 # Syncstr Desktop
 
-An independent gpui scaffold for macOS and Windows. This crate is not part of a
-Cargo workspace and does not depend on `syncstr-headless` or modify the existing
-Windows client. It displays 5,000 fictional tracks with unique IDs; ten fictional
-titles, including Japanese titles, repeat throughout the list.
+An independent gpui client. On Windows it uses `syncstr-headless` directly for
+authenticated v5 catalogs, verified audio and durable offline saves, and Windows
+MediaPlayer for playback. The existing Win32 client remains unchanged.
+macOS retains the scaffold; Windows `--demo` also displays its 5,000 fictional tracks.
 
 Search matches title substrings without case sensitivity. Select a track with
-the pointer or keyboard, then use Play/Pause to toggle simulated playback.
+the pointer or keyboard, then use Play/Pause. Playback is simulated only in demo mode.
 Selection and the current playback track have separate identities. Filtering
 does not stop playback; an empty result retains the current playback track.
-No audio is produced, and playback is not persisted.
+The current playback position is not persisted.
+
+## Windows v5 client
+
+The default profile is `%LOCALAPPDATA%/SyncstrDesktop`, separate from Win32's
+`Syncstr` profile. Use `--profile <directory>` for an isolated profile. Discover
+hosts, select the intended public identity, copy its invitation to the clipboard,
+then choose **Enroll from clipboard** against the existing pre-v5 enrollment
+service. The current v5-only server does not expose enrollment; use an already
+enrolled profile when connecting to it. **Refresh / retry saves** fetches only the
+authenticated v5 catalog and retries retained partial save jobs. A discovered
+address is a hint, not proof of membership. `--host <member>@<socket>` is an optional
+explicit hint for local testing. Invitations are not persisted or logged.
+
+Select a row and choose **Save**, **Remove save**, or **Play**. Distinct logical
+tracks retain separate save ownership even when their verified bytes are shared.
+Playlist rows retain their occurrence identities and original exact ID/hash pins;
+missing entries remain unavailable rather than selecting a hash match. Catalogs
+and completed saves reopen offline without loading the protected device key.
+Shared-library editing is unavailable until the v5 member-write contract exists.
+
+Network, verification and profile operations run on a dedicated worker. Native
+audio runs on another worker, retaining a verified-file lease until the native
+source closes. Cancel interrupts the active core operation; window shutdown
+cancels work, closes the player and drains the core outside the UI executor.
+
+### Copy-validation from Win32
+
+Close Win32 first. Choose a **new, nonexistent** destination whose parent already
+exists, then launch with `--profile <destination> --copy-win32-profile <source>`.
+The source is locked against concurrent writers and copied without following
+reparse points. Its DPAPI-protected identity is preserved, not regenerated.
+After an authenticated Refresh, verified original saves are copied into managed
+storage using the legacy catalog's explicit aliases and exact hash pins. Original
+device IDs are retained in the migration manifest; absent catalog records remain
+pending. Original files are retained separately from disposable managed cache.
+Remove `--copy-win32-profile` on subsequent launches.
+
+This is a copy-validation path, not an automatic production cutover. Never point
+it at an everyday profile for testing. Do not delete the source or reset an
+enrolled identity when its key is missing.
+
+### Disposable native-audio verification
+
+On Windows, from this directory:
+
+```sh
+cargo run --locked --example windows_audio -- <new-fixture-directory>
+cargo run --locked --example windows_audio -- <another-new-fixture-directory> --serve
+cargo run --locked -- --profile <another-new-fixture-directory>/desktop-profile
+```
+
+The first command checks synthetic Win32-format copy migration, authenticated
+v5 acquisition, independent saves with one object, native decode/pause/resume,
+and offline restart without the host or key. Playback is muted unless `--audible`
+is passed. The serving mode advertises a disposable LAN host and defers legacy
+save imports so that GUI saves actually fetch audio. Use Discover, select its
+identity, Refresh, then save both `TRACK-A` and `TRACK-B`. Close the app and stop
+the fixture host before reopening the same profile offline. The fixture contains
+test credentials; do not publish its generated output. Engine progress and human
+audibility are separate checks. See the [ASO-11 validation report](../../docs/validation/windows-shared-client.md).
 
 ## Build and test
 
@@ -58,7 +118,8 @@ it with the manifest changes.
 
 ## Keyboard and accessibility
 
-- Tab and Shift+Tab cycle through search, the track list, and Play/Pause.
+- Tab and Shift+Tab cycle through the connection/save controls, collections,
+  search, the track list, and Play/Pause (only the latter three in demo mode).
 - In the list, Up/Down move one row, Page Up/Page Down move by a visible page,
   and Home/End select the first/last result. Selection scrolls into view.
 - Space and Enter activate Play/Pause while the button has focus.

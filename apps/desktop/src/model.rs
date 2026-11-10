@@ -2,9 +2,14 @@ pub const DEFAULT_TRACK_COUNT: usize = 5_000;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Track {
-    pub id: usize,
+    pub id: String,
+    pub logical_id: String,
+    pub hash: Option<String>,
     pub title: String,
     pub artist: String,
+    pub album: String,
+    pub available: bool,
+    pub saved: bool,
 }
 
 pub fn fixture_tracks(count: usize) -> Vec<Track> {
@@ -22,9 +27,14 @@ pub fn fixture_tracks(count: usize) -> Vec<Track> {
     ];
     (0..count)
         .map(|id| Track {
-            id,
+            id: format!("fixture-{id}"),
+            logical_id: format!("fixture-{id}"),
+            hash: None,
             title: titles[id % titles.len()].to_owned(),
             artist: format!("Fictional Ensemble {}", id / titles.len() + 1),
+            album: String::new(),
+            available: true,
+            saved: false,
         })
         .collect()
 }
@@ -40,7 +50,7 @@ pub fn filtered_indices(tracks: &[Track], query: &str) -> Vec<usize> {
 
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct PlaybackState {
-    pub current_track_id: Option<usize>,
+    pub current_track_id: Option<String>,
     pub is_playing: bool,
 }
 
@@ -49,7 +59,7 @@ impl PlaybackState {
         if self.is_playing {
             self.is_playing = false;
         } else if let Some(track) = selected {
-            self.current_track_id = Some(track.id);
+            self.current_track_id = Some(track.id.clone());
             self.is_playing = true;
         } else if self.current_track_id.is_some() {
             self.is_playing = true;
@@ -69,7 +79,7 @@ mod tests {
         assert_eq!(
             tracks
                 .iter()
-                .map(|track| track.id)
+                .map(|track| track.id.clone())
                 .collect::<HashSet<_>>()
                 .len(),
             5_000
@@ -125,13 +135,13 @@ mod tests {
         playback.toggle(None);
         assert_eq!(playback, PlaybackState::default());
         playback.toggle(Some(&tracks[10]));
-        assert_eq!(playback.current_track_id, Some(10));
+        assert_eq!(playback.current_track_id.as_deref(), Some("fixture-10"));
         assert!(playback.is_playing);
         playback.toggle(Some(&tracks[0]));
         assert!(!playback.is_playing);
-        assert_eq!(playback.current_track_id, Some(10));
+        assert_eq!(playback.current_track_id.as_deref(), Some("fixture-10"));
         playback.toggle(None);
         assert!(playback.is_playing);
-        assert_eq!(playback.current_track_id, Some(10));
+        assert_eq!(playback.current_track_id.as_deref(), Some("fixture-10"));
     }
 }
