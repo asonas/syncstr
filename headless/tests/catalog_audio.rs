@@ -104,6 +104,50 @@ fn online(client: &syncstr_headless::catalog_client::Client) {
 }
 
 #[tokio::test]
+async fn importing_an_original_checks_bytes_and_preserves_independent_saves() -> anyhow::Result<()>
+{
+    let f = Fixture::new().await?;
+    let (endpoint, server, host) = f.serve().await?;
+    let mut client = syncstr_headless::catalog_client::Client::open(&f.profile)?;
+    client.refresh(&host, f.secret, &Default::default()).await?;
+    endpoint.close().await;
+    server.await??;
+    let invalid = f.root.join("invalid.wav");
+    std::fs::write(&invalid, b"invalid")?;
+    assert_eq!(
+        client.import_saved_audio(&f.a, &invalid),
+        Err(syncstr_headless::catalog_client::Error::Integrity)
+    );
+    assert!(client.saved_tracks()?.is_empty());
+    let original = f.root.join("tone.wav");
+    let bytes = std::fs::read(&original)?;
+    client.import_saved_audio(&f.a, &original)?;
+    client.import_saved_audio(&f.b, &original)?;
+    assert_eq!(client.saved_tracks()?.len(), 2);
+    assert_eq!(
+        std::fs::read_dir(f.profile.join("catalog-audio"))?.count(),
+        1
+    );
+    client.remove_save(&f.a)?;
+    client.shutdown().await?;
+    let mut restored = syncstr_headless::catalog_client::Client::open(&f.profile)?;
+    let audio = restored
+        .prepare_playback(
+            &f.b.track_id,
+            Some(&f.b.sha256),
+            &[],
+            None,
+            &Default::default(),
+        )
+        .await?;
+    assert_eq!(std::fs::read(audio.path())?, bytes);
+    drop(audio);
+    restored.shutdown().await?;
+    assert_eq!(std::fs::read(original)?, bytes);
+    Ok(())
+}
+
+#[tokio::test]
 async fn shared_bytes_have_independent_receipts_and_active_playback_survives_removal()
 -> anyhow::Result<()> {
     let f = Fixture::new().await?;

@@ -38,11 +38,53 @@ pub struct Desktop {
     scroll: UniformListScrollHandle,
     page_size: usize,
     _search_subscription: Subscription,
+    #[cfg(windows)]
+    service: Option<crate::backend::Service>,
+    #[cfg(windows)]
+    hosts: Vec<crate::backend::Host>,
+    #[cfg(windows)]
+    selected_host: Option<String>,
+    #[cfg(windows)]
+    library: Vec<Track>,
+    #[cfg(windows)]
+    playlists: Vec<(String, String, Vec<Track>)>,
+    #[cfg(windows)]
+    collection: Option<String>,
+    message: String,
+    busy: bool,
+    position: String,
 }
 
 impl Desktop {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
+        #[cfg(windows)]
+        let service = if std::env::args().any(|a| a == "--demo") {
+            None
+        } else {
+            Some(crate::backend::Service::start(
+                crate::backend::configuration::Config::arguments()
+                    .expect("invalid desktop arguments"),
+            ))
+        };
         let tracks = fixture_tracks(DEFAULT_TRACK_COUNT);
+        #[cfg(windows)]
+        let tracks = if service.is_some() {
+            Vec::new()
+        } else {
+            tracks
+        };
+        #[cfg(windows)]
+        cx.spawn(async move |this, cx| {
+            loop {
+                cx.background_executor()
+                    .timer(std::time::Duration::from_millis(100))
+                    .await;
+                if this.update(cx, |this, cx| this.poll(cx)).is_err() {
+                    break;
+                }
+            }
+        })
+        .detach();
         let search = cx.new(SearchInput::new);
         let search_focus = search.read(cx).focus.clone();
         window.focus(&search_focus, cx);
@@ -68,6 +110,21 @@ impl Desktop {
             scroll: UniformListScrollHandle::new(),
             page_size: 1,
             _search_subscription: subscription,
+            #[cfg(windows)]
+            service,
+            #[cfg(windows)]
+            hosts: Vec::new(),
+            #[cfg(windows)]
+            selected_host: None,
+            #[cfg(windows)]
+            library: Vec::new(),
+            #[cfg(windows)]
+            playlists: Vec::new(),
+            #[cfg(windows)]
+            collection: None,
+            message: String::new(),
+            busy: false,
+            position: String::new(),
         }
     }
 
@@ -99,8 +156,104 @@ impl Desktop {
             .selected
             .and_then(|index| self.filtered.get(index))
             .map(|&index| &self.tracks[index]);
+        #[cfg(windows)]
+        if let Some(service) = &self.service {
+            if self.playback.is_playing && selected.is_none() {
+                service.pause();
+                cx.notify();
+                return;
+            }
+            if let Some(track) = selected {
+                if self.playback.current_track_id.as_ref() == Some(&track.id) {
+                    if self.playback.is_playing {
+                        service.pause();
+                    } else {
+                        service.resume();
+                    }
+                } else if track.available {
+                    service.play(track.clone());
+                } else {
+                    self.message = "This entry is unavailable; its exact track and audio version are retained.".into();
+                }
+            }
+            cx.notify();
+            return;
+        }
         self.playback.toggle(selected);
         cx.notify();
+    }
+
+    #[cfg(windows)]
+    fn poll(&mut self, cx: &mut Context<Self>) {
+        let events: Vec<_> = self
+            .service
+            .as_ref()
+            .map(|s| s.events.try_iter().collect())
+            .unwrap_or_default();
+        if events.is_empty() {
+            return;
+        }
+        for event in events {
+            match event {
+                crate::backend::Event::Library {
+                    tracks,
+                    playlists,
+                    message,
+                } => {
+                    let selected = self
+                        .selected
+                        .and_then(|i| self.filtered.get(i))
+                        .map(|&i| self.tracks[i].id.clone());
+                    self.library = tracks;
+                    self.playlists = playlists;
+                    self.tracks = self
+                        .collection
+                        .as_ref()
+                        .and_then(|id| {
+                            self.playlists
+                                .iter()
+                                .find(|p| &p.0 == id)
+                                .map(|p| p.2.clone())
+                        })
+                        .unwrap_or_else(|| self.library.clone());
+                    self.filtered = filtered_indices(&self.tracks, &self.query);
+                    self.selected = selected
+                        .and_then(|key| {
+                            self.filtered.iter().position(|&i| self.tracks[i].id == key)
+                        })
+                        .or_else(|| (!self.filtered.is_empty()).then_some(0));
+                    self.message = message;
+                }
+                crate::backend::Event::Hosts(hosts, selected) => {
+                    self.hosts = hosts;
+                    self.selected_host = selected;
+                }
+                crate::backend::Event::Busy(busy) => self.busy = busy,
+                crate::backend::Event::Message(message) => self.message = message,
+                crate::backend::Event::Playback {
+                    key,
+                    title,
+                    playing,
+                    seconds,
+                    duration,
+                } => {
+                    self.playback.current_track_id = (!key.is_empty()).then_some(key);
+                    self.playback.is_playing = playing;
+                    self.position = format!("{title} · {seconds:.1} / {duration:.1} s");
+                }
+            }
+        }
+        cx.notify();
+    }
+
+    #[cfg(windows)]
+    fn command(&mut self, command: crate::backend::Command) {
+        if !self.busy
+            && let Some(service) = &self.service
+        {
+            service.send(command);
+            self.busy = true;
+        }
     }
 }
 
@@ -114,7 +267,8 @@ impl Render for Desktop {
         let status = self
             .playback
             .current_track_id
-            .and_then(|id| self.tracks.iter().find(|track| track.id == id))
+            .as_ref()
+            .and_then(|id| self.tracks.iter().find(|track| &track.id == id))
             .map(|track| {
                 format!(
                     "{}: {} — {}",
@@ -144,7 +298,7 @@ impl Render for Desktop {
             .bg(rgb(0xffffff))
             .text_color(rgb(0x202126))
             .text_size(px(16.))
-            .child(div().text_xl().child("Tracks"))
+            .child(self.controls(cx))
             .child(self.search.clone())
             .child(
                 div()
@@ -204,17 +358,29 @@ impl Render for Desktop {
                                             let track = &this.tracks[this.filtered[index]];
                                             let selected = this.selected == Some(index);
                                             div()
-                                                .id(("track", track.id))
+                                                .id(gpui::SharedString::from(format!(
+                                                    "track-{}",
+                                                    track.id
+                                                )))
                                                 .role(Role::ListBoxOption)
                                                 .accessibility_id(format!("track-{}", track.id))
                                                 .aria_label(format!(
-                                                    "{} — {}",
-                                                    track.title, track.artist
+                                                    "{} — {} · {}{}{}",
+                                                    track.title,
+                                                    track.artist,
+                                                    track.album,
+                                                    if track.saved { " · Saved" } else { "" },
+                                                    if track.available {
+                                                        ""
+                                                    } else {
+                                                        " · Unavailable"
+                                                    }
                                                 ))
                                                 .aria_position_in_set(index)
                                                 .aria_selected(selected)
                                                 .when(selected, |row| row.aria_active_descendant())
                                                 .h(px(36.))
+                                                .w_full()
                                                 .px_2()
                                                 .flex()
                                                 .items_center()
@@ -232,10 +398,17 @@ impl Render for Desktop {
                                                     },
                                                 ))
                                                 .child(format!(
-                                                    "{} · {} — {}",
+                                                    "{} · {} — {} · {}{}{}",
                                                     index + 1,
                                                     track.title,
-                                                    track.artist
+                                                    track.artist,
+                                                    track.album,
+                                                    if track.saved { " · Saved" } else { "" },
+                                                    if track.available {
+                                                        ""
+                                                    } else {
+                                                        " · Unavailable"
+                                                    }
                                                 ))
                                         })
                                         .collect()
@@ -284,5 +457,145 @@ impl Render for Desktop {
                             .child(status),
                     ),
             )
+            .child(div().text_sm().child(self.position.clone()))
+            .child(div().text_sm().child(self.message.clone()))
+    }
+}
+
+impl Desktop {
+    fn controls(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
+        #[cfg(windows)]
+        if self.service.is_some() {
+            let mut controls = div().flex().flex_col().gap_2();
+            let mut actions = div().flex().flex_wrap().gap_2();
+            for (id, label) in [
+                ("discover", "Discover"),
+                ("enroll", "Enroll from clipboard"),
+                ("refresh", "Refresh / retry saves"),
+                ("save", "Save"),
+                ("remove", "Remove save"),
+                ("cancel", "Cancel"),
+            ] {
+                actions = actions.child(
+                    div()
+                        .id(id)
+                        .role(Role::Button)
+                        .aria_label(label)
+                        .accessibility_id(id)
+                        .tab_stop(true)
+                        .tab_index(0)
+                        .focus_visible(|style| style.border_color(rgb(0x1253ff)))
+                        .border_1()
+                        .px_2()
+                        .py_1()
+                        .cursor_pointer()
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            if id == "cancel" {
+                                if let Some(service) = &this.service {
+                                    service.cancel();
+                                }
+                            } else {
+                                let command = match id {
+                                    "discover" => Some(crate::backend::Command::Discover),
+                                    "refresh" => Some(crate::backend::Command::Refresh),
+                                    "enroll" => cx
+                                        .read_from_clipboard()
+                                        .and_then(|item| item.text())
+                                        .map(crate::backend::Command::Enroll),
+                                    "save" | "remove" => this
+                                        .selected
+                                        .and_then(|i| this.filtered.get(i))
+                                        .map(|&i| this.tracks[i].clone())
+                                        .map(|track| {
+                                            if id == "save" {
+                                                crate::backend::Command::Save(track)
+                                            } else {
+                                                crate::backend::Command::Remove(track)
+                                            }
+                                        }),
+                                    _ => None,
+                                };
+                                if let Some(command) = command {
+                                    this.command(command);
+                                }
+                            }
+                            cx.notify();
+                        }))
+                        .child(label),
+                );
+            }
+            controls = controls.child(actions).child(div().text_sm().child(if self.busy { "Working… Cancel interrupts acquisition; playback controls remain available." } else { "Library editing is unavailable until shared member-write contracts are implemented." }));
+            for host in &self.hosts {
+                let member = host.member.clone();
+                let label = format!(
+                    "{} {}",
+                    if self.selected_host.as_ref() == Some(&member) {
+                        "Selected host:"
+                    } else {
+                        "Host:"
+                    },
+                    member
+                );
+                controls = controls.child(
+                    div()
+                        .id(gpui::SharedString::from(format!("host-{member}")))
+                        .role(Role::Button)
+                        .aria_label(label.clone())
+                        .tab_stop(true)
+                        .tab_index(0)
+                        .border_1()
+                        .px_2()
+                        .py_1()
+                        .focus_visible(|style| style.border_color(rgb(0x1253ff)))
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.command(crate::backend::Command::SelectHost(member.clone()));
+                            cx.notify();
+                        }))
+                        .child(label),
+                );
+            }
+            let mut collections = div().flex().flex_wrap().gap_2();
+            let choices = std::iter::once((None, "All tracks".to_string())).chain(
+                self.playlists
+                    .iter()
+                    .map(|p| (Some(p.0.clone()), p.1.clone())),
+            );
+            for (id, label) in choices {
+                collections = collections.child(
+                    div()
+                        .id(gpui::SharedString::from(format!(
+                            "collection-{}",
+                            id.as_deref().unwrap_or("all")
+                        )))
+                        .role(Role::Button)
+                        .aria_label(label.clone())
+                        .tab_stop(true)
+                        .tab_index(0)
+                        .border_1()
+                        .px_2()
+                        .py_1()
+                        .focus_visible(|style| style.border_color(rgb(0x1253ff)))
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.collection = id.clone();
+                            this.tracks = id
+                                .as_ref()
+                                .and_then(|id| {
+                                    this.playlists
+                                        .iter()
+                                        .find(|p| &p.0 == id)
+                                        .map(|p| p.2.clone())
+                                })
+                                .unwrap_or_else(|| this.library.clone());
+                            this.filtered = filtered_indices(&this.tracks, &this.query);
+                            this.selected = (!this.filtered.is_empty()).then_some(0);
+                            cx.notify();
+                        }))
+                        .child(label),
+                );
+            }
+            return controls.child(collections).into_any_element();
+        }
+        let _ = cx;
+        div().text_xl().child("Tracks (demo)").into_any_element()
     }
 }

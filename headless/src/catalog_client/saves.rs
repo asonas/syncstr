@@ -86,6 +86,65 @@ fn write(
 }
 
 impl crate::catalog_client::Client {
+    /// Copies a verified original into managed storage without modifying its source.
+    pub fn import_saved_audio(
+        &mut self,
+        pin: &crate::catalog_client::ExactTrack,
+        source: &std::path::Path,
+    ) -> Result<crate::catalog_client::SaveJob, crate::catalog_client::Error> {
+        let pin = self.audio_pin(&pin.track_id, Some(&pin.sha256))?;
+        let bytes = self
+            .catalog()?
+            .audio_bytes(&pin)
+            .ok_or(crate::catalog_client::Error::UnavailableSource)?;
+        let lock = self
+            .lock
+            .as_ref()
+            .ok_or(crate::catalog_client::Error::Closed)?
+            .clone();
+        let asset = match self.audio.lease(pin.clone(), bytes, lock.clone()) {
+            Ok(asset) => asset,
+            Err(
+                crate::catalog_client::Error::UnavailableSource
+                | crate::catalog_client::Error::Integrity,
+            ) => {
+                crate::catalog_client::audio_storage::verify_file(source, &pin.sha256, bytes)?;
+                let mut staged = tempfile::Builder::new()
+                    .prefix(".acquiring-")
+                    .tempfile_in(&self.audio.root)
+                    .map_err(crate::catalog_client::audio_storage::io_error)?;
+                std::io::copy(
+                    &mut std::fs::File::open(source)
+                        .map_err(crate::catalog_client::audio_storage::io_error)?,
+                    &mut staged,
+                )
+                .map_err(crate::catalog_client::audio_storage::io_error)?;
+                staged
+                    .as_file()
+                    .sync_all()
+                    .map_err(crate::catalog_client::audio_storage::io_error)?;
+                crate::catalog_client::audio_storage::verify_file(
+                    staged.path(),
+                    &pin.sha256,
+                    bytes,
+                )?;
+                self.audio.publish(
+                    self.connection
+                        .as_ref()
+                        .ok_or(crate::catalog_client::Error::Closed)?,
+                    staged.into_temp_path(),
+                    pin.clone(),
+                    bytes,
+                    lock,
+                )?
+            }
+            Err(error) => return Err(error),
+        };
+        let job = self.save_tracks(std::slice::from_ref(&pin))?;
+        drop(asset);
+        Ok(job)
+    }
+
     pub fn save_jobs(
         &self,
     ) -> Result<Vec<crate::catalog_client::SaveJob>, crate::catalog_client::Error> {

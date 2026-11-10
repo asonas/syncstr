@@ -1,4 +1,11 @@
 pub async fn create(root: std::path::PathBuf) -> anyhow::Result<()> {
+    create_with_legacy_profile(root, false).await
+}
+
+pub async fn create_with_legacy_profile(
+    root: std::path::PathBuf,
+    legacy_profile: bool,
+) -> anyhow::Result<()> {
     use sha2::Digest as _;
     use std::io::Write as _;
     anyhow::ensure!(!root.exists(), "fixture output must not exist");
@@ -96,6 +103,36 @@ pub async fn create(root: std::path::PathBuf) -> anyhow::Result<()> {
         )
         .await?;
     let proof = legacy.cluster_membership_proof().await?;
+    if legacy_profile {
+        let catalog = legacy.catalog().await?;
+        let entry = catalog
+            .entries
+            .into_iter()
+            .find(|entry| entry.sha256 == hash)
+            .unwrap();
+        let change = legacy
+            .publish_cluster_change(
+                &host,
+                hash.clone(),
+                syncstr_headless::cluster_changes::Action::Import {
+                    entry: Box::new(entry),
+                    organization: Box::new(catalog.organization.for_object(&hash)?),
+                },
+            )
+            .await?;
+        let source = syncstr_headless::store::Store::open(&root.join("win32-copy-source"))?;
+        source
+            .join_cluster(&reader, host.id(), reader_grant.clone(), proof.clone())
+            .await?;
+        source
+            .receive_cluster_changes(host.id().to_string(), vec![change.clone()])
+            .await?;
+        let mut temporary = source.stage().await?;
+        temporary.write_all(&wav)?;
+        source
+            .commit_cluster_replica(&reader, change, temporary, None)
+            .await?;
+    }
     std::fs::write(
         root.join("reader-enrollment.json"),
         serde_json::to_vec_pretty(

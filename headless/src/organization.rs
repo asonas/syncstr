@@ -179,7 +179,8 @@ impl crate::organization::Organization {
         Ok(subset)
     }
 
-    pub(crate) fn canonical_track(&self, id: &str) -> String {
+    /// Resolves explicit track aliases, including device-local IDs in copied legacy profiles.
+    pub fn canonical_track(&self, id: &str) -> String {
         let mut cursor = id.to_owned();
         let mut seen = std::collections::BTreeSet::new();
         while let Some(next) = self.track_aliases.as_ref().and_then(|a| a.get(&cursor)) {
