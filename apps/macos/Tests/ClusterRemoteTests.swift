@@ -6,6 +6,9 @@ import IrohLib
 @MainActor
 final class ClusterRemoteTests: XCTestCase {
     func testSavedRegistrationDownloadsThroughRelayAndKeepsLanWorkingAfterRelayStops() async throws {
+        guard ProcessInfo.processInfo.environment["SYNCSTR_RUN_LAN_INTEROP"] == "1" else {
+            throw XCTSkip("Set SYNCSTR_RUN_LAN_INTEROP=1 on a network permitting mDNS; initial discovery uses mDNS")
+        }
         let repository = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
             .deletingLastPathComponent().deletingLastPathComponent()
         let configuredBinary = ProcessInfo.processInfo.environment["SYNCSTR_HEADLESS_TEST_BINARY"].map { URL(fileURLWithPath: $0) }

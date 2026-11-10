@@ -108,8 +108,11 @@ already forwards `SYNCSTR_V5_TEST_BIN_DIR` to its test runner, covering legacy
 upload, conflict resolution, album titles, metadata, and visibility edits, as
 well as replication and download. `ClusterRemoteTests` uses a locally started
 loopback relay, with mDNS for initial enrollment and LAN recovery after the relay
-stops; it does not require a public relay. Broader multicast discovery checks
-remain in the separate LAN workflow below.
+stops; it does not require a public relay. It runs only with
+`SYNCSTR_RUN_LAN_INTEROP=1` on a network permitting mDNS. On a GitHub-hosted macOS
+runner its initial mDNS discovery failed with `clusterUnavailable`, so it skips
+in PR CI.
+Broader multicast discovery checks remain in the separate LAN workflow below.
 
 `PeerTransferTests.testNativeClientUploadsAfterIdleSessionExpires` runs only with
 `SYNCSTR_RUN_SLOW_INTEROP=1` because it waits 125 seconds. It otherwise skips,
