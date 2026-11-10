@@ -99,14 +99,23 @@ Without these options, cluster enrollment and discovery keep their LAN behavior.
 The legacy service advertises enrollment, cluster v3, and playlist protocols;
 `shared-audio-serve` supplies v5.
 
-`ClusterTransferTests.testNativeEnrollmentReconciliationAndVerifiedDownloadSurviveRestart`
-uses `SYNCSTR_HEADLESS_TEST_BINARY`, then the binary in
-`SYNCSTR_V5_TEST_BIN_DIR`, then the local default build. A missing explicitly
-configured binary fails the test rather than skipping it. The macOS CI job
+`ClusterTransferTests`, `ClusterRemoteTests`, and `PeerTransferTests` use
+`SYNCSTR_HEADLESS_TEST_BINARY`, then `SYNCSTR_V5_TEST_BIN_DIR/syncstr-headless`,
+then `headless/target/debug/syncstr-headless`. A missing explicitly configured
+binary fails the test; a missing local default skips it only when neither
+variable is set. The macOS CI job
 already forwards `SYNCSTR_V5_TEST_BIN_DIR` to its test runner, covering legacy
 upload, conflict resolution, album titles, metadata, and visibility edits, as
-well as replication and download. Real multicast discovery remains in the
-separate LAN checks below.
+well as replication and download. `ClusterRemoteTests` uses a locally started
+loopback relay, with mDNS for initial enrollment and LAN recovery after the relay
+stops; it does not require a public relay. Broader multicast discovery checks
+remain in the separate LAN workflow below.
+
+`PeerTransferTests.testNativeClientUploadsAfterIdleSessionExpires` runs only with
+`SYNCSTR_RUN_SLOW_INTEROP=1` because it waits 125 seconds. It otherwise skips,
+keeping the idle wait out of the PR budget. Directory discovery and external
+upload-batch tests retain their separate `SYNCSTR_DIRECTORY_TEST_URL` and
+`SYNCSTR_UPLOAD_TEST_DIRECTORY` opt-ins.
 
 The [Verification workflow](../.github/workflows/verification.yml) runs the P2P
 library tests, `cluster_changes`, `cluster_client`, `cluster_remote`,

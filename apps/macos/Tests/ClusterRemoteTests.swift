@@ -8,8 +8,17 @@ final class ClusterRemoteTests: XCTestCase {
     func testSavedRegistrationDownloadsThroughRelayAndKeepsLanWorkingAfterRelayStops() async throws {
         let repository = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
             .deletingLastPathComponent().deletingLastPathComponent()
-        let binary = repository.appendingPathComponent("headless/target/debug/syncstr-headless")
-        guard FileManager.default.isExecutableFile(atPath: binary.path) else { throw XCTSkip("Build headless with p2p first") }
+        let configuredBinary = ProcessInfo.processInfo.environment["SYNCSTR_HEADLESS_TEST_BINARY"].map { URL(fileURLWithPath: $0) }
+            ?? ProcessInfo.processInfo.environment["SYNCSTR_V5_TEST_BIN_DIR"].map { URL(fileURLWithPath: $0).appendingPathComponent("syncstr-headless") }
+        let binary = configuredBinary
+            ?? repository.appendingPathComponent("headless/target/debug/syncstr-headless")
+        guard FileManager.default.isExecutableFile(atPath: binary.path) else {
+            if configuredBinary != nil {
+                XCTFail("The configured interoperability binary is missing or not executable")
+                throw LocalMusicError.invalidData
+            }
+            throw XCTSkip("Build headless with --features p2p before running interoperability tests")
+        }
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: root) }
