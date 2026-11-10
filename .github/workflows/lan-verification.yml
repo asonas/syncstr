@@ -25,7 +25,7 @@ jobs:
         shell: bash
         run: >-
           cargo +1.99.1 test --locked --features p2p --test lan_process
-          -- --test-threads=1 --nocapture 2>&1 | tee lan-verification.log
+          -- --ignored --test-threads=1 --nocapture 2>&1 | tee lan-verification.log
       - uses: actions/upload-artifact@v7
         if: always()
         with:
