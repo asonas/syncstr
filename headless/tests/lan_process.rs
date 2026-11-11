@@ -105,6 +105,7 @@ fn wait_for_replica(root: &std::path::Path, hash: &str) {
 
 #[cfg(feature = "p2p")]
 #[test]
+#[ignore = "requires multicast DNS; run in the LAN verification workflow with --ignored"]
 fn separate_lan_hosts_catch_up_after_offline_import_and_restart() {
     let root = tempfile::tempdir().unwrap();
     let runtime = tokio::runtime::Runtime::new().unwrap();
@@ -215,6 +216,7 @@ fn separate_lan_hosts_catch_up_after_offline_import_and_restart() {
 
 #[cfg(feature = "p2p")]
 #[test]
+#[ignore = "requires multicast DNS; run in the LAN verification workflow with --ignored"]
 fn cli_enrollment_discovers_the_pinned_host_without_an_ip_address() {
     #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt as _;

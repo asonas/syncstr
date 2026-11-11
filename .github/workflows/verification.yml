@@ -73,12 +73,9 @@ jobs:
             headless/target
           key: headless-v1-${{ runner.os }}-${{ runner.arch }}-1.99.1-${{ hashFiles('headless/Cargo.lock') }}
           restore-keys: headless-v1-${{ runner.os }}-${{ runner.arch }}-1.99.1-
-      - name: Focused regression tests
-        run: >-
-          cargo +1.99.1 test --locked --features p2p --lib
-          --test catalog_client --test catalog_audio --test cluster_changes --test cluster_client --test cluster_remote
-          --test cluster_replication --test contracts --test node --test cli_process
-          --test shared_audio --test playlists
+      # Every test target runs, so new files need no list; lan_process is #[ignore]d.
+      - name: Regression tests
+        run: cargo +1.99.1 test --locked --features p2p --tests
       - name: Clippy
         run: cargo +1.99.1 clippy --locked --features p2p --lib -- -D warnings
   macos:

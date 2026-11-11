@@ -120,17 +120,16 @@ keeping the idle wait out of the PR budget. Directory discovery and external
 upload-batch tests retain their separate `SYNCSTR_DIRECTORY_TEST_URL` and
 `SYNCSTR_UPLOAD_TEST_DIRECTORY` opt-ins.
 
-The [Verification workflow](../.github/workflows/verification.yml) runs the P2P
-library tests, `cluster_changes`, `cluster_client`, `cluster_remote`,
-`cluster_replication`, `contracts`, `node`, and ordinary `cli_process` tests,
-followed by library Clippy. This is a focused regression gate, not the full suite
-below.
+The [Verification workflow](../.github/workflows/verification.yml) runs every
+P2P test target with `cargo test --locked --features p2p --tests`, followed by
+library Clippy. New files under `tests/` join it without a workflow change.
 
 Real multicast discovery and host-restart replication live in `lan_process`.
-Run them serially on a network permitting mDNS when changing LAN discovery:
+Its tests are `#[ignore]`d so the regular run skips them. Run them serially on a
+network permitting mDNS when changing LAN discovery:
 
 ```sh
-cargo test --locked --features p2p --test lan_process -- --test-threads=1 --nocapture
+cargo test --locked --features p2p --test lan_process -- --ignored --test-threads=1 --nocapture
 ```
 
 The manual [LAN verification workflow](../.github/workflows/lan-verification.yml)
@@ -144,7 +143,8 @@ Enrollment timeouts identify the current phase and number of resolved candidates
 Failed LAN subprocess tests include bounded server stdout/stderr and process
 status; replica timeouts name the expected object and destination. Test identity,
 invitation, and database files remain temporary and are not uploaded as artifacts.
-The full P2P suite still includes `lan_process`; no test is marked ignored.
+The regular P2P suite lists the `lan_process` tests as ignored rather than
+silently omitting them.
 
 For a macOS timeout with no resolved candidates, see the
 [LAN investigation](../docs/validation/lan-discovery.md). Check the launching

@@ -26,7 +26,7 @@ Check the launching application's Local Network access in System Settings,
 then rerun from an authorized terminal:
 
 ```sh
-cargo test --locked --features p2p --test lan_process -- --test-threads=1 --nocapture
+cargo test --locked --features p2p --test lan_process -- --ignored --test-threads=1 --nocapture
 ```
 
 Compare that result with the agent execution environment and, separately, the
