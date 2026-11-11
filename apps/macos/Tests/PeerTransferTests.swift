@@ -71,6 +71,9 @@ final class PeerTransferTests: XCTestCase {
     }
 
     func testNativeClientUploadsAfterIdleSessionExpires() async throws {
+        guard ProcessInfo.processInfo.environment["SYNCSTR_RUN_SLOW_INTEROP"] == "1" else {
+            throw XCTSkip("Set SYNCSTR_RUN_SLOW_INTEROP=1 to run the 125-second idle-session interoperability test")
+        }
         try await exerciseNativeClient(directory: nil, idleSeconds: 125)
     }
 
@@ -92,9 +95,15 @@ final class PeerTransferTests: XCTestCase {
     private func exerciseNativeClient(directory: String?, externalDirectory: URL? = nil, idleSeconds: Double = 0) async throws {
         let repository = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
             .deletingLastPathComponent().deletingLastPathComponent()
-        let binary = ProcessInfo.processInfo.environment["SYNCSTR_HEADLESS_TEST_BINARY"].map { URL(fileURLWithPath: $0) }
+        let configuredBinary = ProcessInfo.processInfo.environment["SYNCSTR_HEADLESS_TEST_BINARY"].map { URL(fileURLWithPath: $0) }
+            ?? ProcessInfo.processInfo.environment["SYNCSTR_V5_TEST_BIN_DIR"].map { URL(fileURLWithPath: $0).appendingPathComponent("syncstr-headless") }
+        let binary = configuredBinary
             ?? repository.appendingPathComponent("headless/target/debug/syncstr-headless")
         guard FileManager.default.isExecutableFile(atPath: binary.path) else {
+            if configuredBinary != nil {
+                XCTFail("The configured interoperability binary is missing or not executable")
+                throw LocalMusicError.invalidData
+            }
             throw XCTSkip("Build headless with --features p2p before running interoperability tests")
         }
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
