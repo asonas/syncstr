@@ -46,9 +46,20 @@ fn array<const N: usize>(bytes: Vec<u8>) -> anyhow::Result<[u8; N]> {
 }
 
 fn state(db: &Connection) -> anyhow::Result<State> {
-    let (cluster, root, baseline, epoch, head, floor, halted): (Vec<u8>, Vec<u8>, Vec<u8>, i64, Option<Vec<u8>>, Vec<u8>, i64) = db.query_row(
-        "SELECT cluster, root, baseline, epoch, head, floor, halted FROM activation_control_state WHERE singleton=1", [],
-        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?)),
+    let (cluster, root, baseline, epoch, head, floor, halted) = db.query_row(
+        "SELECT cluster, root, baseline, epoch, head, floor, halted FROM activation_control_state WHERE singleton=1",
+        [],
+        |r| {
+            Ok((
+                r.get::<_, Vec<u8>>(0)?,
+                r.get::<_, Vec<u8>>(1)?,
+                r.get::<_, Vec<u8>>(2)?,
+                r.get::<_, i64>(3)?,
+                r.get::<_, Option<Vec<u8>>>(4)?,
+                r.get::<_, Vec<u8>>(5)?,
+                r.get::<_, i64>(6)?,
+            ))
+        },
     )?;
     ensure!(
         epoch >= 0 && matches!(halted, 0 | 1),
