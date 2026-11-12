@@ -268,6 +268,16 @@ fn conflicts(db: &Connection, candidate: &Signed, proposed: &Signed) -> anyhow::
     Ok(false)
 }
 
+/// Signing happens after the durable lock or install commits, so a signer
+/// that cannot sign for `host` must be refused before anything is written.
+fn signer_matches(identity: &crate::peer::Identity, host: &Host) -> anyhow::Result<()> {
+    ensure!(
+        identity.id().as_bytes() == &host.key,
+        "signing identity does not match the asserted host"
+    );
+    Ok(())
+}
+
 fn mark_conflict(db: &Connection, candidate: &Signed) -> anyhow::Result<()> {
     db.execute(
         "INSERT OR IGNORE INTO activation_control_conflicts VALUES (?, ?, ?)",
@@ -400,6 +410,7 @@ impl crate::shared_audio::Store {
         expected: &Session,
         supported: &BTreeSet<String>,
     ) -> anyhow::Result<Signed> {
+        signer_matches(identity, &ack.host)?;
         self.run(|db, _| lock_prepare(db, &ack, expected, supported))?;
         let signed = Signed::sign(Body::Prepared(ack), identity)?;
         self.run(|db, _| finish_prepare(db, &signed, expected))?;
@@ -415,6 +426,7 @@ impl crate::shared_audio::Store {
         expected: &Session,
         supported: &BTreeSet<String>,
     ) -> anyhow::Result<Signed> {
+        signer_matches(identity, &host)?;
         let epoch = self.run(|db, _| install(db, &id, &host, expected, supported))?;
         let signed = Signed::sign(
             Body::Installed(Installed {
@@ -678,6 +690,16 @@ fn inspect(db: &Connection) -> anyhow::Result<Inspection> {
         epoch = epoch.checked_sub(1).context("epoch underflow")?;
     }
     ensure!(epoch == 0, "corrupt installed head");
+    // Installation acknowledgments are only stored for the current head, so
+    // one outside the installed ancestry means the head was rolled back.
+    for signed in records.values() {
+        if let Body::Installed(i) = &signed.body {
+            ensure!(
+                installed.contains(&i.certificate),
+                "installation acknowledgment outside installed ancestry"
+            );
+        }
+    }
     let mut prepare_locks = Vec::new();
     let mut unsigned_preparations = Vec::new();
     let mut statement = db.prepare("SELECT proposal, host, required_floor, acknowledgment_digest FROM activation_control_prepare ORDER BY proposal")?;

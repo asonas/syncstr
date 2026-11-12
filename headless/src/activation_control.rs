@@ -294,8 +294,10 @@ fn verify_prepared(signed: &Signed, proposed: &Signed) -> anyhow::Result<()> {
         a.baseline == p.baseline && a.write_frozen && a.admission_frozen,
         "prepared baseline/freeze mismatch"
     );
+    // Installation enforces exactly the proposal's profiles, so a wider
+    // acknowledged minimum would be certified without ever being enforced.
     ensure!(
-        p.profiles.iter().all(|v| a.minimum_profiles.contains(v))
+        a.minimum_profiles == p.profiles
             && a.minimum_profiles
                 .iter()
                 .all(|v| a.implemented_profiles.contains(v)),

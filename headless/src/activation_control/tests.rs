@@ -479,6 +479,63 @@ fn certificate_requires_every_host() -> anyhow::Result<()> {
     let mut bad = root_prepared();
     bad.baseline = [1; 32];
     assert!(verify_prepared(&f.resign(Body::Prepared(bad), 7)?, &vector("proposal")).is_err());
+    // Installation enforces only the proposal's profiles, so an acknowledgment
+    // demanding more would be certified but never enforced.
+    let mut bad = root_prepared();
+    let wider: BTreeSet<String> = supported()
+        .into_iter()
+        .chain(["extra-profile-v1".into()])
+        .collect();
+    bad.minimum_profiles = wider.iter().cloned().collect();
+    bad.implemented_profiles = wider.into_iter().collect();
+    assert!(verify_prepared(&f.resign(Body::Prepared(bad), 7)?, &vector("proposal")).is_err());
+    Ok(())
+}
+
+#[test]
+fn nested_acknowledgment_signature_is_verified() -> anyhow::Result<()> {
+    let f = Fixture::new()?;
+    let mut c = certificate(&vector("certificate"))?.clone();
+    c.prepared[0].signature[0] ^= 1;
+    // Body::signing_bytes covers nested envelopes, so a valid outer signature
+    // must not hide an invalid nested one.
+    let body = Body::Certificate(c);
+    let signature = f.identity(7)?.sign(&body.signing_bytes()?);
+    let outer = Signed {
+        body,
+        signature: signature.try_into().unwrap(),
+    };
+    assert!(outer.verify().is_err());
+    assert!(f.record(&outer).is_err());
+    Ok(())
+}
+
+#[test]
+fn mismatched_signing_identity_changes_nothing() -> anyhow::Result<()> {
+    let f = Fixture::new()?;
+    f.record(&vector("proposal"))?;
+    let before = f.store().control_inspect()?;
+    assert!(
+        f.store()
+            .control_prepare(root_prepared(), &f.identity(8)?, &session(), &supported())
+            .is_err()
+    );
+    assert_eq!(f.store().control_inspect()?, before);
+    f.prepare()?;
+    f.record(&vector("certificate"))?;
+    let before = f.store().control_inspect()?;
+    assert!(
+        f.store()
+            .control_install(
+                vector("certificate").id()?,
+                session().coordinator,
+                &f.identity(8)?,
+                &session(),
+                &supported(),
+            )
+            .is_err()
+    );
+    assert_eq!(f.store().control_inspect()?, before);
     Ok(())
 }
 
@@ -701,6 +758,8 @@ fn reopen_rejects_corrupt_state() -> anyhow::Result<()> {
         "UPDATE activation_control_envelopes SET canonical=x'00' WHERE kind='certificate'",
         "DELETE FROM activation_control_membership",
         "UPDATE activation_control_prepare SET acknowledgment_digest=zeroblob(32)",
+        // A rolled-back head contradicts the retained signed installation.
+        "UPDATE activation_control_state SET head=NULL, epoch=0",
     ] {
         let mut f = Fixture::new()?;
         f.record(&vector("proposal"))?;
