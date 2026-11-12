@@ -26,7 +26,7 @@ pub struct Grant {
 }
 
 impl crate::enrollment::Grant {
-    fn signing_bytes(&self) -> anyhow::Result<Vec<u8>> {
+    pub(crate) fn signing_bytes(&self) -> anyhow::Result<Vec<u8>> {
         let payload = serde_json::to_string(&(
             self.version,
             &self.cluster,
