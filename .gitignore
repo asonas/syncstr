@@ -14,6 +14,7 @@ infra/data/
 ops/backups/
 tmp/
 .worktrees/
+.dev/contexts/
 .cloudflare/
 apps/ios/Syncstr.xcodeproj/project.pbxproj
 apps/ios/Syncstr.xcodeproj/project.xcworkspace/*
