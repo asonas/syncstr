@@ -269,21 +269,26 @@ fn conflicts(db: &Connection, candidate: &Signed, proposed: &Signed) -> anyhow::
 }
 
 /// The supplied proof only shows the signer was authorized at some revision,
-/// so a revoked host could replay a stale proof to halt the journal. Refuse
-/// signers this host already knows to be revoked or disputed. A grant this
-/// host has not seen yet still halts, so a genuine rival is never missed.
-fn revoked_locally(db: &Connection, host: &Host) -> anyhow::Result<bool> {
-    let local = crate::enrollment::read_proof(db)?;
-    let grant = hex::encode(host.grant);
-    if local.grants.iter().any(|g| g.id == grant) && local.verify(&grant).is_err() {
-        return Ok(true);
-    }
-    let member = iroh::EndpointId::from_bytes(&host.key)?.to_string();
-    let (active, disputed) = local.revocation_state()?;
-    Ok(disputed.contains(&member)
-        || active
+/// so a revoked host could replay a stale proof, or delegate to a fresh key,
+/// to halt the journal. Verify the signer's whole grant chain against this
+/// host's known revocations and disputes. A grant this host has not seen
+/// still halts when its chain is clean, so a genuine rival is never missed.
+fn revoked_locally(
+    db: &Connection,
+    host: &Host,
+    supplied: &crate::enrollment::Proof,
+) -> anyhow::Result<bool> {
+    let mut combined = crate::enrollment::read_proof(db)?;
+    // Grant IDs are content digests, so equal IDs are the same grant.
+    let known: BTreeSet<String> = combined.grants.iter().map(|g| g.id.clone()).collect();
+    combined.grants.extend(
+        supplied
+            .grants
             .iter()
-            .any(|&i| local.revocations[i].member == member))
+            .filter(|g| !known.contains(&g.id))
+            .cloned(),
+    );
+    Ok(combined.verify(&hex::encode(host.grant)).is_err())
 }
 
 /// Signing happens after the durable lock or install commits, so a signer
@@ -386,7 +391,7 @@ impl crate::shared_audio::Store {
                 && conflicts(&tx, signed, &proposed)?
             {
                 ensure!(
-                    !revoked_locally(&tx, signed.body.signer())?,
+                    !revoked_locally(&tx, signed.body.signer(), membership)?,
                     "sibling signer is revoked or disputed locally"
                 );
                 save_proof(&tx, p, membership)?;

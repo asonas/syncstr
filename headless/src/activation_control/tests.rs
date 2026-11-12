@@ -511,7 +511,7 @@ fn nested_acknowledgment_signature_is_verified() -> anyhow::Result<()> {
 }
 
 #[test]
-fn mismatched_signing_identity_changes_nothing() -> anyhow::Result<()> {
+fn mismatched_prepare_identity_changes_nothing() -> anyhow::Result<()> {
     let f = Fixture::new()?;
     f.record(&vector("proposal"))?;
     let before = f.store().control_inspect()?;
@@ -521,6 +521,13 @@ fn mismatched_signing_identity_changes_nothing() -> anyhow::Result<()> {
             .is_err()
     );
     assert_eq!(f.store().control_inspect()?, before);
+    Ok(())
+}
+
+#[test]
+fn mismatched_install_identity_changes_nothing() -> anyhow::Result<()> {
+    let f = Fixture::new()?;
+    f.record(&vector("proposal"))?;
     f.prepare()?;
     f.record(&vector("certificate"))?;
     let before = f.store().control_inspect()?;
@@ -648,19 +655,16 @@ fn unauthenticated_fork_does_not_halt() -> anyhow::Result<()> {
     Ok(())
 }
 
-#[test]
-fn locally_revoked_signer_cannot_halt() -> anyhow::Result<()> {
-    let f = Fixture::new()?;
-    f.record(&vector("proposal"))?;
+/// Revoke the host with `seed` in this host's trusted membership only.
+fn revoke_locally(f: &Fixture, seed: u8) -> anyhow::Result<()> {
     let proof = member_proof();
     let root_grant = proof.grants.iter().find(|g| g.authority.is_none()).unwrap();
-    let revoked = f.identity(9)?.id().to_string();
     let mut revocation = crate::enrollment::Revocation {
         version: 1,
         id: String::new(),
         cluster: root_grant.cluster.clone(),
         issuer: root_grant.member.clone(),
-        member: revoked.clone(),
+        member: f.identity(seed)?.id().to_string(),
         authority: root_grant.id.clone(),
         observed: proof.grants.iter().map(|g| g.id.clone()).collect(),
         change_heads: vec![],
@@ -681,19 +685,97 @@ fn locally_revoked_signer_cannot_halt() -> anyhow::Result<()> {
         vec![0],
         "revocation must be active"
     );
-    // The revoked host signs a sibling under the stale proof that still
-    // authorizes it, which verifies on its own.
-    let mut p = proposal(&vector("proposal"))?.clone();
-    p.nonce = [0x99; 32];
-    p.coordinator = p
-        .hosts
+    Ok(())
+}
+
+/// The fixture proof plus a host grant from `issuer` to `member` that this
+/// host has never stored.
+fn delegated(f: &Fixture, issuer: u8, member: u8) -> anyhow::Result<crate::enrollment::Proof> {
+    let mut proof = member_proof();
+    let issuer_key = f.identity(issuer)?.id().to_string();
+    let authority = proof
+        .grants
         .iter()
-        .find(|h| h.key == *f.identity(9).unwrap().id().as_bytes())
+        .find(|g| g.member == issuer_key)
+        .unwrap();
+    let mut grant = crate::enrollment::Grant {
+        version: 1,
+        id: String::new(),
+        cluster: authority.cluster.clone(),
+        issuer: issuer_key,
+        member: f.identity(member)?.id().to_string(),
+        host: true,
+        authority: Some(authority.id.clone()),
+        signature: String::new(),
+    };
+    grant.id = hex::encode(Sha256::digest(grant.signing_bytes()?));
+    grant.signature = hex::encode(f.identity(issuer)?.sign(&grant.signing_bytes()?));
+    proof.grants.push(grant);
+    Ok(proof)
+}
+
+/// A sibling of the fixture proposal coordinated by `seed` under `proof`.
+fn rival(f: &Fixture, proof: &crate::enrollment::Proof, seed: u8) -> anyhow::Result<Signed> {
+    let mut p = proposal(&vector("proposal"))?.clone();
+    let (membership, hosts) = membership_revision(p.cluster, proof)?;
+    p.membership = membership;
+    p.nonce = [0x99; 32];
+    p.coordinator = hosts
+        .iter()
+        .find(|h| h.key == *f.identity(seed).unwrap().id().as_bytes())
         .unwrap()
         .clone();
-    let rival = f.resign(Body::Proposal(Box::new(p)), 9)?;
-    assert!(f.record(&rival).is_err());
+    p.hosts = hosts;
+    f.resign(Body::Proposal(Box::new(p)), seed)
+}
+
+#[test]
+fn locally_revoked_signer_cannot_halt() -> anyhow::Result<()> {
+    // The supplied proof predates the revocation, so it still authorizes
+    // the signer and verifies on its own.
+    let f = Fixture::new()?;
+    f.record(&vector("proposal"))?;
+    revoke_locally(&f, 9)?;
+    let proof = member_proof();
+    let signed = rival(&f, &proof, 9)?;
+    assert!(
+        f.store()
+            .control_record(&signed, &proof, &session())
+            .is_err()
+    );
     assert!(!f.store().control_inspect()?.halted);
+    Ok(())
+}
+
+#[test]
+fn grant_from_locally_revoked_issuer_cannot_halt() -> anyhow::Result<()> {
+    // A revoked host delegates to a fresh key this host has never seen.
+    let f = Fixture::new()?;
+    f.record(&vector("proposal"))?;
+    revoke_locally(&f, 9)?;
+    let proof = delegated(&f, 9, 10)?;
+    let signed = rival(&f, &proof, 10)?;
+    assert!(
+        f.store()
+            .control_record(&signed, &proof, &session())
+            .is_err()
+    );
+    assert!(!f.store().control_inspect()?.halted);
+    Ok(())
+}
+
+#[test]
+fn locally_unknown_valid_grant_still_halts() -> anyhow::Result<()> {
+    let f = Fixture::new()?;
+    f.record(&vector("proposal"))?;
+    revoke_locally(&f, 9)?;
+    let proof = delegated(&f, 7, 10)?;
+    let signed = rival(&f, &proof, 10)?;
+    assert_eq!(
+        f.store().control_record(&signed, &proof, &session())?,
+        Outcome::ReviewRequired
+    );
+    assert!(f.store().control_inspect()?.halted);
     Ok(())
 }
 
