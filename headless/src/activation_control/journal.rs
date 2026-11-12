@@ -268,6 +268,24 @@ fn conflicts(db: &Connection, candidate: &Signed, proposed: &Signed) -> anyhow::
     Ok(false)
 }
 
+/// The supplied proof only shows the signer was authorized at some revision,
+/// so a revoked host could replay a stale proof to halt the journal. Refuse
+/// signers this host already knows to be revoked or disputed. A grant this
+/// host has not seen yet still halts, so a genuine rival is never missed.
+fn revoked_locally(db: &Connection, host: &Host) -> anyhow::Result<bool> {
+    let local = crate::enrollment::read_proof(db)?;
+    let grant = hex::encode(host.grant);
+    if local.grants.iter().any(|g| g.id == grant) && local.verify(&grant).is_err() {
+        return Ok(true);
+    }
+    let member = iroh::EndpointId::from_bytes(&host.key)?.to_string();
+    let (active, disputed) = local.revocation_state()?;
+    Ok(disputed.contains(&member)
+        || active
+            .iter()
+            .any(|&i| local.revocations[i].member == member))
+}
+
 /// Signing happens after the durable lock or install commits, so a signer
 /// that cannot sign for `host` must be refused before anything is written.
 fn signer_matches(identity: &crate::peer::Identity, host: &Host) -> anyhow::Result<()> {
@@ -367,6 +385,10 @@ impl crate::shared_audio::Store {
             if matches!(signed.body, Body::Proposal(_) | Body::Certificate(_))
                 && conflicts(&tx, signed, &proposed)?
             {
+                ensure!(
+                    !revoked_locally(&tx, signed.body.signer())?,
+                    "sibling signer is revoked or disputed locally"
+                );
                 save_proof(&tx, p, membership)?;
                 mark_conflict(&tx, signed)?;
                 tx.commit()?;

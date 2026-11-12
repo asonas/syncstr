@@ -649,6 +649,55 @@ fn unauthenticated_fork_does_not_halt() -> anyhow::Result<()> {
 }
 
 #[test]
+fn locally_revoked_signer_cannot_halt() -> anyhow::Result<()> {
+    let f = Fixture::new()?;
+    f.record(&vector("proposal"))?;
+    let proof = member_proof();
+    let root_grant = proof.grants.iter().find(|g| g.authority.is_none()).unwrap();
+    let revoked = f.identity(9)?.id().to_string();
+    let mut revocation = crate::enrollment::Revocation {
+        version: 1,
+        id: String::new(),
+        cluster: root_grant.cluster.clone(),
+        issuer: root_grant.member.clone(),
+        member: revoked.clone(),
+        authority: root_grant.id.clone(),
+        observed: proof.grants.iter().map(|g| g.id.clone()).collect(),
+        change_heads: vec![],
+        signature: String::new(),
+    };
+    revocation.id = hex::encode(Sha256::digest(revocation.signing_bytes()?));
+    revocation.signature = hex::encode(f.identity(7)?.sign(&revocation.signing_bytes()?));
+    f.store().run(|db, _| {
+        db.execute(
+            "INSERT INTO cluster_revocations VALUES (?, ?)",
+            params![revocation.id, serde_json::to_vec(&revocation)?],
+        )?;
+        Ok(())
+    })?;
+    let local = f.store().run(|db, _| crate::enrollment::read_proof(db))?;
+    assert_eq!(
+        local.revocation_state()?.0,
+        vec![0],
+        "revocation must be active"
+    );
+    // The revoked host signs a sibling under the stale proof that still
+    // authorizes it, which verifies on its own.
+    let mut p = proposal(&vector("proposal"))?.clone();
+    p.nonce = [0x99; 32];
+    p.coordinator = p
+        .hosts
+        .iter()
+        .find(|h| h.key == *f.identity(9).unwrap().id().as_bytes())
+        .unwrap()
+        .clone();
+    let rival = f.resign(Body::Proposal(Box::new(p)), 9)?;
+    assert!(f.record(&rival).is_err());
+    assert!(!f.store().control_inspect()?.halted);
+    Ok(())
+}
+
+#[test]
 fn prepare_crash_retains_lock() -> anyhow::Result<()> {
     let mut f = Fixture::new()?;
     f.record(&vector("proposal"))?;
