@@ -657,7 +657,8 @@ fn unauthenticated_fork_does_not_halt() -> anyhow::Result<()> {
 
 /// Revoke the host with `seed` in this host's trusted membership only.
 fn revoke_locally(f: &Fixture, seed: u8) -> anyhow::Result<()> {
-    let proof = member_proof();
+    // Observe every grant stored so far, as a real revocation would.
+    let proof = f.store().run(|db, _| crate::enrollment::read_proof(db))?;
     let root_grant = proof.grants.iter().find(|g| g.authority.is_none()).unwrap();
     let mut revocation = crate::enrollment::Revocation {
         version: 1,
@@ -688,41 +689,98 @@ fn revoke_locally(f: &Fixture, seed: u8) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// The fixture proof plus a host grant from `issuer` to `member` that this
-/// host has never stored.
-fn delegated(f: &Fixture, issuer: u8, member: u8) -> anyhow::Result<crate::enrollment::Proof> {
-    let mut proof = member_proof();
+/// A grant signed by the fixture host `issuer` under its fixture grant.
+fn issue(
+    f: &Fixture,
+    issuer: u8,
+    member: String,
+    host: bool,
+) -> anyhow::Result<crate::enrollment::Grant> {
     let issuer_key = f.identity(issuer)?.id().to_string();
-    let authority = proof
+    let authority = member_proof()
         .grants
-        .iter()
+        .into_iter()
         .find(|g| g.member == issuer_key)
         .unwrap();
     let mut grant = crate::enrollment::Grant {
         version: 1,
         id: String::new(),
-        cluster: authority.cluster.clone(),
+        cluster: authority.cluster,
         issuer: issuer_key,
-        member: f.identity(member)?.id().to_string(),
-        host: true,
-        authority: Some(authority.id.clone()),
+        member,
+        host,
+        authority: Some(authority.id),
         signature: String::new(),
     };
     grant.id = hex::encode(Sha256::digest(grant.signing_bytes()?));
     grant.signature = hex::encode(f.identity(issuer)?.sign(&grant.signing_bytes()?));
-    proof.grants.push(grant);
+    Ok(grant)
+}
+
+/// The fixture proof plus a host grant from `issuer` to `member` that this
+/// host has never stored.
+fn delegated(f: &Fixture, issuer: u8, member: u8) -> anyhow::Result<crate::enrollment::Proof> {
+    let mut proof = member_proof();
+    proof.grants.push(issue(
+        f,
+        issuer,
+        f.identity(member)?.id().to_string(),
+        true,
+    )?);
     Ok(proof)
+}
+
+fn store_grant(f: &Fixture, grant: &crate::enrollment::Grant) -> anyhow::Result<()> {
+    f.store().run(|db, _| {
+        db.execute(
+            "INSERT INTO cluster_enrollment_grants VALUES (?, ?)",
+            params![grant.id, serde_json::to_vec(grant)?],
+        )?;
+        Ok(())
+    })
+}
+
+/// RFC 4648 base32 without padding, an alternative text form of a key.
+fn base32(bytes: &[u8]) -> String {
+    const ALPHABET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
+    let (mut buffer, mut bits, mut out) = (0u32, 0, String::new());
+    for &byte in bytes {
+        buffer = (buffer << 8) | u32::from(byte);
+        bits += 8;
+        while bits >= 5 {
+            bits -= 5;
+            out.push(ALPHABET[((buffer >> bits) & 31) as usize] as char);
+        }
+        buffer &= (1 << bits) - 1;
+    }
+    if bits > 0 {
+        out.push(ALPHABET[((buffer << (5 - bits)) & 31) as usize] as char);
+    }
+    out
 }
 
 /// A sibling of the fixture proposal coordinated by `seed` under `proof`.
 fn rival(f: &Fixture, proof: &crate::enrollment::Proof, seed: u8) -> anyhow::Result<Signed> {
+    rival_as(f, proof, seed, None)
+}
+
+/// As `rival`, choosing the coordinator's grant when its key has several.
+fn rival_as(
+    f: &Fixture,
+    proof: &crate::enrollment::Proof,
+    seed: u8,
+    grant: Option<Digest>,
+) -> anyhow::Result<Signed> {
     let mut p = proposal(&vector("proposal"))?.clone();
     let (membership, hosts) = membership_revision(p.cluster, proof)?;
     p.membership = membership;
     p.nonce = [0x99; 32];
     p.coordinator = hosts
         .iter()
-        .find(|h| h.key == *f.identity(seed).unwrap().id().as_bytes())
+        .find(|h| {
+            h.key == *f.identity(seed).unwrap().id().as_bytes()
+                && grant.is_none_or(|g| g == h.grant)
+        })
         .unwrap()
         .clone();
     p.hosts = hosts;
@@ -761,6 +819,63 @@ fn grant_from_locally_revoked_issuer_cannot_halt() -> anyhow::Result<()> {
             .is_err()
     );
     assert!(!f.store().control_inspect()?.halted);
+    Ok(())
+}
+
+#[test]
+fn key_encoding_alias_cannot_evade_revocation() -> anyhow::Result<()> {
+    // Before its revocation, host 9 grants itself a second identity that
+    // names the same key in base32 instead of hex.
+    let f = Fixture::new()?;
+    f.record(&vector("proposal"))?;
+    let key9 = *f.identity(9)?.id().as_bytes();
+    let alias = base32(&key9);
+    assert_eq!(key(&alias)?, key9, "alias must decode to the same key");
+    assert_ne!(alias, f.identity(9)?.id().to_string());
+    let grant = issue(&f, 9, alias, true)?;
+    store_grant(&f, &grant)?;
+    revoke_locally(&f, 9)?;
+    let mut proof = member_proof();
+    proof.grants.push(grant.clone());
+    let signed = rival_as(&f, &proof, 9, Some(digest(&grant.id)?))?;
+    assert!(
+        f.store()
+            .control_record(&signed, &proof, &session())
+            .is_err()
+    );
+    assert!(!f.store().control_inspect()?.halted);
+    Ok(())
+}
+
+#[test]
+fn large_local_membership_does_not_veto_unknown_valid_grant() -> anyhow::Result<()> {
+    // Local and supplied proofs each hold the 4,096-grant maximum but differ
+    // in one grant, so their union would exceed it. Call the veto directly:
+    // recording a sibling recomputes membership over 4,096 grants, which is
+    // too slow for CI.
+    let f = Fixture::new()?;
+    let mut local = member_proof();
+    for i in 0..(4096 - local.grants.len()) as u32 {
+        let mut secret = [0u8; 32];
+        secret[..4].copy_from_slice(&i.to_le_bytes());
+        secret[31] = 0xa5;
+        let member = iroh::SecretKey::from_bytes(&secret).public().to_string();
+        let grant = issue(&f, 7, member, false)?;
+        store_grant(&f, &grant)?;
+        local.grants.push(grant);
+    }
+    let mut supplied = local.clone();
+    supplied.grants.pop();
+    let grant = issue(&f, 7, f.identity(10)?.id().to_string(), true)?;
+    supplied.grants.push(grant.clone());
+    let host = Host {
+        key: *f.identity(10)?.id().as_bytes(),
+        grant: digest(&grant.id)?,
+    };
+    assert!(
+        !f.store()
+            .run(|db, _| journal::revoked_locally(db, &host, &supplied))?
+    );
     Ok(())
 }
 

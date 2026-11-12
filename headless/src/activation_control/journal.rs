@@ -270,25 +270,48 @@ fn conflicts(db: &Connection, candidate: &Signed, proposed: &Signed) -> anyhow::
 
 /// The supplied proof only shows the signer was authorized at some revision,
 /// so a revoked host could replay a stale proof, or delegate to a fresh key,
-/// to halt the journal. Verify the signer's whole grant chain against this
-/// host's known revocations and disputes. A grant this host has not seen
-/// still halts when its chain is clean, so a genuine rival is never missed.
-fn revoked_locally(
+/// to halt the journal. Apply this host's known revocations and disputes to
+/// every grant in the signer's chain, the same rules as `Proof::verify`. A
+/// grant this host has not seen still halts when its chain is clean, so a
+/// genuine rival is never missed.
+///
+/// Keys are compared decoded because an endpoint key has more than one
+/// accepted text encoding, and the chain is taken from the supplied proof
+/// alone so that merging it with local grants cannot exceed proof limits.
+pub(super) fn revoked_locally(
     db: &Connection,
     host: &Host,
     supplied: &crate::enrollment::Proof,
 ) -> anyhow::Result<bool> {
-    let mut combined = crate::enrollment::read_proof(db)?;
-    // Grant IDs are content digests, so equal IDs are the same grant.
-    let known: BTreeSet<String> = combined.grants.iter().map(|g| g.id.clone()).collect();
-    combined.grants.extend(
-        supplied
-            .grants
+    let chain = supplied.chain(&hex::encode(host.grant))?;
+    let local = crate::enrollment::read_proof(db)?;
+    let (active, disputed) = local.revocation_state()?;
+    let disputed = disputed
+        .iter()
+        .map(|k| key(k))
+        .collect::<anyhow::Result<BTreeSet<_>>>()?;
+    if disputed.contains(&key(&chain[0].member)?)
+        || chain
             .iter()
-            .filter(|g| !known.contains(&g.id))
-            .cloned(),
-    );
-    Ok(combined.verify(&hex::encode(host.grant)).is_err())
+            .map(|g| key(&g.issuer))
+            .collect::<anyhow::Result<Vec<_>>>()?
+            .iter()
+            .any(|issuer| disputed.contains(issuer))
+    {
+        return Ok(true);
+    }
+    for revoked in active.iter().map(|&i| &local.revocations[i]) {
+        let revoked_key = key(&revoked.member)?;
+        if key(&chain[0].member)? == revoked_key {
+            return Ok(true);
+        }
+        for grant in &chain {
+            if key(&grant.issuer)? == revoked_key && !revoked.observed.contains(&grant.id) {
+                return Ok(true);
+            }
+        }
+    }
+    Ok(false)
 }
 
 /// Signing happens after the durable lock or install commits, so a signer
