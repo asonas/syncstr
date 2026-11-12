@@ -1,4 +1,6 @@
 #[cfg(feature = "p2p")]
+pub mod activation_control;
+#[cfg(feature = "p2p")]
 pub mod activation_inventory;
 pub mod api;
 pub mod artwork;
