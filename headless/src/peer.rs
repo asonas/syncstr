@@ -255,6 +255,7 @@ async fn serve_connection(
 ) -> anyhow::Result<()> {
     use base64::Engine as _;
     use sha2::Digest as _;
+    use std::io::Write as _;
     use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
     let (mut output, mut input) = connection.accept_bi().await?;
     let hello = crate::peer::receive(&mut input).await?;
@@ -270,10 +271,26 @@ async fn serve_connection(
         return Ok(());
     }
     anyhow::ensure!(hello.kind == "hello", "expected hello");
-    if let Some(organization) = crate::peer::receive_organization(&mut input, &hello).await? {
+    let mut stage = std::time::Instant::now();
+    let mut lap = || {
+        let elapsed = stage.elapsed().as_millis();
+        stage = std::time::Instant::now();
+        elapsed
+    };
+    let received = crate::peer::receive_organization(&mut input, &hello).await?;
+    let receive_organization_ms = lap();
+    if let Some(organization) = received {
         store.merge_organization(organization).await?;
     }
+    let merge_ms = lap();
     let catalog = store.catalog().await?;
+    let catalog_ms = lap();
+    let entries = catalog.entries.len();
+    let artwork = catalog
+        .organization
+        .artwork
+        .as_ref()
+        .map_or(0, |artwork| artwork.assets.len());
     let mut header = crate::peer::Message::new("catalog");
     header.library = Some(catalog.id);
     header.name = Some(catalog.name);
@@ -282,12 +299,19 @@ async fn serve_connection(
         ..Default::default()
     });
     crate::peer::send_organized(&mut output, header, catalog.organization).await?;
+    let send_organization_ms = lap();
     for entry in catalog.entries {
         let mut message = crate::peer::Message::new("entry");
         message.entry = Some(entry);
         crate::peer::send(&mut output, &message).await?;
     }
     crate::peer::send(&mut output, &crate::peer::Message::new("ready")).await?;
+    let send_entries_ms = lap();
+    // Diagnostics must not end the connection when stderr is closed
+    let _ = writeln!(
+        std::io::stderr(),
+        "P2P catalog exchange: receive_organization_ms={receive_organization_ms} merge_ms={merge_ms} catalog_ms={catalog_ms} send_organization_ms={send_organization_ms} send_entries_ms={send_entries_ms} entries={entries} artwork={artwork}"
+    );
     loop {
         let request = crate::peer::receive(&mut input).await?;
         anyhow::ensure!(identity.is_paired(connection.remote_id()), "peer revoked");

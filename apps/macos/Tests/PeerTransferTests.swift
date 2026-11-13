@@ -131,7 +131,9 @@ final class PeerTransferTests: XCTestCase {
         let pairing = CredentialStore(service: "syncstr-p2p-test-peer-" + UUID().uuidString)
         let localPairing = CredentialStore(service: "syncstr-p2p-test-lan-" + UUID().uuidString)
         let files = LocalMusicStore(root: root.appendingPathComponent("received"))
-        let transfer = LocalTransfer(store: files, secrets: localPairing, peerSecrets: secrets, peerPairing: pairing)
+        let diagnostics = PlaybackDiagnostics(root: root.appendingPathComponent("diagnostics"))
+        let transfer = LocalTransfer(store: files, secrets: localPairing, peerSecrets: secrets, peerPairing: pairing,
+            diagnostics: diagnostics)
         var displayedCatalog: LocalCatalog?
         transfer.onCatalog = { prepared in
             displayedCatalog = prepared.catalog
@@ -259,6 +261,13 @@ final class PeerTransferTests: XCTestCase {
         XCTAssertEqual(try files.load()?.entries.first?.track.title, "Tagged title")
         XCTAssertEqual(try files.load()?.entries.first?.track.artist, "Tagged artist")
         XCTAssertTrue(files.hasFile(entry))
+        let trace = diagnostics.begin(title: "Fixture", track: entry.track.id, sha256: nil, library: catalog.id)
+        diagnostics.captureConnections(in: trace)
+        let recorded = await diagnostics.recent().first { $0.id == trace.id }?.events ?? []
+        let stages = recorded.filter { $0.event == "catalog_exchange_stage" }.suffix(6)
+        XCTAssertEqual(stages.map { $0.fields["stage"] }, ["hello_sent", "catalog_header_received", "organization_received",
+            "entries_received", "catalog_merged", "catalog_published"])
+        XCTAssertEqual(stages.first { $0.fields["stage"] == "entries_received" }?.fields["entry_count"], "1")
         let reopened = LocalMusicStore(root: files.root)
         XCTAssertTrue(reopened.hasFile(entry))
         XCTAssertEqual(try reopened.load()?.entries.count, 1)

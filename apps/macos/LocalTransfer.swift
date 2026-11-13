@@ -1090,6 +1090,29 @@ final class LocalTransfer: ObservableObject {
         operation = Task {
             defer { if generation == attempt { busy = false; receivingCatalog = false } }
             var stage = "address_decode"
+            let started = ContinuousClock.now
+            var channelOpened: PeerMusicConnection?
+            var stageStarted = started
+            func milliseconds(_ duration: Duration) -> String {
+                String(duration.components.seconds * 1000 + duration.components.attoseconds / 1_000_000_000_000_000)
+            }
+            @MainActor func measurements(_ extra: [String: String] = [:]) -> [String: String] {
+                var fields = extra
+                fields["elapsed_ms"] = milliseconds(ContinuousClock.now - started)
+                if let channelOpened {
+                    fields["sent_bytes"] = String(channelOpened.sentBytes)
+                    fields["received_bytes"] = String(channelOpened.receivedBytes)
+                }
+                return fields
+            }
+            @MainActor func exchangeStage(_ name: String, _ counts: [String: String] = [:]) {
+                let now = ContinuousClock.now
+                var fields = measurements(counts)
+                fields["stage"] = name
+                fields["stage_ms"] = milliseconds(now - stageStarted)
+                stageStarted = now
+                connectionEvent("catalog_exchange_stage", fields: fields, operationID: attempt)
+            }
             do {
                 guard addressText.utf8.count <= 16384 else { throw LocalMusicError.invalidData }
                 let bytes = Data(addressText.utf8)
@@ -1097,16 +1120,22 @@ final class LocalTransfer: ObservableObject {
                 stage = "peer_transport_connect"
                 let channel = try await PeerMusicConnection.connect(address: address, expected: expected, secrets: peerSecrets)
                 guard generation == attempt, !Task.isCancelled else { channel.close(); return }
-                connectionEvent("peer_transport_established", fields: ["reason": "authenticated_peer_transport"], operationID: attempt)
+                channelOpened = channel
+                stageStarted = ContinuousClock.now
+                connectionEvent("peer_transport_established", fields: measurements(["reason": "authenticated_peer_transport"]), operationID: attempt)
                 receivingCatalog = true
                 stage = "catalog_exchange"
                 client = channel
-                try await channel.sendOrganized(MusicMessage(kind: "hello", name: name, clusterCapabilities: ClusterCapabilities(version: 1)), organization: try await store.snapshotInBackground()?.catalog.organization)
+                let localOrganization = try await store.snapshotInBackground()?.catalog.organization
+                try await channel.sendOrganized(MusicMessage(kind: "hello", name: name, clusterCapabilities: ClusterCapabilities(version: 1)), organization: localOrganization)
+                exchangeStage("hello_sent", ["artwork_count": String(localOrganization?.artwork?.assets.count ?? 0)])
                 let header = try await channel.receive()
+                exchangeStage("catalog_header_received")
                 guard header.kind == "catalog", let id = header.library, UUID(uuidString: id) != nil else { throw LocalMusicError.invalidData }
                 if let playbackLibrary, id != playbackLibrary { throw LocalMusicError.unauthorized }
                 receivingCatalog = true
                 let incomingOrganization = try await channel.receiveOrganization(header)
+                exchangeStage("organization_received", ["artwork_count": String(incomingOrganization?.artwork?.assets.count ?? 0)])
                 var entries: [LocalEntry] = []
                 var metadataBytes = 0
                 var ids = Set<String>()
@@ -1119,10 +1148,13 @@ final class LocalTransfer: ObservableObject {
                     guard entries.count < 100000, metadataBytes <= 1024 * 1024 * 1024 else { throw LocalMusicError.invalidData }
                     entries.append(entry)
                 }
+                exchangeStage("entries_received", ["entry_count": String(entries.count)])
                 guard generation == attempt, !Task.isCancelled else { channel.close(); return }
                 let catalog = try await mergedCatalog(id: id, name: header.name ?? name, entries: entries, incoming: incomingOrganization)
+                exchangeStage("catalog_merged")
                 stage = "catalog_save"
                 try await publishCatalog(catalog, attempt: attempt)
+                exchangeStage("catalog_published")
                 stage = "saved_peer_keychain_write"
                 try await peerPairing.save(PairingCredentials(libraryID: expected, name: name, key: bytes.base64EncodedString()))
                 let files = store
@@ -1135,11 +1167,11 @@ final class LocalTransfer: ObservableObject {
                 peerName = name
                 peerAddressText = addressText
                 connected = true
-                connectionEvent("connect_peer", outcome: "succeeded", fields: ["reason": "catalog_received", "remote_catalog_id": id, "matches_previous_library": previousLibrary.map { String($0 == id) } ?? "unknown"], operationID: attempt)
+                connectionEvent("connect_peer", outcome: "succeeded", fields: measurements(["reason": "catalog_received", "remote_catalog_id": id, "matches_previous_library": previousLibrary.map { String($0 == id) } ?? "unknown"]), operationID: attempt)
                 status = "P2Pで接続しました。アルバムを選んで保存できます。"
                 resumeSaves()
             } catch {
-                connectionEvent("connect_peer", outcome: "failed", fields: ["reason": stage, "stale": String(generation != attempt)], error: error, operationID: attempt)
+                connectionEvent("connect_peer", outcome: "failed", fields: measurements(["reason": stage, "stale": String(generation != attempt)]), error: error, operationID: attempt)
                 if generation == attempt, client != nil || connected {
                     connectionEvent("peer_channel_closed", outcome: "disconnected", fields: ["reason": stage], operationID: attempt)
                 }
