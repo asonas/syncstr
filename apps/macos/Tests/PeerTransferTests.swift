@@ -264,10 +264,17 @@ final class PeerTransferTests: XCTestCase {
         let trace = diagnostics.begin(title: "Fixture", track: entry.track.id, sha256: nil, library: catalog.id)
         diagnostics.captureConnections(in: trace)
         let recorded = await diagnostics.recent().first { $0.id == trace.id }?.events ?? []
-        let stages = recorded.filter { $0.event == "catalog_exchange_stage" }.suffix(6)
+        let lastConnect = try XCTUnwrap(recorded.last { $0.event == "connect_peer" && $0.outcome == "succeeded" })
+        let operation = try XCTUnwrap(lastConnect.fields["operation_id"])
+        let stages = recorded.filter { $0.event == "catalog_exchange_stage" && $0.fields["operation_id"] == operation }
         XCTAssertEqual(stages.map { $0.fields["stage"] }, ["hello_sent", "catalog_header_received", "organization_received",
             "entries_received", "catalog_merged", "catalog_published"])
         XCTAssertEqual(stages.first { $0.fields["stage"] == "entries_received" }?.fields["entry_count"], "1")
+        for key in ["elapsed_ms", "sent_bytes", "received_bytes"] {
+            let values = try (stages + [lastConnect]).map { try XCTUnwrap($0.fields[key].flatMap(Int.init), key) }
+            XCTAssertEqual(values, values.sorted(), key)
+        }
+        XCTAssertGreaterThan(Int(lastConnect.fields["received_bytes"] ?? "") ?? 0, 0)
         let reopened = LocalMusicStore(root: files.root)
         XCTAssertTrue(reopened.hasFile(entry))
         XCTAssertEqual(try reopened.load()?.entries.count, 1)
