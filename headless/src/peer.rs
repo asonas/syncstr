@@ -584,6 +584,7 @@ impl crate::peer::Identity {
                 crate::cluster_net::ENROLLMENT_ALPN.to_vec(),
                 crate::cluster_sync::ALPN.to_vec(),
                 crate::shared_audio_net::ALPN.to_vec(),
+                crate::activation_control_net::ALPN.to_vec(),
                 crate::playlist_sync::ALPN.to_vec(),
             ])
             .relay_mode(match relay {

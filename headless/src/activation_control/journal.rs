@@ -3,7 +3,8 @@ use anyhow::Context as _;
 use rusqlite::{Connection, OptionalExtension as _, params};
 use std::collections::BTreeMap;
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Session {
     pub coordinator: Host,
     pub nonce: Digest,
@@ -143,7 +144,7 @@ pub(super) fn all(db: &Connection) -> anyhow::Result<BTreeMap<Digest, Signed>> {
     .collect()
 }
 
-fn proof(
+pub(super) fn proof(
     db: &Connection,
     revision: &Digest,
     cluster: [u8; 16],

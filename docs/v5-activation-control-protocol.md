@@ -1,6 +1,6 @@
 # v5 activation control protocol
 
-Status: Proposed 2026-11-15 for ASO-145. The owner chose the options marked "Chosen" in C1 to C3. Part 1 is implemented; parts 2 and 3 are design only and each needs its own review. This document authorizes no production operation.
+Status: Proposed 2026-11-15 for ASO-145. The owner chose the options marked "Chosen" in C1 to C3. Part 1 and the exchange in part 2 are implemented; the host reactions in part 2 and part 3 are design only and each needs its own review. This document authorizes no production operation.
 
 This document refines slice S3 of the [activation and recovery design](v5-activation-and-recovery.md), decisions D1 to D3 and the failure table in D6. It covers how hosts exchange the control journal, how a coordinator collects readiness from every authorized host, and how an activation that cannot finish is resolved. The local journal and the maintenance freeze are described in the [headless guide](../headless/README.md#maintenance-freeze-on-a-v5-host).
 
@@ -80,15 +80,57 @@ Rules:
 
 The coordinator's order matters. It first synchronizes control records with every host. If any host holds a certificate, the session goes forward: the certificate is installed everywhere. Only when no host holds one does the coordinator withdraw itself, and after that it must not sign a certificate for the proposal.
 
-## Part 2: control protocol (design)
+## Part 2: control protocol
 
-- Hosts speak a separate protocol, negotiated as its own ALPN (`syncstr/control/1`), on the existing cluster endpoint. The data protocol and its strict request decoding do not change. A host that does not offer the protocol has unknown readiness.
-- Both sides present their membership proof as in the data protocol and must authorize each other as hosts.
-- The opening message carries a journal summary: epoch, head, freeze and release state, halt state, session nonce, membership revision, input history, and the identifiers of stored envelopes.
-- Requests: fetch envelopes by identifier together with the membership snapshot of their proposal; offer envelopes; ask for a prepared acknowledgment, an installation acknowledgment, or a withdrawal. The three signing requests are answered only for the designated session.
-- Control first: a host with a control journal exchanges control records with a host peer before it reconciles data with that peer. It reconciles data only when both have the same installed head. A peer without the control protocol is reconciled only while the local journal has no head and nothing pending.
+Implemented, except the host reactions at the end of this section.
 
-Message shapes are fixed with byte or JSON vectors when this part is implemented.
+### C4. A peer without the control protocol
+
+- **A (chosen 2026-11-15):** such a peer reconciles data only while this host has no installed head and nothing pending. Once an activation started or finished here, data with that peer stops.
+- **B:** refuse it as soon as this host has a control journal. Stricter, but `init` could not run until every host was upgraded.
+
+### Transport
+
+- Hosts speak a separate protocol, negotiated as its own ALPN (`syncstr/control/1`), on the existing cluster endpoint. The data protocol and its strict request decoding do not change.
+- Messages are length-prefixed JSON frames, as in the data protocol. Unknown fields are refused. Digests and keys are arrays of byte values; canonical envelope bytes are hexadecimal text.
+- The client opens with `{"version": 1, "proof": <membership proof>}`. The server merges the proof as the data protocol does, requires the client to be an authorized host, and answers `{"version": 1, "proof": ..., "journal": ...}`. The client merges the server's proof and requires both sides to be authorized hosts.
+- `journal` is `{"state": "absent"}` for a host that never initialized control storage, `{"state": "unreadable"}` for a journal that needs review, or `{"state": "readable", "summary": {...}}`.
+- The summary carries `epoch`, `head`, `frozen`, `released`, `halted`, `pending`, the designated `session`, the `membership` revision (null while it cannot be verified), `input_history`, and the identifiers of the stored `envelopes`.
+- One request exists: `{"operation": "fetch", "envelopes": [<identifier>, ...]}` with at most 32 identifiers. The answer lists each envelope the server holds as `{"canonical": <hex>, "membership": <index>}` and the membership snapshots the indexes refer to. The server authorizes both hosts again for every request.
+
+Nothing is signed in answer to a request. Envelopes move by fetching, so every step can be repeated after a crash.
+
+### Taking in envelopes
+
+- A host fetches the envelopes a peer lists and it does not hold, and records them with the journal operations under the session the owner designated on it. Without a designation, or with a halted, unreadable or absent journal, it records nothing. An envelope for another session is refused.
+- Envelopes are recorded in dependency order: proposals, prepared acknowledgments, withdrawals, aborts, certificates, installation acknowledgments.
+- A refused envelope is fetched again only after this host's journal changed.
+
+### Control first
+
+Before a host reconciles data with a peer it exchanges control records with that peer. Data follows only when the journals agree:
+
+| This host | Peer | Data |
+| --- | --- | --- |
+| No control journal | Any | Reconciles as before |
+| Readable | Readable, same installed head | Reconciles |
+| Readable | Readable, another head | Deferred |
+| Readable, no head, nothing pending | No journal, or no control protocol | Reconciles (C4) |
+| Readable, with a head or anything pending | No journal, or no control protocol | Deferred (C4) |
+| Readable | Unreadable | Deferred |
+| Unreadable | Any | Deferred |
+
+Replication is pulled by the receiving host, so each host applies this before it reads from a peer.
+
+### Host reactions (design, not implemented)
+
+The earlier draft had the coordinator ask each host for its signatures. Instead each host reacts to what it fetched, for its designated session only and while frozen:
+
+- It holds a proposal and no lock: it takes the prepare lock and signs its prepared acknowledgment.
+- It holds a certificate that is not installed: it installs it and signs its installation acknowledgment.
+- It holds the coordinator's withdrawal and no certificate: it withdraws.
+
+The coordinator and the other hosts then fetch those envelopes like any other.
 
 ## Part 3: coordinator (design)
 

@@ -386,7 +386,7 @@ impl crate::shared_audio::Store {
         self.merge_membership_from(incoming, None, true).map(|_| ())
     }
 
-    fn merge_membership_from(
+    pub(crate) fn merge_membership_from(
         &self,
         incoming: crate::enrollment::Proof,
         presenter: Option<(&str, &str)>,
@@ -494,6 +494,9 @@ pub async fn serve(
                 let store = store.clone(); let signer = signer.clone();
                 connections.spawn(async move {
                     let connection = incoming.await?;
+                    if connection.alpn() == crate::activation_control_net::ALPN {
+                        return tokio::time::timeout(std::time::Duration::from_secs(7200), crate::activation_control_net::serve_connection(connection, store, signer)).await?;
+                    }
                     anyhow::ensure!(connection.alpn() == crate::shared_audio_net::ALPN, "v5 upgrade required");
                     tokio::time::timeout(std::time::Duration::from_secs(7200), crate::shared_audio_net::serve_connection(connection, store, signer)).await?
                 });
@@ -1053,6 +1056,7 @@ pub async fn synchronize(
     mut discovered: tokio::sync::mpsc::Receiver<iroh::EndpointAddr>,
 ) -> anyhow::Result<()> {
     let mut peers = std::collections::BTreeMap::new();
+    let mut refused = crate::activation_control_net::Refused::default();
     let mut interval = tokio::time::interval(std::time::Duration::from_secs(3));
     interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     loop {
@@ -1065,10 +1069,11 @@ pub async fn synchronize(
                 let proof = store.membership()?;
                 for (peer, address) in &peers {
                     if crate::shared_audio_net::authorize(&proof, &peer.to_string(), true).is_err() { continue; }
-                    let result = tokio::time::timeout(std::time::Duration::from_secs(120), async {
-                        let session = crate::shared_audio_net::Session::connect(&endpoint, address.clone(), proof.clone()).await?;
-                        session.reconcile(&store, &peer.to_string()).await
-                    }).await;
+                    // Control records come first; data follows only between hosts whose journals agree.
+                    let result = tokio::time::timeout(
+                        std::time::Duration::from_secs(120),
+                        crate::activation_control_net::reconcile(&endpoint, &store, address.clone(), &mut refused),
+                    ).await;
                     match result {
                         Ok(Ok(())) => {},
                         Ok(Err(error)) => eprintln!("Shared synchronization deferred: {error}"),

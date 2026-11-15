@@ -103,9 +103,15 @@ target/debug/syncstr-headless shared-audio-control --data data designate \
 - A certificate for a proposal the host prepared installs even if membership changed afterwards to another revision that verifies. A membership that cannot be read or is disputed refuses both storing and installing it. `release` still refuses until a later epoch certifies the new membership. The next epoch excuses a missing installation acknowledgment only from a host its membership revokes.
 - A signed abort, built from a withdrawal by every host of the proposal, resolves a proposal that has no certificate. `status` lists `aborted` and `withdrawn` proposals, `unacknowledged_hosts` and the `session`.
 
-These commands change one host. Sending control records between hosts, collecting
-withdrawals for an abort, and the startup guard are not implemented, so a host
-that prepared a proposal without a certificate still stays frozen in practice.
+`shared-audio-serve` exchanges control records with other hosts before data:
+
+- A host with a designated session fetches the control envelopes a peer holds and records those of that session. Without a designation it records none.
+- Data then reconciles only with a peer at the same installed head. A peer that has no control journal, or does not speak the control protocol, reconciles only while this host has no installed head and nothing pending.
+- A host that never ran `init` reconciles as before.
+
+Hosts do not yet prepare, install or withdraw on their own, and nothing drives a
+session, so a host that prepared a proposal without a certificate still stays
+frozen in practice. The startup guard is not implemented.
 The [control protocol design](../docs/v5-activation-control-protocol.md) describes
 the rules above and the parts that follow.
 
