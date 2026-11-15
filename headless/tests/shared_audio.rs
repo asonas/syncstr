@@ -6015,26 +6015,31 @@ async fn control_protocol_pulls_envelopes_only_for_the_designated_session() -> a
 
     // Without the owner's designation this host records nothing.
     let mut refused = Refused::default();
-    assert_eq!(session.pull(&b, &mut refused).await?, 0);
+    let pulled = session.pull(&b, &mut refused).await?;
+    // What it did not look at may be a certificate.
+    assert_eq!((pulled.stored, pulled.withheld), (0, true));
     // Nor under a designation for another session.
     b.control_designate(&Designation {
         coordinator: m.session.coordinator.clone(),
         nonce: [9; 32],
     })?;
-    assert_eq!(session.pull(&b, &mut refused).await?, 0);
-    assert_eq!(session.pull(&b, &mut refused).await?, 0);
+    // It saw a proposal and an acknowledgment, and remembers that.
+    for _ in 0..2 {
+        let pulled = session.pull(&b, &mut refused).await?;
+        assert_eq!((pulled.stored, pulled.withheld), (0, false));
+    }
     let Journal::Readable { summary } = b.control_journal()? else {
         panic!("this host's journal is readable");
     };
     assert!(summary.envelopes.is_empty() && !summary.pending);
 
     b.control_designate(&m.session)?;
-    assert_eq!(session.pull(&b, &mut refused).await?, 2);
+    assert_eq!(session.pull(&b, &mut refused).await?.stored, 2);
     assert_eq!(
         b.control_inspect()?.pending_preparations,
         [m.proposed.id()?]
     );
-    assert_eq!(session.pull(&b, &mut refused).await?, 0);
+    assert_eq!(session.pull(&b, &mut refused).await?.stored, 0);
 
     // The control protocol is for hosts; a playback member is refused.
     assert!(
@@ -6261,7 +6266,52 @@ struct Hosts {
 }
 
 impl crate::Hosts {
+    /// Two hosts whose coordinator already recorded a proposal.
     async fn new(fixture: &crate::Fixture, profiles: Vec<String>) -> anyhow::Result<Self> {
+        let hosts = crate::Hosts::designated(fixture, profiles).await?;
+        hosts
+            .a
+            .control_record(&hosts.m.proposed, &hosts.m.proof, &hosts.m.session)?;
+        Ok(hosts)
+    }
+
+    /// One pass of both hosts: b exchanges with a and reacts, then a
+    /// exchanges with b, reacts and drives its request.
+    async fn pass(
+        &self,
+        fixture: &crate::Fixture,
+    ) -> anyhow::Result<syncstr_headless::activation_control::Progress> {
+        use syncstr_headless::activation_control_net::{Refused, observe, reconcile};
+        // Data is deferred while the heads differ; the control exchange still ran.
+        let _ = reconcile(
+            &self.b_endpoint,
+            &self.b,
+            self.a_endpoint.addr(),
+            &mut Refused::default(),
+        )
+        .await;
+        self.react(&self.b, &fixture.other)?;
+        let mut shown = None;
+        let _ = observe(
+            &self.a_endpoint,
+            &self.a,
+            self.b_endpoint.addr(),
+            &mut Refused::default(),
+            &mut shown,
+        )
+        .await;
+        self.react(&self.a, &fixture.host)?;
+        let peers = shown
+            .into_iter()
+            .map(|peer| (*fixture.other.id().as_bytes(), peer))
+            .collect();
+        let progress = self.a.control_drive(&fixture.host, &peers)?;
+        self.react(&self.a, &fixture.host)?;
+        Ok(progress)
+    }
+
+    /// Two frozen hosts designated for the fixture session.
+    async fn designated(fixture: &crate::Fixture, profiles: Vec<String>) -> anyhow::Result<Self> {
         let a = fixture.activate()?;
         let b = crate::control_other(fixture)?;
         let (a_endpoint, a_lock) = fixture
@@ -6291,7 +6341,6 @@ impl crate::Hosts {
         for store in [&a, &b] {
             store.control_designate(&m.session)?;
         }
-        a.control_record(&m.proposed, &m.proof, &m.session)?;
         Ok(Self {
             a,
             b,
@@ -6499,5 +6548,174 @@ async fn hosts_follow_only_the_coordinators_withdrawal() -> anyhow::Result<()> {
         [Step::Prepare]
     );
     assert!(a.control_inspect()?.withdrawn.is_empty());
+    Ok(())
+}
+
+#[tokio::test]
+async fn coordinator_drives_a_session_to_completion() -> anyhow::Result<()> {
+    use syncstr_headless::activation_control::Progress;
+    let fixture = crate::Fixture::new().await?;
+    let hosts =
+        crate::Hosts::designated(&fixture, vec!["registration-equivalence-v1".to_owned()]).await?;
+    let (a, b) = (&hosts.a, &hosts.b);
+    assert_eq!(hosts.pass(&fixture).await?, Progress::Idle);
+    a.control_start(&hosts.m.supported(), [1; 32], [2; 32])?;
+    // The owner's request is the only step taken by hand.
+    let Progress::Proposed(id) = hosts.pass(&fixture).await? else {
+        panic!("both hosts are ready");
+    };
+    assert_eq!(id, hosts.m.proposed.id()?);
+    assert_eq!(hosts.pass(&fixture).await?, Progress::Certified(id));
+    assert_eq!(hosts.pass(&fixture).await?, Progress::Complete(id));
+    // b still lacks the coordinator's acknowledgment.
+    assert!(b.control_release().is_err());
+    assert_eq!(hosts.pass(&fixture).await?, Progress::Complete(id));
+    for store in [a, b] {
+        assert_eq!(store.control_inspect()?.epoch, 1);
+        store.control_release()?;
+    }
+    a.commit(
+        &fixture.host,
+        crate::register(&a.catalog()?, "after", &fixture.entry.sha256),
+    )?;
+    let before = b.control_input_history()?;
+    hosts.exchange().await?;
+    assert_ne!(b.control_input_history()?, before);
+    Ok(())
+}
+
+#[tokio::test]
+async fn coordinator_waits_for_a_host_that_differs() -> anyhow::Result<()> {
+    use syncstr_headless::activation_control::Progress;
+    let fixture = crate::Fixture::new().await?;
+    let hosts =
+        crate::Hosts::designated(&fixture, vec!["registration-equivalence-v1".to_owned()]).await?;
+    let (a, b, m) = (&hosts.a, &hosts.b, &hosts.m);
+    a.control_start(&m.supported(), [1; 32], [2; 32])?;
+    // b was released: it is neither frozen nor designated.
+    b.control_release()?;
+    let Progress::Waiting(reason) = hosts.pass(&fixture).await? else {
+        panic!("b is not frozen");
+    };
+    assert!(reason.contains("is not frozen"), "{reason}");
+    b.control_freeze()?;
+    let Progress::Waiting(reason) = hosts.pass(&fixture).await? else {
+        panic!("b is not designated");
+    };
+    assert!(reason.contains("is not designated for this session"), "{reason}");
+    assert!(a.control_inspect()?.pending_preparations.is_empty());
+    b.control_designate(&m.session)?;
+    assert!(matches!(hosts.pass(&fixture).await?, Progress::Proposed(_)));
+    Ok(())
+}
+
+#[tokio::test]
+async fn coordinator_aborts_on_request() -> anyhow::Result<()> {
+    use syncstr_headless::activation_control::Progress;
+    let fixture = crate::Fixture::new().await?;
+    let hosts =
+        crate::Hosts::designated(&fixture, vec!["registration-equivalence-v1".to_owned()]).await?;
+    let (a, b) = (&hosts.a, &hosts.b);
+    a.control_start(&hosts.m.supported(), [1; 32], [2; 32])?;
+    let Progress::Proposed(id) = hosts.pass(&fixture).await? else {
+        panic!("both hosts are ready");
+    };
+    a.control_request_abort()?;
+    // b prepares in this pass; the request still decides.
+    assert_eq!(hosts.pass(&fixture).await?, Progress::Withdrew(id));
+    assert_eq!(b.control_inspect()?.prepare_locks, [id]);
+    assert_eq!(hosts.pass(&fixture).await?, Progress::Aborted(id));
+    assert_eq!(hosts.pass(&fixture).await?, Progress::Aborted(id));
+    for store in [a, b] {
+        assert_eq!(store.control_inspect()?.aborted, [id]);
+        store.control_release()?;
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn synchronize_drives_the_coordinators_request() -> anyhow::Result<()> {
+    let fixture = crate::Fixture::new().await?;
+    // The serving build implements no profile yet, so the request requires none.
+    let hosts = crate::Hosts::designated(&fixture, vec![]).await?;
+    hosts
+        .a
+        .control_start(&Default::default(), [1; 32], [2; 32])?;
+    let mut loops = tokio::task::JoinSet::new();
+    // A loop stops when its discovery channel closes.
+    let mut discoveries = Vec::new();
+    for (endpoint, store, signer, peer) in [
+        (&hosts.a_endpoint, &hosts.a, &fixture.host, &hosts.b_endpoint),
+        (&hosts.b_endpoint, &hosts.b, &fixture.other, &hosts.a_endpoint),
+    ] {
+        let (discovered, receiver) = tokio::sync::mpsc::channel(4);
+        discovered.send(peer.addr()).await?;
+        loops.spawn(syncstr_headless::shared_audio_net::synchronize(
+            endpoint.clone(),
+            store.clone(),
+            signer.clone(),
+            receiver,
+        ));
+        discoveries.push(discovered);
+    }
+    tokio::time::timeout(std::time::Duration::from_secs(60), async {
+        loop {
+            let (a, b) = (hosts.a.control_inspect()?, hosts.b.control_inspect()?);
+            if a.epoch == 1 && a.all_installations_recorded && b.all_installations_recorded {
+                break anyhow::Ok(());
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+    })
+    .await??;
+    loops.abort_all();
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_refused_certificate_is_reported_as_withheld() -> anyhow::Result<()> {
+    use syncstr_headless::activation_control::{Body, Prepared, Session as Designation, Signed};
+    use syncstr_headless::activation_control_net::{Refused, Session};
+    let fixture = crate::Fixture::new().await?;
+    let hosts =
+        crate::Hosts::new(&fixture, vec!["registration-equivalence-v1".to_owned()]).await?;
+    let (a, m) = (&hosts.a, &hosts.m);
+    let id = m.proposed.id()?;
+    m.prepare(a, &fixture.host)?;
+    // The other host's acknowledgment, signed without its journal.
+    let prepared = Signed::sign(
+        Body::Prepared(Prepared {
+            proposal: id,
+            host: m.host(&fixture.other),
+            implementations: vec!["fixture-build".into()],
+            implemented_profiles: m.profiles.clone(),
+            input_history: a.control_input_history()?,
+            baseline: crate::Maintenance::digest(&a.catalog()?.baseline)?,
+            write_frozen: true,
+            admission_frozen: true,
+            minimum_profiles: m.profiles.clone(),
+        }),
+        &fixture.other,
+    )?;
+    a.control_record(&prepared, &m.proof, &m.session)?;
+
+    // A host designated for another session takes in none of it.
+    let b = &hosts.b;
+    b.control_designate(&Designation {
+        coordinator: m.session.coordinator.clone(),
+        nonce: [9; 32],
+    })?;
+    let mut refused = Refused::default();
+    let session = Session::connect(&hosts.b_endpoint, hosts.a_endpoint.addr(), b).await?;
+    let pulled = session.pull(b, &mut refused).await?;
+    assert_eq!((pulled.stored, pulled.withheld), (0, false));
+
+    a.control_certify(id, &fixture.host, &m.session)?;
+    let session = Session::connect(&hosts.b_endpoint, hosts.a_endpoint.addr(), b).await?;
+    // Seen and refused, then remembered without fetching it again.
+    for _ in 0..2 {
+        let pulled = session.pull(b, &mut refused).await?;
+        assert_eq!((pulled.stored, pulled.withheld), (0, true));
+    }
     Ok(())
 }

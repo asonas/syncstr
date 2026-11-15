@@ -6,6 +6,7 @@ use sha2::{Digest as _, Sha256};
 use std::collections::BTreeSet;
 
 mod abort;
+mod coordinate;
 mod encoding;
 mod exchange;
 mod freeze;
@@ -15,6 +16,7 @@ mod react;
 #[cfg(test)]
 mod tests;
 
+pub use coordinate::{Peer, Progress, Request};
 pub use exchange::{Journal, Summary};
 pub use freeze::Refusal;
 pub(crate) use freeze::ensure_writable;

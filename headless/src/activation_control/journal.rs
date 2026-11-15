@@ -44,9 +44,9 @@ pub struct Inspection {
 #[derive(Debug)]
 pub(super) struct State {
     pub(super) cluster: [u8; 16],
-    root: Key,
-    baseline: Digest,
-    epoch: u64,
+    pub(super) root: Key,
+    pub(super) baseline: Digest,
+    pub(super) epoch: u64,
     pub(super) head: Option<Digest>,
     floor: BTreeSet<String>,
     halted: bool,

@@ -43,7 +43,8 @@ pub(super) fn tables(db: &Connection) -> anyhow::Result<()> {
     db.execute_batch("CREATE TABLE IF NOT EXISTS activation_control_freeze (singleton INTEGER PRIMARY KEY CHECK(singleton=1));
         CREATE TABLE IF NOT EXISTS activation_control_releases (certificate BLOB PRIMARY KEY);
         CREATE TABLE IF NOT EXISTS activation_control_withdrawals (proposal BLOB PRIMARY KEY, statement BLOB NOT NULL);
-        CREATE TABLE IF NOT EXISTS activation_control_session (singleton INTEGER PRIMARY KEY CHECK(singleton=1), coordinator BLOB NOT NULL, grant_id BLOB NOT NULL, nonce BLOB NOT NULL);")?;
+        CREATE TABLE IF NOT EXISTS activation_control_session (singleton INTEGER PRIMARY KEY CHECK(singleton=1), coordinator BLOB NOT NULL, grant_id BLOB NOT NULL, nonce BLOB NOT NULL);
+        CREATE TABLE IF NOT EXISTS activation_control_request (singleton INTEGER PRIMARY KEY CHECK(singleton=1), profiles BLOB NOT NULL, inventory BLOB NOT NULL, backup BLOB NOT NULL, proposal BLOB, abort INTEGER NOT NULL);")?;
     Ok(())
 }
 
@@ -154,6 +155,10 @@ impl crate::shared_audio::Store {
                 authorized_hosts(&tx)?.contains(&session.coordinator),
                 "coordinator is not an authorized host"
             );
+            if !unchanged {
+                // A request belongs to the session it was recorded under.
+                tx.execute("DELETE FROM activation_control_request", [])?;
+            }
             tx.execute(
                 "INSERT OR REPLACE INTO activation_control_session VALUES (1, ?, ?, ?)",
                 params![
@@ -212,6 +217,7 @@ impl crate::shared_audio::Store {
             // The next maintenance session needs its own designation.
             tables(&tx)?;
             tx.execute("DELETE FROM activation_control_session", [])?;
+            tx.execute("DELETE FROM activation_control_request", [])?;
             tx.execute("DELETE FROM activation_control_freeze", [])?;
             tx.commit()?;
             Ok(())

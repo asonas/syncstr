@@ -1961,3 +1961,333 @@ fn host_finishes_a_step_interrupted_before_its_signature() -> anyhow::Result<()>
     assert!(react(&f)?.is_empty());
     Ok(())
 }
+
+type Peers = std::collections::BTreeMap<Key, Peer>;
+
+/// What the two other hosts show: this host's own summary, changed per host.
+fn peers(f: &Fixture, change: impl Fn(u8, &mut Peer)) -> anyhow::Result<Peers> {
+    let journal = f.store().control_journal()?;
+    [8, 9]
+        .into_iter()
+        .map(|seed| {
+            let mut peer = Peer {
+                journal: journal.clone(),
+                withheld: false,
+            };
+            change(seed, &mut peer);
+            Ok((*f.identity(seed)?.id().as_bytes(), peer))
+        })
+        .collect()
+}
+
+fn drive(f: &Fixture, peers: &Peers) -> anyhow::Result<Progress> {
+    f.store().control_drive(&f.identity(7)?, peers)
+}
+
+fn waiting(f: &Fixture, peers: &Peers) -> anyhow::Result<String> {
+    match drive(f, peers)? {
+        Progress::Waiting(reason) => Ok(reason),
+        other => anyhow::bail!("expected to wait, got {other:?}"),
+    }
+}
+
+/// A coordinator with the request the fixture proposal was signed for.
+fn requested() -> anyhow::Result<Fixture> {
+    let f = Fixture::new()?;
+    f.store().control_designate(&session())?;
+    start(&f)?;
+    Ok(f)
+}
+
+fn start(f: &Fixture) -> anyhow::Result<()> {
+    let signed = vector("proposal");
+    let p = proposal(&signed)?;
+    f.store()
+        .control_start(&p.profiles.iter().cloned().collect(), p.inventory, p.backup)
+}
+
+/// Record what the two other hosts signed in a fixture envelope.
+fn record_others(f: &Fixture, nested: &[Signed]) -> anyhow::Result<()> {
+    for signed in nested {
+        if signed.body.signer().key != session().coordinator.key {
+            f.record(signed)?;
+        }
+    }
+    Ok(())
+}
+
+fn others_prepared(f: &Fixture) -> anyhow::Result<()> {
+    let Body::Certificate(c) = vector("certificate").body else {
+        unreachable!()
+    };
+    record_others(f, &c.prepared)
+}
+
+#[test]
+fn coordinator_proposes_once_every_host_is_ready() -> anyhow::Result<()> {
+    let f = requested()?;
+    let id = vector("proposal").id()?;
+    let reason = waiting(&f, &Peers::new())?;
+    assert_eq!(reason.matches("was not reached").count(), 2, "{reason}");
+    let mut one = peers(&f, |_, _| {})?;
+    one.pop_last();
+    assert!(waiting(&f, &one)?.contains("was not reached"));
+
+    let summary = |change: fn(&mut Summary)| {
+        move |peer: &mut Peer| {
+            if let Journal::Readable { summary } = &mut peer.journal {
+                change(summary)
+            }
+        }
+    };
+    type Change = Box<dyn Fn(&mut Peer)>;
+    let cases: Vec<(&str, Change)> = vec![
+        ("has no control journal", Box::new(|p| p.journal = Journal::Absent)),
+        ("needs review", Box::new(|p| p.journal = Journal::Unreadable)),
+        ("is halted for review", Box::new(summary(|s| s.halted = true))),
+        ("is not frozen", Box::new(summary(|s| s.frozen = false))),
+        ("is not designated", Box::new(summary(|s| s.session = None))),
+        (
+            "is not designated",
+            Box::new(summary(|s| s.session.as_mut().unwrap().nonce = [1; 32])),
+        ),
+        ("another installed head", Box::new(summary(|s| s.head = Some([1; 32])))),
+        ("another installed head", Box::new(summary(|s| s.epoch = 1))),
+        (
+            "another membership revision",
+            Box::new(summary(|s| s.membership = Some([1; 32]))),
+        ),
+        ("another membership revision", Box::new(summary(|s| s.membership = None))),
+        ("another input history", Box::new(summary(|s| s.input_history = [1; 32]))),
+    ];
+    for (expected, change) in &cases {
+        let shown = peers(&f, |seed, peer| {
+            if seed == 9 {
+                change(peer)
+            }
+        })?;
+        let reason = waiting(&f, &shown)?;
+        assert!(reason.contains(expected), "{expected}: {reason}");
+        assert_eq!(reason.matches("host ").count(), 1, "{reason}");
+    }
+    let ready = peers(&f, |_, _| {})?;
+    // Another host's key signs nothing for the coordinator.
+    assert!(matches!(
+        f.store().control_drive(&f.identity(8)?, &ready)?,
+        Progress::Waiting(_)
+    ));
+    assert_eq!(f.store().control_request()?.unwrap().proposal, None);
+
+    assert_eq!(drive(&f, &ready)?, Progress::Proposed(id));
+    assert_eq!(f.store().control_request()?.unwrap().proposal, Some(id));
+    let Journal::Readable { summary } = f.store().control_journal()? else {
+        unreachable!()
+    };
+    assert_eq!(summary.envelopes, [id], "exactly the fixture proposal");
+    // The next pass signs nothing more: no host has prepared.
+    let reason = waiting(&f, &ready)?;
+    assert!(reason.contains("prepared acknowledgments"), "{reason}");
+    Ok(())
+}
+
+#[test]
+fn coordinator_certifies_and_reports_completion() -> anyhow::Result<()> {
+    let f = requested()?;
+    let id = vector("proposal").id()?;
+    assert_eq!(drive(&f, &peers(&f, |_, _| {})?)?, Progress::Proposed(id));
+    assert_eq!(steps(&react(&f)?), [(Step::Prepare, true)]);
+    let none = Peers::new();
+    let reason = waiting(&f, &none)?;
+    assert_eq!(reason.matches(", ").count(), 1, "two hosts: {reason}");
+
+    others_prepared(&f)?;
+    assert_eq!(drive(&f, &none)?, Progress::Certified(id));
+    let certificate = vector("certificate").id()?;
+    assert_eq!(f.store().control_inspect()?.pending_certificates, [certificate]);
+    assert!(waiting(&f, &none)?.contains("not installed"));
+    // With a certificate the session only goes forward.
+    assert!(f.store().control_request_abort().is_err());
+    assert!(start(&f).is_err(), "the request is not resolved");
+
+    assert_eq!(steps(&react(&f)?), [(Step::Install, true)]);
+    assert!(waiting(&f, &none)?.contains("installation acknowledgments"));
+    f.acknowledge_installations()?;
+    assert_eq!(drive(&f, &none)?, Progress::Complete(id));
+    assert_eq!(drive(&f, &none)?, Progress::Complete(id));
+
+    f.store().control_release()?;
+    assert_eq!(f.store().control_request()?, None);
+    assert_eq!(drive(&f, &none)?, Progress::Idle);
+    Ok(())
+}
+
+#[test]
+fn coordinator_aborts_after_synchronizing_with_every_host() -> anyhow::Result<()> {
+    let f = requested()?;
+    let id = vector("proposal").id()?;
+    assert_eq!(drive(&f, &peers(&f, |_, _| {})?)?, Progress::Proposed(id));
+    react(&f)?;
+    others_prepared(&f)?;
+    f.store().control_request_abort()?;
+
+    // A host that may hold a certificate keeps the coordinator from withdrawing.
+    let none = Peers::new();
+    assert!(waiting(&f, &none)?.contains("was not reached"));
+    let withheld = peers(&f, |seed, peer| peer.withheld = seed == 9)?;
+    assert!(waiting(&f, &withheld)?.contains("could not take in"));
+    let absent = peers(&f, |seed, peer| {
+        if seed == 8 {
+            peer.journal = Journal::Absent
+        }
+    })?;
+    assert!(waiting(&f, &absent)?.contains("no readable control journal"));
+    assert!(f.store().control_inspect()?.withdrawn.is_empty());
+
+    assert_eq!(drive(&f, &peers(&f, |_, _| {})?)?, Progress::Withdrew(id));
+    assert_eq!(f.store().control_inspect()?.withdrawn, [id]);
+    // Every host prepared, and the coordinator still signs no certificate.
+    assert!(
+        f.store()
+            .control_certify(id, &f.identity(7)?, &session())
+            .is_err()
+    );
+    assert!(waiting(&f, &none)?.contains("withdrawals from"));
+
+    let Body::Aborted(a) = vector("aborted").body else {
+        unreachable!()
+    };
+    record_others(&f, &a.withdrawn)?;
+    assert_eq!(drive(&f, &none)?, Progress::Aborted(id));
+    let state = f.store().control_inspect()?;
+    assert_eq!(state.aborted, [id]);
+    assert!(!state.halted && state.pending_certificates.is_empty());
+    assert_eq!(drive(&f, &none)?, Progress::Aborted(id));
+
+    // The same request under the same session is the aborted proposal again.
+    start(&f)?;
+    assert!(waiting(&f, &peers(&f, |_, _| {})?)?.contains("was aborted"));
+    f.store().control_release()?;
+    Ok(())
+}
+
+#[test]
+fn another_hosts_withdrawal_leaves_only_the_abort() -> anyhow::Result<()> {
+    let f = requested()?;
+    let id = vector("proposal").id()?;
+    assert_eq!(drive(&f, &peers(&f, |_, _| {})?)?, Progress::Proposed(id));
+    react(&f)?;
+    others_prepared(&f)?;
+    let Body::Aborted(a) = vector("aborted").body else {
+        unreachable!()
+    };
+    record_others(&f, &a.withdrawn[..2])?;
+    let reason = waiting(&f, &Peers::new())?;
+    assert!(reason.contains("cannot be certified"), "{reason}");
+    let state = f.store().control_inspect()?;
+    assert!(!state.halted && state.pending_certificates.is_empty());
+    f.store().control_request_abort()?;
+    assert_eq!(drive(&f, &peers(&f, |_, _| {})?)?, Progress::Withdrew(id));
+    Ok(())
+}
+
+#[test]
+fn requests_need_the_frozen_designated_coordinator() -> anyhow::Result<()> {
+    let f = Fixture::unfrozen()?;
+    f.store().control_designate(&session())?;
+    assert!(start(&f).is_err(), "not frozen");
+
+    let f = Fixture::new()?;
+    assert!(start(&f).is_err(), "no designation");
+    assert!(f.store().control_request_abort().is_err(), "no request");
+    let other = proposal(&vector("proposal"))?
+        .hosts
+        .iter()
+        .find(|h| h.key != session().coordinator.key)
+        .unwrap()
+        .clone();
+    f.store().control_designate(&Session {
+        coordinator: other,
+        nonce: [0x66; 32],
+    })?;
+    assert!(start(&f).is_err(), "another host coordinates");
+
+    // A request that signed nothing is dropped by an abort.
+    f.store().control_designate(&session())?;
+    start(&f)?;
+    f.store().control_request_abort()?;
+    assert_eq!(f.store().control_request()?, None);
+    // A request belongs to the session it was recorded under.
+    start(&f)?;
+    f.store().control_designate(&Session {
+        coordinator: session().coordinator,
+        nonce: [9; 32],
+    })?;
+    assert_eq!(f.store().control_request()?, None);
+    assert_eq!(drive(&f, &Peers::new())?, Progress::Idle);
+
+    // A host that lost its freeze, or halted, signs no proposal.
+    let f = requested()?;
+    // The other hosts show nothing wrong, so the refusal is this host's own.
+    let healthy = peers(&f, |_, _| {})?;
+    f.sql("DELETE FROM activation_control_freeze")?;
+    assert_eq!(
+        waiting(&f, &healthy)?,
+        "host is not frozen for maintenance"
+    );
+    f.store().control_freeze()?;
+    f.record(&vector("proposal"))?;
+    let mut rival = proposal(&vector("proposal"))?.clone();
+    rival.nonce = [0x99; 32];
+    assert_eq!(
+        f.record(&f.resign(Body::Proposal(Box::new(rival)), 7)?)?,
+        Outcome::ReviewRequired
+    );
+    assert_eq!(waiting(&f, &healthy)?, "control journal halted for review");
+    assert_eq!(f.store().control_request()?.unwrap().proposal, None);
+    Ok(())
+}
+
+#[test]
+fn coordinator_does_not_certify_after_a_membership_change() -> anyhow::Result<()> {
+    let f = requested()?;
+    let id = vector("proposal").id()?;
+    assert_eq!(drive(&f, &peers(&f, |_, _| {})?)?, Progress::Proposed(id));
+    react(&f)?;
+    others_prepared(&f)?;
+    revoke_locally(&f, 9)?;
+    let reason = waiting(&f, &Peers::new())?;
+    assert!(reason.contains("cannot be certified"), "{reason}");
+    let state = f.store().control_inspect()?;
+    assert!(!state.halted && state.pending_certificates.is_empty());
+    // The abort still asks every host of the proposal, the revoked one included.
+    f.store().control_request_abort()?;
+    let mut shown = peers(&f, |_, _| {})?;
+    shown.pop_last();
+    assert!(waiting(&f, &shown)?.contains("was not reached"));
+    assert_eq!(drive(&f, &peers(&f, |_, _| {})?)?, Progress::Withdrew(id));
+    Ok(())
+}
+
+#[test]
+fn coordinator_proposes_the_next_epoch_after_every_acknowledgment() -> anyhow::Result<()> {
+    let f = requested()?;
+    let id = vector("proposal").id()?;
+    assert_eq!(drive(&f, &peers(&f, |_, _| {})?)?, Progress::Proposed(id));
+    react(&f)?;
+    others_prepared(&f)?;
+    assert_eq!(drive(&f, &Peers::new())?, Progress::Certified(id));
+    react(&f)?;
+    // Installed here, so the next request is accepted; the hosts would still
+    // refuse to prepare it.
+    start(&f)?;
+    let reason = waiting(&f, &peers(&f, |_, _| {})?)?;
+    assert!(reason.contains("lacks the acknowledgment"), "{reason}");
+    f.acknowledge_installations()?;
+    let Progress::Proposed(next) = drive(&f, &peers(&f, |_, _| {})?)? else {
+        panic!("every host acknowledged the installed head");
+    };
+    let next = f.store().run(|db, _| super::journal::get(db, &next))?;
+    let p = proposal(&next)?;
+    assert_eq!((p.epoch, p.previous), (2, Some(vector("certificate").id()?)));
+    Ok(())
+}

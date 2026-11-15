@@ -1137,6 +1137,31 @@ async fn react(
     Ok(())
 }
 
+/// Let the designated coordinator advance its session. `reported` keeps the
+/// last report so that a session that keeps waiting is logged once.
+async fn drive(
+    store: &crate::shared_audio::Store,
+    signer: &std::sync::Arc<crate::peer::Identity>,
+    peers: std::collections::BTreeMap<[u8; 32], crate::activation_control::Peer>,
+    reported: &mut Option<String>,
+) -> anyhow::Result<()> {
+    let (driver, identity) = (store.clone(), signer.clone());
+    let progress =
+        tokio::task::spawn_blocking(move || driver.control_drive(&identity, &peers)).await?;
+    let report = match progress {
+        Ok(crate::activation_control::Progress::Idle) => None,
+        Ok(progress) => Some(progress.to_string()),
+        Err(error) => Some(format!("deferred: {error:#}")),
+    };
+    if *reported != report {
+        if let Some(report) = &report {
+            eprintln!("Activation session {report}");
+        }
+        *reported = report;
+    }
+    Ok(())
+}
+
 pub async fn synchronize(
     endpoint: iroh::Endpoint,
     store: crate::shared_audio::Store,
@@ -1150,6 +1175,7 @@ pub async fn synchronize(
     let mut peers = std::collections::BTreeMap::new();
     let mut refused = crate::activation_control_net::Refused::default();
     let mut waiting = std::collections::BTreeMap::new();
+    let mut reported = None;
     let mut interval = tokio::time::interval(std::time::Duration::from_secs(3));
     interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     loop {
@@ -1162,13 +1188,17 @@ pub async fn synchronize(
                 // Also without peers: the coordinator's own records need an answer too.
                 crate::shared_audio_net::react(&store, &signer, &mut waiting).await?;
                 let proof = store.membership()?;
+                // What each host showed in this pass; an earlier answer does not count.
+                let mut observed = std::collections::BTreeMap::new();
                 for (peer, address) in &peers {
                     if crate::shared_audio_net::authorize(&proof, &peer.to_string(), true).is_err() { continue; }
                     // Control records come first; data follows only between hosts whose journals agree.
+                    let mut shown = None;
                     let result = tokio::time::timeout(
                         std::time::Duration::from_secs(120),
-                        crate::activation_control_net::reconcile(&endpoint, &store, address.clone(), &mut refused),
+                        crate::activation_control_net::observe(&endpoint, &store, address.clone(), &mut refused, &mut shown),
                     ).await;
+                    if let Some(shown) = shown { observed.insert(*peer.as_bytes(), shown); }
                     match result {
                         Ok(Ok(())) => {},
                         Ok(Err(error)) => eprintln!("Shared synchronization deferred: {error}"),
@@ -1177,6 +1207,9 @@ pub async fn synchronize(
                     // Answer what this exchange brought before a slow peer delays it.
                     crate::shared_audio_net::react(&store, &signer, &mut waiting).await?;
                 }
+                crate::shared_audio_net::drive(&store, &signer, observed, &mut reported).await?;
+                // The coordinator answers its own proposal or certificate in the same pass.
+                crate::shared_audio_net::react(&store, &signer, &mut waiting).await?;
             }
         }
     }

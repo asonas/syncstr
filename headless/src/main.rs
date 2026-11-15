@@ -30,6 +30,11 @@ enum ControlAction {
     Release,
     /// Record the maintenance session: needs --coordinator and --nonce.
     Designate,
+    /// On the designated coordinator, request the session: needs --inventory
+    /// and --backup, and takes --profile. The serving host carries it out.
+    Start,
+    /// On the designated coordinator, request an abort of the proposal.
+    Abort,
     Status,
 }
 
@@ -65,6 +70,15 @@ enum Command {
         /// Session nonce as 64 hexadecimal digits, for `designate`.
         #[arg(long)]
         nonce: Option<String>,
+        /// A projection profile the proposal requires, for `start`; repeatable.
+        #[arg(long)]
+        profile: Vec<String>,
+        /// Inventory manifest digest as 64 hexadecimal digits, for `start`.
+        #[arg(long)]
+        inventory: Option<String>,
+        /// Backup manifest digest as 64 hexadecimal digits, for `start`.
+        #[arg(long)]
+        backup: Option<String>,
     },
     #[cfg(feature = "p2p")]
     SharedAudioServe {
@@ -360,7 +374,16 @@ async fn run(cli: crate::Cli) -> anyhow::Result<()> {
             action,
             coordinator,
             nonce,
+            profile,
+            inventory,
+            backup,
         } => {
+            let digest = |name: &str, value: Option<String>| -> anyhow::Result<[u8; 32]> {
+                let value = value.ok_or_else(|| anyhow::anyhow!("start needs --{name}"))?;
+                hex::decode(value)?
+                    .try_into()
+                    .map_err(|_| anyhow::anyhow!("--{name} must be 64 hexadecimal digits"))
+            };
             let host_text = |key: &[u8; 32]| -> anyhow::Result<String> {
                 Ok(iroh::EndpointId::from_bytes(key)?.to_string())
             };
@@ -383,6 +406,12 @@ async fn run(cli: crate::Cli) -> anyhow::Result<()> {
                         nonce,
                     })?;
                 }
+                crate::ControlAction::Start => store.control_start(
+                    &profile.into_iter().collect(),
+                    digest("inventory", inventory)?,
+                    digest("backup", backup)?,
+                )?,
+                crate::ControlAction::Abort => store.control_request_abort()?,
                 crate::ControlAction::Status => {}
             }
             let state = match store.control_inspect() {
@@ -413,6 +442,16 @@ async fn run(cli: crate::Cli) -> anyhow::Result<()> {
                         Some(session) => serde_json::json!({
                             "coordinator": host_text(&session.coordinator.key)?,
                             "nonce": hex::encode(session.nonce),
+                        }),
+                        None => serde_json::Value::Null,
+                    },
+                    "request": match store.control_request()? {
+                        Some(request) => serde_json::json!({
+                            "profiles": request.profiles,
+                            "inventory": hex::encode(request.inventory),
+                            "backup": hex::encode(request.backup),
+                            "proposal": request.proposal.map(hex::encode),
+                            "abort": request.abort,
                         }),
                         None => serde_json::Value::Null,
                     },

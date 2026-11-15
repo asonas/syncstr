@@ -119,8 +119,23 @@ After each pass a frozen host reacts to the records of its designated session:
 A step that is refused is logged once and tried again after the next pass. A host
 without a designation, or with a halted or unreadable journal, does nothing.
 
-Nothing drives a session yet: no command signs a proposal, a certificate or an
-abort on a serving host. The startup guard is not implemented.
+The designated coordinator drives the session. The owner records a request on
+the stopped coordinator, and the serving host carries it out:
+
+```sh
+target/debug/syncstr-headless shared-audio-control --data data start \
+  --inventory <64-hex-digits> --backup <64-hex-digits> [--profile <name>]...
+target/debug/syncstr-headless shared-audio-control --data data abort
+```
+
+- `start` is refused unless the host is frozen and is the coordinator of its designated session, and while an earlier request is unresolved. `status` shows the `request`.
+- The coordinator signs the proposal only after every host of the membership answered in the same pass and is frozen, designated for the session, and at the same installed head, membership revision and input history. A host that discovery does not report keeps it waiting.
+- It signs the certificate once every host prepared. It does not sign one after a membership change or after any host withdrew; such a proposal needs an abort.
+- `abort` drops a request whose proposal was not signed yet. Otherwise the coordinator first synchronizes with every host of the proposal, withdraws only if none may hold a certificate, and signs the abort once every host withdrew. `abort` is refused once a certificate exists: the session then goes forward.
+- An aborted proposal cannot be proposed again under the same session. Release every host and designate a new session with another nonce.
+- The coordinator logs each step and what it waits for as `Activation session ...`, once per change. Completion is logged too; `release` stays a command on each host.
+
+The startup guard is not implemented.
 The [control protocol design](../docs/v5-activation-control-protocol.md) describes
 the rules above and the parts that follow.
 
