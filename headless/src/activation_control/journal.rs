@@ -260,13 +260,18 @@ pub(super) fn current_membership(db: &Connection, p: &Proposal) -> anyhow::Resul
     Ok(())
 }
 
-fn is_local(db: &Connection, host: &Host) -> anyhow::Result<bool> {
+/// The grant this host acts under.
+pub(super) fn local_grant(db: &Connection) -> anyhow::Result<Digest> {
     let grant: String = db.query_row(
         "SELECT local_grant FROM cluster_trust WHERE singleton=1",
         [],
         |r| r.get(0),
     )?;
-    Ok(digest(&grant)? == host.grant)
+    digest(&grant)
+}
+
+fn is_local(db: &Connection, host: &Host) -> anyhow::Result<bool> {
+    Ok(local_grant(db)? == host.grant)
 }
 
 pub(super) fn local_host(db: &Connection, p: &Proposal, host: &Host) -> anyhow::Result<()> {

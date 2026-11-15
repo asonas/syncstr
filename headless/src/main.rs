@@ -449,7 +449,7 @@ async fn run(cli: crate::Cli) -> anyhow::Result<()> {
                 anyhow::Ok(())
             });
             cluster_tasks.spawn(syncstr_headless::shared_audio_net::synchronize(
-                endpoint.clone(), store.clone(), discoveries,
+                endpoint.clone(), store.clone(), signer.clone(), discoveries,
             ));
             let token = syncstr_headless::identity::token(&identity.join("token"))?;
             let tls = syncstr_headless::identity::tls(&identity).await?;

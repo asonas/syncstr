@@ -1,6 +1,6 @@
 # v5 activation control protocol
 
-Status: Proposed 2026-11-15 for ASO-145. The owner chose the options marked "Chosen" in C1 to C3. Part 1 and the exchange in part 2 are implemented; the host reactions in part 2 and part 3 are design only and each needs its own review. This document authorizes no production operation.
+Status: Proposed 2026-11-15 for ASO-145. The owner chose the options marked "Chosen" in C1 to C3. Parts 1 and 2 are implemented; part 3 is design only and needs its own review. This document authorizes no production operation.
 
 This document refines slice S3 of the [activation and recovery design](v5-activation-and-recovery.md), decisions D1 to D3 and the failure table in D6. It covers how hosts exchange the control journal, how a coordinator collects readiness from every authorized host, and how an activation that cannot finish is resolved. The local journal and the maintenance freeze are described in the [headless guide](../headless/README.md#maintenance-freeze-on-a-v5-host).
 
@@ -82,7 +82,7 @@ The coordinator's order matters. It first synchronizes control records with ever
 
 ## Part 2: control protocol
 
-Implemented, except the host reactions at the end of this section.
+Implemented.
 
 ### C4. A peer without the control protocol
 
@@ -129,17 +129,27 @@ A host opens the data session first and reads `host_protocols` from the authenti
 
 Replication is pulled by the receiving host, so each host applies this before it reads from a peer. The data protocol also lets a host push records. A pushing host cannot show its journal there, so a push is accepted only where a peer without a journal would be: by a host with no control journal, or with no head and nothing pending.
 
-The check runs once before the data session. A peer whose head moves during that session is not noticed until the next exchange. Hosts do not install on their own yet, so this cannot happen without an operator; the host reactions below need a check tied to the data session.
+The check runs once before the data session, so a peer can install the next head while this host still reads its pages. That is harmless: a host signs no new record until it is released, release needs the installation acknowledgment of every host the head authorizes, and a host acknowledges only after it installed. Until this host installed, the peer has nothing newer to give; a host the head no longer authorizes is refused by the data protocol itself.
 
-### Host reactions (design, not implemented)
+### C5. When does a host sign on its own?
 
-The earlier draft had the coordinator ask each host for its signatures. Instead each host reacts to what it fetched, for its designated session only and while frozen:
+- **A (chosen 2026-11-15):** freezing the host and designating the session is the owner's consent. A frozen host reacts to records of its designated session without another step.
+- **B:** a separate switch on every host before it reacts. One more guard against a wrong designation, and one more step on every host.
 
-- It holds a proposal and no lock: it takes the prepare lock and signs its prepared acknowledgment.
-- It holds a certificate that is not installed: it installs it and signs its installation acknowledgment.
-- It holds the coordinator's withdrawal and no certificate: it withdraws.
+### Host reactions
+
+The earlier draft had the coordinator ask each host for its signatures. Instead each host reacts to what it holds after every synchronization pass, for its designated session only:
+
+- The proposal's coordinator withdrew from it and this host holds no certificate for it: this host withdraws, and does not prepare it.
+- It holds a certificate that is not installed, or an installed head whose acknowledgment it never stored: while frozen, it installs it and signs its installation acknowledgment.
+- It holds a proposal that extends the installed head and has not acknowledged it: while frozen, it takes the prepare lock and signs its prepared acknowledgment for its current input history.
 
 The coordinator and the other hosts then fetch those envelopes like any other.
+
+- Every step goes through the journal operation of the same name, so the rules of part 1 still decide. A step that is refused is reported and tried again after the next pass.
+- A host without a designation, with a halted or unreadable journal, or whose identity is not the host the journal's local grant names, does nothing.
+- In its prepared acknowledgment a host names its build as its implementation and lists the profiles the build implements. No profile is bound to an implementation yet, so a proposal that requires one is not prepared by a serving host; binding the first profile is slice S4 of the activation design.
+- A host prepares as soon as it holds the proposal. If the hosts' input histories differ at that moment no certificate can form and the proposal is aborted, so the coordinator compares histories before it proposes (part 3).
 
 ## Part 3: coordinator (design)
 

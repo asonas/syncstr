@@ -1096,10 +1096,18 @@ impl crate::shared_audio_net::Session {
 pub async fn synchronize(
     endpoint: iroh::Endpoint,
     store: crate::shared_audio::Store,
+    signer: std::sync::Arc<crate::peer::Identity>,
     mut discovered: tokio::sync::mpsc::Receiver<iroh::EndpointAddr>,
 ) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        endpoint.id() == signer.id(),
+        "host signer identity mismatch"
+    );
     let mut peers = std::collections::BTreeMap::new();
     let mut refused = crate::activation_control_net::Refused::default();
+    // The last refusal reported per subject, so a step that keeps waiting is
+    // not logged on every tick.
+    let mut waiting = std::collections::BTreeMap::new();
     let mut interval = tokio::time::interval(std::time::Duration::from_secs(3));
     interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     loop {
@@ -1122,6 +1130,33 @@ pub async fn synchronize(
                         Ok(Err(error)) => eprintln!("Shared synchronization deferred: {error}"),
                         Err(_) => eprintln!("Shared synchronization timed out"),
                     }
+                }
+                // What the exchanges brought may now be this host's to answer.
+                let (reactor, identity) = (store.clone(), signer.clone());
+                let reactions = tokio::task::spawn_blocking(move || {
+                    reactor.control_react(
+                        &identity,
+                        &[crate::activation_control::IMPLEMENTATION.to_owned()],
+                        &crate::activation_control::PROFILES.iter().map(|v| (*v).to_owned()).collect(),
+                    )
+                }).await?;
+                match reactions {
+                    Ok(reactions) => for reaction in reactions {
+                        let subject = hex::encode(reaction.subject);
+                        match reaction.outcome {
+                            Ok(_) => {
+                                waiting.remove(&reaction.subject);
+                                eprintln!("Activation {:?} done for {subject}", reaction.step);
+                            }
+                            Err(error) => {
+                                let message = format!("{:?}: {error}", reaction.step);
+                                if waiting.insert(reaction.subject, message.clone()) != Some(message.clone()) {
+                                    eprintln!("Activation {message} ({subject})");
+                                }
+                            }
+                        }
+                    },
+                    Err(error) => eprintln!("Activation reaction deferred: {error}"),
                 }
             }
         }
