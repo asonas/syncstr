@@ -451,151 +451,9 @@ impl crate::shared_audio::Store {
     ) -> anyhow::Result<Outcome> {
         self.run(|db, _| {
             let tx = db.transaction()?;
-            inspect(&tx)?;
-            let s = state(&tx)?;
-            signed.verify()?;
-            let id = signed.id()?;
-            if all(&tx)?.contains_key(&id) {
-                return Ok(Outcome::Duplicate);
-            }
-            ensure!(!s.halted, "control journal halted for review");
-            let proposed = match &signed.body {
-                Body::Proposal(_) => signed.clone(),
-                Body::Certificate(c) => {
-                    verify_certificate(signed, membership)?;
-                    *c.proposal.clone()
-                }
-                Body::Prepared(a) => {
-                    let p = get(&tx, &a.proposal)?;
-                    verified_proposal(&tx, &p)?;
-                    verify_prepared(signed, &p)?;
-                    p
-                }
-                Body::Installed(i) => {
-                    let stored = get(&tx, &i.certificate)?;
-                    let c = certificate(&stored)?;
-                    let p = proposal(&c.proposal)?;
-                    ensure!(
-                        i.epoch == p.epoch && p.hosts.contains(&i.host),
-                        "installation acknowledgment mismatch"
-                    );
-                    c.proposal.as_ref().clone()
-                }
-                Body::Withdrawn(w) => {
-                    let p = get(&tx, &w.proposal)?;
-                    verified_proposal(&tx, &p)?;
-                    verify_withdrawn(signed, &p)?;
-                    p
-                }
-                Body::Aborted(a) => {
-                    let p = get(&tx, &a.proposal)?;
-                    verified_proposal(&tx, &p)?;
-                    verify_aborted(signed, &p)?;
-                    p
-                }
-            };
-            let p = proposal(&proposed)?;
-            if matches!(signed.body, Body::Proposal(_) | Body::Certificate(_)) {
-                verify_proposal(&proposed, membership)?;
-            }
-            scope(&s, p)?;
-            if let Body::Withdrawn(w) = &signed.body {
-                ensure!(
-                    !super::abort::settled(&tx, s.head, &proposed.id()?, &w.host)?,
-                    "withdrawal from an installation that is already settled"
-                );
-            }
-            // Checked before siblings: a retry recorded after an abort must not
-            // turn the aborted proposal's certificate into a mere rival.
-            if super::abort::contradicts(&tx, signed, &proposed)? {
-                // A certificate or an abort carries every host's signature and
-                // halts whatever happened to its signer since. A withdrawal is
-                // one host's word, so a revoked host cannot halt with it.
-                if matches!(signed.body, Body::Withdrawn(_)) {
-                    ensure!(
-                        !revoked_locally(&tx, signed.body.signer(), membership)?,
-                        "withdrawing host is revoked or disputed locally"
-                    );
-                }
-                if matches!(signed.body, Body::Certificate(_)) {
-                    save_proof(&tx, p, membership)?;
-                }
-                mark_conflict(&tx, signed, "certificate beside an abort or withdrawal")?;
-                tx.commit()?;
-                return Ok(Outcome::ReviewRequired);
-            }
-            if matches!(signed.body, Body::Proposal(_) | Body::Certificate(_))
-                && conflicts(&tx, signed, &proposed)?
-            {
-                ensure!(
-                    !revoked_locally(&tx, signed.body.signer(), membership)?,
-                    "sibling signer is revoked or disputed locally"
-                );
-                save_proof(&tx, p, membership)?;
-                mark_conflict(&tx, signed, "observed sibling or competing coordinator")?;
-                tx.commit()?;
-                return Ok(Outcome::ReviewRequired);
-            }
-            session(p, expected)?;
-            match &signed.body {
-                Body::Proposal(_) | Body::Prepared(_) => {
-                    current_membership(&tx, p)?;
-                    extends(&s, p)?;
-                }
-                Body::Certificate(_) => {
-                    prepared_membership(&tx, signed)?;
-                    extends(&s, p)?;
-                }
-                Body::Installed(i) => ensure!(
-                    s.head == Some(i.certificate) && s.epoch == p.epoch,
-                    "installation acknowledgment is not for current head"
-                ),
-                // Membership may have moved on; that is one reason to abort.
-                Body::Withdrawn(_) | Body::Aborted(_) => {}
-            }
-            if matches!(signed.body, Body::Proposal(_) | Body::Certificate(_)) {
-                save_proof(&tx, p, membership)?;
-            }
-            if matches!(signed.body, Body::Prepared(_)) {
-                // Another host holds a prepare lock; this one must not resume writes.
-                ensure!(
-                    super::freeze::frozen(&tx)?,
-                    "host is not frozen for maintenance"
-                );
-            }
-            if let Body::Certificate(c) = &signed.body {
-                // A certificate may activate; it must never wait on an unfrozen host.
-                ensure!(
-                    super::freeze::frozen(&tx)?,
-                    "host is not frozen for maintenance"
-                );
-                put(&tx, &c.proposal)?;
-                for ack in &c.prepared {
-                    put(&tx, ack)?;
-                }
-            }
-            if let Body::Aborted(a) = &signed.body {
-                for withdrawn in &a.withdrawn {
-                    put(&tx, withdrawn)?;
-                }
-            }
-            if let Body::Withdrawn(w) = &signed.body
-                && is_local(&tx, &w.host)?
-            {
-                // This host signed the promise; a restored database must keep it.
-                super::freeze::tables(&tx)?;
-                tx.execute(
-                    "INSERT OR IGNORE INTO activation_control_withdrawals VALUES (?, ?)",
-                    params![w.proposal.as_slice(), id.as_slice()],
-                )?;
-            }
-            put(&tx, signed)?;
-            if matches!(signed.body, Body::Aborted(_)) {
-                super::abort::settle_floor(&tx)?;
-                inspect(&tx)?;
-            }
+            let outcome = record(&tx, signed, membership, expected)?;
             tx.commit()?;
-            Ok(Outcome::Stored)
+            Ok(outcome)
         })
     }
 
@@ -652,6 +510,158 @@ impl crate::shared_audio::Store {
     pub fn control_inspect(&self) -> anyhow::Result<Inspection> {
         self.run(|db, _| inspect(db))
     }
+}
+
+/// Record one envelope inside the caller's transaction. The caller commits
+/// whatever the outcome is: a conflict is itself recorded.
+pub(super) fn record(
+    tx: &Connection,
+    signed: &Signed,
+    membership: &crate::enrollment::Proof,
+    expected: &Session,
+) -> anyhow::Result<Outcome> {
+    inspect(tx)?;
+    let s = state(tx)?;
+    signed.verify()?;
+    let id = signed.id()?;
+    if all(tx)?.contains_key(&id) {
+        return Ok(Outcome::Duplicate);
+    }
+    ensure!(!s.halted, "control journal halted for review");
+    let proposed = match &signed.body {
+        Body::Proposal(_) => signed.clone(),
+        Body::Certificate(c) => {
+            verify_certificate(signed, membership)?;
+            *c.proposal.clone()
+        }
+        Body::Prepared(a) => {
+            let p = get(tx, &a.proposal)?;
+            verified_proposal(tx, &p)?;
+            verify_prepared(signed, &p)?;
+            p
+        }
+        Body::Installed(i) => {
+            let stored = get(tx, &i.certificate)?;
+            let c = certificate(&stored)?;
+            let p = proposal(&c.proposal)?;
+            ensure!(
+                i.epoch == p.epoch && p.hosts.contains(&i.host),
+                "installation acknowledgment mismatch"
+            );
+            c.proposal.as_ref().clone()
+        }
+        Body::Withdrawn(w) => {
+            let p = get(tx, &w.proposal)?;
+            verified_proposal(tx, &p)?;
+            verify_withdrawn(signed, &p)?;
+            p
+        }
+        Body::Aborted(a) => {
+            let p = get(tx, &a.proposal)?;
+            verified_proposal(tx, &p)?;
+            verify_aborted(signed, &p)?;
+            p
+        }
+    };
+    let p = proposal(&proposed)?;
+    if matches!(signed.body, Body::Proposal(_) | Body::Certificate(_)) {
+        verify_proposal(&proposed, membership)?;
+    }
+    scope(&s, p)?;
+    if let Body::Withdrawn(w) = &signed.body {
+        ensure!(
+            !super::abort::settled(tx, s.head, &proposed.id()?, &w.host)?,
+            "withdrawal from an installation that is already settled"
+        );
+    }
+    // Checked before siblings: a retry recorded after an abort must not
+    // turn the aborted proposal's certificate into a mere rival.
+    if super::abort::contradicts(tx, signed, &proposed)? {
+        // A certificate or an abort carries every host's signature and
+        // halts whatever happened to its signer since. A withdrawal is
+        // one host's word, so a revoked host cannot halt with it.
+        if matches!(signed.body, Body::Withdrawn(_)) {
+            ensure!(
+                !revoked_locally(tx, signed.body.signer(), membership)?,
+                "withdrawing host is revoked or disputed locally"
+            );
+        }
+        if matches!(signed.body, Body::Certificate(_)) {
+            save_proof(tx, p, membership)?;
+        }
+        mark_conflict(tx, signed, "certificate beside an abort or withdrawal")?;
+        return Ok(Outcome::ReviewRequired);
+    }
+    if matches!(signed.body, Body::Proposal(_) | Body::Certificate(_))
+        && conflicts(tx, signed, &proposed)?
+    {
+        ensure!(
+            !revoked_locally(tx, signed.body.signer(), membership)?,
+            "sibling signer is revoked or disputed locally"
+        );
+        save_proof(tx, p, membership)?;
+        mark_conflict(tx, signed, "observed sibling or competing coordinator")?;
+        return Ok(Outcome::ReviewRequired);
+    }
+    session(p, expected)?;
+    match &signed.body {
+        Body::Proposal(_) | Body::Prepared(_) => {
+            current_membership(tx, p)?;
+            extends(&s, p)?;
+        }
+        Body::Certificate(_) => {
+            prepared_membership(tx, signed)?;
+            extends(&s, p)?;
+        }
+        Body::Installed(i) => ensure!(
+            s.head == Some(i.certificate) && s.epoch == p.epoch,
+            "installation acknowledgment is not for current head"
+        ),
+        // Membership may have moved on; that is one reason to abort.
+        Body::Withdrawn(_) | Body::Aborted(_) => {}
+    }
+    if matches!(signed.body, Body::Proposal(_) | Body::Certificate(_)) {
+        save_proof(tx, p, membership)?;
+    }
+    if matches!(signed.body, Body::Prepared(_)) {
+        // Another host holds a prepare lock; this one must not resume writes.
+        ensure!(
+            super::freeze::frozen(tx)?,
+            "host is not frozen for maintenance"
+        );
+    }
+    if let Body::Certificate(c) = &signed.body {
+        // A certificate may activate; it must never wait on an unfrozen host.
+        ensure!(
+            super::freeze::frozen(tx)?,
+            "host is not frozen for maintenance"
+        );
+        put(tx, &c.proposal)?;
+        for ack in &c.prepared {
+            put(tx, ack)?;
+        }
+    }
+    if let Body::Aborted(a) = &signed.body {
+        for withdrawn in &a.withdrawn {
+            put(tx, withdrawn)?;
+        }
+    }
+    if let Body::Withdrawn(w) = &signed.body
+        && is_local(tx, &w.host)?
+    {
+        // This host signed the promise; a restored database must keep it.
+        super::freeze::tables(tx)?;
+        tx.execute(
+            "INSERT OR IGNORE INTO activation_control_withdrawals VALUES (?, ?)",
+            params![w.proposal.as_slice(), id.as_slice()],
+        )?;
+    }
+    put(tx, signed)?;
+    if matches!(signed.body, Body::Aborted(_)) {
+        super::abort::settle_floor(tx)?;
+        inspect(tx)?;
+    }
+    Ok(Outcome::Stored)
 }
 
 pub(super) fn lock_prepare(
