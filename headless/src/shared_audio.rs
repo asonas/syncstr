@@ -983,7 +983,7 @@ impl crate::shared_audio::Store {
         mutation: crate::shared_audio_net::MutationRequest,
         proof: &crate::enrollment::Proof,
     ) -> crate::shared_audio_net::MutationReply {
-        use crate::shared_audio_net::{MutationRejection, MutationReply, UpdatePlaylists};
+        use crate::shared_audio_net::{MutationReply, UpdatePlaylists};
         let request = mutation.request.clone();
         let result = (|| -> anyhow::Result<_> {
             let update: UpdatePlaylists = serde_json::from_value(mutation.payload.clone())?;
@@ -1052,39 +1052,7 @@ impl crate::shared_audio::Store {
                 heads,
             })
         })();
-        match result {
-            Ok(reply) => reply,
-            Err(error) => match error.downcast_ref::<crate::shared_audio::CommitFailure>() {
-                Some(crate::shared_audio::CommitFailure::NeedsReview(current)) => {
-                    MutationReply::NeedsReview {
-                        request,
-                        current: current.clone(),
-                    }
-                }
-                Some(crate::shared_audio::CommitFailure::Incomplete) => MutationReply::Deferred {
-                    request,
-                    reason: "incomplete-history".into(),
-                },
-                Some(crate::shared_audio::CommitFailure::Revoked) => MutationReply::Rejected {
-                    request,
-                    reason: MutationRejection::Revoked,
-                },
-                Some(crate::shared_audio::CommitFailure::Unauthorized) => MutationReply::Rejected {
-                    request,
-                    reason: MutationRejection::Unauthorized,
-                },
-                None if error.downcast_ref::<rusqlite::Error>().is_some() => {
-                    MutationReply::Deferred {
-                        request,
-                        reason: "store-unavailable".into(),
-                    }
-                }
-                None => MutationReply::Rejected {
-                    request,
-                    reason: MutationRejection::Invalid,
-                },
-            },
-        }
+        crate::shared_audio::mutation_result(request, result)
     }
 
     pub fn receive_playlist_page(
@@ -1728,7 +1696,7 @@ impl crate::shared_audio::Store {
         mutation: crate::shared_audio_net::MutationRequest,
         proof: &crate::enrollment::Proof,
     ) -> crate::shared_audio_net::MutationReply {
-        use crate::shared_audio_net::{EditTrack, MutationRejection, MutationReply};
+        use crate::shared_audio_net::{EditTrack, MutationReply};
         let request = mutation.request.clone();
         let result = (|| -> anyhow::Result<_> {
             let edit: EditTrack = serde_json::from_value(mutation.payload.clone())?;
@@ -1792,39 +1760,7 @@ impl crate::shared_audio::Store {
                 heads,
             })
         })();
-        match result {
-            Ok(reply) => reply,
-            Err(error) => match error.downcast_ref::<crate::shared_audio::CommitFailure>() {
-                Some(crate::shared_audio::CommitFailure::NeedsReview(current)) => {
-                    MutationReply::NeedsReview {
-                        request,
-                        current: current.clone(),
-                    }
-                }
-                Some(crate::shared_audio::CommitFailure::Incomplete) => MutationReply::Deferred {
-                    request,
-                    reason: "incomplete-history".into(),
-                },
-                Some(crate::shared_audio::CommitFailure::Revoked) => MutationReply::Rejected {
-                    request,
-                    reason: MutationRejection::Revoked,
-                },
-                Some(crate::shared_audio::CommitFailure::Unauthorized) => MutationReply::Rejected {
-                    request,
-                    reason: MutationRejection::Unauthorized,
-                },
-                None if error.downcast_ref::<rusqlite::Error>().is_some() => {
-                    MutationReply::Deferred {
-                        request,
-                        reason: "store-unavailable".into(),
-                    }
-                }
-                None => MutationReply::Rejected {
-                    request,
-                    reason: MutationRejection::Invalid,
-                },
-            },
-        }
+        crate::shared_audio::mutation_result(request, result)
     }
 
     pub(crate) fn resolve_track_member(
@@ -1834,7 +1770,7 @@ impl crate::shared_audio::Store {
         mutation: crate::shared_audio_net::MutationRequest,
         proof: &crate::enrollment::Proof,
     ) -> crate::shared_audio_net::MutationReply {
-        use crate::shared_audio_net::{MutationRejection, MutationReply, ResolveTrack};
+        use crate::shared_audio_net::{MutationReply, ResolveTrack};
         let request = mutation.request.clone();
         let result = (|| -> anyhow::Result<_> {
             let resolution: ResolveTrack = serde_json::from_value(mutation.payload.clone())?;
@@ -1917,39 +1853,7 @@ impl crate::shared_audio::Store {
                 heads,
             })
         })();
-        match result {
-            Ok(reply) => reply,
-            Err(error) => match error.downcast_ref::<crate::shared_audio::CommitFailure>() {
-                Some(crate::shared_audio::CommitFailure::NeedsReview(current)) => {
-                    MutationReply::NeedsReview {
-                        request,
-                        current: current.clone(),
-                    }
-                }
-                Some(crate::shared_audio::CommitFailure::Incomplete) => MutationReply::Deferred {
-                    request,
-                    reason: "incomplete-history".into(),
-                },
-                Some(crate::shared_audio::CommitFailure::Revoked) => MutationReply::Rejected {
-                    request,
-                    reason: MutationRejection::Revoked,
-                },
-                Some(crate::shared_audio::CommitFailure::Unauthorized) => MutationReply::Rejected {
-                    request,
-                    reason: MutationRejection::Unauthorized,
-                },
-                None if error.downcast_ref::<rusqlite::Error>().is_some() => {
-                    MutationReply::Deferred {
-                        request,
-                        reason: "store-unavailable".into(),
-                    }
-                }
-                None => MutationReply::Rejected {
-                    request,
-                    reason: MutationRejection::Invalid,
-                },
-            },
-        }
+        crate::shared_audio::mutation_result(request, result)
     }
 
     pub fn receive(&self, records: Vec<crate::shared_audio::Signed>) -> anyhow::Result<()> {
