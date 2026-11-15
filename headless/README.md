@@ -110,9 +110,17 @@ target/debug/syncstr-headless shared-audio-control --data data designate \
 - Records pushed by another host are accepted only by a host with no control journal, or with no installed head and nothing pending.
 - A host that never ran `init` reconciles as before.
 
-Hosts do not yet prepare, install or withdraw on their own, and nothing drives a
-session, so a host that prepared a proposal without a certificate still stays
-frozen in practice. The startup guard is not implemented.
+After each pass a frozen host reacts to the records of its designated session:
+
+- It withdraws from a proposal its coordinator withdrew from.
+- It installs a certificate it holds and signs its installation acknowledgment.
+- It prepares a proposal that extends the installed head. This build implements no projection profile yet, so it does not prepare a proposal that requires one.
+
+A step that is refused is logged once and tried again after the next pass. A host
+without a designation, or with a halted or unreadable journal, does nothing.
+
+Nothing drives a session yet: no command signs a proposal, a certificate or an
+abort on a serving host. The startup guard is not implemented.
 The [control protocol design](../docs/v5-activation-control-protocol.md) describes
 the rules above and the parts that follow.
 

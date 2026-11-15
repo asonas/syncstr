@@ -116,6 +116,7 @@ async fn quic_sync_preserves_ids_pins_and_recovers_after_reconnection() -> anyho
     tasks.spawn(syncstr_headless::shared_audio_net::synchronize(
         peer_endpoint.clone(),
         replica.clone(),
+        fixture.other.clone(),
         receiver,
     ));
     discovered.send(host_endpoint.addr()).await?;
@@ -195,6 +196,7 @@ async fn quic_sync_preserves_ids_pins_and_recovers_after_reconnection() -> anyho
     tasks.spawn(syncstr_headless::shared_audio_net::synchronize(
         peer_endpoint.clone(),
         replica.clone(),
+        fixture.other.clone(),
         receiver,
     ));
     discovered.send(host_endpoint.addr()).await?;
@@ -5859,6 +5861,20 @@ impl crate::Maintenance {
         store: &syncstr_headless::shared_audio::Store,
         nonce: u8,
     ) -> anyhow::Result<Self> {
+        crate::Maintenance::propose_requiring(
+            fixture,
+            store,
+            nonce,
+            vec!["registration-equivalence-v1".to_owned()],
+        )
+    }
+
+    fn propose_requiring(
+        fixture: &crate::Fixture,
+        store: &syncstr_headless::shared_audio::Store,
+        nonce: u8,
+        profiles: Vec<String>,
+    ) -> anyhow::Result<Self> {
         use syncstr_headless::activation_control::{
             Body, Proposal, Session, Signed, membership_revision,
         };
@@ -5871,7 +5887,6 @@ impl crate::Maintenance {
             coordinator: coordinator.clone(),
             nonce: [nonce; 32],
         };
-        let profiles = vec!["registration-equivalence-v1".to_owned()];
         let proposed = Signed::sign(
             Body::Proposal(Box::new(Proposal {
                 cluster,
@@ -6230,5 +6245,259 @@ async fn data_reconciles_only_between_hosts_whose_control_journals_agree() -> an
         "{error}"
     );
     server.abort();
+    Ok(())
+}
+
+/// Two frozen v5 hosts that serve each other, both designated for one session
+/// whose proposal the coordinator `a` has recorded.
+struct Hosts {
+    a: syncstr_headless::shared_audio::Store,
+    b: syncstr_headless::shared_audio::Store,
+    a_endpoint: iroh::Endpoint,
+    b_endpoint: iroh::Endpoint,
+    m: crate::Maintenance,
+    _locks: (std::fs::File, std::fs::File),
+    _tasks: tokio::task::JoinSet<anyhow::Result<()>>,
+}
+
+impl crate::Hosts {
+    async fn new(fixture: &crate::Fixture, profiles: Vec<String>) -> anyhow::Result<Self> {
+        let a = fixture.activate()?;
+        let b = crate::control_other(fixture)?;
+        let (a_endpoint, a_lock) = fixture
+            .host
+            .cluster_endpoint(&["127.0.0.1:0".parse()?])
+            .await?;
+        let (b_endpoint, b_lock) = fixture
+            .other
+            .cluster_endpoint(&["127.0.0.1:0".parse()?])
+            .await?;
+        let mut tasks = tokio::task::JoinSet::new();
+        tasks.spawn(syncstr_headless::shared_audio_net::serve(
+            a_endpoint.clone(),
+            a.clone(),
+            fixture.host.clone(),
+        ));
+        tasks.spawn(syncstr_headless::shared_audio_net::serve(
+            b_endpoint.clone(),
+            b.clone(),
+            fixture.other.clone(),
+        ));
+        for store in [&a, &b] {
+            store.control_initialize()?;
+            store.control_freeze()?;
+        }
+        let m = crate::Maintenance::propose_requiring(fixture, &a, 7, profiles)?;
+        for store in [&a, &b] {
+            store.control_designate(&m.session)?;
+        }
+        a.control_record(&m.proposed, &m.proof, &m.session)?;
+        Ok(Self {
+            a,
+            b,
+            a_endpoint,
+            b_endpoint,
+            m,
+            _locks: (a_lock, b_lock),
+            _tasks: tasks,
+        })
+    }
+
+    /// One reaction pass; returns the steps taken and what they signed.
+    fn react(
+        &self,
+        store: &syncstr_headless::shared_audio::Store,
+        identity: &syncstr_headless::peer::Identity,
+    ) -> anyhow::Result<
+        Vec<(
+            syncstr_headless::activation_control::Step,
+            syncstr_headless::activation_control::Signed,
+        )>,
+    > {
+        store
+            .control_react(identity, &["fixture-build".to_owned()], &self.m.supported())?
+            .into_iter()
+            .map(|reaction| Ok((reaction.step, reaction.outcome?)))
+            .collect()
+    }
+
+    /// b exchanges with a, then a with b.
+    async fn exchange(&self) -> anyhow::Result<()> {
+        use syncstr_headless::activation_control_net::{Refused, reconcile};
+        reconcile(
+            &self.b_endpoint,
+            &self.b,
+            self.a_endpoint.addr(),
+            &mut Refused::default(),
+        )
+        .await?;
+        reconcile(
+            &self.a_endpoint,
+            &self.a,
+            self.b_endpoint.addr(),
+            &mut Refused::default(),
+        )
+        .await
+    }
+}
+
+#[tokio::test]
+async fn hosts_complete_an_activation_by_reacting_to_fetched_records() -> anyhow::Result<()> {
+    use syncstr_headless::activation_control::{Body, Certificate, Signed, Step};
+    let fixture = crate::Fixture::new().await?;
+    let hosts =
+        crate::Hosts::new(&fixture, vec!["registration-equivalence-v1".to_owned()]).await?;
+    let (a, b, m) = (&hosts.a, &hosts.b, &hosts.m);
+
+    let mut prepared = hosts.react(a, &fixture.host)?;
+    assert!(hosts.react(b, &fixture.other)?.is_empty(), "nothing fetched");
+    hosts.exchange().await?;
+    prepared.extend(hosts.react(b, &fixture.other)?);
+    assert_eq!(
+        prepared.iter().map(|(step, _)| *step).collect::<Vec<_>>(),
+        [Step::Prepare, Step::Prepare]
+    );
+    hosts.exchange().await?;
+
+    // The coordinator certifies; nothing else in the session is done by hand.
+    let mut prepared: Vec<Signed> = prepared.into_iter().map(|(_, signed)| signed).collect();
+    prepared.sort_by_key(|signed| match &signed.body {
+        Body::Prepared(ack) => ack.host.key,
+        _ => unreachable!(),
+    });
+    let certificate = Signed::sign(
+        Body::Certificate(Certificate {
+            proposal: Box::new(m.proposed.clone()),
+            prepared,
+            coordinator: m.session.coordinator.clone(),
+        }),
+        &fixture.host,
+    )?;
+    a.control_record(&certificate, &m.proof, &m.session)?;
+    assert_eq!(hosts.react(a, &fixture.host)?[0].0, Step::Install);
+    // b is one epoch behind until it reacts, so its exchange defers data.
+    assert!(hosts.exchange().await.is_err());
+    assert_eq!(hosts.react(b, &fixture.other)?[0].0, Step::Install);
+    hosts.exchange().await?;
+    hosts.exchange().await?;
+    for store in [a, b] {
+        assert!(store.control_inspect()?.all_installations_recorded);
+        assert!(hosts.react(store, &fixture.host)?.is_empty());
+        store.control_release()?;
+    }
+    a.commit(
+        &fixture.host,
+        crate::register(&a.catalog()?, "after", &fixture.entry.sha256),
+    )?;
+    let before = b.control_input_history()?;
+    hosts.exchange().await?;
+    assert_ne!(b.control_input_history()?, before);
+    Ok(())
+}
+
+#[tokio::test]
+async fn hosts_follow_the_coordinator_out_of_an_abandoned_proposal() -> anyhow::Result<()> {
+    use syncstr_headless::activation_control::Step;
+    let fixture = crate::Fixture::new().await?;
+    let hosts =
+        crate::Hosts::new(&fixture, vec!["registration-equivalence-v1".to_owned()]).await?;
+    let (a, b, m) = (&hosts.a, &hosts.b, &hosts.m);
+    let id = m.proposed.id()?;
+    hosts.react(a, &fixture.host)?;
+    hosts.exchange().await?;
+    assert_eq!(hosts.react(b, &fixture.other)?[0].0, Step::Prepare);
+
+    a.control_withdraw(id, m.host(&fixture.host), &fixture.host, &m.session)?;
+    assert!(hosts.react(a, &fixture.host)?.is_empty());
+    assert!(hosts.react(b, &fixture.other)?.is_empty(), "nothing fetched");
+    hosts.exchange().await?;
+    assert_eq!(hosts.react(b, &fixture.other)?[0].0, Step::Withdraw);
+    assert!(hosts.react(b, &fixture.other)?.is_empty());
+    hosts.exchange().await?;
+    a.control_abort(id, &fixture.host, &m.session)?;
+    hosts.exchange().await?;
+    for store in [a, b] {
+        assert_eq!(store.control_inspect()?.aborted, [id]);
+        store.control_release()?;
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn synchronize_reacts_to_what_it_fetched() -> anyhow::Result<()> {
+    let fixture = crate::Fixture::new().await?;
+    // The serving build implements no profile yet, so the proposal requires none.
+    let hosts = crate::Hosts::new(&fixture, vec![]).await?;
+    let (discovered, receiver) = tokio::sync::mpsc::channel(4);
+    let task = tokio::spawn(syncstr_headless::shared_audio_net::synchronize(
+        hosts.b_endpoint.clone(),
+        hosts.b.clone(),
+        fixture.other.clone(),
+        receiver,
+    ));
+    discovered.send(hosts.a_endpoint.addr()).await?;
+    tokio::time::timeout(std::time::Duration::from_secs(20), async {
+        loop {
+            // The lock commits before its acknowledgment; wait for both.
+            let state = hosts.b.control_inspect()?;
+            if state.prepare_locks == [hosts.m.proposed.id()?]
+                && state.unsigned_preparations.is_empty()
+            {
+                break anyhow::Ok(());
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+    })
+    .await??;
+    task.abort();
+    Ok(())
+}
+
+#[tokio::test]
+async fn hosts_that_never_prepared_only_withdraw_from_an_abandoned_proposal() -> anyhow::Result<()> {
+    use syncstr_headless::activation_control::Step;
+    let fixture = crate::Fixture::new().await?;
+    let hosts =
+        crate::Hosts::new(&fixture, vec!["registration-equivalence-v1".to_owned()]).await?;
+    let (a, b, m) = (&hosts.a, &hosts.b, &hosts.m);
+    let id = m.proposed.id()?;
+    a.control_withdraw(id, m.host(&fixture.host), &fixture.host, &m.session)?;
+    hosts.exchange().await?;
+    // A host that is not frozen signs nothing, a withdrawal included.
+    b.control_release()?;
+    b.control_designate(&m.session)?;
+    assert!(hosts.react(b, &fixture.other)?.is_empty());
+    assert!(b.control_inspect()?.withdrawn.is_empty());
+    b.control_freeze()?;
+    // One step, and no attempt to prepare what its coordinator gave up.
+    let reactions = hosts.react(b, &fixture.other)?;
+    assert_eq!(reactions.len(), 1);
+    assert_eq!(reactions[0].0, Step::Withdraw);
+    assert!(b.control_inspect()?.prepare_locks.is_empty());
+    Ok(())
+}
+
+#[tokio::test]
+async fn hosts_follow_only_the_coordinators_withdrawal() -> anyhow::Result<()> {
+    use syncstr_headless::activation_control::Step;
+    let fixture = crate::Fixture::new().await?;
+    let hosts =
+        crate::Hosts::new(&fixture, vec!["registration-equivalence-v1".to_owned()]).await?;
+    let (a, b, m) = (&hosts.a, &hosts.b, &hosts.m);
+    hosts.exchange().await?;
+    b.control_withdraw(
+        m.proposed.id()?,
+        m.host(&fixture.other),
+        &fixture.other,
+        &m.session,
+    )?;
+    hosts.exchange().await?;
+    // Another host's withdrawal is not the coordinator giving up.
+    let reactions = hosts.react(a, &fixture.host)?;
+    assert_eq!(
+        reactions.iter().map(|(step, _)| *step).collect::<Vec<_>>(),
+        [Step::Prepare]
+    );
+    assert!(a.control_inspect()?.withdrawn.is_empty());
     Ok(())
 }

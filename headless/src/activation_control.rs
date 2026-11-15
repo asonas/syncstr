@@ -11,6 +11,7 @@ mod exchange;
 mod freeze;
 mod intake;
 mod journal;
+mod react;
 #[cfg(test)]
 mod tests;
 
@@ -19,6 +20,7 @@ pub use freeze::Refusal;
 pub(crate) use freeze::ensure_writable;
 pub(crate) use intake::ensure_intake;
 pub use journal::{Inspection, Outcome, Session};
+pub use react::{IMPLEMENTATION, PROFILES, Reaction, Step};
 pub type Digest = [u8; 32];
 pub type Key = [u8; 32];
 const MAX_BYTES: usize = 32 * 1024 * 1024;

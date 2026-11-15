@@ -1093,13 +1093,63 @@ impl crate::shared_audio_net::Session {
     }
 }
 
+/// Let this host answer the control records it holds. `waiting` keeps the
+/// last refusal per subject so that a step that keeps waiting is logged once.
+async fn react(
+    store: &crate::shared_audio::Store,
+    signer: &std::sync::Arc<crate::peer::Identity>,
+    waiting: &mut std::collections::BTreeMap<[u8; 32], String>,
+) -> anyhow::Result<()> {
+    let (reactor, identity) = (store.clone(), signer.clone());
+    let reactions = tokio::task::spawn_blocking(move || {
+        reactor.control_react(
+            &identity,
+            &[crate::activation_control::IMPLEMENTATION.to_owned()],
+            &crate::activation_control::PROFILES
+                .iter()
+                .map(|v| (*v).to_owned())
+                .collect(),
+        )
+    })
+    .await?;
+    let reactions = match reactions {
+        Ok(reactions) => reactions,
+        Err(error) => {
+            eprintln!("Activation reaction deferred: {error}");
+            return Ok(());
+        }
+    };
+    for reaction in reactions {
+        let subject = hex::encode(reaction.subject);
+        match reaction.outcome {
+            Ok(_) => {
+                waiting.remove(&reaction.subject);
+                eprintln!("Activation {:?} done for {subject}", reaction.step);
+            }
+            Err(error) => {
+                let message = format!("{:?}: {error}", reaction.step);
+                if waiting.insert(reaction.subject, message.clone()).as_ref() != Some(&message) {
+                    eprintln!("Activation {message} ({subject})");
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 pub async fn synchronize(
     endpoint: iroh::Endpoint,
     store: crate::shared_audio::Store,
+    signer: std::sync::Arc<crate::peer::Identity>,
     mut discovered: tokio::sync::mpsc::Receiver<iroh::EndpointAddr>,
 ) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        endpoint.id() == signer.id(),
+        "host signer identity mismatch"
+    );
     let mut peers = std::collections::BTreeMap::new();
     let mut refused = crate::activation_control_net::Refused::default();
+    let mut waiting = std::collections::BTreeMap::new();
     let mut interval = tokio::time::interval(std::time::Duration::from_secs(3));
     interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     loop {
@@ -1109,6 +1159,8 @@ pub async fn synchronize(
                 if address.id != endpoint.id() && (peers.len() < 256 || peers.contains_key(&address.id)) { peers.insert(address.id, address); }
             }
             _ = interval.tick() => {
+                // Also without peers: the coordinator's own records need an answer too.
+                crate::shared_audio_net::react(&store, &signer, &mut waiting).await?;
                 let proof = store.membership()?;
                 for (peer, address) in &peers {
                     if crate::shared_audio_net::authorize(&proof, &peer.to_string(), true).is_err() { continue; }
@@ -1122,6 +1174,8 @@ pub async fn synchronize(
                         Ok(Err(error)) => eprintln!("Shared synchronization deferred: {error}"),
                         Err(_) => eprintln!("Shared synchronization timed out"),
                     }
+                    // Answer what this exchange brought before a slow peer delays it.
+                    crate::shared_audio_net::react(&store, &signer, &mut waiting).await?;
                 }
             }
         }

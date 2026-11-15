@@ -1836,3 +1836,128 @@ fn evidence_answer_stops_at_its_budget() -> anyhow::Result<()> {
     assert!(unknown.0.is_empty() && unknown.1.is_empty());
     Ok(())
 }
+
+fn react(f: &Fixture) -> anyhow::Result<Vec<Reaction>> {
+    f.store().control_react(
+        &f.identity(7)?,
+        &["fixture-build-v1".to_owned()],
+        &supported(),
+    )
+}
+
+fn steps(reactions: &[Reaction]) -> Vec<(Step, bool)> {
+    reactions
+        .iter()
+        .map(|r| (r.step, r.outcome.is_ok()))
+        .collect()
+}
+
+#[test]
+fn designated_host_prepares_and_installs_on_its_own() -> anyhow::Result<()> {
+    let f = Fixture::new()?;
+    f.record(&vector("proposal"))?;
+    assert!(react(&f)?.is_empty(), "no designation");
+    f.store().control_designate(&Session {
+        coordinator: session().coordinator,
+        nonce: [9; 32],
+    })?;
+    assert!(react(&f)?.is_empty(), "designated for another session");
+    f.store().control_designate(&session())?;
+
+    let reactions = react(&f)?;
+    assert_eq!(steps(&reactions), [(Step::Prepare, true)]);
+    assert_eq!(reactions[0].subject, vector("proposal").id()?);
+    let prepared = reactions.into_iter().next().unwrap().outcome?;
+    let Body::Certificate(c) = vector("certificate").body else {
+        unreachable!()
+    };
+    assert!(c.prepared.contains(&prepared));
+    assert!(react(&f)?.is_empty(), "already prepared");
+
+    f.record(&vector("certificate"))?;
+    let reactions = react(&f)?;
+    assert_eq!(steps(&reactions), [(Step::Install, true)]);
+    assert_eq!(
+        reactions.into_iter().next().unwrap().outcome?,
+        vector("installed")
+    );
+    assert!(react(&f)?.is_empty(), "already installed");
+    assert_eq!(f.store().control_inspect()?.epoch, 1);
+    Ok(())
+}
+
+#[test]
+fn host_does_not_react_unfrozen_halted_or_as_another_host() -> anyhow::Result<()> {
+    let f = Fixture::unfrozen()?;
+    f.store().control_designate(&session())?;
+    f.record(&vector("proposal"))?;
+    assert!(react(&f)?.is_empty(), "not frozen");
+
+    // A profile this build does not implement is reported and locks nothing.
+    let f = Fixture::new()?;
+    f.store().control_designate(&session())?;
+    f.record(&vector("proposal"))?;
+    let reactions = f.store().control_react(
+        &f.identity(7)?,
+        &["fixture-build-v1".to_owned()],
+        &BTreeSet::new(),
+    )?;
+    assert_eq!(steps(&reactions), [(Step::Prepare, false)]);
+    assert!(f.store().control_inspect()?.prepare_locks.is_empty());
+    // The journal records one host's grant; another identity is not that host.
+    assert!(
+        f.store()
+            .control_react(
+                &f.identity(8)?,
+                &["fixture-build-v1".to_owned()],
+                &supported()
+            )?
+            .is_empty()
+    );
+
+    let mut p = proposal(&vector("proposal"))?.clone();
+    p.nonce = [0x99; 32];
+    assert_eq!(
+        f.record(&f.resign(Body::Proposal(Box::new(p)), 7)?)?,
+        Outcome::ReviewRequired
+    );
+    assert!(react(&f)?.is_empty(), "halted for review");
+
+    // Release ends the designation, so a later freeze alone answers nothing.
+    let f = Fixture::new()?;
+    f.store().control_designate(&session())?;
+    f.record(&vector("proposal"))?;
+    f.store().control_release()?;
+    f.store().control_freeze()?;
+    assert!(react(&f)?.is_empty(), "frozen again without a designation");
+    Ok(())
+}
+
+#[test]
+fn host_finishes_a_step_interrupted_before_its_signature() -> anyhow::Result<()> {
+    let f = Fixture::new()?;
+    f.store().control_designate(&session())?;
+    f.record(&vector("proposal"))?;
+    f.store()
+        .run(|db, _| journal::lock_prepare(db, &root_prepared(), &session(), &supported()))?;
+    assert_eq!(steps(&react(&f)?), [(Step::Prepare, true)]);
+    assert!(
+        f.store()
+            .control_inspect()?
+            .unsigned_preparations
+            .is_empty()
+    );
+
+    f.record(&vector("certificate"))?;
+    let id = vector("certificate").id()?;
+    f.store()
+        .run(|db, _| journal::install(db, &id, &session().coordinator, &session(), &supported()))?;
+    let reactions = react(&f)?;
+    assert_eq!(steps(&reactions), [(Step::Install, true)]);
+    assert_eq!(
+        reactions.into_iter().next().unwrap().outcome?,
+        vector("installed")
+    );
+    assert!(react(&f)?.is_empty());
+    Ok(())
+}
