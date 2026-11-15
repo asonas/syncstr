@@ -804,24 +804,35 @@ fn issue(
     member: String,
     host: bool,
 ) -> anyhow::Result<crate::enrollment::Grant> {
-    let issuer_key = f.identity(issuer)?.id().to_string();
+    let identity = f.identity(issuer)?;
+    let issuer_key = identity.id().to_string();
     let authority = member_proof()
         .grants
         .into_iter()
         .find(|g| g.member == issuer_key)
         .unwrap();
+    issue_under(&identity, &authority, member, host)
+}
+
+/// As `issue`, for callers that issue many grants and load the issuer once.
+fn issue_under(
+    identity: &crate::peer::Identity,
+    authority: &crate::enrollment::Grant,
+    member: String,
+    host: bool,
+) -> anyhow::Result<crate::enrollment::Grant> {
     let mut grant = crate::enrollment::Grant {
         version: 1,
         id: String::new(),
-        cluster: authority.cluster,
-        issuer: issuer_key,
+        cluster: authority.cluster.clone(),
+        issuer: authority.member.clone(),
         member,
         host,
-        authority: Some(authority.id),
+        authority: Some(authority.id.clone()),
         signature: String::new(),
     };
     grant.id = hex::encode(Sha256::digest(grant.signing_bytes()?));
-    grant.signature = hex::encode(f.identity(issuer)?.sign(&grant.signing_bytes()?));
+    grant.signature = hex::encode(identity.sign(&grant.signing_bytes()?));
     Ok(grant)
 }
 
@@ -963,15 +974,37 @@ fn large_local_membership_does_not_veto_unknown_valid_grant() -> anyhow::Result<
     // too slow for CI.
     let f = Fixture::new()?;
     let mut local = member_proof();
-    for i in 0..(4096 - local.grants.len()) as u32 {
+    let known = local.grants.len();
+    // Load the issuer once and commit once: thousands of separate commits and
+    // fixture reads made this test the longest in the suite on CI.
+    let identity = f.identity(7)?;
+    let issuer_key = identity.id().to_string();
+    let authority = local
+        .grants
+        .iter()
+        .find(|g| g.member == issuer_key)
+        .unwrap()
+        .clone();
+    for i in 0..(4096 - known) as u32 {
         let mut secret = [0u8; 32];
         secret[..4].copy_from_slice(&i.to_le_bytes());
         secret[31] = 0xa5;
         let member = iroh::SecretKey::from_bytes(&secret).public().to_string();
-        let grant = issue(&f, 7, member, false)?;
-        store_grant(&f, &grant)?;
-        local.grants.push(grant);
+        local
+            .grants
+            .push(issue_under(&identity, &authority, member, false)?);
     }
+    f.store().run(|db, _| {
+        let tx = db.transaction()?;
+        for grant in &local.grants[known..] {
+            tx.execute(
+                "INSERT INTO cluster_enrollment_grants VALUES (?, ?)",
+                params![grant.id, serde_json::to_vec(grant)?],
+            )?;
+        }
+        tx.commit()?;
+        Ok(())
+    })?;
     let mut supplied = local.clone();
     supplied.grants.pop();
     let grant = issue(&f, 7, f.identity(10)?.id().to_string(), true)?;

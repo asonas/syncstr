@@ -57,3 +57,9 @@ required-features = ["p2p"]
 [[example]]
 name = "shared_audio_fixture"
 required-features = ["p2p"]
+
+# Tests spend most of their time in unoptimized signature checks, hashing and
+# image decoding. Dependencies change rarely, so optimizing them costs a build
+# only when the lockfile changes. This crate itself stays unoptimized.
+[profile.test.package."*"]
+opt-level = 2
