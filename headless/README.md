@@ -100,7 +100,7 @@ target/debug/syncstr-headless shared-audio-control --data data designate \
 - A halted or unreadable control journal refuses the same writes with reason `control-review-required` until it is reviewed. `freeze` remains available in that state.
 - `designate` records the maintenance session the owner authorized: the coordinator's host key and a session nonce. The coordinator must be an authorized host. A pending activation keeps its session, and `release` removes the designation.
 - A host acknowledges only its own input history, a digest of the signed music and playlist records it holds. From its prepare lock until the proposal is installed or aborted it refuses replicated records it does not hold; records it holds, audio and membership still replicate.
-- A certificate for a proposal the host prepared installs even if membership changed afterwards. `release` still refuses until a later epoch certifies the new membership. The next epoch excuses a missing installation acknowledgment only from a host its membership revokes.
+- A certificate for a proposal the host prepared installs even if membership changed afterwards to another revision that verifies. A membership that cannot be read or is disputed refuses both storing and installing it. `release` still refuses until a later epoch certifies the new membership. The next epoch excuses a missing installation acknowledgment only from a host its membership revokes.
 - A signed abort, built from a withdrawal by every host of the proposal, resolves a proposal that has no certificate. `status` lists `aborted` and `withdrawn` proposals, `unacknowledged_hosts` and the `session`.
 
 These commands change one host. Sending control records between hosts, collecting

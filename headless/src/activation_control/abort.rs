@@ -68,6 +68,36 @@ pub(super) fn withdrawn(records: &BTreeMap<Digest, Signed>) -> BTreeSet<Digest> 
         .collect()
 }
 
+/// A signature carries no time, so a withdrawal cannot reopen an installation
+/// its host acknowledged or an earlier epoch. A released head has every
+/// acknowledgment. Otherwise one host could halt every journal with a
+/// withdrawal signed after the fact.
+pub(super) fn settled(
+    db: &Connection,
+    head: Option<Digest>,
+    id: &Digest,
+    host: &Host,
+) -> anyhow::Result<bool> {
+    let records = all(db)?;
+    let mut cursor = head;
+    while let Some(installed) = cursor {
+        let c = certificate(
+            records
+                .get(&installed)
+                .context("installed certificate missing")?,
+        )?;
+        if c.proposal.id()? == *id {
+            let acknowledged = records.values().any(|s| {
+                matches!(&s.body, Body::Installed(i)
+                    if i.certificate == installed && i.host.key == host.key)
+            });
+            return Ok(Some(installed) != head || acknowledged);
+        }
+        cursor = proposal(&c.proposal)?.previous;
+    }
+    Ok(false)
+}
+
 /// A certificate cannot stand beside an abort of its proposal, or beside a
 /// host's promise never to install it.
 pub(super) fn contradicts(

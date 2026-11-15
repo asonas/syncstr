@@ -493,18 +493,14 @@ impl crate::shared_audio::Store {
                 verify_proposal(&proposed, membership)?;
             }
             scope(&s, p)?;
-            if matches!(signed.body, Body::Proposal(_) | Body::Certificate(_))
-                && conflicts(&tx, signed, &proposed)?
-            {
+            if let Body::Withdrawn(w) = &signed.body {
                 ensure!(
-                    !revoked_locally(&tx, signed.body.signer(), membership)?,
-                    "sibling signer is revoked or disputed locally"
+                    !super::abort::settled(&tx, s.head, &proposed.id()?, &w.host)?,
+                    "withdrawal from an installation that is already settled"
                 );
-                save_proof(&tx, p, membership)?;
-                mark_conflict(&tx, signed, "observed sibling or competing coordinator")?;
-                tx.commit()?;
-                return Ok(Outcome::ReviewRequired);
             }
+            // Checked before siblings: a retry recorded after an abort must not
+            // turn the aborted proposal's certificate into a mere rival.
             if super::abort::contradicts(&tx, signed, &proposed)? {
                 // A certificate or an abort carries every host's signature and
                 // halts whatever happened to its signer since. A withdrawal is
@@ -519,6 +515,18 @@ impl crate::shared_audio::Store {
                     save_proof(&tx, p, membership)?;
                 }
                 mark_conflict(&tx, signed, "certificate beside an abort or withdrawal")?;
+                tx.commit()?;
+                return Ok(Outcome::ReviewRequired);
+            }
+            if matches!(signed.body, Body::Proposal(_) | Body::Certificate(_))
+                && conflicts(&tx, signed, &proposed)?
+            {
+                ensure!(
+                    !revoked_locally(&tx, signed.body.signer(), membership)?,
+                    "sibling signer is revoked or disputed locally"
+                );
+                save_proof(&tx, p, membership)?;
+                mark_conflict(&tx, signed, "observed sibling or competing coordinator")?;
                 tx.commit()?;
                 return Ok(Outcome::ReviewRequired);
             }

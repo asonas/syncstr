@@ -1670,7 +1670,14 @@ fn contradiction_halts_even_after_the_coordinator_was_revoked() -> anyhow::Resul
     f.record(&vector("proposal"))?;
     f.record(&vector("aborted"))?;
     f.store().control_release()?;
-    // Host 8 issues the revocation, so the root's own grant chain stays valid.
+    revoke_coordinator(&f)?;
+    assert!(revoked_locally_for_test(&f)?);
+    assert_eq!(f.record(&vector("certificate"))?, Outcome::ReviewRequired);
+    Ok(())
+}
+
+/// Host 8 revokes the coordinator, so the root's own grant chain stays valid.
+fn revoke_coordinator(f: &Fixture) -> anyhow::Result<()> {
     let proof = f.store().run(|db, _| crate::enrollment::read_proof(db))?;
     let authority = proof
         .grants
@@ -1694,13 +1701,67 @@ fn contradiction_halts_even_after_the_coordinator_was_revoked() -> anyhow::Resul
         "INSERT INTO cluster_revocations VALUES ('{}', X'{}')",
         revocation.id,
         hex::encode(serde_json::to_vec(&revocation)?)
-    ))?;
-    assert!(revoked_locally_for_test(&f)?);
-    assert_eq!(f.record(&vector("certificate"))?, Outcome::ReviewRequired);
-    Ok(())
+    ))
 }
 
 fn revoked_locally_for_test(f: &Fixture) -> anyhow::Result<bool> {
     f.store()
         .run(|db, _| journal::revoked_locally(db, &session().coordinator, &member_proof()))
+}
+
+#[test]
+fn aborted_certificate_halts_after_a_retry_and_a_revoked_coordinator() -> anyhow::Result<()> {
+    let f = Fixture::new()?;
+    f.record(&vector("proposal"))?;
+    f.record(&vector("aborted"))?;
+    let mut p = proposal(&vector("proposal"))?.clone();
+    p.nonce = [0x88; 32];
+    let expected = Session {
+        coordinator: session().coordinator,
+        nonce: [0x88; 32],
+    };
+    f.store().control_record(
+        &f.resign(Body::Proposal(Box::new(p)), 7)?,
+        &member_proof(),
+        &expected,
+    )?;
+    revoke_coordinator(&f)?;
+    assert!(revoked_locally_for_test(&f)?);
+    // The retry makes the certificate a sibling too; the abort must win.
+    assert_eq!(f.record(&vector("certificate"))?, Outcome::ReviewRequired);
+    assert!(f.store().control_inspect()?.halted);
+    Ok(())
+}
+
+#[test]
+fn withdrawal_cannot_reopen_a_settled_installation() -> anyhow::Result<()> {
+    let installed = |f: &Fixture, seed: u8| -> anyhow::Result<Signed> {
+        f.resign(
+            Body::Installed(Installed {
+                certificate: vector("certificate").id()?,
+                host: host(f, seed)?,
+                epoch: 1,
+            }),
+            seed,
+        )
+    };
+    // Host 8 acknowledged the installation; host 9 has not.
+    let f = Fixture::new()?;
+    f.record(&vector("certificate"))?;
+    f.install()?;
+    f.record(&installed(&f, 8)?)?;
+    assert!(f.record(&withdrawal(&f, 8)?).is_err());
+    assert!(!f.store().control_inspect()?.halted);
+    assert_eq!(f.record(&withdrawal(&f, 9)?)?, Outcome::ReviewRequired);
+
+    // A released head is settled for every host.
+    let f = Fixture::new()?;
+    f.record(&vector("certificate"))?;
+    f.install()?;
+    f.acknowledge_installations()?;
+    f.store().control_release()?;
+    assert!(f.record(&withdrawal(&f, 9)?).is_err());
+    assert!(!f.store().control_inspect()?.halted);
+    assert_eq!(f.refusal()?, None);
+    Ok(())
 }
