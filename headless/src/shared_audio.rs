@@ -1590,9 +1590,12 @@ impl crate::shared_audio::Store {
                 );
                 let prior =
                     crate::shared_audio::object_receipt(&transaction, member, &request, &digest)?;
-                if prior.is_none() {
-                    crate::activation_control::ensure_writable(&transaction)?;
+                let writable = crate::activation_control::ensure_writable(&transaction);
+                if let (Some(reply), Err(_)) = (&prior, &writable) {
+                    // Report the earlier outcome without publishing or recording anything.
+                    return Ok(reply.clone());
                 }
+                writable?;
                 crate::shared_audio::publish_audio(
                     &transaction,
                     root,
@@ -1938,7 +1941,27 @@ impl crate::shared_audio::Store {
         })
     }
 
+    /// Bytes replicated from another host. Not refused during a freeze.
     pub fn put_audio(&self, expected: &str, input: &mut impl std::io::Read) -> anyhow::Result<()> {
+        self.store_audio(expected, input, false)
+    }
+
+    /// Bytes an operator uploads to this host. Refused while the host is
+    /// frozen, because published objects are part of the agreed inventory.
+    pub fn admit_audio(
+        &self,
+        expected: &str,
+        input: &mut impl std::io::Read,
+    ) -> anyhow::Result<()> {
+        self.store_audio(expected, input, true)
+    }
+
+    fn store_audio(
+        &self,
+        expected: &str,
+        input: &mut impl std::io::Read,
+        admission: bool,
+    ) -> anyhow::Result<()> {
         anyhow::ensure!(
             crate::shared_audio::valid_hash(expected),
             "invalid audio hash"
@@ -1946,6 +1969,9 @@ impl crate::shared_audio::Store {
         self.run(|connection, root| {
             use sha2::Digest as _;
             use std::io::Write as _;
+            if admission {
+                crate::activation_control::ensure_writable(connection)?;
+            }
             let mut staged = tempfile::Builder::new()
                 .prefix("shared-")
                 .tempfile_in(root.join("staging"))?;
@@ -2045,10 +2071,13 @@ fn object_receipt(
         prior = connection.query_row("SELECT digest, reply FROM shared_object_requests old WHERE old.id=? AND NOT EXISTS(SELECT 1 FROM shared_member_object_requests scoped WHERE scoped.id=old.id AND scoped.digest=old.digest)", [id], |r| Ok((r.get(0)?, r.get(1)?))).optional()?;
         if let Some((previous, reply)) = &prior {
             anyhow::ensure!(previous == digest, "legacy object request ID is reserved");
-            connection.execute(
-                "INSERT INTO shared_member_object_requests VALUES (?, ?, ?, ?)",
-                rusqlite::params![member, id, digest, reply],
-            )?;
+            // A frozen host answers from the legacy receipt without rewriting it.
+            if crate::activation_control::ensure_writable(connection).is_ok() {
+                connection.execute(
+                    "INSERT INTO shared_member_object_requests VALUES (?, ?, ?, ?)",
+                    rusqlite::params![member, id, digest, reply],
+                )?;
+            }
         }
     }
     prior

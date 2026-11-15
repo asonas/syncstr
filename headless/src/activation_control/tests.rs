@@ -1158,6 +1158,44 @@ fn freeze_survives_restart_and_releases_only_when_settled() -> anyhow::Result<()
 }
 
 #[test]
+fn release_requires_the_certified_membership() -> anyhow::Result<()> {
+    let f = Fixture::new()?;
+    f.record(&vector("certificate"))?;
+    f.install()?;
+    f.acknowledge_installations()?;
+    // A grant learned from a peer after installation was never agreed.
+    store_grant(&f, &issue(&f, 7, f.identity(10)?.id().to_string(), true)?)?;
+    assert!(f.store().control_release().is_err());
+    assert_eq!(f.refusal()?, Some(Refusal::Maintenance));
+    Ok(())
+}
+
+#[test]
+fn next_epoch_waits_for_every_installation_acknowledgment() -> anyhow::Result<()> {
+    let f = Fixture::new()?;
+    f.record(&vector("certificate"))?;
+    f.install()?;
+    let next = vector("successor");
+    let expected = Session {
+        coordinator: session().coordinator,
+        nonce: [0x77; 32],
+    };
+    f.store()
+        .control_record(&next, &member_proof(), &expected)?;
+    let mut ack = root_prepared();
+    ack.proposal = next.id()?;
+    let prepare = || {
+        f.store()
+            .control_prepare(ack.clone(), &f.identity(7)?, &expected, &supported())
+    };
+    assert!(prepare().is_err(), "hosts 8 and 9 never confirmed epoch 1");
+    assert!(f.store().control_inspect()?.pending_preparations.is_empty());
+    f.acknowledge_installations()?;
+    prepare()?;
+    Ok(())
+}
+
+#[test]
 fn abandoned_maintenance_releases_without_a_head() -> anyhow::Result<()> {
     let f = Fixture::new()?;
     f.record(&vector("proposal"))?;

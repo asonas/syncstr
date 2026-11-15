@@ -101,7 +101,7 @@ fn put(db: &Connection, signed: &Signed) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn get(db: &Connection, id: &Digest) -> anyhow::Result<Signed> {
+pub(super) fn get(db: &Connection, id: &Digest) -> anyhow::Result<Signed> {
     let raw: Vec<u8> = db.query_row(
         "SELECT canonical FROM activation_control_envelopes WHERE digest=?",
         [id.as_slice()],
@@ -188,7 +188,7 @@ fn session(p: &Proposal, expected: &Session) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn current_membership(db: &Connection, p: &Proposal) -> anyhow::Result<()> {
+pub(super) fn current_membership(db: &Connection, p: &Proposal) -> anyhow::Result<()> {
     let baseline: String = db.query_row(
         "SELECT fingerprint FROM shared_baseline WHERE singleton=1",
         [],
@@ -525,9 +525,14 @@ pub(super) fn lock_prepare(
     supported: &BTreeSet<String>,
 ) -> anyhow::Result<()> {
     let tx = db.transaction()?;
-    inspect(&tx)?;
+    let inspection = inspect(&tx)?;
     let mut s = state(&tx)?;
     ensure!(!s.halted, "control journal halted for review");
+    // The next epoch must not hide a host that never confirmed this one.
+    ensure!(
+        inspection.head.is_none() || inspection.all_installations_recorded,
+        "installation acknowledgments for the installed head are incomplete"
+    );
     let signed = get(&tx, &ack.proposal)?;
     verified_proposal(&tx, &signed)?;
     let p = proposal(&signed)?;
@@ -632,7 +637,7 @@ pub(super) fn install(
     supported: &BTreeSet<String>,
 ) -> anyhow::Result<u64> {
     let tx = db.transaction()?;
-    inspect(&tx)?;
+    let inspection = inspect(&tx)?;
     let mut s = state(&tx)?;
     ensure!(!s.halted, "control journal halted for review");
     let signed = get(&tx, id)?;
@@ -648,6 +653,10 @@ pub(super) fn install(
         ensure!(
             super::freeze::frozen(&tx)?,
             "host is not frozen for maintenance"
+        );
+        ensure!(
+            inspection.head.is_none() || inspection.all_installations_recorded,
+            "installation acknowledgments for the installed head are incomplete"
         );
         extends(&s, p)?;
         s.floor.extend(p.profiles.iter().cloned());

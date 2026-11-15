@@ -5566,8 +5566,69 @@ async fn maintenance_freeze_defers_new_writes_and_keeps_reads_and_accepted_outco
     );
     let earlier_reply = session.edit_track(earlier.clone()).await?;
     assert!(matches!(earlier_reply, MutationReply::Accepted { .. }));
+    let connection = reader_endpoint
+        .connect(
+            host_endpoint.addr(),
+            syncstr_headless::shared_audio_net::ALPN,
+        )
+        .await?;
+    let _: syncstr_headless::shared_audio_net::Hello = crate::shared_exchange(
+        &connection,
+        &syncstr_headless::shared_audio_net::Hello {
+            version: 5,
+            proof: membership.clone(),
+            supported_operations: vec![],
+        },
+    )
+    .await?;
+    use sha2::Digest as _;
+    let upload = crate::audio_mutation(
+        &before,
+        "upload-before-freeze",
+        "put-object",
+        serde_json::json!({"hash": hex::encode(sha2::Sha256::digest(b"def")), "bytes": 3}),
+    );
+    let stored = crate::shared_upload(&connection, &upload, Some(b"def")).await?;
+    assert!(matches!(stored, MutationReply::ObjectStored { .. }));
+    let database = rusqlite::Connection::open(fixture.data().join("node.sqlite"))?;
+    // Leave only the legacy receipt, as a host upgraded from an earlier build has.
+    database.execute("DELETE FROM shared_member_object_requests", [])?;
+    let rows = |table: &str| -> anyhow::Result<i64> {
+        Ok(database.query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |r| r.get(0))?)
+    };
 
     store.control_freeze()?;
+    let objects = rows("shared_objects")?;
+    assert_eq!(
+        crate::shared_upload(&connection, &upload, Some(b"def")).await?,
+        stored
+    );
+    assert_eq!(rows("shared_member_object_requests")?, 0);
+    assert_eq!(
+        crate::shared_upload(
+            &connection,
+            &crate::audio_mutation(
+                &before,
+                "upload-during-freeze",
+                "put-object",
+                serde_json::json!({"hash": hex::encode(sha2::Sha256::digest(b"ghi")), "bytes": 3}),
+            ),
+            None,
+        )
+        .await?,
+        MutationReply::Deferred {
+            request: "upload-during-freeze".into(),
+            reason: "maintenance-freeze".into(),
+        }
+    );
+    let operator = hex::encode(sha2::Sha256::digest(b"operator upload"));
+    assert_eq!(
+        refusal(store.admit_audio(&operator, &mut &b"operator upload"[..])),
+        Some(Refusal::Maintenance)
+    );
+    assert_eq!(rows("shared_objects")?, objects);
+    // Bytes replicated from another host are not this host's new writes.
+    store.put_audio(&operator, &mut &b"operator upload"[..])?;
     let frozen = store.catalog()?;
     let next = crate::register(&frozen, "three", &fixture.entry.sha256);
     assert_eq!(

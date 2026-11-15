@@ -117,6 +117,10 @@ impl crate::shared_audio::Store {
                     inspection.all_installations_recorded,
                     "installation acknowledgments are incomplete"
                 );
+                // Membership learned from peers after installation was never
+                // agreed by the certified host set; it needs a new proposal.
+                let installed = journal::get(&tx, &head)?;
+                journal::current_membership(&tx, proposal(&certificate(&installed)?.proposal)?)?;
                 tx.execute(
                     "INSERT OR IGNORE INTO activation_control_releases VALUES (?)",
                     [head.as_slice()],

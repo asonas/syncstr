@@ -355,7 +355,15 @@ async fn run(cli: crate::Cli) -> anyhow::Result<()> {
                 crate::ControlAction::Release => store.control_release()?,
                 crate::ControlAction::Status => {}
             }
-            let state = store.control_inspect()?;
+            let state = match store.control_inspect() {
+                Ok(state) => state,
+                // Freezing succeeds on a journal that cannot be inspected.
+                Err(error) if matches!(action, crate::ControlAction::Freeze) => {
+                    println!("{}", serde_json::json!({"frozen": true, "review_required": error.to_string()}));
+                    return Ok(());
+                }
+                Err(error) => return Err(error),
+            };
             println!(
                 "{}",
                 serde_json::json!({

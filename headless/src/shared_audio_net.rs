@@ -326,6 +326,8 @@ impl crate::shared_audio::Store {
         member: &str,
     ) -> anyhow::Result<crate::enrollment::Revocation> {
         use sha2::Digest as _;
+        // Refuse before signing; the gated merge below rechecks with the write.
+        self.run(|connection, _| crate::activation_control::ensure_writable(connection))?;
         let mut proof = self.membership()?;
         let authority = proof
             .grants
