@@ -1,12 +1,38 @@
 //! Control protocol between hosts: each side authorizes the other as a host,
 //! the server reports its control journal, and the client fetches the signed
 //! envelopes it lacks. Nothing is signed in answer to a request.
-use crate::activation_control::{Digest, Journal, Signed, Summary};
+use crate::activation_control::{Digest, Journal, Session as Designation, Signed, Summary};
 use anyhow::Context as _;
 
 pub const ALPN: &[u8] = b"syncstr/control/1";
 const MAX_FETCH: usize = 32;
+/// How the QUIC stack reports a peer that offers none of the requested protocols.
+const NO_PROTOCOL: &str = "known protocol";
 const MAX_HELLO: usize = 4 * 1024 * 1024;
+/// An answer stops growing here; the client asks again for the rest.
+const MAX_ANSWER: usize = 16 * 1024 * 1024;
+
+/// The peer does not offer the control protocol.
+#[derive(Debug)]
+pub struct Unsupported;
+
+impl std::fmt::Display for Unsupported {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("peer does not offer the control protocol")
+    }
+}
+
+impl std::error::Error for Unsupported {}
+
+/// Journal inspection verifies signatures and waits on the store; keep it off
+/// the async workers.
+async fn blocking<T: Send + 'static>(
+    store: &crate::shared_audio::Store,
+    work: impl FnOnce(&crate::shared_audio::Store) -> anyhow::Result<T> + Send + 'static,
+) -> anyhow::Result<T> {
+    let store = store.clone();
+    tokio::task::spawn_blocking(move || work(&store)).await?
+}
 
 #[derive(serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -56,9 +82,13 @@ pub(crate) async fn serve_connection(
     let (mut output, mut input) = connection.accept_bi().await?;
     let hello: Hello = crate::cluster_net::receive(&mut input, MAX_HELLO).await?;
     anyhow::ensure!(hello.version == 1, "unsupported control protocol version");
-    let proof = store.merge_membership_from(hello.proof, Some((&peer, &own)), false)?;
+    let (presenter, host) = (peer.clone(), own.clone());
+    let proof = blocking(&store, move |store| {
+        store.merge_membership_from(hello.proof, Some((&presenter, &host)), false)
+    })
+    .await?;
     crate::shared_audio_net::authorize(&proof, &peer, true)?;
-    let journal = store.control_journal()?;
+    let journal = blocking(&store, |store| store.control_journal()).await?;
     crate::cluster_net::send(
         &mut output,
         &Welcome {
@@ -77,7 +107,10 @@ pub(crate) async fn serve_connection(
         match request {
             Request::Fetch { envelopes } => {
                 anyhow::ensure!(envelopes.len() <= MAX_FETCH, "control fetch too large");
-                let (found, snapshots) = store.control_evidence(&envelopes)?;
+                let (found, snapshots) = blocking(&store, move |store| {
+                    store.control_evidence(&envelopes, MAX_ANSWER)
+                })
+                .await?;
                 let revisions: Vec<Digest> = snapshots.keys().copied().collect();
                 let mut reply = Fetched {
                     envelopes: Vec::new(),
@@ -102,14 +135,21 @@ pub(crate) async fn serve_connection(
 
 /// What decided the last refusal of an envelope. It is fetched again only
 /// after this host's journal changed.
-type Seen = (u64, Option<Digest>, bool, Option<Digest>, Option<Digest>, usize);
+type Seen = (
+    u64,
+    Option<Digest>,
+    bool,
+    Option<Designation>,
+    Option<Digest>,
+    usize,
+);
 
 fn seen(summary: &Summary) -> Seen {
     (
         summary.epoch,
         summary.head,
         summary.frozen,
-        summary.session.as_ref().map(|s| s.nonce),
+        summary.session.clone(),
         summary.membership,
         summary.envelopes.len(),
     )
@@ -127,19 +167,29 @@ pub struct Session {
 }
 
 impl Session {
-    /// Fails when the peer does not speak the control protocol or the two
-    /// hosts do not authorize each other.
+    /// Fails with `Unsupported` when the peer does not offer the control
+    /// protocol, and otherwise when the exchange fails or the two hosts do not
+    /// authorize each other.
     pub async fn connect(
         endpoint: &iroh::Endpoint,
         address: iroh::EndpointAddr,
         store: &crate::shared_audio::Store,
     ) -> anyhow::Result<Self> {
         let peer = address.id.to_string();
-        let connection = tokio::time::timeout(
+        let connection = match tokio::time::timeout(
             std::time::Duration::from_secs(10),
             endpoint.connect(address, ALPN),
         )
-        .await??;
+        .await?
+        {
+            Ok(connection) => connection,
+            // TLS alert 120, no_application_protocol: the peer listens but
+            // does not offer this protocol. Anything else is not that answer.
+            Err(error) if format!("{error:?}").contains(NO_PROTOCOL) => {
+                return Err(Unsupported.into());
+            }
+            Err(error) => return Err(error.into()),
+        };
         let (mut output, mut input) = connection.open_bi().await?;
         crate::cluster_net::send(
             &mut output,
@@ -156,7 +206,7 @@ impl Session {
         )
         .await??;
         anyhow::ensure!(welcome.version == 1, "unsupported control protocol version");
-        store.merge_membership(welcome.proof)?;
+        blocking(store, move |store| store.merge_membership(welcome.proof)).await?;
         let proof = store.membership()?;
         crate::shared_audio_net::authorize(&proof, &peer, true)?;
         crate::shared_audio_net::authorize(&proof, &endpoint.id().to_string(), true)?;
@@ -194,7 +244,9 @@ impl Session {
         let Journal::Readable { summary: remote } = &self.journal else {
             return Ok(0);
         };
-        let Journal::Readable { summary: local } = store.control_journal()? else {
+        let Journal::Readable { summary: local } =
+            blocking(store, |store| store.control_journal()).await?
+        else {
             return Ok(0);
         };
         if local.halted || local.session.is_none() {
@@ -224,8 +276,10 @@ impl Session {
                 evidence.push((signed, membership));
             }
         }
-        let outcomes = store.control_accept(evidence)?;
-        let Journal::Readable { summary: local } = store.control_journal()? else {
+        let outcomes = blocking(store, move |store| store.control_accept(evidence)).await?;
+        let Journal::Readable { summary: local } =
+            blocking(store, |store| store.control_journal()).await?
+        else {
             return Ok(0);
         };
         let after = seen(&local);
@@ -235,7 +289,7 @@ impl Session {
                 Ok(_) => stored += 1,
                 // Whatever was refused may become acceptable once the journal moves.
                 Err(_) if after == before => {
-                    refused.0.insert(id, after);
+                    refused.0.insert(id, after.clone());
                 }
                 Err(_) => {}
             }
@@ -245,17 +299,25 @@ impl Session {
 }
 
 /// Data flows only between hosts whose control journals agree: both without
-/// one, or both readable at the same installed head. A peer without a journal
-/// is acceptable only until this host has a head or anything pending.
+/// one, or both readable, not halted, at the same installed head. A peer
+/// without a journal is acceptable only until this host has a head or
+/// anything pending.
 fn gate(local: &Journal, remote: &Journal) -> anyhow::Result<()> {
     let Journal::Readable { summary: local } = local else {
         anyhow::bail!("control journal requires review");
     };
+    anyhow::ensure!(!local.halted, "control journal is halted for review");
     match remote {
-        Journal::Readable { summary } => anyhow::ensure!(
-            summary.head == local.head,
-            "peer is at another activation epoch"
-        ),
+        Journal::Readable { summary } => {
+            anyhow::ensure!(
+                !summary.halted,
+                "peer control journal is halted for review"
+            );
+            anyhow::ensure!(
+                summary.head == local.head,
+                "peer is at another activation epoch"
+            );
+        }
         Journal::Unreadable => anyhow::bail!("peer control journal requires review"),
         Journal::Absent => anyhow::ensure!(
             local.head.is_none() && !local.pending,
@@ -263,6 +325,15 @@ fn gate(local: &Journal, remote: &Journal) -> anyhow::Result<()> {
         ),
     }
     Ok(())
+}
+
+/// A host that pushes records cannot show its journal on the data protocol,
+/// so a push is accepted only where a peer without a journal would be.
+pub(crate) fn admit_push(store: &crate::shared_audio::Store) -> anyhow::Result<()> {
+    match store.control_journal()? {
+        Journal::Absent => Ok(()),
+        local => gate(&local, &Journal::Absent),
+    }
 }
 
 /// Synchronize control records with a host peer, then data if the journals
@@ -274,17 +345,18 @@ pub async fn reconcile(
     refused: &mut Refused,
 ) -> anyhow::Result<()> {
     let peer = address.id.to_string();
-    if store.control_journal()? != Journal::Absent {
+    if blocking(store, |store| store.control_journal()).await? != Journal::Absent {
         let remote = match Session::connect(endpoint, address.clone(), store).await {
             Ok(session) => {
                 session.pull(store, refused).await?;
                 session.journal
             }
-            // A peer that does not answer the control protocol has no journal
-            // this host can rely on.
-            Err(_) => Journal::Absent,
+            // Only a peer that does not offer the protocol counts as having no
+            // journal. After any other failure its journal is unknown.
+            Err(error) if error.is::<Unsupported>() => Journal::Absent,
+            Err(error) => return Err(error.context("control exchange failed; data deferred")),
         };
-        gate(&store.control_journal()?, &remote)?;
+        gate(&blocking(store, |store| store.control_journal()).await?, &remote)?;
     }
     let session =
         crate::shared_audio_net::Session::connect(endpoint, address, store.membership()?).await?;
@@ -330,6 +402,33 @@ mod tests {
         assert!(gate(&one, &Journal::Absent).is_err());
         assert!(gate(&none, &Journal::Unreadable).is_err());
         assert!(gate(&Journal::Unreadable, &none).is_err());
+        // A halted journal on either side waits for review.
+        let mut halted = summary(Some([1; 32]), false);
+        if let Journal::Readable { summary } = &mut halted {
+            summary.halted = true;
+        }
+        assert!(gate(&halted, &one).is_err());
+        assert!(gate(&one, &halted).is_err());
+    }
+
+    #[test]
+    fn a_corrected_designation_retries_refused_envelopes() {
+        let designated = |key: u8| {
+            let Journal::Readable { mut summary } = summary(None, true) else {
+                unreachable!()
+            };
+            summary.session = Some(Designation {
+                coordinator: crate::activation_control::Host {
+                    key: [key; 32],
+                    grant: [5; 32],
+                },
+                nonce: [6; 32],
+            });
+            seen(&summary)
+        };
+        assert_eq!(designated(1), designated(1));
+        // The same nonce under another coordinator is another session.
+        assert_ne!(designated(1), designated(2));
     }
 
     #[test]

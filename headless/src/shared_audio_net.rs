@@ -654,6 +654,7 @@ async fn serve_connection(
             }
             crate::shared_audio_net::Request::Receive { records } => {
                 crate::shared_audio_net::authorize(&proof, &peer, true)?;
+                crate::activation_control_net::admit_push(&store)?;
                 store.receive(records)?;
                 crate::cluster_net::send(&mut output, &true).await?;
             }

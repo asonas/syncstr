@@ -95,10 +95,13 @@ impl crate::shared_audio::Store {
 
     /// The requested envelopes this host holds, each with the membership
     /// revision of its proposal, and the membership snapshots by revision.
+    /// Stops before the answer outgrows `budget` bytes on the wire; the first
+    /// envelope is always included so that a caller makes progress.
     #[allow(clippy::type_complexity)]
     pub fn control_evidence(
         &self,
         ids: &[Digest],
+        budget: usize,
     ) -> anyhow::Result<(
         Vec<(Signed, Digest)>,
         BTreeMap<Digest, crate::enrollment::Proof>,
@@ -106,6 +109,7 @@ impl crate::shared_audio::Store {
         self.run(|db, _| {
             let mut envelopes = Vec::new();
             let mut memberships = BTreeMap::new();
+            let mut used = 0usize;
             for id in ids {
                 // An envelope this host cannot produce intact is not served.
                 let Ok(signed) = get(db, id) else { continue };
@@ -113,10 +117,24 @@ impl crate::shared_audio::Store {
                     continue;
                 };
                 let p = proposal(&stored)?;
-                if let Entry::Vacant(entry) = memberships.entry(p.membership) {
-                    let Ok(snapshot) = proof(db, &p.membership, p.cluster) else {
-                        continue;
-                    };
+                // Canonical bytes travel as hexadecimal text.
+                let mut cost = signed.canonical()?.len() * 2;
+                let entry = memberships.entry(p.membership);
+                let snapshot = match &entry {
+                    Entry::Occupied(_) => None,
+                    Entry::Vacant(_) => {
+                        let Ok(snapshot) = proof(db, &p.membership, p.cluster) else {
+                            continue;
+                        };
+                        cost += serde_json::to_vec(&snapshot)?.len();
+                        Some(snapshot)
+                    }
+                };
+                if !envelopes.is_empty() && used.saturating_add(cost) > budget {
+                    break;
+                }
+                used = used.saturating_add(cost);
+                if let (Entry::Vacant(entry), Some(snapshot)) = (entry, snapshot) {
                     entry.insert(snapshot);
                 }
                 envelopes.push((signed, p.membership));

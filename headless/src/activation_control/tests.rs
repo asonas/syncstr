@@ -1798,3 +1798,20 @@ fn withdrawal_cannot_reopen_a_settled_installation() -> anyhow::Result<()> {
     assert_eq!(f.refusal()?, None);
     Ok(())
 }
+
+#[test]
+fn evidence_answer_stops_at_its_budget() -> anyhow::Result<()> {
+    let f = Fixture::new()?;
+    f.record(&vector("certificate"))?;
+    let ids: Vec<Digest> = f.store().run(|db, _| Ok(journal::all(db)?.into_keys().collect()))?;
+    assert_eq!(ids.len(), 5);
+    let (all, snapshots) = f.store().control_evidence(&ids, usize::MAX)?;
+    assert_eq!((all.len(), snapshots.len()), (5, 1));
+    // The first envelope always fits, so a caller makes progress.
+    let (first, snapshots) = f.store().control_evidence(&ids, 1)?;
+    assert_eq!((first.len(), snapshots.len()), (1, 1));
+    assert_eq!(first[0].0.id()?, ids[0]);
+    let unknown = f.store().control_evidence(&[[9; 32]], usize::MAX)?;
+    assert!(unknown.0.is_empty() && unknown.1.is_empty());
+    Ok(())
+}

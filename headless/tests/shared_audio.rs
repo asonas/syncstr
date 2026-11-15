@@ -6090,6 +6090,17 @@ async fn data_reconciles_only_between_hosts_whose_control_journals_agree() -> an
     reconcile(&b_endpoint, &b, a_endpoint.addr(), &mut refused).await?;
     let first = b.cursor(&peer)?;
     assert!(first > 0);
+    let push = || async {
+        syncstr_headless::shared_audio_net::Session::connect(
+            &b_endpoint,
+            a_endpoint.addr(),
+            b.membership()?,
+        )
+        .await?
+        .request::<bool>(syncstr_headless::shared_audio_net::Request::Receive { records: vec![] })
+        .await
+    };
+    assert!(push().await?);
 
     // This host has a journal and nothing activated: a peer without one, and a
     // peer that does not speak the control protocol, still reconcile.
@@ -6103,6 +6114,22 @@ async fn data_reconciles_only_between_hosts_whose_control_journals_agree() -> an
     reconcile(&b_endpoint, &b, a_endpoint.addr(), &mut refused).await?;
     assert!(b.cursor(&peer)? > second);
     a_endpoint.set_alpns(both);
+    // A control exchange that fails for another reason leaves the peer's
+    // journal unknown: a playback member is refused there, and gets no data
+    // although the data protocol alone would serve it.
+    let reader = syncstr_headless::peer::Identity::from_secret(
+        &fixture.root.path().join("reader"),
+        [43; 32],
+    )?;
+    let (reader_endpoint, _reader_lock) =
+        reader.cluster_endpoint(&["127.0.0.1:0".parse()?]).await?;
+    let error = reconcile(&reader_endpoint, &b, a_endpoint.addr(), &mut refused)
+        .await
+        .unwrap_err();
+    assert!(
+        error.to_string().contains("control exchange failed"),
+        "{error}"
+    );
 
     // A full activation on a; b follows through the control protocol.
     for store in [&a, &b] {
@@ -6115,6 +6142,8 @@ async fn data_reconciles_only_between_hosts_whose_control_journals_agree() -> an
     }
     a.control_record(&m.proposed, &m.proof, &m.session)?;
     let from_a = m.prepare(&a, &fixture.host)?;
+    // A pushing host cannot show its journal, so a pending activation refuses it.
+    assert!(push().await.is_err());
     reconcile(&b_endpoint, &b, a_endpoint.addr(), &mut refused).await?;
     assert_eq!(
         b.control_inspect()?.pending_preparations,

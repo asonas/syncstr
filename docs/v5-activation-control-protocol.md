@@ -96,7 +96,8 @@ Implemented, except the host reactions at the end of this section.
 - The client opens with `{"version": 1, "proof": <membership proof>}`. The server merges the proof as the data protocol does, requires the client to be an authorized host, and answers `{"version": 1, "proof": ..., "journal": ...}`. The client merges the server's proof and requires both sides to be authorized hosts.
 - `journal` is `{"state": "absent"}` for a host that never initialized control storage, `{"state": "unreadable"}` for a journal that needs review, or `{"state": "readable", "summary": {...}}`.
 - The summary carries `epoch`, `head`, `frozen`, `released`, `halted`, `pending`, the designated `session`, the `membership` revision (null while it cannot be verified), `input_history`, and the identifiers of the stored `envelopes`.
-- One request exists: `{"operation": "fetch", "envelopes": [<identifier>, ...]}` with at most 32 identifiers. The answer lists each envelope the server holds as `{"canonical": <hex>, "membership": <index>}` and the membership snapshots the indexes refer to. The server authorizes both hosts again for every request.
+- One request exists: `{"operation": "fetch", "envelopes": [<identifier>, ...]}` with at most 32 identifiers. The answer lists each envelope the server holds as `{"canonical": <hex>, "membership": <index>}` and the membership snapshots the indexes refer to. The server authorizes both hosts again for every request. An answer stops growing at about 16 MiB; the client asks again for what is still missing.
+- A later version of this protocol is offered as another ALPN next to this one, because unknown fields are refused.
 
 Nothing is signed in answer to a request. Envelopes move by fetching, so every step can be repeated after a crash.
 
@@ -115,12 +116,18 @@ Before a host reconciles data with a peer it exchanges control records with that
 | No control journal | Any | Reconciles as before |
 | Readable | Readable, same installed head | Reconciles |
 | Readable | Readable, another head | Deferred |
-| Readable, no head, nothing pending | No journal, or no control protocol | Reconciles (C4) |
-| Readable, with a head or anything pending | No journal, or no control protocol | Deferred (C4) |
+| Readable, no head, nothing pending | No journal, or does not offer the control protocol | Reconciles (C4) |
+| Readable, with a head or anything pending | No journal, or does not offer the control protocol | Deferred (C4) |
 | Readable | Unreadable | Deferred |
+| Readable | Control exchange failed for any other reason | Deferred |
+| Halted on either side | Any | Deferred |
 | Unreadable | Any | Deferred |
 
-Replication is pulled by the receiving host, so each host applies this before it reads from a peer.
+Only a refused protocol counts as "does not offer": the peer answered and offered none of the requested protocols. A timeout, a broken answer or a refused authorization leaves the peer's journal unknown.
+
+Replication is pulled by the receiving host, so each host applies this before it reads from a peer. The data protocol also lets a host push records. A pushing host cannot show its journal there, so a push is accepted only where a peer without a journal would be: by a host with no control journal, or with no head and nothing pending.
+
+The check runs once before the data session. A peer whose head moves during that session is not noticed until the next exchange. Hosts do not install on their own yet, so this cannot happen without an operator; the host reactions below need a check tied to the data session.
 
 ### Host reactions (design, not implemented)
 
