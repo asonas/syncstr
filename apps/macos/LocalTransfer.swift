@@ -329,6 +329,10 @@ final class LocalTransfer: ObservableObject {
         if readyForLocalCopyRemoval != ready { readyForLocalCopyRemoval = ready }
     }
     var saveRetry: Task<Void, Never>?
+    var saveRetryInterval: Duration = .seconds(15)
+    private var saveReconnectAttempts = 0
+    private var saveReconnectNotBefore: ContinuousClock.Instant?
+    private(set) var saveReconnecting = false
     var saveNetwork: ClusterNetwork?
     var saveGeneration = UUID()
     var savesBackgrounded = false
@@ -1198,6 +1202,33 @@ final class LocalTransfer: ObservableObject {
             connectionEvent("reconnect_peer", outcome: "failed", fields: ["reason": stage], error: error)
             status = error.localizedDescription
         }
+    }
+
+    /// An idle legacy session can expire while `connected` is still set.
+    var legacyChannelUsable: Bool {
+        connected && client != nil && (client as? PeerMusicConnection)?.isClosed != true
+    }
+
+    /// Every legacy connection repeats the full catalog exchange, so automatic reconnects
+    /// back off until a save completes.
+    static func saveReconnectDelay(attempts: Int) -> Duration {
+        .seconds(min(300, 15 << min(max(attempts - 1, 0), 5)))
+    }
+
+    func reconnectPeerForWaitingSaves() async {
+        guard clusterRegistration == nil, lastLegacyDevice == nil, peerName != nil, !busy, !legacyChannelUsable,
+              !savesBackgrounded, saveReconnectNotBefore.map({ $0 <= .now }) ?? true else { return }
+        saveReconnectAttempts += 1
+        connectionEvent("save_reconnect_started", fields: ["attempt": String(saveReconnectAttempts)])
+        saveReconnecting = true
+        await reconnectPeer()
+        saveReconnecting = false
+        saveReconnectNotBefore = .now + Self.saveReconnectDelay(attempts: saveReconnectAttempts)
+    }
+
+    func legacySaveCompleted() {
+        saveReconnectAttempts = 0
+        saveReconnectNotBefore = nil
     }
 
     func forgetPeer() async {
