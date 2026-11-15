@@ -22,7 +22,8 @@ pub struct Inspection {
     pub head: Option<Digest>,
     pub minimum_profiles: BTreeSet<String>,
     pub prepare_locks: Vec<Digest>,
-    /// Locks whose proposal has no installed certificate.
+    /// Proposals without an installed certificate that this host locked, or
+    /// that another host is known to have prepared.
     pub pending_preparations: Vec<Digest>,
     pub pending_certificates: Vec<Digest>,
     pub unsigned_preparations: Vec<Digest>,
@@ -446,6 +447,13 @@ impl crate::shared_audio::Store {
             if matches!(signed.body, Body::Proposal(_) | Body::Certificate(_)) {
                 save_proof(&tx, p, membership)?;
             }
+            if matches!(signed.body, Body::Prepared(_)) {
+                // Another host holds a prepare lock; this one must not resume writes.
+                ensure!(
+                    super::freeze::frozen(&tx)?,
+                    "host is not frozen for maintenance"
+                );
+            }
             if let Body::Certificate(c) = &signed.body {
                 // A certificate may activate; it must never wait on an unfrozen host.
                 ensure!(
@@ -828,6 +836,15 @@ pub(super) fn inspect(db: &Connection) -> anyhow::Result<Inspection> {
         }
         prepare_locks.push(id);
     }
+    for signed in records.values() {
+        if let Body::Prepared(a) = &signed.body
+            && !installed_proposals.contains(&a.proposal)
+            && !pending_preparations.contains(&a.proposal)
+        {
+            pending_preparations.push(a.proposal);
+        }
+    }
+    pending_preparations.sort();
     ensure!(expected_floor == s.floor, "corrupt durable profile floor");
     let mut conflicts_found = false;
     let mut statement = db.prepare("SELECT digest, canonical FROM activation_control_conflicts")?;

@@ -1196,6 +1196,35 @@ fn next_epoch_waits_for_every_installation_acknowledgment() -> anyhow::Result<()
 }
 
 #[test]
+fn another_hosts_preparation_keeps_this_host_frozen() -> anyhow::Result<()> {
+    let remote = |f: &Fixture| -> anyhow::Result<Signed> {
+        let key = *f.identity(8)?.id().as_bytes();
+        let mut ack = root_prepared();
+        ack.host = proposal(&vector("proposal"))?
+            .hosts
+            .iter()
+            .find(|h| h.key == key)
+            .unwrap()
+            .clone();
+        f.resign(Body::Prepared(ack), 8)
+    };
+    let f = Fixture::unfrozen()?;
+    f.record(&vector("proposal"))?;
+    assert!(f.record(&remote(&f)?).is_err());
+    assert_eq!(f.refusal()?, None);
+
+    let f = Fixture::new()?;
+    f.record(&vector("proposal"))?;
+    f.record(&remote(&f)?)?;
+    let state = f.store().control_inspect()?;
+    assert!(state.prepare_locks.is_empty());
+    assert_eq!(state.pending_preparations, [vector("proposal").id()?]);
+    assert!(f.store().control_release().is_err());
+    assert_eq!(f.refusal()?, Some(Refusal::Maintenance));
+    Ok(())
+}
+
+#[test]
 fn abandoned_maintenance_releases_without_a_head() -> anyhow::Result<()> {
     let f = Fixture::new()?;
     f.record(&vector("proposal"))?;
