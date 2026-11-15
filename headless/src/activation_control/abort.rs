@@ -46,8 +46,30 @@ fn certified(records: &BTreeMap<Digest, Signed>, id: &Digest) -> anyhow::Result<
     Ok(false)
 }
 
-/// A certificate cannot stand beside an abort of its proposal, or beside this
-/// host's promise never to store one.
+/// Proposals resolved by a signed abort.
+pub(super) fn aborted(records: &BTreeMap<Digest, Signed>) -> BTreeSet<Digest> {
+    records
+        .values()
+        .filter_map(|s| match &s.body {
+            Body::Aborted(a) => Some(a.proposal),
+            _ => None,
+        })
+        .collect()
+}
+
+/// Proposals any host is known to have withdrawn from.
+pub(super) fn withdrawn(records: &BTreeMap<Digest, Signed>) -> BTreeSet<Digest> {
+    records
+        .values()
+        .filter_map(|s| match &s.body {
+            Body::Withdrawn(w) => Some(w.proposal),
+            _ => None,
+        })
+        .collect()
+}
+
+/// A certificate cannot stand beside an abort of its proposal, or beside a
+/// host's promise never to install it.
 pub(super) fn contradicts(
     db: &Connection,
     candidate: &Signed,
@@ -57,10 +79,9 @@ pub(super) fn contradicts(
     let records = all(db)?;
     match &candidate.body {
         Body::Certificate(_) => Ok(withdrawals(db, &records)?.contains(&id)
-            || records
-                .values()
-                .any(|s| matches!(&s.body, Body::Aborted(a) if a.proposal == id))),
-        Body::Aborted(_) => certified(&records, &id),
+            || aborted(&records).contains(&id)
+            || withdrawn(&records).contains(&id)),
+        Body::Aborted(_) | Body::Withdrawn(_) => certified(&records, &id),
         _ => Ok(false),
     }
 }
@@ -69,13 +90,7 @@ pub(super) fn contradicts(
 /// locks, so an abort gives back what its proposal alone required.
 pub(super) fn settle_floor(db: &Connection) -> anyhow::Result<()> {
     let records = all(db)?;
-    let aborted: BTreeSet<Digest> = records
-        .values()
-        .filter_map(|s| match &s.body {
-            Body::Aborted(a) => Some(a.proposal),
-            _ => None,
-        })
-        .collect();
+    let aborted = aborted(&records);
     let mut floor = BTreeSet::new();
     let mut cursor = state(db)?.head;
     while let Some(id) = cursor {

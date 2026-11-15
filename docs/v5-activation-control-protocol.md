@@ -71,7 +71,10 @@ Rules:
 - After withdrawing, a host refuses to take a prepare lock for the proposal.
 - An abort is valid only with a withdrawal from every host in the proposal's host set, signed by the proposal's coordinator.
 - Storing an abort resolves the proposal: its prepare lock stays as evidence but no longer blocks release, no longer pins the input history, and no longer raises the profile floor. A profile floor comes only from installed certificates and unresolved locks.
-- A certificate for a proposal the host withdrew from or holds an abort for, and an abort for a proposal the host holds a certificate for, are contradictions. The host records the envelope as a conflict and halts its journal for review.
+- An aborted proposal is not a sibling. A new proposal from the same head and epoch can be recorded and prepared after the abort. Two unresolved proposals from one head still halt the journal.
+- A host's own signed withdrawal binds it however the envelope arrives, so a host restored to an earlier state keeps its promise once a peer returns the envelope.
+- A certificate cannot stand beside an abort of its proposal or beside any host's withdrawal from it. Whichever arrives second is recorded as a conflict and halts the journal for review. A certificate or an abort halts even if its signer was revoked since, because it carries every host's signature. A withdrawal from a host that is revoked locally is refused instead, so one revoked host cannot halt the others.
+- A membership that cannot be read or verified is an error, not a membership change; the C2 rule applies only to a verified, different revision.
 - An unreachable host means the abort waits.
 
 The coordinator's order matters. It first synchronizes control records with every host. If any host holds a certificate, the session goes forward: the certificate is installed everywhere. Only when no host holds one does the coordinator withdraw itself, and after that it must not sign a certificate for the proposal.

@@ -1582,3 +1582,125 @@ fn designation_names_an_authorized_host_and_ends_with_release() -> anyhow::Resul
     assert!(f.store().control_session()?.is_none());
     Ok(())
 }
+
+#[test]
+fn aborted_proposal_allows_a_new_one_from_the_same_head() -> anyhow::Result<()> {
+    let mut f = Fixture::new()?;
+    f.record(&vector("proposal"))?;
+    f.prepare()?;
+    f.record(&vector("aborted"))?;
+    let mut p = proposal(&vector("proposal"))?.clone();
+    p.nonce = [0x88; 32];
+    let retry = f.resign(Body::Proposal(Box::new(p)), 7)?;
+    let expected = Session {
+        coordinator: session().coordinator,
+        nonce: [0x88; 32],
+    };
+    assert_eq!(
+        f.store()
+            .control_record(&retry, &member_proof(), &expected)?,
+        Outcome::Stored
+    );
+    let mut ack = root_prepared();
+    ack.proposal = retry.id()?;
+    f.store()
+        .control_prepare(ack, &f.identity(7)?, &expected, &supported())?;
+    f.reopen()?;
+    let state = f.store().control_inspect()?;
+    assert!(!state.halted);
+    assert_eq!(state.pending_preparations, [retry.id()?]);
+    // Two unresolved proposals from one head are still a fork.
+    let mut p = proposal(&vector("proposal"))?.clone();
+    p.nonce = [0x99; 32];
+    let rival = f.resign(Body::Proposal(Box::new(p)), 7)?;
+    assert_eq!(f.record(&rival)?, Outcome::ReviewRequired);
+    Ok(())
+}
+
+#[test]
+fn received_withdrawals_bind_this_host_and_contradict_a_certificate() -> anyhow::Result<()> {
+    // The host's own signed promise arrives from a peer after its database
+    // was restored to a state before the withdrawal.
+    let f = Fixture::new()?;
+    f.record(&vector("proposal"))?;
+    f.record(&withdrawal(&f, 7)?)?;
+    assert_eq!(
+        f.store().control_inspect()?.withdrawn,
+        [vector("proposal").id()?]
+    );
+    assert!(f.prepare().is_err());
+    f.record(&withdrawal(&f, 8)?)?;
+    assert_eq!(f.store().control_inspect()?.withdrawn.len(), 1);
+
+    let f = Fixture::new()?;
+    f.record(&vector("proposal"))?;
+    f.record(&withdrawal(&f, 8)?)?;
+    assert_eq!(f.record(&vector("certificate"))?, Outcome::ReviewRequired);
+    assert!(f.store().control_inspect()?.halted);
+
+    let mut f = Fixture::new()?;
+    f.record(&vector("certificate"))?;
+    assert_eq!(f.record(&withdrawal(&f, 8)?)?, Outcome::ReviewRequired);
+    f.reopen()?;
+    assert!(f.store().control_inspect()?.halted);
+
+    // A host revoked here cannot halt the journal with its word alone.
+    let f = Fixture::new()?;
+    f.record(&vector("certificate"))?;
+    revoke_locally(&f, 8)?;
+    assert!(f.record(&withdrawal(&f, 8)?).is_err());
+    assert!(!f.store().control_inspect()?.halted);
+    Ok(())
+}
+
+#[test]
+fn unreadable_membership_is_not_a_membership_change() -> anyhow::Result<()> {
+    let f = Fixture::new()?;
+    f.record(&vector("proposal"))?;
+    f.prepare()?;
+    f.sql("DELETE FROM cluster_enrollment_grants")?;
+    assert!(f.record(&vector("certificate")).is_err());
+    assert!(f.store().control_inspect()?.pending_certificates.is_empty());
+    Ok(())
+}
+
+#[test]
+fn contradiction_halts_even_after_the_coordinator_was_revoked() -> anyhow::Result<()> {
+    let f = Fixture::new()?;
+    f.record(&vector("proposal"))?;
+    f.record(&vector("aborted"))?;
+    f.store().control_release()?;
+    // Host 8 issues the revocation, so the root's own grant chain stays valid.
+    let proof = f.store().run(|db, _| crate::enrollment::read_proof(db))?;
+    let authority = proof
+        .grants
+        .iter()
+        .find(|g| g.member == f.identity(8).unwrap().id().to_string())
+        .unwrap();
+    let mut revocation = crate::enrollment::Revocation {
+        version: 1,
+        id: String::new(),
+        cluster: authority.cluster.clone(),
+        issuer: authority.member.clone(),
+        member: f.identity(7)?.id().to_string(),
+        authority: authority.id.clone(),
+        observed: proof.grants.iter().map(|g| g.id.clone()).collect(),
+        change_heads: vec![],
+        signature: String::new(),
+    };
+    revocation.id = hex::encode(Sha256::digest(revocation.signing_bytes()?));
+    revocation.signature = hex::encode(f.identity(8)?.sign(&revocation.signing_bytes()?));
+    f.sql(&format!(
+        "INSERT INTO cluster_revocations VALUES ('{}', X'{}')",
+        revocation.id,
+        hex::encode(serde_json::to_vec(&revocation)?)
+    ))?;
+    assert!(revoked_locally_for_test(&f)?);
+    assert_eq!(f.record(&vector("certificate"))?, Outcome::ReviewRequired);
+    Ok(())
+}
+
+fn revoked_locally_for_test(f: &Fixture) -> anyhow::Result<bool> {
+    f.store()
+        .run(|db, _| journal::revoked_locally(db, &session().coordinator, &member_proof()))
+}

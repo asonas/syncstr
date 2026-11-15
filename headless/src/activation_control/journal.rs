@@ -212,10 +212,12 @@ fn current_baseline(db: &Connection, p: &Proposal) -> anyhow::Result<()> {
 fn prepared_membership(db: &Connection, signed: &Signed) -> anyhow::Result<()> {
     let c = certificate(signed)?;
     let p = proposal(&c.proposal)?;
-    if current_membership(db, p).is_ok() {
+    current_baseline(db, p)?;
+    // An unreadable or disputed membership is an error, not a change.
+    let current = crate::enrollment::read_proof(db)?;
+    if membership_revision(p.cluster, &current)?.0 == p.membership {
         return Ok(());
     }
-    current_baseline(db, p)?;
     let ack: Option<Vec<u8>> = db
         .query_row(
             "SELECT acknowledgment_digest FROM activation_control_prepare WHERE proposal=?",
@@ -255,6 +257,15 @@ pub(super) fn current_membership(db: &Connection, p: &Proposal) -> anyhow::Resul
         "membership changed; retain preparation lock"
     );
     Ok(())
+}
+
+fn is_local(db: &Connection, host: &Host) -> anyhow::Result<bool> {
+    let grant: String = db.query_row(
+        "SELECT local_grant FROM cluster_trust WHERE singleton=1",
+        [],
+        |r| r.get(0),
+    )?;
+    Ok(digest(&grant)? == host.grant)
 }
 
 pub(super) fn local_host(db: &Connection, p: &Proposal, host: &Host) -> anyhow::Result<()> {
@@ -305,11 +316,15 @@ pub(super) fn verified_proposal(db: &Connection, signed: &Signed) -> anyhow::Res
 /// Return true for observed siblings, including a rival discovered after install.
 fn conflicts(db: &Connection, candidate: &Signed, proposed: &Signed) -> anyhow::Result<bool> {
     let p = proposal(proposed)?;
-    for signed in all(db)?.values() {
+    let records = all(db)?;
+    // An aborted proposal is resolved; a retry from the same head is no fork.
+    let aborted = super::abort::aborted(&records);
+    for (id, signed) in &records {
         if let Body::Proposal(other) = &signed.body
             && other.previous == p.previous
             && other.epoch == p.epoch
-            && signed.id()? != proposed.id()?
+            && *id != proposed.id()?
+            && !aborted.contains(id)
         {
             return Ok(true);
         }
@@ -491,14 +506,19 @@ impl crate::shared_audio::Store {
                 return Ok(Outcome::ReviewRequired);
             }
             if super::abort::contradicts(&tx, signed, &proposed)? {
-                ensure!(
-                    !revoked_locally(&tx, signed.body.signer(), membership)?,
-                    "contradicting signer is revoked or disputed locally"
-                );
+                // A certificate or an abort carries every host's signature and
+                // halts whatever happened to its signer since. A withdrawal is
+                // one host's word, so a revoked host cannot halt with it.
+                if matches!(signed.body, Body::Withdrawn(_)) {
+                    ensure!(
+                        !revoked_locally(&tx, signed.body.signer(), membership)?,
+                        "withdrawing host is revoked or disputed locally"
+                    );
+                }
                 if matches!(signed.body, Body::Certificate(_)) {
                     save_proof(&tx, p, membership)?;
                 }
-                mark_conflict(&tx, signed, "certificate and abort for one proposal")?;
+                mark_conflict(&tx, signed, "certificate beside an abort or withdrawal")?;
                 tx.commit()?;
                 return Ok(Outcome::ReviewRequired);
             }
@@ -544,6 +564,16 @@ impl crate::shared_audio::Store {
                 for withdrawn in &a.withdrawn {
                     put(&tx, withdrawn)?;
                 }
+            }
+            if let Body::Withdrawn(w) = &signed.body
+                && is_local(&tx, &w.host)?
+            {
+                // This host signed the promise; a restored database must keep it.
+                super::freeze::tables(&tx)?;
+                tx.execute(
+                    "INSERT OR IGNORE INTO activation_control_withdrawals VALUES (?, ?)",
+                    params![w.proposal.as_slice(), id.as_slice()],
+                )?;
             }
             put(&tx, signed)?;
             if matches!(signed.body, Body::Aborted(_)) {
@@ -778,14 +808,15 @@ pub(super) fn inspect(db: &Connection) -> anyhow::Result<Inspection> {
     let mut siblings = BTreeMap::new();
     let mut certificates = BTreeMap::new();
     let mut certificate_children = BTreeMap::new();
-    let mut aborted = BTreeSet::new();
+    let aborted = super::abort::aborted(&records);
+    let withdrawn_anywhere = super::abort::withdrawn(&records);
     for (id, signed) in &records {
         match &signed.body {
             Body::Proposal(p) => {
                 scope(&s, p)?;
                 verified_proposal(db, signed)?;
                 ensure!(
-                    siblings.insert((p.previous, p.epoch), *id).is_none(),
+                    aborted.contains(id) || siblings.insert((p.previous, p.epoch), *id).is_none(),
                     "unrecorded proposal fork; review required"
                 );
             }
@@ -848,7 +879,6 @@ pub(super) fn inspect(db: &Connection) -> anyhow::Result<Inspection> {
                         "missing nested withdrawal evidence"
                     );
                 }
-                aborted.insert(a.proposal);
             }
         }
     }
@@ -857,7 +887,7 @@ pub(super) fn inspect(db: &Connection) -> anyhow::Result<Inspection> {
     for id in certificates.keys() {
         let proposed = certificate(&records[id])?.proposal.id()?;
         ensure!(
-            !aborted.contains(&proposed) && !withdrawn.contains(&proposed),
+            !aborted.contains(&proposed) && !withdrawn_anywhere.contains(&proposed),
             "certificate for a withdrawn or aborted proposal"
         );
         certified.insert(proposed);
@@ -998,14 +1028,21 @@ pub(super) fn inspect(db: &Connection) -> anyhow::Result<Inspection> {
                 verify_aborted(&signed, stored)?;
                 stored
             }
+            Body::Withdrawn(w) => {
+                let stored = records
+                    .get(&w.proposal)
+                    .context("missing proposal evidence")?;
+                verify_withdrawn(&signed, stored)?;
+                stored
+            }
             _ => anyhow::bail!("invalid conflict kind"),
         };
         verified_proposal(db, proposed)?;
         scope(&s, proposal(proposed)?)?;
         let id = proposed.id()?;
         let contradicted = match &signed.body {
-            Body::Certificate(_) => aborted.contains(&id) || withdrawn.contains(&id),
-            Body::Aborted(_) => certified.contains(&id),
+            Body::Certificate(_) => aborted.contains(&id) || withdrawn_anywhere.contains(&id),
+            Body::Aborted(_) | Body::Withdrawn(_) => certified.contains(&id),
             _ => false,
         };
         ensure!(
