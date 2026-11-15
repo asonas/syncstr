@@ -839,6 +839,7 @@ impl crate::shared_audio::Store {
                     return Ok(records);
                 }
             }
+            crate::activation_control::ensure_writable(&transaction)?;
             let mut records = crate::shared_audio::playlist_records(&transaction)?;
             let before = crate::playlists::project(&records, &proof)?;
             let catalog = crate::shared_audio::catalog(&transaction)?;
@@ -1160,6 +1161,8 @@ impl crate::shared_audio::Store {
                 transaction.commit()?;
                 return Ok((signed, body));
             }
+            // Accepted requests above still report their outcome while frozen.
+            crate::activation_control::ensure_writable(&transaction)?;
             let catalog = crate::shared_audio::catalog(&transaction)?;
             anyhow::ensure!(
                 grant.cluster == catalog.cluster,
@@ -1551,7 +1554,12 @@ impl crate::shared_audio::Store {
         );
         let digest = crate::shared_audio::hash(&serde_json::to_vec(&(member, mutation))?);
         self.run(|connection, _| {
-            crate::shared_audio::object_receipt(connection, member, &mutation.request, &digest)?;
+            // Refuse before the member sends the audio body.
+            if crate::shared_audio::object_receipt(connection, member, &mutation.request, &digest)?
+                .is_none()
+            {
+                crate::activation_control::ensure_writable(connection)?;
+            }
             Ok(())
         })?;
         Ok(put)
@@ -1582,6 +1590,9 @@ impl crate::shared_audio::Store {
                 );
                 let prior =
                     crate::shared_audio::object_receipt(&transaction, member, &request, &digest)?;
+                if prior.is_none() {
+                    crate::activation_control::ensure_writable(&transaction)?;
+                }
                 crate::shared_audio::publish_audio(
                     &transaction,
                     root,
@@ -2137,6 +2148,19 @@ pub(crate) fn mutation_result(
                 request,
                 reason: MutationRejection::Unauthorized,
             },
+            None if error
+                .downcast_ref::<crate::activation_control::Refusal>()
+                .is_some() =>
+            {
+                MutationReply::Deferred {
+                    request,
+                    reason: error
+                        .downcast_ref::<crate::activation_control::Refusal>()
+                        .map(|refusal| refusal.reason())
+                        .unwrap_or_default()
+                        .into(),
+                }
+            }
             None if error.downcast_ref::<rusqlite::Error>().is_some()
                 || error.downcast_ref::<std::io::Error>().is_some() =>
             {

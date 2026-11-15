@@ -1,14 +1,17 @@
-//! Local signed activation evidence only. No transport, freeze or writer release.
+//! Local signed activation evidence and the maintenance freeze. No transport.
 use anyhow::ensure;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 use std::collections::BTreeSet;
 
 mod encoding;
+mod freeze;
 mod journal;
 #[cfg(test)]
 mod tests;
 
+pub use freeze::Refusal;
+pub(crate) use freeze::ensure_writable;
 pub use journal::{Inspection, Outcome, Session};
 pub type Digest = [u8; 32];
 pub type Key = [u8; 32];

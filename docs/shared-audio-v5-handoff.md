@@ -120,7 +120,12 @@ new connection can receive the verifiable Hello refusal above before any mutatio
 request, with ordinary connection failure when evidence cannot be returned.
 Other outcomes keep the session open.
 Incomplete history returns `deferred` with reason `incomplete-history`; unavailable
-storage returns `deferred` with reason `store-unavailable`. Operations other than
+storage returns `deferred` with reason `store-unavailable`. A host frozen for
+activation maintenance returns `deferred` with reason `maintenance-freeze`, and a
+host whose activation control journal is halted or unreadable returns `deferred`
+with reason `control-review-required`. Both keep answering requests accepted
+earlier with their original reply, and keep serving catalog and audio reads.
+Keep the request queued and retry it later at the same host. Operations other than
 `set-album-visibility`, `resolve-album-visibility`, `edit-track`, `resolve-track`,
 `update-playlists`, `put-object`, `register-track` and `assign-source`
 remain `unsupported`.

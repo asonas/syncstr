@@ -22,10 +22,15 @@ pub struct Inspection {
     pub head: Option<Digest>,
     pub minimum_profiles: BTreeSet<String>,
     pub prepare_locks: Vec<Digest>,
+    /// Locks whose proposal has no installed certificate.
+    pub pending_preparations: Vec<Digest>,
     pub pending_certificates: Vec<Digest>,
     pub unsigned_preparations: Vec<Digest>,
     pub all_installations_recorded: bool,
     pub halted: bool,
+    pub frozen: bool,
+    /// Writers were released for the installed head. False without a head.
+    pub released: bool,
 }
 
 #[derive(Debug)]
@@ -356,6 +361,7 @@ impl crate::shared_audio::Store {
                 CREATE TABLE IF NOT EXISTS activation_control_state (singleton INTEGER PRIMARY KEY CHECK(singleton=1), cluster BLOB NOT NULL, root BLOB NOT NULL, baseline BLOB NOT NULL, epoch INTEGER NOT NULL, head BLOB, floor BLOB NOT NULL, halted INTEGER NOT NULL);
                 CREATE TABLE IF NOT EXISTS activation_control_prepare (proposal BLOB PRIMARY KEY, host BLOB NOT NULL, required_floor BLOB NOT NULL, acknowledgment_digest BLOB);
                 CREATE TABLE IF NOT EXISTS activation_control_conflicts (digest BLOB PRIMARY KEY, canonical BLOB NOT NULL, reason TEXT NOT NULL);")?;
+            super::freeze::tables(&tx)?;
             tx.execute("INSERT OR IGNORE INTO activation_control_state VALUES (1, ?, ?, ?, 0, NULL, ?, 0)", params![cluster.as_slice(), key(&proof.root)?.as_slice(), baseline.as_slice(), b"[]".as_slice()])?;
             let s = state(&tx)?;
             ensure!(s.cluster == cluster && s.root == key(&proof.root)? && s.baseline == baseline, "control storage scope changed");
@@ -441,6 +447,11 @@ impl crate::shared_audio::Store {
                 save_proof(&tx, p, membership)?;
             }
             if let Body::Certificate(c) = &signed.body {
+                // A certificate may activate; it must never wait on an unfrozen host.
+                ensure!(
+                    super::freeze::frozen(&tx)?,
+                    "host is not frozen for maintenance"
+                );
                 put(&tx, &c.proposal)?;
                 for ack in &c.prepared {
                     put(&tx, ack)?;
@@ -452,7 +463,7 @@ impl crate::shared_audio::Store {
         })
     }
 
-    /// The caller supplies verified freeze assertions. This API does not freeze writers.
+    /// Refused unless `control_freeze` is durably set; the lock commits with that check.
     pub fn control_prepare(
         &self,
         ack: Prepared,
@@ -526,6 +537,10 @@ pub(super) fn lock_prepare(
     local_host(&tx, p, &ack.host)?;
     supports(p, &s.floor, supported)?;
     extends(&s, p)?;
+    ensure!(
+        super::freeze::frozen(&tx)?,
+        "host is not frozen for maintenance"
+    );
     ensure!(
         ack.write_frozen
             && ack.admission_frozen
@@ -630,6 +645,10 @@ pub(super) fn install(
     local_host(&tx, p, host)?;
     supports(p, &s.floor, supported)?;
     if s.head != Some(*id) {
+        ensure!(
+            super::freeze::frozen(&tx)?,
+            "host is not frozen for maintenance"
+        );
         extends(&s, p)?;
         s.floor.extend(p.profiles.iter().cloned());
         tx.execute(
@@ -642,7 +661,7 @@ pub(super) fn install(
     Ok(p.epoch)
 }
 
-fn inspect(db: &Connection) -> anyhow::Result<Inspection> {
+pub(super) fn inspect(db: &Connection) -> anyhow::Result<Inspection> {
     let s = state(db)?;
     let records = all(db)?;
     let mut siblings = BTreeMap::new();
@@ -750,7 +769,12 @@ fn inspect(db: &Connection) -> anyhow::Result<Inspection> {
             );
         }
     }
+    let installed_proposals = installed
+        .iter()
+        .map(|id| certificate(&records[id])?.proposal.id())
+        .collect::<anyhow::Result<BTreeSet<_>>>()?;
     let mut prepare_locks = Vec::new();
+    let mut pending_preparations = Vec::new();
     let mut unsigned_preparations = Vec::new();
     let mut statement = db.prepare("SELECT proposal, host, required_floor, acknowledgment_digest FROM activation_control_prepare ORDER BY proposal")?;
     let rows = statement.query_map([], |r| {
@@ -789,6 +813,9 @@ fn inspect(db: &Connection) -> anyhow::Result<Inspection> {
             );
         } else {
             unsigned_preparations.push(id);
+        }
+        if !installed_proposals.contains(&id) {
+            pending_preparations.push(id);
         }
         prepare_locks.push(id);
     }
@@ -832,18 +859,37 @@ fn inspect(db: &Connection) -> anyhow::Result<Inspection> {
             _ => None,
         })
         .collect();
+    let pending_certificates: Vec<_> = certificates
+        .keys()
+        .filter(|id| !installed.contains(*id))
+        .copied()
+        .collect();
+    let frozen = super::freeze::frozen(db)?;
+    let released = match &s.head {
+        Some(head) => super::freeze::released(db, head)?,
+        None => false,
+    };
+    // Preparing, storing a certificate and installing all require the freeze,
+    // and release requires none pending, so an unfrozen host with pending or
+    // unreleased activation state was altered outside this journal.
+    ensure!(
+        frozen
+            || (pending_preparations.is_empty()
+                && pending_certificates.is_empty()
+                && (s.head.is_none() || released)),
+        "activation pending without a maintenance freeze"
+    );
     Ok(Inspection {
         epoch: s.epoch,
         head: s.head,
         minimum_profiles: s.floor,
         prepare_locks,
-        pending_certificates: certificates
-            .keys()
-            .filter(|id| !installed.contains(*id))
-            .copied()
-            .collect(),
+        pending_preparations,
+        pending_certificates,
         unsigned_preparations,
         all_installations_recorded: !expected_hosts.is_empty() && expected_hosts == actual_hosts,
         halted: s.halted,
+        frozen,
+        released,
     })
 }
