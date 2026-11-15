@@ -179,6 +179,47 @@ impl Fixture {
     }
 }
 
+/// The host of the fixture proposal whose identity has `seed`.
+fn host(f: &Fixture, seed: u8) -> anyhow::Result<Host> {
+    let key = *f.identity(seed)?.id().as_bytes();
+    Ok(proposal(&vector("proposal"))?
+        .hosts
+        .iter()
+        .find(|h| h.key == key)
+        .unwrap()
+        .clone())
+}
+
+/// A withdrawal from the fixture proposal signed by another host.
+fn withdrawal(f: &Fixture, seed: u8) -> anyhow::Result<Signed> {
+    f.resign(
+        Body::Withdrawn(Withdrawn {
+            proposal: vector("proposal").id()?,
+            host: host(f, seed)?,
+        }),
+        seed,
+    )
+}
+
+fn withdraw(f: &Fixture) -> anyhow::Result<Signed> {
+    f.store().control_withdraw(
+        vector("proposal").id()?,
+        session().coordinator,
+        &f.identity(7)?,
+        &session(),
+    )
+}
+
+fn abort(f: &Fixture) -> anyhow::Result<Signed> {
+    f.store()
+        .control_abort(vector("proposal").id()?, &f.identity(7)?, &session())
+}
+
+/// Whether a replicated record this host does not hold may be stored.
+fn intake(f: &Fixture) -> anyhow::Result<()> {
+    f.store().run(|db, _| ensure_intake(db))
+}
+
 fn root_prepared() -> Prepared {
     let p = vector("proposal");
     Prepared {
@@ -186,7 +227,7 @@ fn root_prepared() -> Prepared {
         host: session().coordinator,
         implementations: vec!["fixture-build-v1".into()],
         implemented_profiles: supported().into_iter().collect(),
-        input_history: [0x33; 32],
+        input_history: digest(vectors()["input_history"].as_str().unwrap()).unwrap(),
         baseline: [0x22; 32],
         write_frozen: true,
         admission_frozen: true,
@@ -256,7 +297,7 @@ fn canonical_vectors() -> anyhow::Result<()> {
     }
     let cert = f.resign(
         Body::Certificate(Certificate {
-            proposal: Box::new(proposed),
+            proposal: Box::new(proposed.clone()),
             prepared: acks,
             coordinator: p.coordinator.clone(),
         }),
@@ -277,11 +318,31 @@ fn canonical_vectors() -> anyhow::Result<()> {
             previous: Some(cert.id()?),
             epoch: 2,
             nonce: [0x77; 32],
-            ..p
+            ..p.clone()
         })),
         7,
     )?;
     assert_vector(&successor, &vectors()["successor"])?;
+    let mut withdrawals = Vec::new();
+    for seed in [7, 8, 9] {
+        withdrawals.push(withdrawal(&f, seed)?);
+    }
+    withdrawals.sort_by_key(|w| w.body.signer().key);
+    for (signed, expected) in withdrawals
+        .iter()
+        .zip(vectors()["withdrawn"].as_array().unwrap())
+    {
+        assert_vector(signed, expected)?;
+    }
+    let aborted = f.resign(
+        Body::Aborted(Aborted {
+            proposal: proposed.id()?,
+            withdrawn: withdrawals,
+            coordinator: p.coordinator,
+        }),
+        7,
+    )?;
+    assert_vector(&aborted, &vectors()["aborted"])?;
     Ok(())
 }
 
@@ -312,7 +373,7 @@ fn membership_revision_vectors() -> anyhow::Result<()> {
 
 #[test]
 fn bounded_noncanonical_decode() -> anyhow::Result<()> {
-    for name in ["proposal", "certificate", "installed", "successor"] {
+    for name in ["proposal", "certificate", "installed", "successor", "aborted"] {
         let bytes = vector(name).canonical()?;
         for length in [0, 1, 4, bytes.len() - 1] {
             assert!(Signed::decode(&bytes[..length]).is_err());
@@ -342,7 +403,7 @@ fn bounded_noncanonical_decode() -> anyhow::Result<()> {
 
 #[test]
 fn tampered_envelopes() -> anyhow::Result<()> {
-    for name in ["proposal", "certificate", "installed", "successor"] {
+    for name in ["proposal", "certificate", "installed", "successor", "aborted"] {
         let bytes = vector(name).canonical()?;
         // Cover each digest-sized signing region and every signature byte.
         for offset in (4..bytes.len())
@@ -495,7 +556,6 @@ fn membership_and_baseline_mismatch() -> anyhow::Result<()> {
         "DELETE FROM cluster_enrollment_grants WHERE id != (SELECT local_grant FROM cluster_trust)",
     )?;
     assert!(f.prepare().is_err());
-    assert!(f.record(&vector("certificate")).is_err());
     assert_eq!(f.store().control_inspect()?, before);
     Ok(())
 }
@@ -1275,5 +1335,433 @@ fn halted_or_altered_journal_refuses_writes_until_reviewed() -> anyhow::Result<(
         Some(Refusal::Review),
         "an installed head without a recorded release must not accept writes"
     );
+    Ok(())
+}
+
+#[test]
+fn input_history_covers_music_and_playlist_records() -> anyhow::Result<()> {
+    let f = Fixture::new()?;
+    let empty = f.store().control_input_history()?;
+    assert_eq!(
+        hex::encode(empty),
+        vectors()["input_history"].as_str().unwrap()
+    );
+    f.sql("INSERT INTO shared_records VALUES ('a', X'00')")?;
+    let music = f.store().control_input_history()?;
+    f.sql("DELETE FROM shared_records; INSERT INTO shared_playlists VALUES ('a', X'00')")?;
+    let playlist = f.store().control_input_history()?;
+    assert!(empty != music && empty != playlist && music != playlist);
+    Ok(())
+}
+
+#[test]
+fn prepare_and_install_require_this_hosts_input_history() -> anyhow::Result<()> {
+    let f = Fixture::new()?;
+    f.record(&vector("proposal"))?;
+    f.sql("INSERT INTO shared_records VALUES ('a', X'00')")?;
+    assert!(f.prepare().is_err(), "the fixture acknowledges an empty history");
+    assert!(f.store().control_inspect()?.prepare_locks.is_empty());
+    let mut ack = root_prepared();
+    ack.input_history = f.store().control_input_history()?;
+    f.store()
+        .control_prepare(ack, &f.identity(7)?, &session(), &supported())?;
+    // The certificate acknowledges a history this host does not have.
+    f.record(&vector("certificate"))?;
+    assert!(f.install().is_err());
+    assert!(f.store().control_inspect()?.head.is_none());
+    Ok(())
+}
+
+#[test]
+fn prepare_lock_pins_replicated_intake_until_installed() -> anyhow::Result<()> {
+    let f = Fixture::new()?;
+    f.record(&vector("proposal"))?;
+    intake(&f)?;
+    f.prepare()?;
+    assert!(intake(&f).is_err());
+    f.record(&vector("certificate"))?;
+    assert!(intake(&f).is_err());
+    f.install()?;
+    intake(&f)?;
+
+    // A certificate pins a host that holds no lock of its own as well.
+    let f = Fixture::new()?;
+    f.record(&vector("certificate"))?;
+    assert!(intake(&f).is_err());
+    let f = Fixture::new()?;
+    f.sql("UPDATE activation_control_state SET epoch=2")?;
+    assert!(intake(&f).is_err(), "unreadable journal");
+    intake(&Fixture::uninitialized()?)?;
+    Ok(())
+}
+
+#[test]
+fn withdrawal_refuses_preparation_and_a_later_certificate_halts() -> anyhow::Result<()> {
+    let mut f = Fixture::new()?;
+    let id = vector("proposal").id()?;
+    assert!(withdraw(&f).is_err(), "unknown proposal");
+    f.record(&vector("proposal"))?;
+    assert!(
+        f.store()
+            .control_withdraw(id, host(&f, 8)?, &f.identity(8)?, &session())
+            .is_err(),
+        "not this host"
+    );
+    let signed = withdraw(&f)?;
+    assert_eq!(withdraw(&f)?, signed);
+    f.reopen()?;
+    assert_eq!(f.store().control_inspect()?.withdrawn, [id]);
+    assert!(f.prepare().is_err());
+    assert!(f.store().control_inspect()?.prepare_locks.is_empty());
+    assert_eq!(f.record(&vector("certificate"))?, Outcome::ReviewRequired);
+    assert_eq!(f.refusal()?, Some(Refusal::Review));
+    f.reopen()?;
+    let state = f.store().control_inspect()?;
+    assert!(state.halted && state.pending_certificates.is_empty());
+
+    let f = Fixture::new()?;
+    f.record(&vector("certificate"))?;
+    assert!(withdraw(&f).is_err(), "a stored certificate goes forward");
+    Ok(())
+}
+
+#[test]
+fn abort_needs_every_withdrawal_and_resolves_the_lock() -> anyhow::Result<()> {
+    let mut f = Fixture::new()?;
+    let id = vector("proposal").id()?;
+    f.record(&vector("proposal"))?;
+    f.prepare()?;
+    assert!(abort(&f).is_err(), "the coordinator has not withdrawn");
+    withdraw(&f)?;
+    f.record(&withdrawal(&f, 8)?)?;
+    assert!(abort(&f).is_err(), "host 9 has not withdrawn");
+    assert!(f.store().control_release().is_err());
+    assert!(intake(&f).is_err());
+    f.record(&withdrawal(&f, 9)?)?;
+    assert_eq!(abort(&f)?, vector("aborted"));
+    f.reopen()?;
+    let state = f.store().control_inspect()?;
+    assert_eq!(state.aborted, [id]);
+    assert_eq!(state.prepare_locks, [id], "the lock stays as evidence");
+    assert!(state.pending_preparations.is_empty() && state.minimum_profiles.is_empty());
+    intake(&f)?;
+    assert!(f.prepare().is_err());
+    f.store().control_release()?;
+    assert_eq!(f.refusal()?, None);
+    Ok(())
+}
+
+#[test]
+fn recorded_abort_resolves_a_prepared_host_and_contradicts_a_certificate() -> anyhow::Result<()> {
+    let aborted = vector("aborted");
+    let f = Fixture::new()?;
+    f.record(&vector("proposal"))?;
+    f.prepare()?;
+    let Body::Aborted(mut partial) = aborted.body.clone() else {
+        unreachable!()
+    };
+    partial.withdrawn.pop();
+    assert!(f.record(&f.resign(Body::Aborted(partial), 7)?).is_err());
+    assert_eq!(f.record(&aborted)?, Outcome::Stored);
+    assert_eq!(f.record(&aborted)?, Outcome::Duplicate);
+    let state = f.store().control_inspect()?;
+    assert!(state.pending_preparations.is_empty() && state.minimum_profiles.is_empty());
+    f.store().control_release()?;
+    assert_eq!(f.refusal()?, None);
+    assert_eq!(f.record(&vector("certificate"))?, Outcome::ReviewRequired);
+    assert_eq!(f.refusal()?, Some(Refusal::Review));
+
+    let mut f = Fixture::new()?;
+    f.record(&vector("certificate"))?;
+    assert_eq!(f.record(&aborted)?, Outcome::ReviewRequired);
+    f.reopen()?;
+    let state = f.store().control_inspect()?;
+    assert!(state.halted && state.aborted.is_empty());
+    assert_eq!(state.pending_certificates, [vector("certificate").id()?]);
+    Ok(())
+}
+
+#[test]
+fn certificate_installs_after_membership_moved_but_release_waits() -> anyhow::Result<()> {
+    let f = Fixture::new()?;
+    f.record(&vector("proposal"))?;
+    f.prepare()?;
+    store_grant(&f, &issue(&f, 7, f.identity(10)?.id().to_string(), true)?)?;
+    f.record(&vector("certificate"))?;
+    f.install()?;
+    f.acknowledge_installations()?;
+    assert!(f.store().control_release().is_err());
+    assert_eq!(f.refusal()?, Some(Refusal::Maintenance));
+
+    // A host that never prepared holds no evidence for the old revision.
+    let f = Fixture::new()?;
+    f.record(&vector("proposal"))?;
+    store_grant(&f, &issue(&f, 7, f.identity(10)?.id().to_string(), true)?)?;
+    assert!(f.record(&vector("certificate")).is_err());
+    assert!(f.store().control_inspect()?.pending_certificates.is_empty());
+    Ok(())
+}
+
+#[test]
+fn next_epoch_excuses_only_a_host_the_new_membership_revokes() -> anyhow::Result<()> {
+    let f = Fixture::new()?;
+    f.record(&vector("certificate"))?;
+    f.install()?;
+    revoke_locally(&f, 9)?;
+    let proof = f.store().membership()?;
+    let mut p = proposal(&vector("successor"))?.clone();
+    let (membership, hosts) = membership_revision(p.cluster, &proof)?;
+    let revoked = host(&f, 9)?.key;
+    assert!(hosts.iter().all(|h| h.key != revoked));
+    p.membership = membership;
+    p.hosts = hosts;
+    let next = f.resign(Body::Proposal(Box::new(p)), 7)?;
+    let expected = Session {
+        coordinator: session().coordinator,
+        nonce: [0x77; 32],
+    };
+    f.store().control_record(&next, &proof, &expected)?;
+    let mut ack = root_prepared();
+    ack.proposal = next.id()?;
+    let prepare = || {
+        f.store()
+            .control_prepare(ack.clone(), &f.identity(7)?, &expected, &supported())
+    };
+    assert!(prepare().is_err(), "host 8 is still authorized and silent");
+    f.record(&f.resign(
+        Body::Installed(Installed {
+            certificate: vector("certificate").id()?,
+            host: host(&f, 8)?,
+            epoch: 1,
+        }),
+        8,
+    )?)?;
+    assert_eq!(f.store().control_inspect()?.unacknowledged, [revoked]);
+    prepare()?;
+    Ok(())
+}
+
+#[test]
+fn designation_names_an_authorized_host_and_ends_with_release() -> anyhow::Result<()> {
+    let mut f = Fixture::new()?;
+    assert!(f.store().control_session()?.is_none());
+    let stranger = Session {
+        coordinator: Host {
+            key: *f.identity(10)?.id().as_bytes(),
+            grant: [0; 32],
+        },
+        nonce: [1; 32],
+    };
+    assert!(f.store().control_designate(&stranger).is_err());
+    assert!(f.store().control_host(stranger.coordinator.key).is_err());
+    assert_eq!(
+        f.store().control_host(session().coordinator.key)?,
+        session().coordinator
+    );
+    f.store().control_designate(&session())?;
+    f.reopen()?;
+    let stored = f.store().control_session()?.unwrap();
+    assert_eq!(
+        (stored.coordinator, stored.nonce),
+        (session().coordinator, session().nonce)
+    );
+    f.record(&vector("proposal"))?;
+    f.prepare()?;
+    let other = Session {
+        coordinator: host(&f, 8)?,
+        nonce: [2; 32],
+    };
+    assert!(
+        f.store().control_designate(&other).is_err(),
+        "the pending preparation belongs to the first session"
+    );
+    f.store().control_designate(&session())?;
+    f.record(&vector("aborted"))?;
+    f.store().control_designate(&other)?;
+    f.store().control_release()?;
+    assert!(f.store().control_session()?.is_none());
+    Ok(())
+}
+
+#[test]
+fn aborted_proposal_allows_a_new_one_from_the_same_head() -> anyhow::Result<()> {
+    let mut f = Fixture::new()?;
+    f.record(&vector("proposal"))?;
+    f.prepare()?;
+    f.record(&vector("aborted"))?;
+    let mut p = proposal(&vector("proposal"))?.clone();
+    p.nonce = [0x88; 32];
+    let retry = f.resign(Body::Proposal(Box::new(p)), 7)?;
+    let expected = Session {
+        coordinator: session().coordinator,
+        nonce: [0x88; 32],
+    };
+    assert_eq!(
+        f.store()
+            .control_record(&retry, &member_proof(), &expected)?,
+        Outcome::Stored
+    );
+    let mut ack = root_prepared();
+    ack.proposal = retry.id()?;
+    f.store()
+        .control_prepare(ack, &f.identity(7)?, &expected, &supported())?;
+    f.reopen()?;
+    let state = f.store().control_inspect()?;
+    assert!(!state.halted);
+    assert_eq!(state.pending_preparations, [retry.id()?]);
+    // Two unresolved proposals from one head are still a fork.
+    let mut p = proposal(&vector("proposal"))?.clone();
+    p.nonce = [0x99; 32];
+    let rival = f.resign(Body::Proposal(Box::new(p)), 7)?;
+    assert_eq!(f.record(&rival)?, Outcome::ReviewRequired);
+    Ok(())
+}
+
+#[test]
+fn received_withdrawals_bind_this_host_and_contradict_a_certificate() -> anyhow::Result<()> {
+    // The host's own signed promise arrives from a peer after its database
+    // was restored to a state before the withdrawal.
+    let f = Fixture::new()?;
+    f.record(&vector("proposal"))?;
+    f.record(&withdrawal(&f, 7)?)?;
+    assert_eq!(
+        f.store().control_inspect()?.withdrawn,
+        [vector("proposal").id()?]
+    );
+    assert!(f.prepare().is_err());
+    f.record(&withdrawal(&f, 8)?)?;
+    assert_eq!(f.store().control_inspect()?.withdrawn.len(), 1);
+
+    let f = Fixture::new()?;
+    f.record(&vector("proposal"))?;
+    f.record(&withdrawal(&f, 8)?)?;
+    assert_eq!(f.record(&vector("certificate"))?, Outcome::ReviewRequired);
+    assert!(f.store().control_inspect()?.halted);
+
+    let mut f = Fixture::new()?;
+    f.record(&vector("certificate"))?;
+    assert_eq!(f.record(&withdrawal(&f, 8)?)?, Outcome::ReviewRequired);
+    f.reopen()?;
+    assert!(f.store().control_inspect()?.halted);
+
+    // A host revoked here cannot halt the journal with its word alone.
+    let f = Fixture::new()?;
+    f.record(&vector("certificate"))?;
+    revoke_locally(&f, 8)?;
+    assert!(f.record(&withdrawal(&f, 8)?).is_err());
+    assert!(!f.store().control_inspect()?.halted);
+    Ok(())
+}
+
+#[test]
+fn unreadable_membership_is_not_a_membership_change() -> anyhow::Result<()> {
+    let f = Fixture::new()?;
+    f.record(&vector("proposal"))?;
+    f.prepare()?;
+    f.sql("DELETE FROM cluster_enrollment_grants")?;
+    assert!(f.record(&vector("certificate")).is_err());
+    assert!(f.store().control_inspect()?.pending_certificates.is_empty());
+    Ok(())
+}
+
+#[test]
+fn contradiction_halts_even_after_the_coordinator_was_revoked() -> anyhow::Result<()> {
+    let f = Fixture::new()?;
+    f.record(&vector("proposal"))?;
+    f.record(&vector("aborted"))?;
+    f.store().control_release()?;
+    revoke_coordinator(&f)?;
+    assert!(revoked_locally_for_test(&f)?);
+    assert_eq!(f.record(&vector("certificate"))?, Outcome::ReviewRequired);
+    Ok(())
+}
+
+/// Host 8 revokes the coordinator, so the root's own grant chain stays valid.
+fn revoke_coordinator(f: &Fixture) -> anyhow::Result<()> {
+    let proof = f.store().run(|db, _| crate::enrollment::read_proof(db))?;
+    let authority = proof
+        .grants
+        .iter()
+        .find(|g| g.member == f.identity(8).unwrap().id().to_string())
+        .unwrap();
+    let mut revocation = crate::enrollment::Revocation {
+        version: 1,
+        id: String::new(),
+        cluster: authority.cluster.clone(),
+        issuer: authority.member.clone(),
+        member: f.identity(7)?.id().to_string(),
+        authority: authority.id.clone(),
+        observed: proof.grants.iter().map(|g| g.id.clone()).collect(),
+        change_heads: vec![],
+        signature: String::new(),
+    };
+    revocation.id = hex::encode(Sha256::digest(revocation.signing_bytes()?));
+    revocation.signature = hex::encode(f.identity(8)?.sign(&revocation.signing_bytes()?));
+    f.sql(&format!(
+        "INSERT INTO cluster_revocations VALUES ('{}', X'{}')",
+        revocation.id,
+        hex::encode(serde_json::to_vec(&revocation)?)
+    ))
+}
+
+fn revoked_locally_for_test(f: &Fixture) -> anyhow::Result<bool> {
+    f.store()
+        .run(|db, _| journal::revoked_locally(db, &session().coordinator, &member_proof()))
+}
+
+#[test]
+fn aborted_certificate_halts_after_a_retry_and_a_revoked_coordinator() -> anyhow::Result<()> {
+    let f = Fixture::new()?;
+    f.record(&vector("proposal"))?;
+    f.record(&vector("aborted"))?;
+    let mut p = proposal(&vector("proposal"))?.clone();
+    p.nonce = [0x88; 32];
+    let expected = Session {
+        coordinator: session().coordinator,
+        nonce: [0x88; 32],
+    };
+    f.store().control_record(
+        &f.resign(Body::Proposal(Box::new(p)), 7)?,
+        &member_proof(),
+        &expected,
+    )?;
+    revoke_coordinator(&f)?;
+    assert!(revoked_locally_for_test(&f)?);
+    // The retry makes the certificate a sibling too; the abort must win.
+    assert_eq!(f.record(&vector("certificate"))?, Outcome::ReviewRequired);
+    assert!(f.store().control_inspect()?.halted);
+    Ok(())
+}
+
+#[test]
+fn withdrawal_cannot_reopen_a_settled_installation() -> anyhow::Result<()> {
+    let installed = |f: &Fixture, seed: u8| -> anyhow::Result<Signed> {
+        f.resign(
+            Body::Installed(Installed {
+                certificate: vector("certificate").id()?,
+                host: host(f, seed)?,
+                epoch: 1,
+            }),
+            seed,
+        )
+    };
+    // Host 8 acknowledged the installation; host 9 has not.
+    let f = Fixture::new()?;
+    f.record(&vector("certificate"))?;
+    f.install()?;
+    f.record(&installed(&f, 8)?)?;
+    assert!(f.record(&withdrawal(&f, 8)?).is_err());
+    assert!(!f.store().control_inspect()?.halted);
+    assert_eq!(f.record(&withdrawal(&f, 9)?)?, Outcome::ReviewRequired);
+
+    // A released head is settled for every host.
+    let f = Fixture::new()?;
+    f.record(&vector("certificate"))?;
+    f.install()?;
+    f.acknowledge_installations()?;
+    f.store().control_release()?;
+    assert!(f.record(&withdrawal(&f, 9)?).is_err());
+    assert!(!f.store().control_inspect()?.halted);
+    assert_eq!(f.refusal()?, None);
     Ok(())
 }

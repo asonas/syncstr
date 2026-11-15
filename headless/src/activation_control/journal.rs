@@ -32,26 +32,32 @@ pub struct Inspection {
     pub frozen: bool,
     /// Writers were released for the installed head. False without a head.
     pub released: bool,
+    /// Proposals resolved by a signed abort.
+    pub aborted: Vec<Digest>,
+    /// Proposals this host promised never to prepare or install.
+    pub withdrawn: Vec<Digest>,
+    /// Hosts of the installed head whose installation is not acknowledged.
+    pub unacknowledged: Vec<Key>,
 }
 
 #[derive(Debug)]
-struct State {
-    cluster: [u8; 16],
+pub(super) struct State {
+    pub(super) cluster: [u8; 16],
     root: Key,
     baseline: Digest,
     epoch: u64,
-    head: Option<Digest>,
+    pub(super) head: Option<Digest>,
     floor: BTreeSet<String>,
     halted: bool,
 }
 
-fn array<const N: usize>(bytes: Vec<u8>) -> anyhow::Result<[u8; N]> {
+pub(super) fn array<const N: usize>(bytes: Vec<u8>) -> anyhow::Result<[u8; N]> {
     bytes
         .try_into()
         .map_err(|_| anyhow::anyhow!("corrupt control state width"))
 }
 
-fn state(db: &Connection) -> anyhow::Result<State> {
+pub(super) fn state(db: &Connection) -> anyhow::Result<State> {
     let (cluster, root, baseline, epoch, head, floor, halted) = db.query_row(
         "SELECT cluster, root, baseline, epoch, head, floor, halted FROM activation_control_state WHERE singleton=1",
         [],
@@ -82,7 +88,7 @@ fn state(db: &Connection) -> anyhow::Result<State> {
     })
 }
 
-fn save_floor(db: &Connection, floor: &BTreeSet<String>) -> anyhow::Result<()> {
+pub(super) fn save_floor(db: &Connection, floor: &BTreeSet<String>) -> anyhow::Result<()> {
     db.execute(
         "UPDATE activation_control_state SET floor=? WHERE singleton=1",
         [serde_json::to_vec(floor)?],
@@ -90,7 +96,7 @@ fn save_floor(db: &Connection, floor: &BTreeSet<String>) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn put(db: &Connection, signed: &Signed) -> anyhow::Result<()> {
+pub(super) fn put(db: &Connection, signed: &Signed) -> anyhow::Result<()> {
     db.execute(
         "INSERT OR IGNORE INTO activation_control_envelopes VALUES (?, ?, ?)",
         params![
@@ -113,7 +119,7 @@ pub(super) fn get(db: &Connection, id: &Digest) -> anyhow::Result<Signed> {
     Ok(signed)
 }
 
-fn all(db: &Connection) -> anyhow::Result<BTreeMap<Digest, Signed>> {
+pub(super) fn all(db: &Connection) -> anyhow::Result<BTreeMap<Digest, Signed>> {
     let mut statement = db.prepare(
         "SELECT digest, kind, canonical FROM activation_control_envelopes ORDER BY digest",
     )?;
@@ -173,7 +179,7 @@ fn save_proof(
     Ok(())
 }
 
-fn scope(s: &State, p: &Proposal) -> anyhow::Result<()> {
+pub(super) fn scope(s: &State, p: &Proposal) -> anyhow::Result<()> {
     ensure!(
         s.cluster == p.cluster && s.root == p.root && s.baseline == p.baseline,
         "wrong control cluster/root/baseline"
@@ -181,7 +187,7 @@ fn scope(s: &State, p: &Proposal) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn session(p: &Proposal, expected: &Session) -> anyhow::Result<()> {
+pub(super) fn session(p: &Proposal, expected: &Session) -> anyhow::Result<()> {
     ensure!(
         p.coordinator == expected.coordinator && p.nonce == expected.nonce,
         "wrong designated coordinator/session"
@@ -189,13 +195,62 @@ fn session(p: &Proposal, expected: &Session) -> anyhow::Result<()> {
     Ok(())
 }
 
-pub(super) fn current_membership(db: &Connection, p: &Proposal) -> anyhow::Result<()> {
+fn current_baseline(db: &Connection, p: &Proposal) -> anyhow::Result<()> {
     let baseline: String = db.query_row(
         "SELECT fingerprint FROM shared_baseline WHERE singleton=1",
         [],
         |r| r.get(0),
     )?;
     ensure!(digest(&baseline)? == p.baseline, "local baseline changed");
+    Ok(())
+}
+
+/// A host that prepared a proposal proved its membership revision under the
+/// prepare lock, and the certificate carries that acknowledgment. Membership
+/// learned afterwards does not undo the certificate; release still compares
+/// it, so the host stays frozen until a later epoch certifies the change.
+fn prepared_membership(db: &Connection, signed: &Signed) -> anyhow::Result<()> {
+    let c = certificate(signed)?;
+    let p = proposal(&c.proposal)?;
+    current_baseline(db, p)?;
+    // An unreadable or disputed membership is an error, not a change.
+    let current = crate::enrollment::read_proof(db)?;
+    if membership_revision(p.cluster, &current)?.0 == p.membership {
+        return Ok(());
+    }
+    let ack: Option<Vec<u8>> = db
+        .query_row(
+            "SELECT acknowledgment_digest FROM activation_control_prepare WHERE proposal=?",
+            [c.proposal.id()?.as_slice()],
+            |r| r.get(0),
+        )
+        .optional()?
+        .flatten();
+    let ack = ack.context("membership changed before this host prepared")?;
+    for prepared in &c.prepared {
+        if prepared.id()?.as_slice() == ack {
+            return Ok(());
+        }
+    }
+    anyhow::bail!("certificate lacks this host's prepared acknowledgment")
+}
+
+/// The next epoch must not hide a host that never confirmed the installed
+/// one. Only a host the new proposal no longer authorizes is excused: grants
+/// are never deleted, so it is revoked in that membership revision.
+fn predecessor_settled(inspection: &Inspection, p: &Proposal) -> anyhow::Result<()> {
+    ensure!(
+        inspection
+            .unacknowledged
+            .iter()
+            .all(|key| p.hosts.iter().all(|h| h.key != *key)),
+        "installation acknowledgments for the installed head are incomplete"
+    );
+    Ok(())
+}
+
+pub(super) fn current_membership(db: &Connection, p: &Proposal) -> anyhow::Result<()> {
+    current_baseline(db, p)?;
     let current = crate::enrollment::read_proof(db)?;
     ensure!(
         membership_revision(p.cluster, &current)?.0 == p.membership,
@@ -204,7 +259,16 @@ pub(super) fn current_membership(db: &Connection, p: &Proposal) -> anyhow::Resul
     Ok(())
 }
 
-fn local_host(db: &Connection, p: &Proposal, host: &Host) -> anyhow::Result<()> {
+fn is_local(db: &Connection, host: &Host) -> anyhow::Result<bool> {
+    let grant: String = db.query_row(
+        "SELECT local_grant FROM cluster_trust WHERE singleton=1",
+        [],
+        |r| r.get(0),
+    )?;
+    Ok(digest(&grant)? == host.grant)
+}
+
+pub(super) fn local_host(db: &Connection, p: &Proposal, host: &Host) -> anyhow::Result<()> {
     let grant: String = db.query_row(
         "SELECT local_grant FROM cluster_trust WHERE singleton=1",
         [],
@@ -244,7 +308,7 @@ fn extends(s: &State, p: &Proposal) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn verified_proposal(db: &Connection, signed: &Signed) -> anyhow::Result<()> {
+pub(super) fn verified_proposal(db: &Connection, signed: &Signed) -> anyhow::Result<()> {
     let p = proposal(signed)?;
     verify_proposal(signed, &proof(db, &p.membership, p.cluster)?)
 }
@@ -252,11 +316,15 @@ fn verified_proposal(db: &Connection, signed: &Signed) -> anyhow::Result<()> {
 /// Return true for observed siblings, including a rival discovered after install.
 fn conflicts(db: &Connection, candidate: &Signed, proposed: &Signed) -> anyhow::Result<bool> {
     let p = proposal(proposed)?;
-    for signed in all(db)?.values() {
+    let records = all(db)?;
+    // An aborted proposal is resolved; a retry from the same head is no fork.
+    let aborted = super::abort::aborted(&records);
+    for (id, signed) in &records {
         if let Body::Proposal(other) = &signed.body
             && other.previous == p.previous
             && other.epoch == p.epoch
-            && signed.id()? != proposed.id()?
+            && *id != proposed.id()?
+            && !aborted.contains(id)
         {
             return Ok(true);
         }
@@ -322,7 +390,7 @@ pub(super) fn revoked_locally(
 
 /// Signing happens after the durable lock or install commits, so a signer
 /// that cannot sign for `host` must be refused before anything is written.
-fn signer_matches(identity: &crate::peer::Identity, host: &Host) -> anyhow::Result<()> {
+pub(super) fn signer_matches(identity: &crate::peer::Identity, host: &Host) -> anyhow::Result<()> {
     ensure!(
         identity.id().as_bytes() == &host.key,
         "signing identity does not match the asserted host"
@@ -330,14 +398,10 @@ fn signer_matches(identity: &crate::peer::Identity, host: &Host) -> anyhow::Resu
     Ok(())
 }
 
-fn mark_conflict(db: &Connection, candidate: &Signed) -> anyhow::Result<()> {
+fn mark_conflict(db: &Connection, candidate: &Signed, reason: &str) -> anyhow::Result<()> {
     db.execute(
         "INSERT OR IGNORE INTO activation_control_conflicts VALUES (?, ?, ?)",
-        params![
-            candidate.id()?.as_slice(),
-            candidate.canonical()?,
-            "observed sibling or competing coordinator"
-        ],
+        params![candidate.id()?.as_slice(), candidate.canonical()?, reason],
     )?;
     db.execute(
         "UPDATE activation_control_state SET halted=1 WHERE singleton=1",
@@ -411,12 +475,49 @@ impl crate::shared_audio::Store {
                     );
                     c.proposal.as_ref().clone()
                 }
+                Body::Withdrawn(w) => {
+                    let p = get(&tx, &w.proposal)?;
+                    verified_proposal(&tx, &p)?;
+                    verify_withdrawn(signed, &p)?;
+                    p
+                }
+                Body::Aborted(a) => {
+                    let p = get(&tx, &a.proposal)?;
+                    verified_proposal(&tx, &p)?;
+                    verify_aborted(signed, &p)?;
+                    p
+                }
             };
             let p = proposal(&proposed)?;
             if matches!(signed.body, Body::Proposal(_) | Body::Certificate(_)) {
                 verify_proposal(&proposed, membership)?;
             }
             scope(&s, p)?;
+            if let Body::Withdrawn(w) = &signed.body {
+                ensure!(
+                    !super::abort::settled(&tx, s.head, &proposed.id()?, &w.host)?,
+                    "withdrawal from an installation that is already settled"
+                );
+            }
+            // Checked before siblings: a retry recorded after an abort must not
+            // turn the aborted proposal's certificate into a mere rival.
+            if super::abort::contradicts(&tx, signed, &proposed)? {
+                // A certificate or an abort carries every host's signature and
+                // halts whatever happened to its signer since. A withdrawal is
+                // one host's word, so a revoked host cannot halt with it.
+                if matches!(signed.body, Body::Withdrawn(_)) {
+                    ensure!(
+                        !revoked_locally(&tx, signed.body.signer(), membership)?,
+                        "withdrawing host is revoked or disputed locally"
+                    );
+                }
+                if matches!(signed.body, Body::Certificate(_)) {
+                    save_proof(&tx, p, membership)?;
+                }
+                mark_conflict(&tx, signed, "certificate beside an abort or withdrawal")?;
+                tx.commit()?;
+                return Ok(Outcome::ReviewRequired);
+            }
             if matches!(signed.body, Body::Proposal(_) | Body::Certificate(_))
                 && conflicts(&tx, signed, &proposed)?
             {
@@ -425,24 +526,26 @@ impl crate::shared_audio::Store {
                     "sibling signer is revoked or disputed locally"
                 );
                 save_proof(&tx, p, membership)?;
-                mark_conflict(&tx, signed)?;
+                mark_conflict(&tx, signed, "observed sibling or competing coordinator")?;
                 tx.commit()?;
                 return Ok(Outcome::ReviewRequired);
             }
             session(p, expected)?;
-            if !matches!(signed.body, Body::Installed(_)) {
-                current_membership(&tx, p)?;
-                extends(&s, p)?;
-            } else {
-                ensure!(
-                    s.head
-                        == match &signed.body {
-                            Body::Installed(i) => Some(i.certificate),
-                            _ => None,
-                        }
-                        && s.epoch == p.epoch,
+            match &signed.body {
+                Body::Proposal(_) | Body::Prepared(_) => {
+                    current_membership(&tx, p)?;
+                    extends(&s, p)?;
+                }
+                Body::Certificate(_) => {
+                    prepared_membership(&tx, signed)?;
+                    extends(&s, p)?;
+                }
+                Body::Installed(i) => ensure!(
+                    s.head == Some(i.certificate) && s.epoch == p.epoch,
                     "installation acknowledgment is not for current head"
-                );
+                ),
+                // Membership may have moved on; that is one reason to abort.
+                Body::Withdrawn(_) | Body::Aborted(_) => {}
             }
             if matches!(signed.body, Body::Proposal(_) | Body::Certificate(_)) {
                 save_proof(&tx, p, membership)?;
@@ -465,7 +568,26 @@ impl crate::shared_audio::Store {
                     put(&tx, ack)?;
                 }
             }
+            if let Body::Aborted(a) = &signed.body {
+                for withdrawn in &a.withdrawn {
+                    put(&tx, withdrawn)?;
+                }
+            }
+            if let Body::Withdrawn(w) = &signed.body
+                && is_local(&tx, &w.host)?
+            {
+                // This host signed the promise; a restored database must keep it.
+                super::freeze::tables(&tx)?;
+                tx.execute(
+                    "INSERT OR IGNORE INTO activation_control_withdrawals VALUES (?, ?)",
+                    params![w.proposal.as_slice(), id.as_slice()],
+                )?;
+            }
             put(&tx, signed)?;
+            if matches!(signed.body, Body::Aborted(_)) {
+                super::abort::settle_floor(&tx)?;
+                inspect(&tx)?;
+            }
             tx.commit()?;
             Ok(Outcome::Stored)
         })
@@ -536,14 +658,19 @@ pub(super) fn lock_prepare(
     let inspection = inspect(&tx)?;
     let mut s = state(&tx)?;
     ensure!(!s.halted, "control journal halted for review");
-    // The next epoch must not hide a host that never confirmed this one.
     ensure!(
-        inspection.head.is_none() || inspection.all_installations_recorded,
-        "installation acknowledgments for the installed head are incomplete"
+        !inspection.withdrawn.contains(&ack.proposal)
+            && !inspection.aborted.contains(&ack.proposal),
+        "proposal was withdrawn or aborted"
     );
     let signed = get(&tx, &ack.proposal)?;
     verified_proposal(&tx, &signed)?;
     let p = proposal(&signed)?;
+    predecessor_settled(&inspection, p)?;
+    ensure!(
+        ack.input_history == super::intake::input_history(&tx)?,
+        "acknowledged input history is not this host's"
+    );
     scope(&s, p)?;
     session(p, expected)?;
     current_membership(&tx, p)?;
@@ -654,7 +781,7 @@ pub(super) fn install(
     verify_certificate(&signed, &proof(&tx, &p.membership, p.cluster)?)?;
     scope(&s, p)?;
     session(p, expected)?;
-    current_membership(&tx, p)?;
+    prepared_membership(&tx, &signed)?;
     local_host(&tx, p, host)?;
     supports(p, &s.floor, supported)?;
     if s.head != Some(*id) {
@@ -662,9 +789,14 @@ pub(super) fn install(
             super::freeze::frozen(&tx)?,
             "host is not frozen for maintenance"
         );
+        predecessor_settled(&inspection, p)?;
+        let acknowledged = c.prepared.iter().find_map(|a| match &a.body {
+            Body::Prepared(a) => Some(a.input_history),
+            _ => None,
+        });
         ensure!(
-            inspection.head.is_none() || inspection.all_installations_recorded,
-            "installation acknowledgments for the installed head are incomplete"
+            acknowledged == Some(super::intake::input_history(&tx)?),
+            "input history changed since it was acknowledged"
         );
         extends(&s, p)?;
         s.floor.extend(p.profiles.iter().cloned());
@@ -684,13 +816,15 @@ pub(super) fn inspect(db: &Connection) -> anyhow::Result<Inspection> {
     let mut siblings = BTreeMap::new();
     let mut certificates = BTreeMap::new();
     let mut certificate_children = BTreeMap::new();
+    let aborted = super::abort::aborted(&records);
+    let withdrawn_anywhere = super::abort::withdrawn(&records);
     for (id, signed) in &records {
         match &signed.body {
             Body::Proposal(p) => {
                 scope(&s, p)?;
                 verified_proposal(db, signed)?;
                 ensure!(
-                    siblings.insert((p.previous, p.epoch), *id).is_none(),
+                    aborted.contains(id) || siblings.insert((p.previous, p.epoch), *id).is_none(),
                     "unrecorded proposal fork; review required"
                 );
             }
@@ -734,7 +868,37 @@ pub(super) fn inspect(db: &Connection) -> anyhow::Result<Inspection> {
                     "corrupt installation acknowledgment"
                 );
             }
+            Body::Withdrawn(w) => verify_withdrawn(
+                signed,
+                records
+                    .get(&w.proposal)
+                    .context("missing proposal evidence")?,
+            )?,
+            Body::Aborted(a) => {
+                verify_aborted(
+                    signed,
+                    records
+                        .get(&a.proposal)
+                        .context("missing proposal evidence")?,
+                )?;
+                for withdrawn in &a.withdrawn {
+                    ensure!(
+                        records.get(&withdrawn.id()?) == Some(withdrawn),
+                        "missing nested withdrawal evidence"
+                    );
+                }
+            }
         }
+    }
+    let withdrawn = super::abort::withdrawals(db, &records)?;
+    let mut certified = BTreeSet::new();
+    for id in certificates.keys() {
+        let proposed = certificate(&records[id])?.proposal.id()?;
+        ensure!(
+            !aborted.contains(&proposed) && !withdrawn_anywhere.contains(&proposed),
+            "certificate for a withdrawn or aborted proposal"
+        );
+        certified.insert(proposed);
     }
     for p in certificates
         .values()
@@ -812,7 +976,9 @@ pub(super) fn inspect(db: &Connection) -> anyhow::Result<Inspection> {
                 && p.profiles.iter().all(|v| floor.contains(v)),
             "corrupt prepare lock"
         );
-        expected_floor.extend(floor.iter().cloned());
+        if !aborted.contains(&id) {
+            expected_floor.extend(floor.iter().cloned());
+        }
         if let Some(ack) = ack {
             let ack: Digest = array(ack)?;
             let Body::Prepared(a) = &records
@@ -831,7 +997,7 @@ pub(super) fn inspect(db: &Connection) -> anyhow::Result<Inspection> {
         } else {
             unsigned_preparations.push(id);
         }
-        if !installed_proposals.contains(&id) {
+        if !installed_proposals.contains(&id) && !aborted.contains(&id) {
             pending_preparations.push(id);
         }
         prepare_locks.push(id);
@@ -839,6 +1005,7 @@ pub(super) fn inspect(db: &Connection) -> anyhow::Result<Inspection> {
     for signed in records.values() {
         if let Body::Prepared(a) = &signed.body
             && !installed_proposals.contains(&a.proposal)
+            && !aborted.contains(&a.proposal)
             && !pending_preparations.contains(&a.proposal)
         {
             pending_preparations.push(a.proposal);
@@ -855,19 +1022,39 @@ pub(super) fn inspect(db: &Connection) -> anyhow::Result<Inspection> {
         let (id, raw) = row?;
         let signed = Signed::decode(&raw)?;
         ensure!(signed.id()?.as_slice() == id, "corrupt conflict identity");
-        let proposed = match &signed.body {
+        let proposed: &Signed = match &signed.body {
             Body::Proposal(_) => &signed,
             Body::Certificate(c) => {
                 let p = proposal(&c.proposal)?;
                 verify_certificate(&signed, &proof(db, &p.membership, p.cluster)?)?;
                 &c.proposal
             }
+            Body::Aborted(a) => {
+                let stored = records
+                    .get(&a.proposal)
+                    .context("missing proposal evidence")?;
+                verify_aborted(&signed, stored)?;
+                stored
+            }
+            Body::Withdrawn(w) => {
+                let stored = records
+                    .get(&w.proposal)
+                    .context("missing proposal evidence")?;
+                verify_withdrawn(&signed, stored)?;
+                stored
+            }
             _ => anyhow::bail!("invalid conflict kind"),
         };
         verified_proposal(db, proposed)?;
         scope(&s, proposal(proposed)?)?;
+        let id = proposed.id()?;
+        let contradicted = match &signed.body {
+            Body::Certificate(_) => aborted.contains(&id) || withdrawn_anywhere.contains(&id),
+            Body::Aborted(_) | Body::Withdrawn(_) => certified.contains(&id),
+            _ => false,
+        };
         ensure!(
-            conflicts(db, &signed, proposed)?,
+            contradicted || conflicts(db, &signed, proposed)?,
             "conflict lacks sibling evidence"
         );
         conflicts_found = true;
@@ -917,5 +1104,8 @@ pub(super) fn inspect(db: &Connection) -> anyhow::Result<Inspection> {
         halted: s.halted,
         frozen,
         released,
+        aborted: aborted.into_iter().collect(),
+        withdrawn: withdrawn.into_iter().collect(),
+        unacknowledged: expected_hosts.difference(&actual_hosts).copied().collect(),
     })
 }
