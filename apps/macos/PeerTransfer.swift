@@ -182,6 +182,8 @@ final class PeerMusicConnection: MusicChannel {
     private let connection: IrohLib.Connection
     private let stream: IrohLib.BiStream
     private var closed = false
+    private(set) var sentBytes = 0
+    private(set) var receivedBytes = 0
     var isClosed: Bool { closed || connection.closeReason() != nil }
 
     private init(endpoint: IrohLib.Endpoint, connection: IrohLib.Connection, stream: IrohLib.BiStream) {
@@ -241,6 +243,7 @@ final class PeerMusicConnection: MusicChannel {
         var packet = Data([UInt8(length >> 24), UInt8((length >> 16) & 255), UInt8((length >> 8) & 255), UInt8(length & 255)])
         packet.append(body)
         try await stream.send().writeAll(buf: packet)
+        sentBytes += packet.count
     }
 
     func receive() async throws -> MusicMessage {
@@ -253,6 +256,7 @@ final class PeerMusicConnection: MusicChannel {
         let count = header.reduce(0) { ($0 << 8) | Int($1) }
         guard count > 0, count <= 2 * 1024 * 1024 else { throw LocalMusicError.invalidData }
         let body = try await stream.recv().readExact(size: UInt32(count))
+        receivedBytes += 4 + count
         let message = try JSONDecoder().decode(MusicMessage.self, from: body)
         guard message.version == 4 else { throw LocalMusicError.incompatiblePeer }
         return message
