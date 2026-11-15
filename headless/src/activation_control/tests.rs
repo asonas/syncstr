@@ -1922,6 +1922,14 @@ fn host_does_not_react_unfrozen_halted_or_as_another_host() -> anyhow::Result<()
         Outcome::ReviewRequired
     );
     assert!(react(&f)?.is_empty(), "halted for review");
+
+    // Release ends the designation, so a later freeze alone answers nothing.
+    let f = Fixture::new()?;
+    f.store().control_designate(&session())?;
+    f.record(&vector("proposal"))?;
+    f.store().control_release()?;
+    f.store().control_freeze()?;
+    assert!(react(&f)?.is_empty(), "frozen again without a designation");
     Ok(())
 }
 

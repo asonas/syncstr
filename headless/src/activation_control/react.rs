@@ -65,7 +65,9 @@ fn plan(
     let Ok(inspection) = inspect(db) else {
         return Ok(None);
     };
-    if inspection.halted {
+    // The owner consents by freezing and designating; a host that is not
+    // frozen signs nothing, a withdrawal included.
+    if inspection.halted || !inspection.frozen {
         return Ok(None);
     }
     let host = Host {
@@ -83,7 +85,7 @@ fn plan(
         };
         certified.insert(c.proposal.id()?);
         let p = proposal(&c.proposal)?;
-        if !designated(p) || !p.hosts.contains(&host) || !inspection.frozen {
+        if !designated(p) || !p.hosts.contains(&host) {
             continue;
         }
         // A stored certificate, or an installed head whose acknowledgment was
@@ -117,12 +119,9 @@ fn plan(
         }
         let acknowledged = inspection.prepare_locks.contains(id)
             && !inspection.unsigned_preparations.contains(id);
-        if inspection.withdrawn.contains(id)
-            || acknowledged
-            || !inspection.frozen
-            || p.previous != inspection.head
-            || inspection.epoch.checked_add(1) != Some(p.epoch)
-        {
+        // A readable, unhalted journal holds no other open proposal than one
+        // that extends the installed head: a sibling halts it.
+        if inspection.withdrawn.contains(id) || acknowledged {
             continue;
         }
         steps.push(Planned::Prepare(Box::new(Prepared {
@@ -149,9 +148,10 @@ impl crate::shared_audio::Store {
     /// React to the control records this host holds for its designated
     /// session: withdraw from a proposal its coordinator withdrew from,
     /// install a stored certificate, and prepare a proposal that extends the
-    /// installed head. Every step goes through the journal operation of the
-    /// same name, so each of its rules still applies; a step that is refused
-    /// is reported and tried again on a later call.
+    /// installed head. It does nothing unless the host is frozen. Every step
+    /// goes through the journal operation of the same name, whose rules still
+    /// apply; a step that is refused is reported and tried again on a later
+    /// call.
     pub fn control_react(
         &self,
         identity: &crate::peer::Identity,

@@ -146,7 +146,9 @@ The earlier draft had the coordinator ask each host for its signatures. Instead 
 
 The coordinator and the other hosts then fetch those envelopes like any other.
 
-- Every step goes through the journal operation of the same name, so the rules of part 1 still decide. A step that is refused is reported and tried again after the next pass.
+- A host that is not frozen takes none of these steps, a withdrawal included.
+- Every step goes through the journal operation of the same name, whose rules still apply. Two conditions are the reaction's own: it requires the freeze for a withdrawal, and it does not prepare a proposal its coordinator withdrew from. A step that is refused is reported and tried again after the next exchange.
+- Records are taken in and answered by the same loop, one peer at a time, so no record arrives between a plan and its steps.
 - A host without a designation, with a halted or unreadable journal, or whose identity is not the host the journal's local grant names, does nothing.
 - In its prepared acknowledgment a host names its build as its implementation and lists the profiles the build implements. No profile is bound to an implementation yet, so a proposal that requires one is not prepared by a serving host; binding the first profile is slice S4 of the activation design.
 - A host prepares as soon as it holds the proposal. If the hosts' input histories differ at that moment no certificate can form and the proposal is aborted, so the coordinator compares histories before it proposes (part 3).
@@ -179,3 +181,5 @@ The owner may ask the coordinator to abort a proposal that has no certificate. I
 - The startup guard (ASO-146) and journaled enrollment or promotion (ASO-147).
 - Excluding a host that cannot return. D3 of the activation design requires isolation in addition to revocation.
 - Recovery when a coordinator lost its journal and aborted while a certificate exists elsewhere. The hosts detect the contradiction and halt for review.
+- A host restored from a backup that still holds a freeze, a designation and a proposal. It reacts as after an ordinary restart, and learns of a later withdrawal, abort or release only when a peer returns it. Restoring is governed by D6 and D7 of the activation design and by the startup guard.
+- Review and recovery of a halted journal (ASO-154).

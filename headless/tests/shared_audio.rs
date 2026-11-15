@@ -6438,20 +6438,17 @@ async fn synchronize_reacts_to_what_it_fetched() -> anyhow::Result<()> {
     discovered.send(hosts.a_endpoint.addr()).await?;
     tokio::time::timeout(std::time::Duration::from_secs(20), async {
         loop {
-            if hosts.b.control_inspect()?.prepare_locks == [hosts.m.proposed.id()?] {
+            // The lock commits before its acknowledgment; wait for both.
+            let state = hosts.b.control_inspect()?;
+            if state.prepare_locks == [hosts.m.proposed.id()?]
+                && state.unsigned_preparations.is_empty()
+            {
                 break anyhow::Ok(());
             }
             tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         }
     })
     .await??;
-    assert!(
-        hosts
-            .b
-            .control_inspect()?
-            .unsigned_preparations
-            .is_empty()
-    );
     task.abort();
     Ok(())
 }
@@ -6466,10 +6463,41 @@ async fn hosts_that_never_prepared_only_withdraw_from_an_abandoned_proposal() ->
     let id = m.proposed.id()?;
     a.control_withdraw(id, m.host(&fixture.host), &fixture.host, &m.session)?;
     hosts.exchange().await?;
+    // A host that is not frozen signs nothing, a withdrawal included.
+    b.control_release()?;
+    b.control_designate(&m.session)?;
+    assert!(hosts.react(b, &fixture.other)?.is_empty());
+    assert!(b.control_inspect()?.withdrawn.is_empty());
+    b.control_freeze()?;
     // One step, and no attempt to prepare what its coordinator gave up.
     let reactions = hosts.react(b, &fixture.other)?;
     assert_eq!(reactions.len(), 1);
     assert_eq!(reactions[0].0, Step::Withdraw);
     assert!(b.control_inspect()?.prepare_locks.is_empty());
+    Ok(())
+}
+
+#[tokio::test]
+async fn hosts_follow_only_the_coordinators_withdrawal() -> anyhow::Result<()> {
+    use syncstr_headless::activation_control::Step;
+    let fixture = crate::Fixture::new().await?;
+    let hosts =
+        crate::Hosts::new(&fixture, vec!["registration-equivalence-v1".to_owned()]).await?;
+    let (a, b, m) = (&hosts.a, &hosts.b, &hosts.m);
+    hosts.exchange().await?;
+    b.control_withdraw(
+        m.proposed.id()?,
+        m.host(&fixture.other),
+        &fixture.other,
+        &m.session,
+    )?;
+    hosts.exchange().await?;
+    // Another host's withdrawal is not the coordinator giving up.
+    let reactions = hosts.react(a, &fixture.host)?;
+    assert_eq!(
+        reactions.iter().map(|(step, _)| *step).collect::<Vec<_>>(),
+        [Step::Prepare]
+    );
+    assert!(a.control_inspect()?.withdrawn.is_empty());
     Ok(())
 }
