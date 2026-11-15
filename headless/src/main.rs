@@ -28,6 +28,8 @@ enum ControlAction {
     Freeze,
     /// Accept writes again. Refused while an activation is pending.
     Release,
+    /// Record the maintenance session: needs --coordinator and --nonce.
+    Designate,
     Status,
 }
 
@@ -57,6 +59,12 @@ enum Command {
         data: std::path::PathBuf,
         #[arg(value_enum)]
         action: ControlAction,
+        /// Host key of the session coordinator, for `designate`.
+        #[arg(long)]
+        coordinator: Option<String>,
+        /// Session nonce as 64 hexadecimal digits, for `designate`.
+        #[arg(long)]
+        nonce: Option<String>,
     },
     #[cfg(feature = "p2p")]
     SharedAudioServe {
@@ -347,12 +355,34 @@ async fn run(cli: crate::Cli) -> anyhow::Result<()> {
             println!("{}", serde_json::json!({"schema": 5, "baseline": catalog.baseline, "tracks": catalog.tracks.len()}));
         }
         #[cfg(feature = "p2p")]
-        crate::Command::SharedAudioControl { data, action } => {
+        crate::Command::SharedAudioControl {
+            data,
+            action,
+            coordinator,
+            nonce,
+        } => {
+            let host_text = |key: &[u8; 32]| -> anyhow::Result<String> {
+                Ok(iroh::EndpointId::from_bytes(key)?.to_string())
+            };
             let store = syncstr_headless::shared_audio::Store::open(&data)?;
             match action {
                 crate::ControlAction::Init => store.control_initialize()?,
                 crate::ControlAction::Freeze => store.control_freeze()?,
                 crate::ControlAction::Release => store.control_release()?,
+                crate::ControlAction::Designate => {
+                    let key = coordinator
+                        .ok_or_else(|| anyhow::anyhow!("designate needs --coordinator"))?
+                        .parse::<iroh::EndpointId>()?;
+                    let nonce = nonce.ok_or_else(|| anyhow::anyhow!("designate needs --nonce"))?;
+                    let nonce: [u8; 32] = hex::decode(nonce)?
+                        .try_into()
+                        .map_err(|_| anyhow::anyhow!("--nonce must be 64 hexadecimal digits"))?;
+                    let coordinator = store.control_host(*key.as_bytes())?;
+                    store.control_designate(&syncstr_headless::activation_control::Session {
+                        coordinator,
+                        nonce,
+                    })?;
+                }
                 crate::ControlAction::Status => {}
             }
             let state = match store.control_inspect() {
@@ -376,6 +406,16 @@ async fn run(cli: crate::Cli) -> anyhow::Result<()> {
                     "pending_preparations": state.pending_preparations.iter().map(hex::encode).collect::<Vec<_>>(),
                     "pending_certificates": state.pending_certificates.iter().map(hex::encode).collect::<Vec<_>>(),
                     "all_installations_recorded": state.all_installations_recorded,
+                    "unacknowledged_hosts": state.unacknowledged.iter().map(host_text).collect::<anyhow::Result<Vec<_>>>()?,
+                    "aborted": state.aborted.iter().map(hex::encode).collect::<Vec<_>>(),
+                    "withdrawn": state.withdrawn.iter().map(hex::encode).collect::<Vec<_>>(),
+                    "session": match store.control_session()? {
+                        Some(session) => serde_json::json!({
+                            "coordinator": host_text(&session.coordinator.key)?,
+                            "nonce": hex::encode(session.nonce),
+                        }),
+                        None => serde_json::Value::Null,
+                    },
                 })
             );
         }

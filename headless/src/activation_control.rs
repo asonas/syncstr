@@ -4,14 +4,17 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 use std::collections::BTreeSet;
 
+mod abort;
 mod encoding;
 mod freeze;
+mod intake;
 mod journal;
 #[cfg(test)]
 mod tests;
 
 pub use freeze::Refusal;
 pub(crate) use freeze::ensure_writable;
+pub(crate) use intake::ensure_intake;
 pub use journal::{Inspection, Outcome, Session};
 pub type Digest = [u8; 32];
 pub type Key = [u8; 32];
@@ -67,12 +70,30 @@ pub struct Installed {
     pub epoch: u64,
 }
 
+/// A host's promise that it holds no certificate for a proposal and will
+/// never prepare, store or install one.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Withdrawn {
+    pub proposal: Digest,
+    pub host: Host,
+}
+
+/// The coordinator's evidence that every host withdrew from a proposal.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Aborted {
+    pub proposal: Digest,
+    pub withdrawn: Vec<Signed>,
+    pub coordinator: Host,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Body {
     Proposal(Box<Proposal>),
     Prepared(Prepared),
     Certificate(Certificate),
     Installed(Installed),
+    Withdrawn(Withdrawn),
+    Aborted(Aborted),
 }
 
 impl Body {
@@ -86,6 +107,8 @@ impl Body {
             Self::Prepared(p) => &p.host,
             Self::Certificate(c) => &c.coordinator,
             Self::Installed(i) => &i.host,
+            Self::Withdrawn(w) => &w.host,
+            Self::Aborted(a) => &a.coordinator,
         }
     }
 
@@ -95,6 +118,8 @@ impl Body {
             Self::Prepared(_) => "prepared",
             Self::Certificate(_) => "certificate",
             Self::Installed(_) => "installed",
+            Self::Withdrawn(_) => "withdrawn",
+            Self::Aborted(_) => "aborted",
         }
     }
 }
@@ -136,6 +161,15 @@ impl Signed {
                     "certificate acknowledgment kind"
                 );
                 ack.verify()?;
+            }
+        }
+        if let Body::Aborted(a) = &self.body {
+            for withdrawn in &a.withdrawn {
+                ensure!(
+                    matches!(withdrawn.body, Body::Withdrawn(_)),
+                    "abort withdrawal kind"
+                );
+                withdrawn.verify()?;
             }
         }
         Ok(())
@@ -310,6 +344,43 @@ fn verify_prepared(signed: &Signed, proposed: &Signed) -> anyhow::Result<()> {
         !a.implementations.is_empty(),
         "missing installed implementation evidence"
     );
+    Ok(())
+}
+
+fn verify_withdrawn(signed: &Signed, proposed: &Signed) -> anyhow::Result<()> {
+    signed.verify()?;
+    let p = proposal(proposed)?;
+    let Body::Withdrawn(w) = &signed.body else {
+        anyhow::bail!("expected withdrawal")
+    };
+    ensure!(
+        w.proposal == proposed.id()? && p.hosts.contains(&w.host),
+        "withdrawal proposal/host mismatch"
+    );
+    Ok(())
+}
+
+/// An abort stands only on a withdrawal from every host of its proposal.
+fn verify_aborted(signed: &Signed, proposed: &Signed) -> anyhow::Result<()> {
+    signed.verify()?;
+    let p = proposal(proposed)?;
+    let Body::Aborted(a) = &signed.body else {
+        anyhow::bail!("expected abort")
+    };
+    ensure!(
+        a.proposal == proposed.id()? && a.coordinator == p.coordinator,
+        "abort proposal/coordinator mismatch"
+    );
+    let expected: BTreeSet<_> = p.hosts.iter().map(|h| h.key).collect();
+    let mut actual = BTreeSet::new();
+    for withdrawn in &a.withdrawn {
+        verify_withdrawn(withdrawn, proposed)?;
+        ensure!(
+            actual.insert(withdrawn.body.signer().key),
+            "duplicate withdrawn host"
+        );
+    }
+    ensure!(actual == expected, "missing or extra withdrawn host");
     Ok(())
 }
 

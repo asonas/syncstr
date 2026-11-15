@@ -5689,3 +5689,140 @@ async fn maintenance_freeze_defers_new_writes_and_keeps_reads_and_accepted_outco
     tasks.abort_all();
     Ok(())
 }
+
+#[tokio::test]
+async fn prepare_lock_refuses_unknown_replicated_records_until_the_abort() -> anyhow::Result<()> {
+    use syncstr_headless::activation_control::{
+        Body, Host, Prepared, Proposal, Session, Signed, Withdrawn, membership_revision,
+    };
+    let fixture = crate::Fixture::new().await?;
+    let source = fixture.activate()?;
+    let replica = fixture.replica()?;
+    source.commit(
+        &fixture.host,
+        crate::register(&source.catalog()?, "one", &fixture.entry.sha256),
+    )?;
+    let known = source.page(0)?;
+    let known_playlists = source.playlist_page(0)?;
+    replica.receive_page("source", 0, known.clone())?;
+    replica.receive_playlist_page("source/playlists", 0, known_playlists.clone())?;
+
+    replica.control_initialize()?;
+    replica.control_freeze()?;
+    let proof = replica.membership()?;
+    let cluster = *uuid::Uuid::parse_str(&replica.catalog()?.cluster)?.as_bytes();
+    let (membership, hosts) = membership_revision(cluster, &proof)?;
+    let host = |identity: &syncstr_headless::peer::Identity| -> Host {
+        hosts
+            .iter()
+            .find(|h| h.key == *identity.id().as_bytes())
+            .unwrap()
+            .clone()
+    };
+    let key = |text: &str| -> anyhow::Result<[u8; 32]> {
+        hex::decode(text)?
+            .try_into()
+            .map_err(|_| anyhow::anyhow!("digest width"))
+    };
+    let session = Session {
+        coordinator: host(&fixture.host),
+        nonce: [7; 32],
+    };
+    let profiles = vec!["registration-equivalence-v1".to_owned()];
+    let proposed = Signed::sign(
+        Body::Proposal(Box::new(Proposal {
+            cluster,
+            root: *proof.root.parse::<iroh::EndpointId>()?.as_bytes(),
+            baseline: key(&replica.catalog()?.baseline)?,
+            previous: None,
+            epoch: 1,
+            membership,
+            hosts: hosts.clone(),
+            profiles: profiles.clone(),
+            inventory: [1; 32],
+            backup: [2; 32],
+            coordinator: session.coordinator.clone(),
+            nonce: session.nonce,
+        })),
+        &fixture.host,
+    )?;
+    replica.control_record(&proposed, &proof, &session)?;
+    replica.control_prepare(
+        Prepared {
+            proposal: proposed.id()?,
+            host: session.coordinator.clone(),
+            implementations: vec!["fixture-build".into()],
+            implemented_profiles: profiles.clone(),
+            input_history: replica.control_input_history()?,
+            baseline: key(&replica.catalog()?.baseline)?,
+            write_frozen: true,
+            admission_frozen: true,
+            minimum_profiles: profiles.clone(),
+        },
+        &fixture.host,
+        &session,
+        &profiles.iter().cloned().collect(),
+    )?;
+
+    // The source signed these before it froze; the replica acknowledged without them.
+    source.commit(
+        &fixture.host,
+        crate::register(&source.catalog()?, "two", &fixture.entry.sha256),
+    )?;
+    let mut document = source.playlists()?.remove(0).document;
+    document.id = "source:later".into();
+    document.source_playlist = "later".into();
+    source.update_playlists(
+        &fixture.host,
+        syncstr_headless::shared_audio::PlaylistUpdate {
+            documents: vec![document],
+            expected: Default::default(),
+            confirmed_replacements: false,
+        },
+    )?;
+    let history = replica.control_input_history()?;
+    let cursor = replica.cursor("source")?;
+    let playlist_cursor = replica.cursor("source/playlists")?;
+    let later = source.page(cursor)?;
+    let later_playlists = source.playlist_page(playlist_cursor)?;
+    assert!(!later.is_empty() && !later_playlists.is_empty());
+    assert!(replica.receive_page("source", cursor, later.clone()).is_err());
+    assert!(
+        replica
+            .receive_playlist_page("source/playlists", playlist_cursor, later_playlists.clone())
+            .is_err()
+    );
+    assert!(
+        replica
+            .receive(later.iter().map(|(_, record)| record.clone()).collect())
+            .is_err()
+    );
+    assert_eq!(replica.control_input_history()?, history);
+    assert_eq!(replica.cursor("source")?, cursor);
+    // Records the replica already holds are not an intake.
+    replica.receive(known.into_iter().map(|(_, record)| record).collect())?;
+
+    replica.control_withdraw(
+        proposed.id()?,
+        session.coordinator.clone(),
+        &fixture.host,
+        &session,
+    )?;
+    replica.control_record(
+        &Signed::sign(
+            Body::Withdrawn(Withdrawn {
+                proposal: proposed.id()?,
+                host: host(&fixture.other),
+            }),
+            &fixture.other,
+        )?,
+        &proof,
+        &session,
+    )?;
+    replica.control_abort(proposed.id()?, &fixture.host, &session)?;
+    replica.receive_page("source", cursor, later)?;
+    replica.receive_playlist_page("source/playlists", playlist_cursor, later_playlists)?;
+    assert_ne!(replica.control_input_history()?, history);
+    replica.control_release()?;
+    Ok(())
+}

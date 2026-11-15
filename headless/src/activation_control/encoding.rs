@@ -5,6 +5,8 @@ const PROPOSAL: &[u8] = b"syncstr-activation-proposal-v1\n";
 const PREPARED: &[u8] = b"syncstr-activation-prepared-v1\n";
 const CERTIFICATE: &[u8] = b"syncstr-activation-certificate-v1\n";
 const INSTALLED: &[u8] = b"syncstr-activation-installed-v1\n";
+const WITHDRAWN: &[u8] = b"syncstr-activation-withdrawn-v1\n";
+const ABORTED: &[u8] = b"syncstr-activation-aborted-v1\n";
 
 pub(super) fn count(out: &mut Vec<u8>, size: usize) -> anyhow::Result<()> {
     out.extend(u32::try_from(size)?.to_be_bytes());
@@ -58,6 +60,8 @@ pub(super) fn encode(body: &Body) -> anyhow::Result<Vec<u8>> {
         Body::Prepared(_) => PREPARED,
         Body::Certificate(_) => CERTIFICATE,
         Body::Installed(_) => INSTALLED,
+        Body::Withdrawn(_) => WITHDRAWN,
+        Body::Aborted(_) => ABORTED,
     };
     let mut out = domain.to_vec();
     out.push(1);
@@ -129,6 +133,28 @@ pub(super) fn encode(body: &Body) -> anyhow::Result<Vec<u8>> {
             host(&mut out, &i.host);
             out.extend(i.epoch.to_be_bytes());
         }
+        Body::Withdrawn(w) => {
+            out.extend(w.proposal);
+            host(&mut out, &w.host);
+        }
+        Body::Aborted(a) => {
+            out.extend(a.proposal);
+            ensure!(a.withdrawn.len() <= MAX_HOSTS, "too many withdrawals");
+            count(&mut out, a.withdrawn.len())?;
+            let mut previous = None;
+            for signed in &a.withdrawn {
+                let Body::Withdrawn(w) = &signed.body else {
+                    anyhow::bail!("nested withdrawal kind")
+                };
+                ensure!(
+                    previous.is_none_or(|k| k < w.host.key),
+                    "unordered withdrawn hosts"
+                );
+                previous = Some(w.host.key);
+                blob(&mut out, &signed.canonical()?)?;
+            }
+            host(&mut out, &a.coordinator);
+        }
     }
     ensure!(out.len() <= MAX_BYTES - 68, "control encoding too large");
     Ok(out)
@@ -195,7 +221,7 @@ fn decode_kind(bytes: &[u8], expected: Option<&[u8]>) -> anyhow::Result<Signed> 
     let signing = outer.blob(MAX_BYTES)?;
     let signature = outer.array()?;
     outer.done()?;
-    let domain = [PROPOSAL, PREPARED, CERTIFICATE, INSTALLED]
+    let domain = [PROPOSAL, PREPARED, CERTIFICATE, INSTALLED, WITHDRAWN, ABORTED]
         .into_iter()
         .find(|d| signing.starts_with(d))
         .context("unknown control domain")?;
@@ -253,11 +279,27 @@ fn decode_kind(bytes: &[u8], expected: Option<&[u8]>) -> anyhow::Result<Signed> 
             prepared,
             coordinator: r.host()?,
         })
-    } else {
+    } else if domain == INSTALLED {
         Body::Installed(Installed {
             certificate: r.array()?,
             host: r.host()?,
             epoch: r.number()?,
+        })
+    } else if domain == WITHDRAWN {
+        Body::Withdrawn(Withdrawn {
+            proposal: r.array()?,
+            host: r.host()?,
+        })
+    } else {
+        let proposal = r.array()?;
+        let count = r.count(MAX_HOSTS)?;
+        let withdrawn = (0..count)
+            .map(|_| decode_kind(r.blob(MAX_BYTES)?, Some(WITHDRAWN)))
+            .collect::<anyhow::Result<_>>()?;
+        Body::Aborted(Aborted {
+            proposal,
+            withdrawn,
+            coordinator: r.host()?,
         })
     };
     r.done()?;

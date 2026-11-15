@@ -1072,12 +1072,13 @@ impl crate::shared_audio::Store {
             anyhow::ensure!(current == after, "playlist cursor changed");
             crate::shared_audio::scoped_requests(&transaction)?;
             let mut next = after;
+            let mut fresh = false;
             for (sequence, signed) in page {
                 anyhow::ensure!(sequence > next, "nonmonotonic playlist page");
                 let body = signed.decode(&proof)?;
                 anyhow::ensure!(body.cluster == catalog.cluster, "cross-cluster playlist");
                 let known: bool = transaction.query_row("SELECT EXISTS(SELECT 1 FROM shared_playlists WHERE id=?)", [&signed.id], |r| r.get(0))?;
-                if !known { proof.verify(&body.grant)?; }
+                if !known { proof.verify(&body.grant)?; fresh = true; }
                 if let (Some(id), Some(digest)) = (&body.request, &body.request_digest) {
                     let member = crate::shared_audio::request_member(&body.author, body.origin.as_ref());
                     crate::shared_audio::reject_object_request(&transaction, member, id)?;
@@ -1086,6 +1087,7 @@ impl crate::shared_audio::Store {
                 transaction.execute("INSERT OR IGNORE INTO shared_playlists VALUES (?, ?)", rusqlite::params![signed.id, serde_json::to_vec(&signed)?])?;
                 next = sequence;
             }
+            if fresh { crate::activation_control::ensure_intake(&transaction)?; }
             // Signed conflicts are retained; projection reports them without choosing a winner.
             transaction.execute("INSERT INTO shared_cursors VALUES (?, ?) ON CONFLICT(peer) DO UPDATE SET sequence=excluded.sequence", rusqlite::params![peer, next])?;
             transaction.commit()?;
@@ -1921,17 +1923,19 @@ impl crate::shared_audio::Store {
                 let current: i64 = transaction.query_row("SELECT sequence FROM shared_cursors WHERE peer=?", [peer], |r| r.get(0)).optional()?.unwrap_or(0);
                 anyhow::ensure!(current == expected, "replication cursor changed");
             }
+            let mut fresh = false;
             for record in records {
                 let body = crate::shared_audio::decode(&record, &proof)?;
                 anyhow::ensure!(body.baseline == catalog.baseline, "different migration baseline");
                 let known: bool = transaction.query_row("SELECT EXISTS(SELECT 1 FROM shared_records WHERE id=?)", [&record.id], |r| r.get(0))?;
-                if !known { proof.verify(&body.grant)?; }
+                if !known { proof.verify(&body.grant)?; fresh = true; }
                 let member = crate::shared_audio::request_member(&body.author, body.origin.as_ref());
                 crate::shared_audio::reject_object_request(&transaction, member, &body.request)?;
                 crate::shared_audio::index_request(&transaction, member, &body.request, &body.request_digest, &record.id, "audio")?;
                 transaction.execute("INSERT OR IGNORE INTO shared_records VALUES (?, ?)", rusqlite::params![record.id, serde_json::to_vec(&record)?])?;
                 transaction.execute("INSERT OR IGNORE INTO shared_requests VALUES (?, ?, ?)", rusqlite::params![body.request, body.request_digest, record.id])?;
             }
+            if fresh { crate::activation_control::ensure_intake(&transaction)?; }
             crate::shared_audio::catalog(&transaction)?;
             if let Some((peer, _, next)) = cursor {
                 transaction.execute("INSERT INTO shared_cursors VALUES (?, ?) ON CONFLICT(peer) DO UPDATE SET sequence=excluded.sequence", rusqlite::params![peer, next])?;

@@ -1,6 +1,7 @@
-//! Durable maintenance freeze and writer release. Local state only; nothing is sent.
+//! Durable maintenance freeze, session designation and writer release. Local
+//! state only; nothing is sent.
 use super::*;
-use rusqlite::Connection;
+use rusqlite::{Connection, OptionalExtension as _, params};
 
 /// Why this host refuses to sign new shared state.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -30,7 +31,7 @@ impl std::fmt::Display for Refusal {
 
 impl std::error::Error for Refusal {}
 
-fn exists(db: &Connection, table: &str) -> anyhow::Result<bool> {
+pub(super) fn exists(db: &Connection, table: &str) -> anyhow::Result<bool> {
     Ok(db.query_row(
         "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name=?)",
         [table],
@@ -40,8 +41,38 @@ fn exists(db: &Connection, table: &str) -> anyhow::Result<bool> {
 
 pub(super) fn tables(db: &Connection) -> anyhow::Result<()> {
     db.execute_batch("CREATE TABLE IF NOT EXISTS activation_control_freeze (singleton INTEGER PRIMARY KEY CHECK(singleton=1));
-        CREATE TABLE IF NOT EXISTS activation_control_releases (certificate BLOB PRIMARY KEY);")?;
+        CREATE TABLE IF NOT EXISTS activation_control_releases (certificate BLOB PRIMARY KEY);
+        CREATE TABLE IF NOT EXISTS activation_control_withdrawals (proposal BLOB PRIMARY KEY, statement BLOB NOT NULL);
+        CREATE TABLE IF NOT EXISTS activation_control_session (singleton INTEGER PRIMARY KEY CHECK(singleton=1), coordinator BLOB NOT NULL, grant_id BLOB NOT NULL, nonce BLOB NOT NULL);")?;
     Ok(())
+}
+
+fn designated(db: &Connection) -> anyhow::Result<Option<Session>> {
+    if !exists(db, "activation_control_session")? {
+        return Ok(None);
+    }
+    let row: Option<(Vec<u8>, Vec<u8>, Vec<u8>)> = db
+        .query_row(
+            "SELECT coordinator, grant_id, nonce FROM activation_control_session",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .optional()?;
+    row.map(|(key, grant, nonce)| {
+        Ok(Session {
+            coordinator: Host {
+                key: journal::array(key)?,
+                grant: journal::array(grant)?,
+            },
+            nonce: journal::array(nonce)?,
+        })
+    })
+    .transpose()
+}
+
+fn authorized_hosts(db: &Connection) -> anyhow::Result<Vec<Host>> {
+    let cluster = journal::state(db)?.cluster;
+    Ok(membership_revision(cluster, &crate::enrollment::read_proof(db)?)?.1)
 }
 
 /// Storage initialized before these tables existed has never been frozen.
@@ -99,6 +130,58 @@ impl crate::shared_audio::Store {
         })
     }
 
+    /// Record the maintenance session the owner authorized on this host: the
+    /// coordinator and its session nonce. A pending activation keeps its session.
+    pub fn control_designate(&self, session: &Session) -> anyhow::Result<()> {
+        self.run(|db, _| {
+            let tx = db.transaction()?;
+            ensure!(
+                exists(&tx, "activation_control_state")?,
+                "control storage is not initialized"
+            );
+            tables(&tx)?;
+            let inspection = journal::inspect(&tx)?;
+            let unchanged = designated(&tx)?.is_some_and(|current| {
+                current.coordinator == session.coordinator && current.nonce == session.nonce
+            });
+            ensure!(
+                unchanged
+                    || (inspection.pending_preparations.is_empty()
+                        && inspection.pending_certificates.is_empty()),
+                "a pending activation belongs to the designated session"
+            );
+            ensure!(
+                authorized_hosts(&tx)?.contains(&session.coordinator),
+                "coordinator is not an authorized host"
+            );
+            tx.execute(
+                "INSERT OR REPLACE INTO activation_control_session VALUES (1, ?, ?, ?)",
+                params![
+                    session.coordinator.key.as_slice(),
+                    session.coordinator.grant.as_slice(),
+                    session.nonce.as_slice()
+                ],
+            )?;
+            tx.commit()?;
+            Ok(())
+        })
+    }
+
+    /// The session designated on this host, if any.
+    pub fn control_session(&self) -> anyhow::Result<Option<Session>> {
+        self.run(|db, _| designated(db))
+    }
+
+    /// The authorized host with this key in the current membership.
+    pub fn control_host(&self, key: Key) -> anyhow::Result<Host> {
+        self.run(|db, _| {
+            let mut found = authorized_hosts(db)?.into_iter().filter(|h| h.key == key);
+            let host = found.next();
+            ensure!(found.next().is_none(), "host key has more than one grant");
+            host.ok_or_else(|| anyhow::anyhow!("not an authorized host"))
+        })
+    }
+
     /// Release writers only when nothing is pending. With an installed head,
     /// the release is recorded against it so a restart cannot release early.
     pub fn control_release(&self) -> anyhow::Result<()> {
@@ -126,6 +209,9 @@ impl crate::shared_audio::Store {
                     [head.as_slice()],
                 )?;
             }
+            // The next maintenance session needs its own designation.
+            tables(&tx)?;
+            tx.execute("DELETE FROM activation_control_session", [])?;
             tx.execute("DELETE FROM activation_control_freeze", [])?;
             tx.commit()?;
             Ok(())
