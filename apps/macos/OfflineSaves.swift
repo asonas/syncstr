@@ -140,8 +140,10 @@ extension LocalTransfer {
 
     func setSavesBackgrounded(_ backgrounded: Bool) {
         savesBackgrounded = backgrounded
-        if backgrounded { stopSaveWorker() }
-        else { resumeSaves() }
+        if backgrounded {
+            stopSaveWorker()
+            if saveReconnecting { cancel(reason: "saves_backgrounded") }
+        } else { resumeSaves() }
     }
 
     func resumeSaves(explicit: String? = nil) {
@@ -151,12 +153,15 @@ extension LocalTransfer {
         let token = saveGeneration
         saveWorker = Task { [weak self] in
             guard let self else { return }
+            var needsPeer = false
             defer {
                 if saveGeneration == token {
                     saveWorker = nil
                     if saveRequests.contains(where: { [.waiting, .wifi, .saving].contains($0.state) }) {
-                        saveRetry = Task { [weak self] in
-                            do { try await Task.sleep(for: .seconds(15)) } catch { return }
+                        saveRetry = Task { [weak self, needsPeer] in
+                            // A successful connection resumes saves itself and cancels this retry.
+                            if needsPeer { await self?.reconnectPeerForWaitingSaves() }
+                            do { try await Task.sleep(for: self?.saveRetryInterval ?? .seconds(15)) } catch { return }
                             self?.resumeSaves()
                         }
                     }
@@ -210,12 +215,14 @@ extension LocalTransfer {
                                     saveNetwork = network
                                     defer { network.stop(); if saveGeneration == token { saveNetwork = nil } }
                                     try await network.download(object: entry.sha256, track: entry.track.id) { _ in }
-                                } else if connected && !busy {
+                                } else if legacyChannelUsable && !busy {
                                     let cached = try await playbackFile(entry.track)
                                     try Task.checkCancellation()
                                     try await protectCachedFile(cached, entry: entry)
+                                    legacySaveCompleted()
                                 } else {
                                     waiting = true
+                                    needsPeer = true
                                     continue
                                 }
                             }

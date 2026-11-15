@@ -92,7 +92,14 @@ final class PeerTransferTests: XCTestCase {
         try await exerciseNativeClient(directory: nil, externalDirectory: URL(fileURLWithPath: path), idleSeconds: idle)
     }
 
-    private func exerciseNativeClient(directory: String?, externalDirectory: URL? = nil, idleSeconds: Double = 0) async throws {
+    func testWaitingSavesReconnectTheSavedPeerAndBackOffWhenRefused() async throws {
+        XCTAssertEqual((1...7).map { LocalTransfer.saveReconnectDelay(attempts: $0) },
+            [15, 30, 60, 120, 240, 300, 300].map { Duration.seconds($0) })
+        try await exerciseNativeClient(directory: nil, waitingSaves: true)
+    }
+
+    private func exerciseNativeClient(directory: String?, externalDirectory: URL? = nil, idleSeconds: Double = 0,
+                                      waitingSaves: Bool = false) async throws {
         let repository = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
             .deletingLastPathComponent().deletingLastPathComponent()
         let configuredBinary = ProcessInfo.processInfo.environment["SYNCSTR_HEADLESS_TEST_BINARY"].map { URL(fileURLWithPath: $0) }
@@ -204,6 +211,51 @@ final class PeerTransferTests: XCTestCase {
         XCTAssertEqual(catalog.entries.first?.track.track, 3)
         XCTAssertEqual(catalog.entries.first?.track.discNumber, 2)
         XCTAssertGreaterThan(catalog.entries.first?.track.duration ?? 0, 0)
+        if waitingSaves {
+            let other = root.appendingPathComponent("other.mp3")
+            try FileManager.default.copyItem(at: source, to: other)
+            try AudioTags.writeFile(other, fields: ["TITLE": "Other title"], artwork: nil, mimeType: nil, changeArtwork: false)
+            transfer.uploadPeer(files: [other])
+            try await wait { !transfer.busy }
+            let entries = try XCTUnwrap(files.load()).entries
+            let first = try XCTUnwrap(entries.first { $0.track.title == "Tagged title" })
+            let second = try XCTUnwrap(entries.first { $0.track.title == "Other title" })
+            XCTAssertFalse(files.hasFile(first))
+            XCTAssertFalse(files.hasFile(second))
+            defer { transfer.stopSaveWorker() }
+            transfer.saveRetryInterval = .milliseconds(50)
+            func reconnects() async -> Int {
+                let trace = diagnostics.begin(title: "Fixture", track: first.track.id, sha256: nil, library: catalog.id)
+                diagnostics.captureConnections(in: trace)
+                return await diagnostics.recent().first { $0.id == trace.id }?.events.filter { $0.event == "save_reconnect_started" }.count ?? 0
+            }
+
+            transfer.cancel()
+            await transfer.requestSave([first.track], scope: "track:" + first.track.id)
+            try await wait { transfer.saveRequests.first?.state == .complete }
+            XCTAssertTrue(transfer.peerConnected, transfer.status ?? "")
+            XCTAssertEqual(try Data(contentsOf: files.fileURL(first)), payload)
+            let succeeded = await reconnects()
+            XCTAssertEqual(succeeded, 1)
+
+            _ = try run(["peer-pair", "--state", peer.path, "--peer", transfer.peerID, "--revoke"])
+            transfer.cancel()
+            await transfer.requestSave([second.track], scope: "track:" + second.track.id)
+            for _ in 0..<400 {
+                if await reconnects() == 2, !transfer.busy { break }
+                try await Task.sleep(for: .milliseconds(25))
+            }
+            try await Task.sleep(for: .seconds(1))
+            XCTAssertEqual(transfer.saveRequests.last?.state, .waiting)
+            XCTAssertFalse(transfer.connected)
+            let refused = await reconnects()
+            XCTAssertEqual(refused, 2, "A refused reconnect must wait out its delay instead of repeating every retry")
+            await transfer.forgetPeer()
+            try await secrets.remove()
+            try await pairing.remove()
+            try await localPairing.remove()
+            return
+        }
         transfer.copy(catalog.entries.map(\.track))
         try await wait { !transfer.busy }
         let entry = try XCTUnwrap(catalog.entries.first)
