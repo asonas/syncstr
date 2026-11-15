@@ -47,7 +47,7 @@ pub(super) fn tables(db: &Connection) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn designated(db: &Connection) -> anyhow::Result<Option<Session>> {
+pub(super) fn designated(db: &Connection) -> anyhow::Result<Option<Session>> {
     if !exists(db, "activation_control_session")? {
         return Ok(None);
     }

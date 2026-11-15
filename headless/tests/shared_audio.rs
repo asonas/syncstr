@@ -5826,3 +5826,409 @@ async fn prepare_lock_refuses_unknown_replicated_records_until_the_abort() -> an
     replica.control_release()?;
     Ok(())
 }
+
+/// A second v5 host of the fixture cluster: the replica's data with the other
+/// host's own grant as its local one.
+fn control_other(fixture: &crate::Fixture) -> anyhow::Result<syncstr_headless::shared_audio::Store> {
+    let replica = fixture.replica()?;
+    let other = fixture.other.id().to_string();
+    let grant = replica
+        .membership()?
+        .grants
+        .into_iter()
+        .find(|g| g.host && g.member == other)
+        .unwrap()
+        .id;
+    rusqlite::Connection::open(fixture.root.path().join("replica/node.sqlite"))?
+        .execute("UPDATE cluster_trust SET local_grant=?", [grant])?;
+    Ok(replica)
+}
+
+struct Maintenance {
+    session: syncstr_headless::activation_control::Session,
+    proposed: syncstr_headless::activation_control::Signed,
+    proof: syncstr_headless::enrollment::Proof,
+    hosts: Vec<syncstr_headless::activation_control::Host>,
+    profiles: Vec<String>,
+}
+
+impl crate::Maintenance {
+    /// A first-epoch proposal coordinated by the fixture host.
+    fn propose(
+        fixture: &crate::Fixture,
+        store: &syncstr_headless::shared_audio::Store,
+        nonce: u8,
+    ) -> anyhow::Result<Self> {
+        use syncstr_headless::activation_control::{
+            Body, Proposal, Session, Signed, membership_revision,
+        };
+        let proof = store.membership()?;
+        let catalog = store.catalog()?;
+        let cluster = *uuid::Uuid::parse_str(&catalog.cluster)?.as_bytes();
+        let (membership, hosts) = membership_revision(cluster, &proof)?;
+        let coordinator = crate::Maintenance::host_in(&hosts, &fixture.host);
+        let session = Session {
+            coordinator: coordinator.clone(),
+            nonce: [nonce; 32],
+        };
+        let profiles = vec!["registration-equivalence-v1".to_owned()];
+        let proposed = Signed::sign(
+            Body::Proposal(Box::new(Proposal {
+                cluster,
+                root: *proof.root.parse::<iroh::EndpointId>()?.as_bytes(),
+                baseline: crate::Maintenance::digest(&catalog.baseline)?,
+                previous: None,
+                epoch: 1,
+                membership,
+                hosts: hosts.clone(),
+                profiles: profiles.clone(),
+                inventory: [1; 32],
+                backup: [2; 32],
+                coordinator,
+                nonce: session.nonce,
+            })),
+            &fixture.host,
+        )?;
+        Ok(Self {
+            session,
+            proposed,
+            proof,
+            hosts,
+            profiles,
+        })
+    }
+
+    fn digest(text: &str) -> anyhow::Result<[u8; 32]> {
+        hex::decode(text)?
+            .try_into()
+            .map_err(|_| anyhow::anyhow!("digest width"))
+    }
+
+    fn host_in(
+        hosts: &[syncstr_headless::activation_control::Host],
+        identity: &syncstr_headless::peer::Identity,
+    ) -> syncstr_headless::activation_control::Host {
+        hosts
+            .iter()
+            .find(|h| h.key == *identity.id().as_bytes())
+            .unwrap()
+            .clone()
+    }
+
+    fn host(
+        &self,
+        identity: &syncstr_headless::peer::Identity,
+    ) -> syncstr_headless::activation_control::Host {
+        crate::Maintenance::host_in(&self.hosts, identity)
+    }
+
+    fn supported(&self) -> std::collections::BTreeSet<String> {
+        self.profiles.iter().cloned().collect()
+    }
+
+    /// Lock and sign this host's prepared acknowledgment.
+    fn prepare(
+        &self,
+        store: &syncstr_headless::shared_audio::Store,
+        identity: &syncstr_headless::peer::Identity,
+    ) -> anyhow::Result<syncstr_headless::activation_control::Signed> {
+        store.control_prepare(
+            syncstr_headless::activation_control::Prepared {
+                proposal: self.proposed.id()?,
+                host: self.host(identity),
+                implementations: vec!["fixture-build".into()],
+                implemented_profiles: self.profiles.clone(),
+                input_history: store.control_input_history()?,
+                baseline: crate::Maintenance::digest(&store.catalog()?.baseline)?,
+                write_frozen: true,
+                admission_frozen: true,
+                minimum_profiles: self.profiles.clone(),
+            },
+            identity,
+            &self.session,
+            &self.supported(),
+        )
+    }
+}
+
+#[tokio::test]
+async fn control_protocol_pulls_envelopes_only_for_the_designated_session() -> anyhow::Result<()> {
+    use syncstr_headless::activation_control::{Journal, Session as Designation};
+    use syncstr_headless::activation_control_net::{Refused, Session};
+    let fixture = crate::Fixture::new().await?;
+    let a = fixture.activate()?;
+    let b = crate::control_other(&fixture)?;
+    for store in [&a, &b] {
+        store.control_initialize()?;
+        store.control_freeze()?;
+    }
+    let m = crate::Maintenance::propose(&fixture, &a, 7)?;
+    a.control_designate(&m.session)?;
+    a.control_record(&m.proposed, &m.proof, &m.session)?;
+    m.prepare(&a, &fixture.host)?;
+
+    let (a_endpoint, _a_lock) = fixture
+        .host
+        .cluster_endpoint(&["127.0.0.1:0".parse()?])
+        .await?;
+    let (b_endpoint, _b_lock) = fixture
+        .other
+        .cluster_endpoint(&["127.0.0.1:0".parse()?])
+        .await?;
+    let reader = syncstr_headless::peer::Identity::from_secret(
+        &fixture.root.path().join("reader"),
+        [43; 32],
+    )?;
+    let (reader_endpoint, _reader_lock) =
+        reader.cluster_endpoint(&["127.0.0.1:0".parse()?]).await?;
+    let mut tasks = tokio::task::JoinSet::new();
+    tasks.spawn(syncstr_headless::shared_audio_net::serve(
+        a_endpoint.clone(),
+        a.clone(),
+        fixture.host.clone(),
+    ));
+
+    let session = Session::connect(&b_endpoint, a_endpoint.addr(), &b).await?;
+    let Journal::Readable { summary } = &session.journal else {
+        panic!("the peer's journal is readable");
+    };
+    assert!(summary.frozen && summary.pending && !summary.halted);
+    assert_eq!((summary.epoch, summary.head), (0, None));
+    assert_eq!(summary.session.as_ref(), Some(&m.session));
+    assert_eq!(summary.input_history, a.control_input_history()?);
+    assert_eq!(summary.envelopes.len(), 2);
+
+    // Without the owner's designation this host records nothing.
+    let mut refused = Refused::default();
+    assert_eq!(session.pull(&b, &mut refused).await?, 0);
+    // Nor under a designation for another session.
+    b.control_designate(&Designation {
+        coordinator: m.session.coordinator.clone(),
+        nonce: [9; 32],
+    })?;
+    assert_eq!(session.pull(&b, &mut refused).await?, 0);
+    assert_eq!(session.pull(&b, &mut refused).await?, 0);
+    let Journal::Readable { summary } = b.control_journal()? else {
+        panic!("this host's journal is readable");
+    };
+    assert!(summary.envelopes.is_empty() && !summary.pending);
+
+    b.control_designate(&m.session)?;
+    assert_eq!(session.pull(&b, &mut refused).await?, 2);
+    assert_eq!(
+        b.control_inspect()?.pending_preparations,
+        [m.proposed.id()?]
+    );
+    assert_eq!(session.pull(&b, &mut refused).await?, 0);
+
+    // The control protocol is for hosts; a playback member is refused.
+    assert!(
+        Session::connect(&reader_endpoint, a_endpoint.addr(), &b)
+            .await
+            .is_err()
+    );
+    // The server refuses on its own, whatever the client checks.
+    let connection = reader_endpoint
+        .connect(
+            a_endpoint.addr(),
+            syncstr_headless::activation_control_net::ALPN,
+        )
+        .await?;
+    assert!(
+        crate::shared_exchange::<_, serde_json::Value>(
+            &connection,
+            &syncstr_headless::activation_control_net::Hello {
+                version: 1,
+                proof: a.membership()?,
+            },
+        )
+        .await
+        .is_err()
+    );
+    tasks.abort_all();
+    Ok(())
+}
+
+#[tokio::test]
+async fn data_reconciles_only_between_hosts_whose_control_journals_agree() -> anyhow::Result<()> {
+    use syncstr_headless::activation_control::{Body, Certificate, Signed};
+    use syncstr_headless::activation_control_net::{Refused, reconcile};
+    let fixture = crate::Fixture::new().await?;
+    let a = fixture.activate()?;
+    let b = crate::control_other(&fixture)?;
+    let (a_endpoint, _a_lock) = fixture
+        .host
+        .cluster_endpoint(&["127.0.0.1:0".parse()?])
+        .await?;
+    let (b_endpoint, _b_lock) = fixture
+        .other
+        .cluster_endpoint(&["127.0.0.1:0".parse()?])
+        .await?;
+    let upgraded = || {
+        tokio::spawn(syncstr_headless::shared_audio_net::serve(
+            a_endpoint.clone(),
+            a.clone(),
+            fixture.host.clone(),
+        ))
+    };
+    // A host that was never upgraded: no control protocol, and it says so.
+    let outdated = || {
+        tokio::spawn(syncstr_headless::shared_audio_net::serve_data_only(
+            a_endpoint.clone(),
+            a.clone(),
+            fixture.host.clone(),
+        ))
+    };
+    let mut server = upgraded();
+    let both = vec![
+        syncstr_headless::shared_audio_net::ALPN.to_vec(),
+        syncstr_headless::activation_control_net::ALPN.to_vec(),
+    ];
+    let data_only = vec![syncstr_headless::shared_audio_net::ALPN.to_vec()];
+    let peer = fixture.host.id().to_string();
+    let mut refused = Refused::default();
+    let commit = |id: &str| -> anyhow::Result<()> {
+        a.commit(
+            &fixture.host,
+            crate::register(&a.catalog()?, id, &fixture.entry.sha256),
+        )?;
+        Ok(())
+    };
+
+    // Neither host has a control journal: data flows as before.
+    commit("one")?;
+    reconcile(&b_endpoint, &b, a_endpoint.addr(), &mut refused).await?;
+    let first = b.cursor(&peer)?;
+    assert!(first > 0);
+    let push = || async {
+        syncstr_headless::shared_audio_net::Session::connect(
+            &b_endpoint,
+            a_endpoint.addr(),
+            b.membership()?,
+        )
+        .await?
+        .request::<bool>(syncstr_headless::shared_audio_net::Request::Receive { records: vec![] })
+        .await
+    };
+    assert!(push().await?);
+
+    // This host has a journal and nothing activated: a peer without one, and a
+    // peer that does not speak the control protocol, still reconcile.
+    b.control_initialize()?;
+    commit("two")?;
+    reconcile(&b_endpoint, &b, a_endpoint.addr(), &mut refused).await?;
+    let second = b.cursor(&peer)?;
+    assert!(second > first);
+    server.abort();
+    server = outdated();
+    commit("three")?;
+    reconcile(&b_endpoint, &b, a_endpoint.addr(), &mut refused).await?;
+    assert!(b.cursor(&peer)? > second);
+    server.abort();
+    server = upgraded();
+    // A peer that says it serves the control protocol must complete the
+    // exchange. If the connection is refused, its journal is unknown.
+    a_endpoint.set_alpns(data_only);
+    let error = reconcile(&b_endpoint, &b, a_endpoint.addr(), &mut refused)
+        .await
+        .unwrap_err();
+    assert!(
+        error.to_string().contains("control exchange failed"),
+        "{error}"
+    );
+    a_endpoint.set_alpns(both);
+    // A control exchange that fails for another reason leaves the peer's
+    // journal unknown: a playback member is refused there, and gets no data
+    // although the data protocol alone would serve it.
+    let reader = syncstr_headless::peer::Identity::from_secret(
+        &fixture.root.path().join("reader"),
+        [43; 32],
+    )?;
+    let (reader_endpoint, _reader_lock) =
+        reader.cluster_endpoint(&["127.0.0.1:0".parse()?]).await?;
+    let error = reconcile(&reader_endpoint, &b, a_endpoint.addr(), &mut refused)
+        .await
+        .unwrap_err();
+    assert!(
+        error.to_string().contains("control exchange failed"),
+        "{error}"
+    );
+
+    // A full activation on a; b follows through the control protocol.
+    for store in [&a, &b] {
+        store.control_initialize()?;
+        store.control_freeze()?;
+    }
+    let m = crate::Maintenance::propose(&fixture, &a, 7)?;
+    for store in [&a, &b] {
+        store.control_designate(&m.session)?;
+    }
+    a.control_record(&m.proposed, &m.proof, &m.session)?;
+    let from_a = m.prepare(&a, &fixture.host)?;
+    // A pushing host cannot show its journal, so a pending activation refuses it.
+    assert!(push().await.is_err());
+    reconcile(&b_endpoint, &b, a_endpoint.addr(), &mut refused).await?;
+    assert_eq!(
+        b.control_inspect()?.pending_preparations,
+        [m.proposed.id()?]
+    );
+    let from_b = m.prepare(&b, &fixture.other)?;
+    a.control_record(&from_b, &m.proof, &m.session)?;
+    let mut prepared = vec![from_a, from_b];
+    prepared.sort_by_key(|signed| match &signed.body {
+        Body::Prepared(ack) => ack.host.key,
+        _ => unreachable!(),
+    });
+    let certificate = Signed::sign(
+        Body::Certificate(Certificate {
+            proposal: Box::new(m.proposed.clone()),
+            prepared,
+            coordinator: m.session.coordinator.clone(),
+        }),
+        &fixture.host,
+    )?;
+    a.control_record(&certificate, &m.proof, &m.session)?;
+    a.control_install(
+        certificate.id()?,
+        m.host(&fixture.host),
+        &fixture.host,
+        &m.session,
+        &m.supported(),
+    )?;
+
+    // b took in the certificate but has not installed it: no data yet.
+    let error = reconcile(&b_endpoint, &b, a_endpoint.addr(), &mut refused)
+        .await
+        .unwrap_err();
+    assert!(
+        error.to_string().contains("another activation epoch"),
+        "{error}"
+    );
+    assert_eq!(
+        b.control_inspect()?.pending_certificates,
+        [certificate.id()?]
+    );
+    b.control_install(
+        certificate.id()?,
+        m.host(&fixture.other),
+        &fixture.other,
+        &m.session,
+        &m.supported(),
+    )?;
+    reconcile(&b_endpoint, &b, a_endpoint.addr(), &mut refused).await?;
+    // The same exchange brought a's installation acknowledgment.
+    assert!(b.control_inspect()?.all_installations_recorded);
+
+    // Once a head is installed, a peer without the control protocol is refused.
+    server.abort();
+    server = outdated();
+    let error = reconcile(&b_endpoint, &b, a_endpoint.addr(), &mut refused)
+        .await
+        .unwrap_err();
+    assert!(
+        error.to_string().contains("no control journal"),
+        "{error}"
+    );
+    server.abort();
+    Ok(())
+}

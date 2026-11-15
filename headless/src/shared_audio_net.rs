@@ -17,6 +17,19 @@ pub struct Hello {
     pub supported_operations: Vec<String>,
 }
 
+/// A host's reply. Members read it as `Hello` and ignore the extra field.
+#[derive(serde::Serialize, serde::Deserialize)]
+pub struct HostHello {
+    pub version: u8,
+    pub proof: crate::enrollment::Proof,
+    #[serde(default)]
+    pub supported_operations: Vec<String>,
+    /// Protocols this host serves to other hosts beside this one. Sent on the
+    /// authenticated session, so a peer can rely on it.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub host_protocols: Vec<String>,
+}
+
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "status", rename_all = "kebab-case", deny_unknown_fields)]
 pub enum HelloRefusal {
@@ -386,7 +399,7 @@ impl crate::shared_audio::Store {
         self.merge_membership_from(incoming, None, true).map(|_| ())
     }
 
-    fn merge_membership_from(
+    pub(crate) fn merge_membership_from(
         &self,
         incoming: crate::enrollment::Proof,
         presenter: Option<(&str, &str)>,
@@ -481,6 +494,26 @@ pub async fn serve(
     store: crate::shared_audio::Store,
     signer: std::sync::Arc<crate::peer::Identity>,
 ) -> anyhow::Result<()> {
+    crate::shared_audio_net::serve_protocols(endpoint, store, signer, true).await
+}
+
+/// The data protocol as a host served it before the control protocol existed.
+/// Interoperability tests use it to stand in for a host that was not upgraded.
+#[doc(hidden)]
+pub async fn serve_data_only(
+    endpoint: iroh::Endpoint,
+    store: crate::shared_audio::Store,
+    signer: std::sync::Arc<crate::peer::Identity>,
+) -> anyhow::Result<()> {
+    crate::shared_audio_net::serve_protocols(endpoint, store, signer, false).await
+}
+
+async fn serve_protocols(
+    endpoint: iroh::Endpoint,
+    store: crate::shared_audio::Store,
+    signer: std::sync::Arc<crate::peer::Identity>,
+    control: bool,
+) -> anyhow::Result<()> {
     anyhow::ensure!(
         endpoint.id() == signer.id(),
         "host signer identity mismatch"
@@ -494,8 +527,11 @@ pub async fn serve(
                 let store = store.clone(); let signer = signer.clone();
                 connections.spawn(async move {
                     let connection = incoming.await?;
+                    if control && connection.alpn() == crate::activation_control_net::ALPN {
+                        return tokio::time::timeout(std::time::Duration::from_secs(7200), crate::activation_control_net::serve_connection(connection, store, signer)).await?;
+                    }
                     anyhow::ensure!(connection.alpn() == crate::shared_audio_net::ALPN, "v5 upgrade required");
-                    tokio::time::timeout(std::time::Duration::from_secs(7200), crate::shared_audio_net::serve_connection(connection, store, signer)).await?
+                    tokio::time::timeout(std::time::Duration::from_secs(7200), crate::shared_audio_net::serve_connection(connection, store, signer, control)).await?
                 });
             }
             result = connections.join_next(), if !connections.is_empty() => {
@@ -510,6 +546,7 @@ async fn serve_connection(
     connection: iroh::endpoint::Connection,
     store: crate::shared_audio::Store,
     signer: std::sync::Arc<crate::peer::Identity>,
+    control: bool,
 ) -> anyhow::Result<()> {
     let own = signer.id().to_string();
     let peer = connection.remote_id().to_string();
@@ -549,7 +586,7 @@ async fn serve_connection(
     };
     crate::cluster_net::send(
         &mut output,
-        &crate::shared_audio_net::Hello {
+        &crate::shared_audio_net::HostHello {
             version: 5,
             proof,
             supported_operations: vec![
@@ -562,6 +599,11 @@ async fn serve_connection(
                 "register-track".into(),
                 "assign-source".into(),
             ],
+            host_protocols: if control {
+                vec![crate::activation_control_net::PROTOCOL.into()]
+            } else {
+                vec![]
+            },
         },
     )
     .await?;
@@ -651,6 +693,7 @@ async fn serve_connection(
             }
             crate::shared_audio_net::Request::Receive { records } => {
                 crate::shared_audio_net::authorize(&proof, &peer, true)?;
+                crate::activation_control_net::admit_push(&store)?;
                 store.receive(records)?;
                 crate::cluster_net::send(&mut output, &true).await?;
             }
@@ -737,6 +780,8 @@ pub struct Session {
     connection: iroh::endpoint::Connection,
     pub proof: crate::enrollment::Proof,
     pub supported_operations: Vec<String>,
+    /// Protocols the host said it serves to other hosts.
+    pub host_protocols: Vec<String>,
 }
 
 impl crate::shared_audio_net::Session {
@@ -817,7 +862,7 @@ impl crate::shared_audio_net::Session {
         )
         .await?;
         output.finish()?;
-        let hello: crate::shared_audio_net::Hello = tokio::time::timeout(
+        let hello: crate::shared_audio_net::HostHello = tokio::time::timeout(
             std::time::Duration::from_secs(30),
             crate::cluster_net::receive(&mut input, 4 * 1024 * 1024),
         )
@@ -862,6 +907,7 @@ impl crate::shared_audio_net::Session {
             connection,
             proof: combined,
             supported_operations: hello.supported_operations,
+            host_protocols: hello.host_protocols,
         })
     }
 
@@ -1053,6 +1099,7 @@ pub async fn synchronize(
     mut discovered: tokio::sync::mpsc::Receiver<iroh::EndpointAddr>,
 ) -> anyhow::Result<()> {
     let mut peers = std::collections::BTreeMap::new();
+    let mut refused = crate::activation_control_net::Refused::default();
     let mut interval = tokio::time::interval(std::time::Duration::from_secs(3));
     interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     loop {
@@ -1065,10 +1112,11 @@ pub async fn synchronize(
                 let proof = store.membership()?;
                 for (peer, address) in &peers {
                     if crate::shared_audio_net::authorize(&proof, &peer.to_string(), true).is_err() { continue; }
-                    let result = tokio::time::timeout(std::time::Duration::from_secs(120), async {
-                        let session = crate::shared_audio_net::Session::connect(&endpoint, address.clone(), proof.clone()).await?;
-                        session.reconcile(&store, &peer.to_string()).await
-                    }).await;
+                    // Control records come first; data follows only between hosts whose journals agree.
+                    let result = tokio::time::timeout(
+                        std::time::Duration::from_secs(120),
+                        crate::activation_control_net::reconcile(&endpoint, &store, address.clone(), &mut refused),
+                    ).await;
                     match result {
                         Ok(Ok(())) => {},
                         Ok(Err(error)) => eprintln!("Shared synchronization deferred: {error}"),

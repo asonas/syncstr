@@ -1,4 +1,5 @@
-//! Local signed activation evidence and the maintenance freeze. No transport.
+//! Local signed activation evidence and the maintenance freeze. The transport
+//! is `activation_control_net`.
 use anyhow::ensure;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
@@ -6,12 +7,14 @@ use std::collections::BTreeSet;
 
 mod abort;
 mod encoding;
+mod exchange;
 mod freeze;
 mod intake;
 mod journal;
 #[cfg(test)]
 mod tests;
 
+pub use exchange::{Journal, Summary};
 pub use freeze::Refusal;
 pub(crate) use freeze::ensure_writable;
 pub(crate) use intake::ensure_intake;
