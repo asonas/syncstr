@@ -21,7 +21,8 @@ before storing any presented grants or revocations. Validation, authorization an
 storage share one store lock and transaction; a rejected Hello leaves membership
 unchanged. The server replies with its current proof and
 `"supported_operations":["set-album-visibility","resolve-album-visibility","edit-track","resolve-track","update-playlists","put-object","register-track","assign-source"]`, then finishes. A missing
-operations field means no member mutations are supported. Clients must keep their known
+operations field means no member mutations are supported. A host may add
+`"host_protocols"`, a list of protocols it serves to other hosts; members ignore it. Clients must keep their known
 revocations when merging the response, validate root and cluster equality, and
 require a live host grant for the actual remote ID.
 They must also verify their own live membership. A successful QUIC transport

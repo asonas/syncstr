@@ -106,7 +106,7 @@ target/debug/syncstr-headless shared-audio-control --data data designate \
 `shared-audio-serve` exchanges control records with other hosts before data:
 
 - A host with a designated session fetches the control envelopes a peer holds and records those of that session. Without a designation it records none.
-- Data then reconciles only with a peer at the same installed head, and with neither journal halted. A peer that has no control journal, or does not offer the control protocol, reconciles only while this host has no installed head and nothing pending. If the control exchange fails for any other reason, data with that peer waits.
+- Data then reconciles only with a peer at the same installed head, and with neither journal halted. A peer that has no control journal, or does not list the control protocol in its authenticated reply, reconciles only while this host has no installed head and nothing pending. If a peer lists it and the control exchange fails, data with that peer waits.
 - Records pushed by another host are accepted only by a host with no control journal, or with no installed head and nothing pending.
 - A host that never ran `init` reconciles as before.
 

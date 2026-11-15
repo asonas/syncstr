@@ -1807,10 +1807,31 @@ fn evidence_answer_stops_at_its_budget() -> anyhow::Result<()> {
     assert_eq!(ids.len(), 5);
     let (all, snapshots) = f.store().control_evidence(&ids, usize::MAX)?;
     assert_eq!((all.len(), snapshots.len()), (5, 1));
-    // The first envelope always fits, so a caller makes progress.
-    let (first, snapshots) = f.store().control_evidence(&ids, 1)?;
+    // A budget for exactly the first envelope and its membership snapshot.
+    let one = all[0].0.canonical()?.len() * 2
+        + serde_json::to_vec(snapshots.values().next().unwrap())?.len();
+    let (first, snapshots) = f.store().control_evidence(&ids, one)?;
     assert_eq!((first.len(), snapshots.len()), (1, 1));
     assert_eq!(first[0].0.id()?, ids[0]);
+    // An envelope that cannot fit alone is not served; smaller ones still are.
+    let sizes = all
+        .iter()
+        .map(|(signed, _)| Ok(signed.canonical()?.len()))
+        .collect::<anyhow::Result<Vec<_>>>()?;
+    let largest = (0..sizes.len()).max_by_key(|i| sizes[*i]).unwrap();
+    let snapshot = serde_json::to_vec(snapshots.values().next().unwrap())?.len();
+    // Ask for the largest first: skipping it must not end the answer.
+    let mut ordered = vec![ids[largest]];
+    ordered.extend(ids.iter().filter(|id| **id != ids[largest]));
+    let (rest, _) = f
+        .store()
+        .control_evidence(&ordered, sizes[largest] * 2 + snapshot - 1)?;
+    assert!(!rest.is_empty());
+    assert!(
+        rest.iter()
+            .all(|(signed, _)| signed.id().unwrap() != ids[largest])
+    );
+    assert!(f.store().control_evidence(&ids, 1)?.0.is_empty());
     let unknown = f.store().control_evidence(&[[9; 32]], usize::MAX)?;
     assert!(unknown.0.is_empty() && unknown.1.is_empty());
     Ok(())

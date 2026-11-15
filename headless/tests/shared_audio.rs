@@ -6064,12 +6064,22 @@ async fn data_reconciles_only_between_hosts_whose_control_journals_agree() -> an
         .other
         .cluster_endpoint(&["127.0.0.1:0".parse()?])
         .await?;
-    let mut tasks = tokio::task::JoinSet::new();
-    tasks.spawn(syncstr_headless::shared_audio_net::serve(
-        a_endpoint.clone(),
-        a.clone(),
-        fixture.host.clone(),
-    ));
+    let upgraded = || {
+        tokio::spawn(syncstr_headless::shared_audio_net::serve(
+            a_endpoint.clone(),
+            a.clone(),
+            fixture.host.clone(),
+        ))
+    };
+    // A host that was never upgraded: no control protocol, and it says so.
+    let outdated = || {
+        tokio::spawn(syncstr_headless::shared_audio_net::serve_data_only(
+            a_endpoint.clone(),
+            a.clone(),
+            fixture.host.clone(),
+        ))
+    };
+    let mut server = upgraded();
     let both = vec![
         syncstr_headless::shared_audio_net::ALPN.to_vec(),
         syncstr_headless::activation_control_net::ALPN.to_vec(),
@@ -6109,10 +6119,23 @@ async fn data_reconciles_only_between_hosts_whose_control_journals_agree() -> an
     reconcile(&b_endpoint, &b, a_endpoint.addr(), &mut refused).await?;
     let second = b.cursor(&peer)?;
     assert!(second > first);
-    a_endpoint.set_alpns(data_only.clone());
+    server.abort();
+    server = outdated();
     commit("three")?;
     reconcile(&b_endpoint, &b, a_endpoint.addr(), &mut refused).await?;
     assert!(b.cursor(&peer)? > second);
+    server.abort();
+    server = upgraded();
+    // A peer that says it serves the control protocol must complete the
+    // exchange. If the connection is refused, its journal is unknown.
+    a_endpoint.set_alpns(data_only);
+    let error = reconcile(&b_endpoint, &b, a_endpoint.addr(), &mut refused)
+        .await
+        .unwrap_err();
+    assert!(
+        error.to_string().contains("control exchange failed"),
+        "{error}"
+    );
     a_endpoint.set_alpns(both);
     // A control exchange that fails for another reason leaves the peer's
     // journal unknown: a playback member is refused there, and gets no data
@@ -6197,7 +6220,8 @@ async fn data_reconciles_only_between_hosts_whose_control_journals_agree() -> an
     assert!(b.control_inspect()?.all_installations_recorded);
 
     // Once a head is installed, a peer without the control protocol is refused.
-    a_endpoint.set_alpns(data_only);
+    server.abort();
+    server = outdated();
     let error = reconcile(&b_endpoint, &b, a_endpoint.addr(), &mut refused)
         .await
         .unwrap_err();
@@ -6205,6 +6229,6 @@ async fn data_reconciles_only_between_hosts_whose_control_journals_agree() -> an
         error.to_string().contains("no control journal"),
         "{error}"
     );
-    tasks.abort_all();
+    server.abort();
     Ok(())
 }

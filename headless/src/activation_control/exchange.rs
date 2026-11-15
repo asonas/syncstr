@@ -95,8 +95,8 @@ impl crate::shared_audio::Store {
 
     /// The requested envelopes this host holds, each with the membership
     /// revision of its proposal, and the membership snapshots by revision.
-    /// Stops before the answer outgrows `budget` bytes on the wire; the first
-    /// envelope is always included so that a caller makes progress.
+    /// Stops before the answer outgrows `budget` bytes on the wire. An envelope
+    /// that alone needs more than the budget is not served at all.
     #[allow(clippy::type_complexity)]
     pub fn control_evidence(
         &self,
@@ -130,7 +130,10 @@ impl crate::shared_audio::Store {
                         Some(snapshot)
                     }
                 };
-                if !envelopes.is_empty() && used.saturating_add(cost) > budget {
+                if cost > budget {
+                    continue;
+                }
+                if used.saturating_add(cost) > budget {
                     break;
                 }
                 used = used.saturating_add(cost);

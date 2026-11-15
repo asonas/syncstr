@@ -86,17 +86,18 @@ Implemented, except the host reactions at the end of this section.
 
 ### C4. A peer without the control protocol
 
-- **A (chosen 2026-11-15):** such a peer reconciles data only while this host has no installed head and nothing pending. Once an activation started or finished here, data with that peer stops.
+- **A (chosen 2026-11-15):** such a peer reconciles data only while this host has no installed head and nothing pending. Pending means a prepare lock this host holds, a prepared acknowledgment it stored from another host, or a stored certificate. A recorded proposal that no host has prepared is not pending: no host has acknowledged an input history yet, and the hosts still have to converge before they prepare.
 - **B:** refuse it as soon as this host has a control journal. Stricter, but `init` could not run until every host was upgraded.
 
 ### Transport
 
-- Hosts speak a separate protocol, negotiated as its own ALPN (`syncstr/control/1`), on the existing cluster endpoint. The data protocol and its strict request decoding do not change.
+- Hosts speak a separate protocol, negotiated as its own ALPN (`syncstr/control/1`), on the existing cluster endpoint. The data protocol's requests and their strict decoding do not change.
+- A host that serves it says so in its data protocol reply, in the optional field `"host_protocols": ["syncstr/control/1"]`. The reply is sent after both sides authenticated, so a peer can rely on it. Members and older hosts ignore the field.
 - Messages are length-prefixed JSON frames, as in the data protocol. Unknown fields are refused. Digests and keys are arrays of byte values; canonical envelope bytes are hexadecimal text.
 - The client opens with `{"version": 1, "proof": <membership proof>}`. The server merges the proof as the data protocol does, requires the client to be an authorized host, and answers `{"version": 1, "proof": ..., "journal": ...}`. The client merges the server's proof and requires both sides to be authorized hosts.
 - `journal` is `{"state": "absent"}` for a host that never initialized control storage, `{"state": "unreadable"}` for a journal that needs review, or `{"state": "readable", "summary": {...}}`.
 - The summary carries `epoch`, `head`, `frozen`, `released`, `halted`, `pending`, the designated `session`, the `membership` revision (null while it cannot be verified), `input_history`, and the identifiers of the stored `envelopes`.
-- One request exists: `{"operation": "fetch", "envelopes": [<identifier>, ...]}` with at most 32 identifiers. The answer lists each envelope the server holds as `{"canonical": <hex>, "membership": <index>}` and the membership snapshots the indexes refer to. The server authorizes both hosts again for every request. An answer stops growing at about 16 MiB; the client asks again for what is still missing.
+- One request exists: `{"operation": "fetch", "envelopes": [<identifier>, ...]}` with at most 32 identifiers. The answer lists each envelope the server holds as `{"canonical": <hex>, "membership": <index>}` and the membership snapshots the indexes refer to. The server authorizes both hosts again for every request. An answer stops growing at about 16 MiB, and an envelope that alone needs more is not served. What an answer leaves out is fetched on a later exchange.
 - A later version of this protocol is offered as another ALPN next to this one, because unknown fields are refused.
 
 Nothing is signed in answer to a request. Envelopes move by fetching, so every step can be repeated after a crash.
@@ -105,6 +106,7 @@ Nothing is signed in answer to a request. Envelopes move by fetching, so every s
 
 - A host fetches the envelopes a peer lists and it does not hold, and records them with the journal operations under the session the owner designated on it. Without a designation, or with a halted, unreadable or absent journal, it records nothing. An envelope for another session is refused.
 - Envelopes are recorded in dependency order: proposals, prepared acknowledgments, withdrawals, aborts, certificates, installation acknowledgments.
+- Each answer is recorded before the next is fetched, so an exchange that is cut short keeps what it brought.
 - A refused envelope is fetched again only after this host's journal changed.
 
 ### Control first
@@ -116,14 +118,14 @@ Before a host reconciles data with a peer it exchanges control records with that
 | No control journal | Any | Reconciles as before |
 | Readable | Readable, same installed head | Reconciles |
 | Readable | Readable, another head | Deferred |
-| Readable, no head, nothing pending | No journal, or does not offer the control protocol | Reconciles (C4) |
-| Readable, with a head or anything pending | No journal, or does not offer the control protocol | Deferred (C4) |
+| Readable, no head, nothing pending | No journal, or does not list the control protocol | Reconciles (C4) |
+| Readable, with a head or anything pending | No journal, or does not list the control protocol | Deferred (C4) |
 | Readable | Unreadable | Deferred |
-| Readable | Control exchange failed for any other reason | Deferred |
+| Readable | Lists the control protocol, but the exchange failed | Deferred |
 | Halted on either side | Any | Deferred |
 | Unreadable | Any | Deferred |
 
-Only a refused protocol counts as "does not offer": the peer answered and offered none of the requested protocols. A timeout, a broken answer or a refused authorization leaves the peer's journal unknown.
+A host opens the data session first and reads `host_protocols` from the authenticated reply. A peer that lists the control protocol must complete the exchange: a timeout, a refused connection, a broken answer or a refused authorization leaves its journal unknown and defers data. Only a peer that does not list it counts as having no journal. A connection error is never taken as evidence, because it can arrive before the peer is authenticated.
 
 Replication is pulled by the receiving host, so each host applies this before it reads from a peer. The data protocol also lets a host push records. A pushing host cannot show its journal there, so a push is accepted only where a peer without a journal would be: by a host with no control journal, or with no head and nothing pending.
 

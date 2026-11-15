@@ -4,25 +4,14 @@
 use crate::activation_control::{Digest, Journal, Session as Designation, Signed, Summary};
 use anyhow::Context as _;
 
-pub const ALPN: &[u8] = b"syncstr/control/1";
+/// The name a host lists in `host_protocols` of its data protocol reply.
+pub const PROTOCOL: &str = "syncstr/control/1";
+pub const ALPN: &[u8] = PROTOCOL.as_bytes();
 const MAX_FETCH: usize = 32;
-/// How the QUIC stack reports a peer that offers none of the requested protocols.
-const NO_PROTOCOL: &str = "known protocol";
 const MAX_HELLO: usize = 4 * 1024 * 1024;
-/// An answer stops growing here; the client asks again for the rest.
+/// An answer stops growing here, and an envelope that alone needs more is not
+/// served. The rest is fetched on a later exchange.
 const MAX_ANSWER: usize = 16 * 1024 * 1024;
-
-/// The peer does not offer the control protocol.
-#[derive(Debug)]
-pub struct Unsupported;
-
-impl std::fmt::Display for Unsupported {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("peer does not offer the control protocol")
-    }
-}
-
-impl std::error::Error for Unsupported {}
 
 /// Journal inspection verifies signatures and waits on the store; keep it off
 /// the async workers.
@@ -167,29 +156,19 @@ pub struct Session {
 }
 
 impl Session {
-    /// Fails with `Unsupported` when the peer does not offer the control
-    /// protocol, and otherwise when the exchange fails or the two hosts do not
-    /// authorize each other.
+    /// Fails when the exchange fails or the two hosts do not authorize each
+    /// other.
     pub async fn connect(
         endpoint: &iroh::Endpoint,
         address: iroh::EndpointAddr,
         store: &crate::shared_audio::Store,
     ) -> anyhow::Result<Self> {
         let peer = address.id.to_string();
-        let connection = match tokio::time::timeout(
+        let connection = tokio::time::timeout(
             std::time::Duration::from_secs(10),
             endpoint.connect(address, ALPN),
         )
-        .await?
-        {
-            Ok(connection) => connection,
-            // TLS alert 120, no_application_protocol: the peer listens but
-            // does not offer this protocol. Anything else is not that answer.
-            Err(error) if format!("{error:?}").contains(NO_PROTOCOL) => {
-                return Err(Unsupported.into());
-            }
-            Err(error) => return Err(error.into()),
-        };
+        .await??;
         let (mut output, mut input) = connection.open_bi().await?;
         crate::cluster_net::send(
             &mut output,
@@ -259,9 +238,12 @@ impl Session {
             .filter(|id| !local.envelopes.contains(id) && refused.0.get(*id) != Some(&before))
             .copied()
             .collect();
-        let mut evidence = Vec::new();
+        // Record each answer before asking for more, so that an exchange cut
+        // short keeps what it already brought.
+        let mut outcomes = Vec::new();
         for chunk in missing.chunks(MAX_FETCH) {
             let fetched = self.fetch(chunk).await?;
+            let mut evidence = Vec::new();
             for envelope in fetched.envelopes {
                 let signed = Signed::decode(&hex::decode(&envelope.canonical)?)?;
                 anyhow::ensure!(
@@ -275,8 +257,8 @@ impl Session {
                     .clone();
                 evidence.push((signed, membership));
             }
+            outcomes.extend(blocking(store, move |store| store.control_accept(evidence)).await?);
         }
-        let outcomes = blocking(store, move |store| store.control_accept(evidence)).await?;
         let Journal::Readable { summary: local } =
             blocking(store, |store| store.control_journal()).await?
         else {
@@ -345,22 +327,28 @@ pub async fn reconcile(
     refused: &mut Refused,
 ) -> anyhow::Result<()> {
     let peer = address.id.to_string();
+    let data =
+        crate::shared_audio_net::Session::connect(endpoint, address.clone(), store.membership()?)
+            .await?;
     if blocking(store, |store| store.control_journal()).await? != Journal::Absent {
-        let remote = match Session::connect(endpoint, address.clone(), store).await {
-            Ok(session) => {
-                session.pull(store, refused).await?;
-                session.journal
-            }
-            // Only a peer that does not offer the protocol counts as having no
-            // journal. After any other failure its journal is unknown.
-            Err(error) if error.is::<Unsupported>() => Journal::Absent,
-            Err(error) => return Err(error.context("control exchange failed; data deferred")),
+        // The data session authenticated the peer, so its word on whether it
+        // serves the control protocol can be relied on. A peer that says it
+        // does must complete the exchange; one that does not has no journal.
+        let remote = if data.host_protocols.iter().any(|name| name == PROTOCOL) {
+            let session = Session::connect(endpoint, address, store)
+                .await
+                .context("control exchange failed; data deferred")?;
+            session.pull(store, refused).await?;
+            session.journal
+        } else {
+            Journal::Absent
         };
-        gate(&blocking(store, |store| store.control_journal()).await?, &remote)?;
+        gate(
+            &blocking(store, |store| store.control_journal()).await?,
+            &remote,
+        )?;
     }
-    let session =
-        crate::shared_audio_net::Session::connect(endpoint, address, store.membership()?).await?;
-    session.reconcile(store, &peer).await
+    data.reconcile(store, &peer).await
 }
 
 #[cfg(test)]
