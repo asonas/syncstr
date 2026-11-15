@@ -129,7 +129,7 @@ async fn merge_membership(
     axum::extract::State(state): axum::extract::State<State>,
     axum::Json(proof): axum::Json<crate::enrollment::Proof>,
 ) -> Result<axum::http::StatusCode, Failure> {
-    tokio::task::spawn_blocking(move || state.store.merge_membership(proof))
+    tokio::task::spawn_blocking(move || state.store.admit_membership(proof))
         .await
         .map_err(crate::shared_audio_api::failed)?
         .map_err(crate::shared_audio_api::failed)?;
@@ -285,7 +285,7 @@ async fn upload(
         .await
         .map_err(crate::shared_audio_api::failed)?;
     drop(file);
-    tokio::task::spawn_blocking(move || state.store.put_audio(&hash, &mut staged.reopen()?))
+    tokio::task::spawn_blocking(move || state.store.admit_audio(&hash, &mut staged.reopen()?))
         .await
         .map_err(crate::shared_audio_api::failed)?
         .map_err(crate::shared_audio_api::failed)?;

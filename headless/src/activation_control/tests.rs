@@ -34,7 +34,21 @@ struct Fixture {
 }
 
 impl Fixture {
+    /// An initialized host already frozen for maintenance.
     fn new() -> anyhow::Result<Self> {
+        let f = Self::uninitialized()?;
+        f.store().control_initialize()?;
+        f.store().control_freeze()?;
+        Ok(f)
+    }
+
+    fn unfrozen() -> anyhow::Result<Self> {
+        let f = Self::uninitialized()?;
+        f.store().control_initialize()?;
+        Ok(f)
+    }
+
+    fn uninitialized() -> anyhow::Result<Self> {
         let directory = tempfile::tempdir()?;
         std::fs::write(directory.path().join("node.lock"), [])?;
         let db = Connection::open(directory.path().join("node.sqlite"))?;
@@ -74,7 +88,6 @@ impl Fixture {
         )?;
         drop(db);
         let store = crate::shared_audio::Store::open(directory.path())?;
-        store.control_initialize()?;
         Ok(Self {
             directory,
             store: Some(store),
@@ -120,6 +133,41 @@ impl Fixture {
     fn reopen(&mut self) -> anyhow::Result<()> {
         self.store.take();
         self.store = Some(crate::shared_audio::Store::open(self.directory.path())?);
+        Ok(())
+    }
+
+    /// The refusal a signing transaction would get, if any.
+    fn refusal(&self) -> anyhow::Result<Option<Refusal>> {
+        match self.store().run(|db, _| ensure_writable(db)) {
+            Ok(()) => Ok(None),
+            Err(error) => Ok(Some(
+                *error
+                    .downcast_ref::<Refusal>()
+                    .ok_or_else(|| anyhow::anyhow!("untyped refusal"))?,
+            )),
+        }
+    }
+
+    fn acknowledge_installations(&self) -> anyhow::Result<()> {
+        let certificate = vector("certificate");
+        let id = certificate.id()?;
+        for seed in [8, 9] {
+            let key = *self.identity(seed)?.id().as_bytes();
+            let host = proposal(&super::certificate(&certificate)?.proposal)?
+                .hosts
+                .iter()
+                .find(|h| h.key == key)
+                .unwrap()
+                .clone();
+            self.record(&self.resign(
+                Body::Installed(Installed {
+                    certificate: id,
+                    host,
+                    epoch: 1,
+                }),
+                seed,
+            )?)?;
+        }
         Ok(())
     }
 
@@ -1043,5 +1091,189 @@ fn additive_tables_preserve_existing_store() -> anyhow::Result<()> {
         assert_eq!(receipt, ("retained-digest".into(), "retained-record".into()));
         Ok(())
     })?;
+    Ok(())
+}
+
+#[test]
+fn host_without_control_storage_stays_writable() -> anyhow::Result<()> {
+    let f = Fixture::uninitialized()?;
+    assert_eq!(f.refusal()?, None);
+    assert!(f.store().control_freeze().is_err());
+    assert_eq!(f.refusal()?, None);
+    let f = Fixture::unfrozen()?;
+    assert_eq!(f.refusal()?, None);
+    Ok(())
+}
+
+#[test]
+fn activation_steps_require_the_freeze() -> anyhow::Result<()> {
+    let f = Fixture::unfrozen()?;
+    f.record(&vector("proposal"))?;
+    assert!(f.prepare().is_err());
+    assert!(f.record(&vector("certificate")).is_err());
+    let state = f.store().control_inspect()?;
+    assert!(state.prepare_locks.is_empty() && state.pending_certificates.is_empty());
+    assert!(state.minimum_profiles.is_empty() && !state.frozen);
+    assert_eq!(f.refusal()?, None);
+    f.store().control_freeze()?;
+    f.prepare()?;
+    f.record(&vector("certificate"))?;
+    f.install()?;
+    Ok(())
+}
+
+#[test]
+fn freeze_survives_restart_and_releases_only_when_settled() -> anyhow::Result<()> {
+    let mut f = Fixture::new()?;
+    f.store().control_freeze()?;
+    f.reopen()?;
+    assert!(f.store().control_inspect()?.frozen);
+    assert_eq!(f.refusal()?, Some(Refusal::Maintenance));
+    f.record(&vector("proposal"))?;
+    f.prepare()?;
+    assert!(f.store().control_release().is_err(), "pending preparation");
+    f.record(&vector("certificate"))?;
+    assert!(f.store().control_release().is_err(), "pending certificate");
+    f.install()?;
+    assert!(
+        f.store().control_release().is_err(),
+        "other hosts have not acknowledged installation"
+    );
+    f.reopen()?;
+    assert_eq!(f.refusal()?, Some(Refusal::Maintenance));
+    f.acknowledge_installations()?;
+    f.store().control_release()?;
+    for _ in 0..2 {
+        let state = f.store().control_inspect()?;
+        assert!(!state.frozen && state.released && state.pending_preparations.is_empty());
+        assert_eq!(f.refusal()?, None);
+        f.reopen()?;
+    }
+    assert!(f.store().control_release().is_err(), "not frozen");
+    // The next epoch needs its own freeze and its own release.
+    f.store().control_freeze()?;
+    assert!(f.store().control_inspect()?.released);
+    assert_eq!(f.refusal()?, Some(Refusal::Maintenance));
+    Ok(())
+}
+
+#[test]
+fn release_requires_the_certified_membership() -> anyhow::Result<()> {
+    let f = Fixture::new()?;
+    f.record(&vector("certificate"))?;
+    f.install()?;
+    f.acknowledge_installations()?;
+    // A grant learned from a peer after installation was never agreed.
+    store_grant(&f, &issue(&f, 7, f.identity(10)?.id().to_string(), true)?)?;
+    assert!(f.store().control_release().is_err());
+    assert_eq!(f.refusal()?, Some(Refusal::Maintenance));
+    Ok(())
+}
+
+#[test]
+fn next_epoch_waits_for_every_installation_acknowledgment() -> anyhow::Result<()> {
+    let f = Fixture::new()?;
+    f.record(&vector("certificate"))?;
+    f.install()?;
+    let next = vector("successor");
+    let expected = Session {
+        coordinator: session().coordinator,
+        nonce: [0x77; 32],
+    };
+    f.store()
+        .control_record(&next, &member_proof(), &expected)?;
+    let mut ack = root_prepared();
+    ack.proposal = next.id()?;
+    let prepare = || {
+        f.store()
+            .control_prepare(ack.clone(), &f.identity(7)?, &expected, &supported())
+    };
+    assert!(prepare().is_err(), "hosts 8 and 9 never confirmed epoch 1");
+    assert!(f.store().control_inspect()?.pending_preparations.is_empty());
+    f.acknowledge_installations()?;
+    prepare()?;
+    Ok(())
+}
+
+#[test]
+fn another_hosts_preparation_keeps_this_host_frozen() -> anyhow::Result<()> {
+    let remote = |f: &Fixture| -> anyhow::Result<Signed> {
+        let key = *f.identity(8)?.id().as_bytes();
+        let mut ack = root_prepared();
+        ack.host = proposal(&vector("proposal"))?
+            .hosts
+            .iter()
+            .find(|h| h.key == key)
+            .unwrap()
+            .clone();
+        f.resign(Body::Prepared(ack), 8)
+    };
+    let f = Fixture::unfrozen()?;
+    f.record(&vector("proposal"))?;
+    assert!(f.record(&remote(&f)?).is_err());
+    assert_eq!(f.refusal()?, None);
+
+    let f = Fixture::new()?;
+    f.record(&vector("proposal"))?;
+    f.record(&remote(&f)?)?;
+    let state = f.store().control_inspect()?;
+    assert!(state.prepare_locks.is_empty());
+    assert_eq!(state.pending_preparations, [vector("proposal").id()?]);
+    assert!(f.store().control_release().is_err());
+    assert_eq!(f.refusal()?, Some(Refusal::Maintenance));
+    Ok(())
+}
+
+#[test]
+fn abandoned_maintenance_releases_without_a_head() -> anyhow::Result<()> {
+    let f = Fixture::new()?;
+    f.record(&vector("proposal"))?;
+    f.store().control_release()?;
+    let state = f.store().control_inspect()?;
+    assert!(!state.frozen && !state.released && state.head.is_none());
+    assert_eq!(f.refusal()?, None);
+    Ok(())
+}
+
+#[test]
+fn halted_or_altered_journal_refuses_writes_until_reviewed() -> anyhow::Result<()> {
+    let f = Fixture::new()?;
+    f.record(&vector("proposal"))?;
+    let mut p = proposal(&vector("proposal"))?.clone();
+    p.nonce = [0x99; 32];
+    let rival = f.resign(Body::Proposal(Box::new(p)), 7)?;
+    assert_eq!(f.record(&rival)?, Outcome::ReviewRequired);
+    assert_eq!(f.refusal()?, Some(Refusal::Review));
+    assert!(f.store().control_release().is_err());
+
+    for damage in [
+        "UPDATE activation_control_state SET epoch=2",
+        // Pending activation state without the freeze was altered outside the journal.
+        "DELETE FROM activation_control_freeze",
+        "DROP TABLE activation_control_freeze",
+    ] {
+        let f = Fixture::new()?;
+        f.record(&vector("proposal"))?;
+        f.prepare()?;
+        f.sql(damage)?;
+        assert_eq!(f.refusal()?, Some(Refusal::Review), "{damage}");
+        assert!(f.store().control_inspect().is_err(), "{damage}");
+        // Freezing again is always allowed and restores the invariant it guards.
+        f.store().control_freeze()?;
+        if damage.contains("freeze") {
+            assert_eq!(f.refusal()?, Some(Refusal::Maintenance), "{damage}");
+        }
+    }
+
+    let f = Fixture::new()?;
+    f.record(&vector("certificate"))?;
+    f.install()?;
+    f.acknowledge_installations()?;
+    f.sql("DELETE FROM activation_control_freeze")?;
+    assert_eq!(
+        f.refusal()?,
+        Some(Refusal::Review),
+        "an installed head without a recorded release must not accept writes"
+    );
     Ok(())
 }

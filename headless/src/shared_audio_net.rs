@@ -326,6 +326,8 @@ impl crate::shared_audio::Store {
         member: &str,
     ) -> anyhow::Result<crate::enrollment::Revocation> {
         use sha2::Digest as _;
+        // Refuse before signing; the gated merge below rechecks with the write.
+        self.run(|connection, _| crate::activation_control::ensure_writable(connection))?;
         let mut proof = self.membership()?;
         let authority = proof
             .grants
@@ -364,21 +366,31 @@ impl crate::shared_audio::Store {
         record.id = hex::encode(sha2::Sha256::digest(record.signing_bytes()?));
         record.signature = hex::encode(signer.sign(&record.signing_bytes()?));
         proof.revocations.push(record.clone());
-        self.merge_membership(proof)?;
+        self.admit_membership(proof)?;
         Ok(record)
     }
     pub fn membership(&self) -> anyhow::Result<crate::enrollment::Proof> {
         self.run(|connection, _| crate::enrollment::read_proof(connection))
     }
 
+    /// Records learned from peers. During a freeze they still merge, because a
+    /// changed membership revision is what invalidates a pending proposal.
     pub fn merge_membership(&self, incoming: crate::enrollment::Proof) -> anyhow::Result<()> {
-        self.merge_membership_from(incoming, None).map(|_| ())
+        self.merge_membership_from(incoming, None, false)
+            .map(|_| ())
+    }
+
+    /// Membership changes this host originates or an operator imports. They
+    /// are refused while the host is frozen or its control journal needs review.
+    pub fn admit_membership(&self, incoming: crate::enrollment::Proof) -> anyhow::Result<()> {
+        self.merge_membership_from(incoming, None, true).map(|_| ())
     }
 
     fn merge_membership_from(
         &self,
         incoming: crate::enrollment::Proof,
         presenter: Option<(&str, &str)>,
+        admission: bool,
     ) -> anyhow::Result<crate::enrollment::Proof> {
         self.run(|connection, _| {
             let transaction = connection.transaction()?;
@@ -439,6 +451,12 @@ impl crate::shared_audio::Store {
             if let Some((peer, own)) = presenter {
                 crate::shared_audio_net::authorize(&combined, peer, false)?;
                 crate::shared_audio_net::authorize(&combined, own, true)?;
+            }
+            if admission
+                && (combined.grants.len() > known_grants
+                    || combined.revocations.len() > known_revocations)
+            {
+                crate::activation_control::ensure_writable(&transaction)?;
             }
             for grant in &combined.grants[known_grants..] {
                 transaction.execute(
@@ -503,7 +521,7 @@ async fn serve_connection(
     let presenter = peer.clone();
     let own_check = own.clone();
     let proof = tokio::task::spawn_blocking(move || -> anyhow::Result<_> {
-        check.merge_membership_from(hello.proof, Some((&presenter, &own_check)))
+        check.merge_membership_from(hello.proof, Some((&presenter, &own_check)), false)
     })
     .await?;
     let proof = match proof {

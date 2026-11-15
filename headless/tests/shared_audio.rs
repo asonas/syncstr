@@ -5509,3 +5509,183 @@ async fn competing_sources_cannot_claim_one_legacy_track_after_replication() -> 
     );
     Ok(())
 }
+
+#[tokio::test]
+async fn maintenance_freeze_defers_new_writes_and_keeps_reads_and_accepted_outcomes()
+-> anyhow::Result<()> {
+    use syncstr_headless::activation_control::Refusal;
+    use syncstr_headless::shared_audio_net::{MutationReply, Session};
+    fn refusal<T>(result: anyhow::Result<T>) -> Option<Refusal> {
+        result.err()?.downcast_ref::<Refusal>().copied()
+    }
+    let fixture = crate::Fixture::new().await?;
+    let store = fixture.activate()?;
+    let request = crate::register(&store.catalog()?, "one", &fixture.entry.sha256);
+    let accepted = store.commit(&fixture.host, request.clone())?;
+    // Control storage alone changes nothing; only the freeze refuses writes.
+    store.control_initialize()?;
+    store.commit(
+        &fixture.host,
+        crate::register(&store.catalog()?, "two", &fixture.entry.sha256),
+    )?;
+    let before = store.catalog()?;
+    let one = before.correspondences[&crate::source("one").subject()].clone();
+    let membership = store.membership()?;
+    let playlist = store.playlists()?.remove(0);
+    let mut unrelated = playlist.document.clone();
+    unrelated.id = "source:unrelated".into();
+    unrelated.source_playlist = "unrelated".into();
+    let update = syncstr_headless::shared_audio::PlaylistUpdate {
+        documents: vec![unrelated],
+        expected: Default::default(),
+        confirmed_replacements: false,
+    };
+    let reader = syncstr_headless::peer::Identity::from_secret(
+        &fixture.root.path().join("reader"),
+        [43; 32],
+    )?;
+    let (host_endpoint, _host_lock) = fixture
+        .host
+        .cluster_endpoint(&["127.0.0.1:0".parse()?])
+        .await?;
+    let (reader_endpoint, _reader_lock) =
+        reader.cluster_endpoint(&["127.0.0.1:0".parse()?]).await?;
+    let mut tasks = tokio::task::JoinSet::new();
+    tasks.spawn(syncstr_headless::shared_audio_net::serve(
+        host_endpoint.clone(),
+        store.clone(),
+        fixture.host.clone(),
+    ));
+    let session =
+        Session::connect(&reader_endpoint, host_endpoint.addr(), membership.clone()).await?;
+    let earlier = metadata_edit(
+        &before,
+        "before-freeze",
+        &one,
+        serde_json::json!({"artist": "Before"}),
+    );
+    let earlier_reply = session.edit_track(earlier.clone()).await?;
+    assert!(matches!(earlier_reply, MutationReply::Accepted { .. }));
+    let connection = reader_endpoint
+        .connect(
+            host_endpoint.addr(),
+            syncstr_headless::shared_audio_net::ALPN,
+        )
+        .await?;
+    let _: syncstr_headless::shared_audio_net::Hello = crate::shared_exchange(
+        &connection,
+        &syncstr_headless::shared_audio_net::Hello {
+            version: 5,
+            proof: membership.clone(),
+            supported_operations: vec![],
+        },
+    )
+    .await?;
+    use sha2::Digest as _;
+    let upload = crate::audio_mutation(
+        &before,
+        "upload-before-freeze",
+        "put-object",
+        serde_json::json!({"hash": hex::encode(sha2::Sha256::digest(b"def")), "bytes": 3}),
+    );
+    let stored = crate::shared_upload(&connection, &upload, Some(b"def")).await?;
+    assert!(matches!(stored, MutationReply::ObjectStored { .. }));
+    let database = rusqlite::Connection::open(fixture.data().join("node.sqlite"))?;
+    // Leave only the legacy receipt, as a host upgraded from an earlier build has.
+    database.execute("DELETE FROM shared_member_object_requests", [])?;
+    let rows = |table: &str| -> anyhow::Result<i64> {
+        Ok(database.query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |r| r.get(0))?)
+    };
+
+    store.control_freeze()?;
+    let objects = rows("shared_objects")?;
+    assert_eq!(
+        crate::shared_upload(&connection, &upload, Some(b"def")).await?,
+        stored
+    );
+    assert_eq!(rows("shared_member_object_requests")?, 0);
+    assert_eq!(
+        crate::shared_upload(
+            &connection,
+            &crate::audio_mutation(
+                &before,
+                "upload-during-freeze",
+                "put-object",
+                serde_json::json!({"hash": hex::encode(sha2::Sha256::digest(b"ghi")), "bytes": 3}),
+            ),
+            None,
+        )
+        .await?,
+        MutationReply::Deferred {
+            request: "upload-during-freeze".into(),
+            reason: "maintenance-freeze".into(),
+        }
+    );
+    let operator = hex::encode(sha2::Sha256::digest(b"operator upload"));
+    assert_eq!(
+        refusal(store.admit_audio(&operator, &mut &b"operator upload"[..])),
+        Some(Refusal::Maintenance)
+    );
+    assert_eq!(rows("shared_objects")?, objects);
+    // Bytes replicated from another host are not this host's new writes.
+    store.put_audio(&operator, &mut &b"operator upload"[..])?;
+    let frozen = store.catalog()?;
+    let next = crate::register(&frozen, "three", &fixture.entry.sha256);
+    assert_eq!(
+        refusal(store.commit(&fixture.host, next.clone())),
+        Some(Refusal::Maintenance)
+    );
+    assert_eq!(
+        refusal(store.update_playlists(&fixture.host, update.clone())),
+        Some(Refusal::Maintenance)
+    );
+    assert_eq!(
+        refusal(store.revoke_member(&fixture.host, &reader.id().to_string())),
+        Some(Refusal::Maintenance)
+    );
+    assert_eq!(
+        session
+            .edit_track(metadata_edit(
+                &frozen,
+                "during-freeze",
+                &one,
+                serde_json::json!({"artist": "During"}),
+            ))
+            .await?,
+        MutationReply::Deferred {
+            request: "during-freeze".into(),
+            reason: "maintenance-freeze".into(),
+        }
+    );
+    // Outcomes accepted before the freeze stay answerable, and reads continue.
+    assert_eq!(store.commit(&fixture.host, request)?, accepted);
+    assert_eq!(session.edit_track(earlier).await?, earlier_reply);
+    assert_eq!(
+        serde_json::to_value(store.catalog()?)?,
+        serde_json::to_value(&frozen)?
+    );
+    assert_eq!(
+        serde_json::to_value(store.membership()?)?,
+        serde_json::to_value(&membership)?
+    );
+    assert!(store.audio(&one, &fixture.entry.sha256).is_ok());
+    // Peer-learned membership still merges; the revision check detects it.
+    store.merge_membership(membership.clone())?;
+
+    store.control_release()?;
+    store.commit(&fixture.host, next)?;
+    store.update_playlists(&fixture.host, update)?;
+    assert!(matches!(
+        session
+            .edit_track(metadata_edit(
+                &store.catalog()?,
+                "after-release",
+                &one,
+                serde_json::json!({"artist": "After"}),
+            ))
+            .await?,
+        MutationReply::Accepted { .. }
+    ));
+    tasks.abort_all();
+    Ok(())
+}

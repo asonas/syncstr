@@ -19,6 +19,18 @@ async fn wait_for_shutdown() {
     }
 }
 
+#[cfg(feature = "p2p")]
+#[derive(Clone, Copy, clap::ValueEnum)]
+enum ControlAction {
+    /// Create the control journal. Until then the host accepts writes as before.
+    Init,
+    /// Refuse new writes and membership changes until released.
+    Freeze,
+    /// Accept writes again. Refused while an activation is pending.
+    Release,
+    Status,
+}
+
 #[derive(clap::Subcommand)]
 enum Command {
     #[cfg(feature = "p2p")]
@@ -37,6 +49,14 @@ enum Command {
         data: std::path::PathBuf,
         #[arg(long)]
         expected_baseline: String,
+    },
+    /// Operate the activation control journal of a stopped host.
+    #[cfg(feature = "p2p")]
+    SharedAudioControl {
+        #[arg(long)]
+        data: std::path::PathBuf,
+        #[arg(value_enum)]
+        action: ControlAction,
     },
     #[cfg(feature = "p2p")]
     SharedAudioServe {
@@ -325,6 +345,39 @@ async fn run(cli: crate::Cli) -> anyhow::Result<()> {
             let store = syncstr_headless::shared_audio::Store::activate(&data, &expected_baseline)?;
             let catalog = store.catalog()?;
             println!("{}", serde_json::json!({"schema": 5, "baseline": catalog.baseline, "tracks": catalog.tracks.len()}));
+        }
+        #[cfg(feature = "p2p")]
+        crate::Command::SharedAudioControl { data, action } => {
+            let store = syncstr_headless::shared_audio::Store::open(&data)?;
+            match action {
+                crate::ControlAction::Init => store.control_initialize()?,
+                crate::ControlAction::Freeze => store.control_freeze()?,
+                crate::ControlAction::Release => store.control_release()?,
+                crate::ControlAction::Status => {}
+            }
+            let state = match store.control_inspect() {
+                Ok(state) => state,
+                // Freezing succeeds on a journal that cannot be inspected.
+                Err(error) if matches!(action, crate::ControlAction::Freeze) => {
+                    println!("{}", serde_json::json!({"frozen": true, "review_required": error.to_string()}));
+                    return Ok(());
+                }
+                Err(error) => return Err(error),
+            };
+            println!(
+                "{}",
+                serde_json::json!({
+                    "epoch": state.epoch,
+                    "head": state.head.map(hex::encode),
+                    "minimum_profiles": state.minimum_profiles,
+                    "frozen": state.frozen,
+                    "released": state.released,
+                    "halted": state.halted,
+                    "pending_preparations": state.pending_preparations.iter().map(hex::encode).collect::<Vec<_>>(),
+                    "pending_certificates": state.pending_certificates.iter().map(hex::encode).collect::<Vec<_>>(),
+                    "all_installations_recorded": state.all_installations_recorded,
+                })
+            );
         }
         #[cfg(feature = "p2p")]
         crate::Command::SharedAudioServe {

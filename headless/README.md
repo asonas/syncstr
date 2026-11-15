@@ -78,6 +78,29 @@ For stopped, read-only host inventory and offline comparison with device intent
 exports, see [Offline activation inventory](activation-inventory.md). These
 commands collect evidence only; they do not activate or verify a recovery set.
 
+### Maintenance freeze on a v5 host
+
+A v5 host can refuse new writes while an activation is prepared. Run these on a
+stopped host; each prints the control journal state as JSON.
+
+```sh
+target/debug/syncstr-headless shared-audio-control --data data init
+target/debug/syncstr-headless shared-audio-control --data data freeze
+target/debug/syncstr-headless shared-audio-control --data data status
+target/debug/syncstr-headless shared-audio-control --data data release
+```
+
+- `init` creates the control journal. A host that has never run it accepts writes as before.
+- `freeze` survives restarts. A frozen host refuses member mutations, administrative commits, playlist updates, new object uploads from members or the administrative route, revocations and imported membership. Members receive `deferred` with reason `maintenance-freeze` and keep their request queued.
+- A frozen host still serves the catalog and audio, replicates records and audio with other hosts, and answers requests it accepted earlier with their original reply. Answering an earlier object upload publishes nothing and records nothing.
+- A host signs a prepared acknowledgment, stores a certificate, or installs one only while frozen. It prepares or installs the next epoch only after every host's installation acknowledgment for the installed one is recorded.
+- `release` is refused while a preparation or certificate is pending, including a preparation another host is known to hold, after an installation until every host's installation acknowledgment is recorded, and when membership has changed since the installed certificate was proposed. It records the release against the installed certificate.
+- A halted or unreadable control journal refuses the same writes with reason `control-review-required` until it is reviewed. `freeze` remains available in that state.
+
+These commands change one host. Sending control records between hosts, aborting a
+proposal that never received a certificate, and the startup guard are not
+implemented; a host that prepared such a proposal stays frozen.
+
 - `node.sqlite` stores the node library UUID and track entries. Its schema version is 4, including organization records and verified artwork assets independent of audio entries.
 - `objects/<sha256>.<suffix>` stores original bytes. Only committed catalog entries are accessible through the API.
 - `staging/upload-*` holds incomplete uploads, removed on failure or at the next exclusive startup.
