@@ -1200,8 +1200,9 @@ fn joined(
     found
 }
 
-/// `given` holds the addresses the owner named. They stay for the whole run,
-/// and a host found there passes the same checks as a discovered one.
+/// `given` holds the addresses the owner named, one per host. They stay for
+/// the whole run, and a host found there passes the same checks as a
+/// discovered one.
 pub async fn synchronize(
     endpoint: iroh::Endpoint,
     store: crate::shared_audio::Store,
@@ -1214,12 +1215,15 @@ pub async fn synchronize(
         "host signer identity mismatch"
     );
     anyhow::ensure!(given.len() <= 256, "too many given peer addresses");
-    let given: std::collections::BTreeMap<_, _> = given
-        .into_iter()
-        .filter(|address| address.id != endpoint.id())
-        .map(|address| (address.id, address))
-        .collect();
-    let mut peers = given.clone();
+    let mut peers = std::collections::BTreeMap::new();
+    for address in given {
+        anyhow::ensure!(
+            peers.insert(address.id, address).is_none(),
+            "a host was given two addresses"
+        );
+    }
+    peers.remove(&endpoint.id());
+    let given = peers.clone();
     let mut refused = crate::activation_control_net::Refused::default();
     let mut waiting = std::collections::BTreeMap::new();
     let mut reported = None;

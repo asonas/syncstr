@@ -6815,3 +6815,44 @@ async fn a_given_address_is_read_only_for_the_named_host() -> anyhow::Result<()>
     assert!(address(&fixture.root.path().join("missing.json"), host).is_err());
     Ok(())
 }
+
+#[tokio::test]
+async fn synchronize_refuses_ambiguous_or_too_many_given_addresses() -> anyhow::Result<()> {
+    let fixture = crate::Fixture::new().await?;
+    let store = fixture.activate()?;
+    let (endpoint, _lock) = fixture
+        .host
+        .cluster_endpoint(&["127.0.0.1:0".parse()?])
+        .await?;
+    let at = |byte: u8, high: u8, port| {
+        let mut key = [byte; 32];
+        key[0] = high;
+        iroh::EndpointAddr::new(iroh::SecretKey::from_bytes(&key).public())
+            .with_ip_addr(std::net::SocketAddr::from(([192, 0, 2, 10], port)))
+    };
+    let run = |given| {
+        // The loop would run until its discovery channel closes.
+        let (_discovered, receiver) = tokio::sync::mpsc::channel(1);
+        tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            syncstr_headless::shared_audio_net::synchronize(
+                endpoint.clone(),
+                store.clone(),
+                fixture.host.clone(),
+                receiver,
+                given,
+            ),
+        )
+    };
+    // Two files for one host: which one the owner meant is unknown.
+    let error = run(vec![at(1, 0, 7000), at(1, 0, 7001)]).await?.unwrap_err();
+    assert!(error.to_string().contains("two addresses"), "{error}");
+    let many: Vec<_> = (0..=255u8)
+        .map(|byte| at(byte, 0, 7000))
+        .chain([at(0, 1, 7000)])
+        .collect();
+    assert_eq!(many.len(), 257);
+    let error = run(many).await?.unwrap_err();
+    assert!(error.to_string().contains("too many"), "{error}");
+    Ok(())
+}

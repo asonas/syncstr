@@ -114,19 +114,22 @@ It synchronizes with the hosts that local discovery reports, and with the hosts
 whose address the owner gives:
 
 ```sh
-# On host A, with a listen address that host B can reach:
+# On host A, with a listen address that host B can reach, and B's file once it exists:
 target/debug/syncstr-headless shared-audio-serve --data data --identity identity \
-  --peer-state peer --peer-listen 192.0.2.10:7000 --peer-address-out host-a.json
-# On host B, with a copy of that file:
+  --peer-state peer --peer-listen 192.0.2.10:7000 --peer-address-out host-a.json \
+  --peer-address "$HOST_B_ID=host-b.json"
+# On host B, the same with A's file:
 target/debug/syncstr-headless shared-audio-serve --data data --identity identity \
-  --peer-state peer --peer-address <host-a-id>=host-a.json
+  --peer-state peer --peer-listen 198.51.100.20:7000 --peer-address-out host-b.json \
+  --peer-address "$HOST_A_ID=host-a.json"
 ```
 
-- `--peer-address` is repeatable. The file is read once at startup. It is refused unless it names that host and lists between 1 and 32 IP addresses. This endpoint uses no relay, so the address must be reachable directly.
+- `--peer-address` is repeatable, once per host: two files for the same host are refused. The file is read once at startup. It is refused unless it names that host and lists between 1 and 32 IP addresses. This endpoint uses no relay, so the address must be reachable directly.
 - A given address is added to what discovery reports for that host and is never replaced by it.
 - A host reached this way passes the same membership check, control exchange and data gate as a discovered one.
-- Every host fetches from the others. Give each host the address of every host that discovery does not report to it.
-- With the default `--peer-listen 127.0.0.1:0` the port changes at every start. Use a fixed listen address, or copy the file again after a restart.
+- Every host fetches from the others, so both sides need a listen address the other can reach and the other's file. A host writes its file when it starts; start it once without the other's file to obtain it.
+- With the default `--peer-listen 127.0.0.1:0` a host listens only on loopback and its port changes at every start. Use a fixed listen address. After an address changes, copy the file again and restart the hosts that read it.
+- The host ID in the file is checked against the connection. The IP addresses are not: a host tries to connect to whatever the file lists.
 
 After each pass a frozen host reacts to the records of its designated session:
 
