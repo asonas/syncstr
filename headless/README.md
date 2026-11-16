@@ -110,6 +110,24 @@ target/debug/syncstr-headless shared-audio-control --data data designate \
 - Records pushed by another host are accepted only by a host with no control journal, or with no installed head and nothing pending.
 - A host that never ran `init` reconciles as before.
 
+It synchronizes with the hosts that local discovery reports, and with the hosts
+whose address the owner gives:
+
+```sh
+# On host A, with a listen address that host B can reach:
+target/debug/syncstr-headless shared-audio-serve --data data --identity identity \
+  --peer-state peer --peer-listen 192.0.2.10:7000 --peer-address-out host-a.json
+# On host B, with a copy of that file:
+target/debug/syncstr-headless shared-audio-serve --data data --identity identity \
+  --peer-state peer --peer-address <host-a-id>=host-a.json
+```
+
+- `--peer-address` is repeatable. The file is read once at startup. It is refused unless it names that host and lists between 1 and 32 IP addresses. This endpoint uses no relay, so the address must be reachable directly.
+- A given address is added to what discovery reports for that host and is never replaced by it.
+- A host reached this way passes the same membership check, control exchange and data gate as a discovered one.
+- Every host fetches from the others. Give each host the address of every host that discovery does not report to it.
+- With the default `--peer-listen 127.0.0.1:0` the port changes at every start. Use a fixed listen address, or copy the file again after a restart.
+
 After each pass a frozen host reacts to the records of its designated session:
 
 - It withdraws from a proposal its coordinator withdrew from.
@@ -129,7 +147,7 @@ target/debug/syncstr-headless shared-audio-control --data data abort
 ```
 
 - `start` is refused unless the host is frozen and is the coordinator of its designated session, and while the proposal signed for an earlier request is neither aborted nor installed on this host. A request that signed nothing yet is replaced. `status` shows the `request`.
-- The coordinator signs the proposal only after every host of the membership answered in the same pass and is frozen, designated for the session, and at the same installed head, membership revision and input history. A host that discovery does not report keeps it waiting.
+- The coordinator signs the proposal only after every host of the membership answered in the same pass and is frozen, designated for the session, and at the same installed head, membership revision and input history. A host that discovery does not report keeps it waiting, unless its address is given with `--peer-address`.
 - It signs the certificate once every host prepared. It does not sign one after a membership change or after any host withdrew; such a proposal needs an abort.
 - `abort` drops a request whose proposal was not signed yet. Otherwise the coordinator first synchronizes with every host of the proposal, withdraws only if none is halted or may hold a certificate, and signs the abort once every host withdrew. `abort` is refused once a certificate exists: the session then goes forward.
 - An aborted proposal cannot be proposed again under the same session. Once every host holds the abort, designate a new session with another nonce on every host; the hosts can stay frozen.

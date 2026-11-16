@@ -92,6 +92,12 @@ enum Command {
         peer_listen: Vec<std::net::SocketAddr>,
         #[arg(long)]
         peer_address_out: Option<std::path::PathBuf>,
+        #[arg(
+            long,
+            value_name = "ID=ADDRESS_FILE",
+            help = "Address file of another host, as its --peer-address-out wrote it; repeatable"
+        )]
+        peer_address: Vec<String>,
         #[arg(long, default_value = "127.0.0.1:8443")]
         listen: std::net::SocketAddr,
     },
@@ -465,8 +471,19 @@ async fn run(cli: crate::Cli) -> anyhow::Result<()> {
             peer_state,
             peer_listen,
             peer_address_out,
+            peer_address,
             listen,
         } => {
+            anyhow::ensure!(peer_address.len() <= 256, "too many given peer addresses");
+            let given = peer_address
+                .iter()
+                .map(|value| {
+                    let (id, path) = value
+                        .split_once('=')
+                        .ok_or_else(|| anyhow::anyhow!("expected ID=ADDRESS_FILE"))?;
+                    syncstr_headless::shared_audio_net::address(std::path::Path::new(path), id.parse()?)
+                })
+                .collect::<anyhow::Result<Vec<_>>>()?;
             let store = syncstr_headless::shared_audio::Store::open(&data)?;
             let signer = std::sync::Arc::new(syncstr_headless::peer::Identity::open(&peer_state)?);
             let (endpoint, _endpoint_lock) = signer.cluster_endpoint(&peer_listen).await?;
@@ -488,7 +505,7 @@ async fn run(cli: crate::Cli) -> anyhow::Result<()> {
                 anyhow::Ok(())
             });
             cluster_tasks.spawn(syncstr_headless::shared_audio_net::synchronize(
-                endpoint.clone(), store.clone(), signer.clone(), discoveries,
+                endpoint.clone(), store.clone(), signer.clone(), discoveries, given,
             ));
             let token = syncstr_headless::identity::token(&identity.join("token"))?;
             let tls = syncstr_headless::identity::tls(&identity).await?;
