@@ -1,6 +1,6 @@
 # v5 activation control protocol
 
-Status: Proposed 2026-11-15 for ASO-145. The owner chose the options marked "Chosen" in C1 to C3. Parts 1 and 2 are implemented; part 3 is design only and needs its own review. This document authorizes no production operation.
+Status: Proposed 2026-11-15 for ASO-145. The owner chose the options marked "Chosen" in C1 to C7. Parts 1 to 3 are implemented. This document authorizes no production operation.
 
 This document refines slice S3 of the [activation and recovery design](v5-activation-and-recovery.md), decisions D1 to D3 and the failure table in D6. It covers how hosts exchange the control journal, how a coordinator collects readiness from every authorized host, and how an activation that cannot finish is resolved. The local journal and the maintenance freeze are described in the [headless guide](../headless/README.md#maintenance-freeze-on-a-v5-host).
 
@@ -153,28 +153,56 @@ The coordinator and the other hosts then fetch those envelopes like any other.
 - In its prepared acknowledgment a host names its build as its implementation and lists the profiles the build implements. No profile is bound to an implementation yet, so a proposal that requires one is not prepared by a serving host; binding the first profile is slice S4 of the activation design.
 - A host prepares as soon as it holds the proposal. If the hosts' input histories differ at that moment no certificate can form and the proposal is aborted, so the coordinator compares histories before it proposes (part 3).
 
-## Part 3: coordinator (design)
+## Part 3: coordinator
 
-The owner starts a session on the designated coordinator with the required profiles and the inventory and backup manifest digests. The coordinator then advances on its own and reports why it waits.
+Implemented.
 
-1. Reach every host in the membership's host set over the control protocol. Any unreachable, unknown or disputed host blocks. The set is never reduced to the hosts that answer.
-2. Require every host to be frozen, designated for this session, at the same head, membership revision and input history.
-3. Sign and offer the proposal. Collect a prepared acknowledgment from every host.
-4. Sign the certificate, store it, offer it to every host, and collect installation acknowledgments. Offer every acknowledgment to every host.
-5. Report completion. Release stays a separate command on each host.
+### C6. How does the owner instruct a serving coordinator?
 
-The owner may ask the coordinator to abort a proposal that has no certificate. It follows the order in "Signed abort".
+- **A (chosen 2026-11-15):** a command on the stopped coordinator records a request, next to `freeze` and `designate`: `start` with the required profiles and the inventory and backup manifest digests, or `abort`. The serving host carries the request out. No request that makes a host sign arrives over the network. Asking for an abort means restarting the coordinator.
+- **B:** an administrative route on the serving host. No restart, and whoever holds the API token could start an activation.
+
+### C7. A host that discovery does not report
+
+- **A (chosen 2026-11-15):** the coordinator waits and names the host. Static addresses for `shared-audio-serve` also change data synchronization and are a separate change.
+- **B:** add static peer addresses with the coordinator.
+
+### The request
+
+A request holds the profiles, the two manifest digests, the proposal signed for it and whether an abort was asked for. It belongs to the designated session: `start` is refused unless the host is frozen and its local grant is the designated coordinator's, and designating another session or releasing the host deletes it. A new request replaces one that signed nothing yet, or whose proposal is aborted or installed on this host.
+
+### One pass
+
+After every synchronization pass the coordinator looks at its journal and at what each host showed in that pass, and signs at most one record. It reports each step and each reason for waiting once.
+
+1. Without a proposal: every host of the current membership must have answered in this pass with a readable journal that is not halted, frozen, designated for this session, and at the same installed head, epoch, membership revision and input history. The installed head must hold the installation acknowledgment of every host the membership still authorizes. Then the coordinator signs the proposal and records it in the same transaction that binds it to the request. An earlier answer does not count, and the set is never reduced to the hosts that answer.
+2. With a proposal and a prepared acknowledgment from every host: it signs the certificate and stores it in one transaction. It refuses after a membership change and after any host's withdrawal; the report then asks for an abort.
+3. With a certificate: it waits for its own installation and for every installation acknowledgment, then reports completion. Release stays a separate command on each host.
+
+Prepared acknowledgments, the certificate and installation acknowledgments reach the other hosts by fetching, as every record does.
+
+The coordinator compares what each host showed when its exchange began. A host can still change before it prepares; the journal rules decide then, as described under "Input history".
+
+### Abort
+
+`abort` on a request without a proposal deletes the request: nothing was signed. `abort` is refused once the coordinator holds a certificate. Otherwise the coordinator follows the order in "Signed abort":
+
+1. Every other host of the proposal must have answered in this pass with a readable journal that is not halted, and must list no record that this host lacks and has not seen to be something else than a certificate. A halted host keeps the record that contradicted its journal apart from the ones it lists, so it may hold a certificate. A certificate that could be taken in moves the session forward instead. One that could not be keeps the coordinator from withdrawing, and waits for review.
+2. It signs its withdrawal. Withdrawing is refused once a certificate is stored, and signing a certificate is refused once any host withdrew. Each commits with its check, so the coordinator cannot do both.
+3. The other hosts follow its withdrawal as a reaction. With a withdrawal from every host it signs the abort.
+
+A proposal is identified by its content. The same request under the same session produces the aborted proposal again, so a retry needs a new session. Once every host holds the abort nothing is pending, and the owner designates another nonce on every host. The hosts can stay frozen; after a membership change behind an installed certificate they cannot be released before the next epoch (C2).
 
 ## Done-when mapping for ASO-145
 
 | Criterion | Where |
 | --- | --- |
-| An offline, unknown or disputed host blocks | Part 3, steps 1 and 3; certificate verification already requires every host |
+| An offline, unknown or disputed host blocks | Part 3, one pass, steps 1 and 2; certificate verification already requires every host |
 | A grant or revocation during preparation invalidates the proposal | Part 1, membership changes |
 | A returning host synchronizes control state first | Part 2, control first |
 | No intake that changes an acknowledged input history | Part 1, input history |
-| A signed abort releases locks only without a certificate | Part 1, signed abort; part 3 for collection |
-| A partly stored certificate is installed everywhere before release | Existing release rules, C2, and part 3, step 4 |
+| A signed abort releases locks only without a certificate | Part 1, signed abort; part 3, abort |
+| A partly stored certificate is installed everywhere before release | Existing release rules, C2, and part 3, one pass, step 3 |
 
 ## Not covered
 
@@ -183,3 +211,5 @@ The owner may ask the coordinator to abort a proposal that has no certificate. I
 - Recovery when a coordinator lost its journal and aborted while a certificate exists elsewhere. The hosts detect the contradiction and halt for review.
 - A host restored from a backup that still holds a freeze, a designation and a proposal. It reacts as after an ordinary restart, and learns of a later withdrawal, abort or release only when a peer returns it. Restoring is governed by D6 and D7 of the activation design and by the startup guard.
 - Review and recovery of a halted journal (ASO-154).
+- Static addresses for hosts that discovery does not report (C7, ASO-155).
+- A live view of the coordinator's progress. It is logged; `status` reads the journal of a stopped host.

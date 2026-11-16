@@ -61,36 +61,39 @@ fn rank(body: &Body) -> u8 {
     }
 }
 
+/// What this host tells a peer about its journal.
+pub(super) fn journal(db: &Connection) -> anyhow::Result<Journal> {
+    if !freeze::exists(db, "activation_control_state")? {
+        return Ok(Journal::Absent);
+    }
+    let Ok(inspection) = inspect(db) else {
+        return Ok(Journal::Unreadable);
+    };
+    let cluster = state(db)?.cluster;
+    let membership = crate::enrollment::read_proof(db)
+        .and_then(|current| membership_revision(cluster, &current))
+        .ok()
+        .map(|(revision, _)| revision);
+    Ok(Journal::Readable {
+        summary: Box::new(Summary {
+            epoch: inspection.epoch,
+            head: inspection.head,
+            frozen: inspection.frozen,
+            released: inspection.released,
+            halted: inspection.halted,
+            pending: !inspection.pending_preparations.is_empty()
+                || !inspection.pending_certificates.is_empty(),
+            session: freeze::designated(db)?,
+            membership,
+            input_history: intake::input_history(db)?,
+            envelopes: all(db)?.into_keys().collect(),
+        }),
+    })
+}
+
 impl crate::shared_audio::Store {
     pub fn control_journal(&self) -> anyhow::Result<Journal> {
-        self.run(|db, _| {
-            if !freeze::exists(db, "activation_control_state")? {
-                return Ok(Journal::Absent);
-            }
-            let Ok(inspection) = inspect(db) else {
-                return Ok(Journal::Unreadable);
-            };
-            let cluster = state(db)?.cluster;
-            let membership = crate::enrollment::read_proof(db)
-                .and_then(|current| membership_revision(cluster, &current))
-                .ok()
-                .map(|(revision, _)| revision);
-            Ok(Journal::Readable {
-                summary: Box::new(Summary {
-                    epoch: inspection.epoch,
-                    head: inspection.head,
-                    frozen: inspection.frozen,
-                    released: inspection.released,
-                    halted: inspection.halted,
-                    pending: !inspection.pending_preparations.is_empty()
-                        || !inspection.pending_certificates.is_empty(),
-                    session: freeze::designated(db)?,
-                    membership,
-                    input_history: intake::input_history(db)?,
-                    envelopes: all(db)?.into_keys().collect(),
-                }),
-            })
-        })
+        self.run(|db, _| journal(db))
     }
 
     /// The requested envelopes this host holds, each with the membership

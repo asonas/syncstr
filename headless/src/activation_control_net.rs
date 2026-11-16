@@ -1,7 +1,9 @@
 //! Control protocol between hosts: each side authorizes the other as a host,
 //! the server reports its control journal, and the client fetches the signed
 //! envelopes it lacks. Nothing is signed in answer to a request.
-use crate::activation_control::{Digest, Journal, Session as Designation, Signed, Summary};
+use crate::activation_control::{
+    Body, Digest, Journal, Peer, Session as Designation, Signed, Summary,
+};
 use anyhow::Context as _;
 
 /// The name a host lists in `host_protocols` of its data protocol reply.
@@ -145,9 +147,19 @@ fn seen(summary: &Summary) -> Seen {
 }
 
 /// Envelopes this host refused, so that a peer's unusable record is not
-/// fetched on every synchronization tick.
+/// fetched on every synchronization tick. Each is remembered with whether it
+/// is a certificate.
 #[derive(Default)]
-pub struct Refused(std::collections::BTreeMap<Digest, Seen>);
+pub struct Refused(std::collections::BTreeMap<Digest, (Seen, bool)>);
+
+/// What one exchange took in.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct Pulled {
+    pub stored: usize,
+    /// The peer lists an envelope this host still lacks and has not seen to
+    /// be anything else than a certificate.
+    pub withheld: bool,
+}
 
 pub struct Session {
     connection: iroh::endpoint::Connection,
@@ -212,32 +224,41 @@ impl Session {
         .await?
     }
 
-    /// Take in the envelopes the peer holds and this host lacks. Returns how
-    /// many were stored. A host without a designated session, or with a
-    /// journal that is absent, unreadable or halted, takes in nothing.
+    /// Take in the envelopes the peer holds and this host lacks. A host
+    /// without a designated session, or with a journal that is absent,
+    /// unreadable or halted, takes in nothing.
     pub async fn pull(
         &self,
         store: &crate::shared_audio::Store,
         refused: &mut Refused,
-    ) -> anyhow::Result<usize> {
+    ) -> anyhow::Result<Pulled> {
         let Journal::Readable { summary: remote } = &self.journal else {
-            return Ok(0);
+            return Ok(Pulled::default());
+        };
+        // Whatever the peer lists may be a certificate until it is seen.
+        let unknown = Pulled {
+            stored: 0,
+            withheld: !remote.envelopes.is_empty(),
         };
         let Journal::Readable { summary: local } =
             blocking(store, |store| store.control_journal()).await?
         else {
-            return Ok(0);
+            return Ok(unknown);
         };
         if local.halted || local.session.is_none() {
-            return Ok(0);
+            return Ok(unknown);
         }
         let before = seen(&local);
         let missing: Vec<Digest> = remote
             .envelopes
             .iter()
-            .filter(|id| !local.envelopes.contains(id) && refused.0.get(*id) != Some(&before))
+            .filter(|id| {
+                !local.envelopes.contains(id)
+                    && refused.0.get(*id).map(|(seen, _)| seen) != Some(&before)
+            })
             .copied()
             .collect();
+        let mut certificates = std::collections::BTreeMap::new();
         // Record each answer before asking for more, so that an exchange cut
         // short keeps what it already brought.
         let mut outcomes = Vec::new();
@@ -255,6 +276,7 @@ impl Session {
                     .get(envelope.membership)
                     .context("membership snapshot missing")?
                     .clone();
+                certificates.insert(signed.id()?, matches!(signed.body, Body::Certificate(_)));
                 evidence.push((signed, membership));
             }
             outcomes.extend(blocking(store, move |store| store.control_accept(evidence)).await?);
@@ -262,7 +284,7 @@ impl Session {
         let Journal::Readable { summary: local } =
             blocking(store, |store| store.control_journal()).await?
         else {
-            return Ok(0);
+            return Ok(unknown);
         };
         let after = seen(&local);
         let mut stored = 0;
@@ -271,12 +293,20 @@ impl Session {
                 Ok(_) => stored += 1,
                 // Whatever was refused may become acceptable once the journal moves.
                 Err(_) if after == before => {
-                    refused.0.insert(id, after.clone());
+                    let certificate = certificates.get(&id).copied().unwrap_or(true);
+                    refused.0.insert(id, (after.clone(), certificate));
                 }
                 Err(_) => {}
             }
         }
-        Ok(stored)
+        for (id, (_, certificate)) in &refused.0 {
+            certificates.entry(*id).or_insert(*certificate);
+        }
+        let withheld = remote
+            .envelopes
+            .iter()
+            .any(|id| !local.envelopes.contains(id) && certificates.get(id) != Some(&false));
+        Ok(Pulled { stored, withheld })
     }
 }
 
@@ -326,7 +356,20 @@ pub async fn reconcile(
     address: iroh::EndpointAddr,
     refused: &mut Refused,
 ) -> anyhow::Result<()> {
-    let peer = address.id.to_string();
+    observe(endpoint, store, address, refused, &mut None).await
+}
+
+/// `reconcile`, which also leaves in `peer` what the control exchange showed
+/// of the peer's journal. Nothing is left when the exchange did not complete,
+/// or when this host has no control journal and so did not ask.
+pub async fn observe(
+    endpoint: &iroh::Endpoint,
+    store: &crate::shared_audio::Store,
+    address: iroh::EndpointAddr,
+    refused: &mut Refused,
+    peer: &mut Option<Peer>,
+) -> anyhow::Result<()> {
+    let name = address.id.to_string();
     let data =
         crate::shared_audio_net::Session::connect(endpoint, address.clone(), store.membership()?)
             .await?;
@@ -338,9 +381,17 @@ pub async fn reconcile(
             let session = Session::connect(endpoint, address, store)
                 .await
                 .context("control exchange failed; data deferred")?;
-            session.pull(store, refused).await?;
+            let pulled = session.pull(store, refused).await?;
+            *peer = Some(Peer {
+                journal: session.journal.clone(),
+                withheld: pulled.withheld,
+            });
             session.journal
         } else {
+            *peer = Some(Peer {
+                journal: Journal::Absent,
+                withheld: false,
+            });
             Journal::Absent
         };
         gate(
@@ -348,7 +399,7 @@ pub async fn reconcile(
             &remote,
         )?;
     }
-    data.reconcile(store, &peer).await
+    data.reconcile(store, &name).await
 }
 
 #[cfg(test)]
