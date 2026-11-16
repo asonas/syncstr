@@ -2141,6 +2141,13 @@ fn coordinator_aborts_after_synchronizing_with_every_host() -> anyhow::Result<()
         }
     })?;
     assert!(waiting(&f, &absent)?.contains("no readable control journal"));
+    // A halted host keeps a contradicting certificate out of what it lists.
+    let halted = peers(&f, |seed, peer| {
+        if let (9, Journal::Readable { summary }) = (seed, &mut peer.journal) {
+            summary.halted = true
+        }
+    })?;
+    assert!(waiting(&f, &halted)?.contains("is halted for review"));
     assert!(f.store().control_inspect()?.withdrawn.is_empty());
 
     assert_eq!(drive(&f, &peers(&f, |_, _| {})?)?, Progress::Withdrew(id));
@@ -2166,7 +2173,17 @@ fn coordinator_aborts_after_synchronizing_with_every_host() -> anyhow::Result<()
     // The same request under the same session is the aborted proposal again.
     start(&f)?;
     assert!(waiting(&f, &peers(&f, |_, _| {})?)?.contains("was aborted"));
-    f.store().control_release()?;
+    // A new session on the still frozen host signs another proposal.
+    f.store().control_designate(&Session {
+        coordinator: session().coordinator,
+        nonce: [0x67; 32],
+    })?;
+    start(&f)?;
+    let Progress::Proposed(retry) = drive(&f, &peers(&f, |_, _| {})?)? else {
+        panic!("a new session may propose again");
+    };
+    assert_ne!(retry, id);
+    assert!(!f.store().control_inspect()?.halted);
     Ok(())
 }
 
@@ -2211,9 +2228,12 @@ fn requests_need_the_frozen_designated_coordinator() -> anyhow::Result<()> {
     })?;
     assert!(start(&f).is_err(), "another host coordinates");
 
-    // A request that signed nothing is dropped by an abort.
+    // A request that signed nothing is replaced, or dropped by an abort.
     f.store().control_designate(&session())?;
     start(&f)?;
+    f.store()
+        .control_start(&supported(), [3; 32], [4; 32])?;
+    assert_eq!(f.store().control_request()?.unwrap().inventory, [3; 32]);
     f.store().control_request_abort()?;
     assert_eq!(f.store().control_request()?, None);
     // A request belongs to the session it was recorded under.

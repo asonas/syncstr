@@ -54,7 +54,7 @@ impl std::fmt::Display for Progress {
             Self::Withdrew(id) => write!(f, "withdrew from proposal {}", hex::encode(id)),
             Self::Aborted(id) => write!(
                 f,
-                "proposal {} is aborted; designate a new session to try again",
+                "proposal {} is aborted; designate a new session on every host to try again",
                 hex::encode(id)
             ),
             Self::Complete(id) => write!(
@@ -179,7 +179,9 @@ fn unready(
 }
 
 /// Why the coordinator does not withdraw yet: a host it has not synchronized
-/// with in this pass may hold a certificate.
+/// with in this pass may hold a certificate. A halted host keeps what
+/// contradicted its journal apart from the envelopes it lists, so it counts as
+/// one that may.
 fn unsynchronized(p: &Proposal, peers: &BTreeMap<Key, Peer>) -> Vec<String> {
     let mut reasons = Vec::new();
     for host in &p.hosts {
@@ -189,13 +191,17 @@ fn unsynchronized(p: &Proposal, peers: &BTreeMap<Key, Peer>) -> Vec<String> {
         let reason = match peers.get(&host.key) {
             None => "was not reached",
             Some(Peer {
-                journal: Journal::Readable { .. },
-                withheld: false,
-            }) => continue,
-            Some(Peer {
-                journal: Journal::Readable { .. },
-                ..
-            }) => "holds a control record this host could not take in",
+                journal: Journal::Readable { summary },
+                withheld,
+            }) => {
+                if summary.halted {
+                    "is halted for review"
+                } else if *withheld {
+                    "holds a control record this host could not take in"
+                } else {
+                    continue;
+                }
+            }
             Some(_) => "has no readable control journal",
         };
         reasons.push(format!("host {} {reason}", name(&host.key)));
@@ -412,7 +418,9 @@ fn drive(
 impl crate::shared_audio::Store {
     /// Record the owner's request to run the designated session from this
     /// host. Refused unless the host is frozen and is the session's
-    /// coordinator, and while an earlier request is unresolved.
+    /// coordinator, and while the proposal signed for an earlier request is
+    /// neither aborted nor installed here. A request that signed nothing yet
+    /// is replaced.
     pub fn control_start(
         &self,
         profiles: &BTreeSet<String>,
@@ -486,6 +494,9 @@ impl crate::shared_audio::Store {
     }
 
     /// Coordinator only. Refused after any host withdrew from the proposal.
+    /// Like the other journal operations it takes the session from its
+    /// caller and looks at neither the stored designation nor a request;
+    /// `control_drive` checks both before it certifies.
     pub fn control_certify(
         &self,
         id: Digest,

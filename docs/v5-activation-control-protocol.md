@@ -169,7 +169,7 @@ Implemented.
 
 ### The request
 
-A request holds the profiles, the two manifest digests, the proposal signed for it and whether an abort was asked for. It belongs to the designated session: `start` is refused unless the host is frozen and its local grant is the designated coordinator's, and designating another session or releasing the host deletes it. A new request replaces one whose proposal is aborted or installed on this host.
+A request holds the profiles, the two manifest digests, the proposal signed for it and whether an abort was asked for. It belongs to the designated session: `start` is refused unless the host is frozen and its local grant is the designated coordinator's, and designating another session or releasing the host deletes it. A new request replaces one that signed nothing yet, or whose proposal is aborted or installed on this host.
 
 ### One pass
 
@@ -187,11 +187,11 @@ The coordinator compares what each host showed when its exchange began. A host c
 
 `abort` on a request without a proposal deletes the request: nothing was signed. `abort` is refused once the coordinator holds a certificate. Otherwise the coordinator follows the order in "Signed abort":
 
-1. Every other host of the proposal must have answered in this pass with a readable journal, and must list no record that this host lacks and has not seen to be something else than a certificate. A certificate that could be taken in moves the session forward instead. One that could not be keeps the coordinator from withdrawing, and waits for review.
+1. Every other host of the proposal must have answered in this pass with a readable journal that is not halted, and must list no record that this host lacks and has not seen to be something else than a certificate. A halted host keeps the record that contradicted its journal apart from the ones it lists, so it may hold a certificate. A certificate that could be taken in moves the session forward instead. One that could not be keeps the coordinator from withdrawing, and waits for review.
 2. It signs its withdrawal. Withdrawing is refused once a certificate is stored, and signing a certificate is refused once any host withdrew. Each commits with its check, so the coordinator cannot do both.
 3. The other hosts follow its withdrawal as a reaction. With a withdrawal from every host it signs the abort.
 
-A proposal is identified by its content. The same request under the same session produces the aborted proposal again, so a retry needs a new session: release every host and designate another nonce.
+A proposal is identified by its content. The same request under the same session produces the aborted proposal again, so a retry needs a new session. Once every host holds the abort nothing is pending, and the owner designates another nonce on every host. The hosts can stay frozen; after a membership change behind an installed certificate they cannot be released before the next epoch (C2).
 
 ## Done-when mapping for ASO-145
 
