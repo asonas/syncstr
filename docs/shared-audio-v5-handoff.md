@@ -1,5 +1,7 @@
 # ASO-8: v5 protocol and Apple handoff
 
+> [ADR 0008](adr/0008-one-primary-host-over-a-private-network.md), proposed on 2026-11-17, replaces the design that this document describes. This document stays as the record of the code that still implements that design. See [Syncstr on a private network](private-network-architecture.md).
+
 This contract is the server prerequisite for ASO-9 (Apple), ASO-10 (Android) and
 ASO-11 (Windows). ASO-12 tracks cross-platform acceptance. It does not authorize
 production activation. Use the exact published revision recorded on ASO-8.

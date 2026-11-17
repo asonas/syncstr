@@ -1,5 +1,7 @@
 # M1 persistence contract
 
+> [ADR 0008](adr/0008-one-primary-host-over-a-private-network.md), proposed on 2026-11-17, replaces the design that this document describes. This document stays as the record of the code that still implements that design. See [Syncstr on a private network](private-network-architecture.md).
+
 Status: acceptance verified on 2026-10-11. The acceptance gate is defined in the
 [cluster implementation plan](cluster-implementation-plan.md#m1-cluster-persistence-and-reversible-migration).
 

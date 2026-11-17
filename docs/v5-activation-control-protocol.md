@@ -1,5 +1,7 @@
 # v5 activation control protocol
 
+> [ADR 0008](adr/0008-one-primary-host-over-a-private-network.md), proposed on 2026-11-17, replaces the design that this document describes. This document stays as the record of the code that still implements that design. See [Syncstr on a private network](private-network-architecture.md).
+
 Status: Proposed 2026-11-15 for ASO-145. The owner chose the options marked "Chosen" in C1 to C13. Parts 1 to 4 are implemented; part 5 is a design. This document authorizes no production operation.
 
 This document refines slice S3 of the [activation and recovery design](v5-activation-and-recovery.md), decisions D1 to D3 and the failure table in D6. It covers how hosts exchange the control journal, how a coordinator collects readiness from every authorized host, and how an activation that cannot finish is resolved. The local journal and the maintenance freeze are described in the [headless guide](../headless/README.md#maintenance-freeze-on-a-v5-host).

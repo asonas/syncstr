@@ -86,7 +86,56 @@ _Avoid_: Every image shown by a music player
 **Sync Conflict**:
 Competing changes within a cluster that cannot be reconciled without choosing which data or intention takes precedence. The listener resolves the conflict by choosing what to prioritize.
 
+## Hosts and devices
+
+These terms belong to the design in [ADR 0008](docs/adr/0008-one-primary-host-over-a-private-network.md), which is proposed and not implemented. They replace the terms under [Device connectivity](#device-connectivity) as that design is built.
+
+**Library**:
+The music a listener manages, with its catalog, artwork and playlists, as one unit that hosts hold and devices play.
+
+**Host**:
+A machine that holds a full copy of a library and serves it over HTTPS. A host is either the primary or a mirror. The macOS app can run a host, and Headless Syncstr is a host without playback.
+_Avoid_: Library Host, server, node
+
+**Primary**:
+The one host of a library that accepts changes. A library has exactly one primary at a time.
+_Avoid_: Master, main host
+
+**Mirror**:
+A host that copies the primary and serves the copy to devices. A mirror accepts no change.
+_Avoid_: Replica, backup host, secondary
+
+**Device**:
+An app that plays music from a host: the iPhone app, or the macOS app when it is not a host. A device holds a playback cache and offline saves, and is not a full copy of the library.
+_Avoid_: Client, member, peer, Playback Device
+
+**Pairing**:
+The one-time step in which a device creates its own device token for a library and registers it with the primary, using a one-time code that the primary shows. Reaching a host's address does not by itself allow access.
+_Avoid_: Enrollment, joining
+
+**Device Token**:
+The secret that a paired device sends with every request to a host. The device creates it during pairing, and the host keeps only its hash. Each device has its own for each library, and the listener can revoke it.
+_Avoid_: Password, key, invitation
+
+**Host Address**:
+The HTTPS address at which devices reach a host, such as a name on the listener's private network.
+_Avoid_: Endpoint, node address
+
+**Private Network**:
+A network that already connects the listener's machines, such as a tailnet, another VPN, or a home LAN. Syncstr assumes one and does not build one.
+_Avoid_: Remote access when referring to the network itself
+
+**Switch Number**:
+One number per library that rises each time the listener makes another host the primary. A host that meets a higher number stops accepting changes.
+_Avoid_: Epoch, generation, term
+
+**Download**:
+Fetching a file from a host to a device. A download fills either the playback cache or an offline save.
+_Avoid_: Sync, transfer, replication
+
 ## Device connectivity
+
+These terms describe the cluster design that [ADR 0008](docs/adr/0008-one-primary-host-over-a-private-network.md) replaces. They stay valid for the code that still implements it. Playback Cache and Offline Save keep their meaning in both designs.
 
 **Cluster**:
 A listener-managed group of Syncstr devices that share music through authorized relationships. A device remains part of its cluster when it moves between networks.

@@ -1,5 +1,7 @@
 # Local connectivity with optional user-operated remote access
 
+> [ADR 0008](0008-one-primary-host-over-a-private-network.md), proposed on 2026-11-17, replaces the parts of this decision about discovery, relays, a peer directory, LAN-only enrollment and several library hosts. The parts about no central service, no accounts and revocable devices still hold.
+
 Syncstr must support local device discovery, pairing, and direct music synchronization without external services, and its operator will not provide central connectivity servers. Remote access is optional: listeners who need it supply their own supporting services, including a peer directory and a transfer relay where needed, using deployment templates and instructions supplied with Syncstr. Initial remote access targets an always-on library-holding device such as a NAS; arbitrary roaming-device-to-roaming-device connectivity is outside this initial scope.
 
 Prefer direct transfer and automatically fall back to end-to-end encrypted relayed transfer only when a relay has been configured. A relay is optional, so installations without one may be unable to connect across some networks. This accepts additional setup for remote-access users in exchange for avoiding operator-hosted infrastructure and its recurring costs; an existing personal deployment is not a shared service dependency for other users.

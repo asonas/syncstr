@@ -1,5 +1,7 @@
 # Peer rendezvous
 
+> [ADR 0008](adr/0008-one-primary-host-over-a-private-network.md), proposed on 2026-11-17, replaces the design that this document describes. This document stays as the record of the code that still implements that design. See [Syncstr on a private network](private-network-architecture.md).
+
 Cloudflare exchanges short-lived endpoint candidates, not catalogs or audio. It does not relay QUIC. Nodes retain existing Ed25519 identities and allowed-device records. A directory entry is not pairing authorization.
 
 Requests are JSON envelopes with `payload` (an exact JSON string) and `signature` (base64 Ed25519 signature over UTF-8 `syncstr-rendezvous-v1\n` followed by the payload). Payloads include a lowercase hexadecimal node `id` and Unix millisecond `time` within 60 seconds of server time.

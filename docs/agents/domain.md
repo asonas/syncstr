@@ -6,6 +6,8 @@ Use the [README map](../../README.md#code-and-documentation-map) to find the rel
 
 ## Finding decisions
 
+- [Architecture decision records](../adr/): accepted and proposed product boundaries. [ADR 0008](../adr/0008-one-primary-host-over-a-private-network.md) replaces the cluster design with one primary host over a private network. It is proposed and not implemented, so check which design a task belongs to before you use cluster terms.
+- [Glossary](../../GLOSSARY.md): the vocabulary, including the terms of the proposed design under "Hosts and devices".
 - [Design specification](../design-spec.md): UI principles and the long-term service specification.
 - [Design decisions](../decisions.md): initial rationale and unresolved questions. Check applicability against [deferred work](../../README.md#long-term-design-and-deferred-work).
 - [DESIGN.md](../../DESIGN.md): UI and icon appearance.
@@ -14,4 +16,4 @@ Use the [README map](../../README.md#code-and-documentation-map) to find the rel
 
 Use the terminology in the relevant document and source code. If a proposed change contradicts a decision, identify its decision ID or issue and explain the conflict.
 
-If `CONTEXT.md` or `docs/adr/` is added later, read the vocabulary or decisions relevant to the task. Otherwise, use the existing references above; do not create empty documents to satisfy a template.
+If `CONTEXT.md` is added later, read the vocabulary relevant to the task. Do not create empty documents to satisfy a template.
