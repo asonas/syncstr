@@ -4,7 +4,9 @@ The Windows client reuses the Rust cluster playback implementation. It discovers
 LAN library hosts, confirms a pasted invitation against the selected endpoint,
 refreshes catalog metadata without automatically downloading originals, saves a
 selected original with integrity verification, and plays saved audio through the
-Windows multimedia subsystem.
+Windows MediaPlayer. Playback status follows the media session, including
+asynchronous decoding failures. Starting another track or closing the window
+closes the previous player.
 
 Discovery, enrollment, catalog reads, transfers, and file verification run on a
 serialized worker. The window remains available for movement and repainting,
@@ -51,6 +53,19 @@ transfer integrity, and wire contracts in `headless`, plus Windows DPAPI identit
 restoration. A build does not prove audible output or a real host interaction.
 Record LAN enrollment, physical playback, offline restart, and firewall behavior
 separately when they are checked on the target Windows computer.
+
+An opt-in test exercises the real Windows audio output with local test copies.
+Use MP3 and AAC/M4A samples longer than two seconds. It checks that playback
+advances, pause holds the position, resume advances again, and invalid media
+produces an asynchronous error. The test briefly plays the samples:
+
+```powershell
+$env:SYNCSTR_AUDIO_TEST_FILES = ((Resolve-Path ./test-audio/sample.mp3).Path, (Resolve-Path ./test-audio/sample.m4a).Path) -join ';'
+cargo +1.99.0 test --manifest-path apps/windows/Cargo.toml --locked local_audio_plays -- --ignored --nocapture
+```
+
+Run this on an interactive Windows desktop with an available audio output.
+Passing playback-position checks does not independently confirm audible output.
 
 See the [review repair record](../../docs/validation/windows-android-review-repairs.md)
 for cross-build evidence and pending device checks.

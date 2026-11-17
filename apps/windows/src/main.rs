@@ -1,12 +1,13 @@
 #![windows_subsystem = "windows"]
 #![allow(unsafe_op_in_unsafe_fn)]
 
+mod audio;
+
 use std::sync::{Mutex, OnceLock};
 use windows::{
     Win32::{
-        Foundation::*, Graphics::Gdi::*, Media::Multimedia::*, Security::Cryptography::*,
-        System::LibraryLoader::*, UI::Input::KeyboardAndMouse::EnableWindow,
-        UI::WindowsAndMessaging::*,
+        Foundation::*, Graphics::Gdi::*, Security::Cryptography::*, System::LibraryLoader::*,
+        UI::Input::KeyboardAndMouse::EnableWindow, UI::WindowsAndMessaging::*,
     },
     core::*,
 };
@@ -30,7 +31,7 @@ struct Ui {
     action_buttons: Vec<HWND>,
     discovered: Vec<iroh::EndpointAddr>,
     entries: Vec<syncstr_headless::model::Entry>,
-    paused: bool,
+    playback: Option<crate::audio::Playback>,
     busy: bool,
     worker: Option<OperationWorker>,
 }
@@ -447,44 +448,21 @@ unsafe fn apply_completed(completed: Completed) -> anyhow::Result<()> {
         }
         Completed::Message(message) => status(&message),
         Completed::Play(path) => {
-            let _ = mciSendStringW(w!("close syncstr_audio"), None, None);
-            let command = wide(&format!("open \"{}\" alias syncstr_audio", path.display()));
-            anyhow::ensure!(
-                mciSendStringW(PCWSTR(command.as_ptr()), None, None) == 0,
-                "Windows could not open this audio format"
-            );
-            anyhow::ensure!(
-                mciSendStringW(w!("play syncstr_audio"), None, None) == 0,
-                "Windows could not start playback"
-            );
-            UI.get().unwrap().lock().unwrap().paused = false;
-            status("Playing saved audio locally.");
+            let mut ui = UI.get().unwrap().lock().unwrap();
+            ui.playback.take();
+            ui.playback = Some(crate::audio::Playback::open(&path)?);
+            set_text(ui.status, "Opening saved audio locally.");
         }
     }
     Ok(())
 }
 
 unsafe fn pause_playback() -> anyhow::Result<()> {
-    let mut ui = UI.get().unwrap().lock().unwrap();
-    let command = if ui.paused {
-        w!("resume syncstr_audio")
-    } else {
-        w!("pause syncstr_audio")
-    };
-    anyhow::ensure!(
-        mciSendStringW(command, None, None) == 0,
-        "No active playback session"
-    );
-    ui.paused = !ui.paused;
-    set_text(
-        ui.status,
-        if ui.paused {
-            "Playback paused."
-        } else {
-            "Playback resumed."
-        },
-    );
-    Ok(())
+    let ui = UI.get().unwrap().lock().unwrap();
+    ui.playback
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("No active playback session"))?
+        .toggle_pause()
 }
 
 unsafe extern "system" fn wndproc(
@@ -664,6 +642,17 @@ unsafe extern "system" fn wndproc(
             }
             LRESULT(0)
         }
+        WM_TIMER => {
+            let mut ui = UI.get().unwrap().lock().unwrap();
+            if let Some(playback) = ui.playback.as_mut() {
+                match playback.changed_status() {
+                    Ok(Some(message)) => set_text(ui.status, &message),
+                    Err(error) => set_text(ui.status, &format!("Audio playback failed: {error}")),
+                    Ok(None) => {}
+                }
+            }
+            LRESULT(0)
+        }
         WM_COMMAND => {
             let id = (wparam.0 & 0xffff) as i32;
             let result = if id == ID_PAUSE {
@@ -719,7 +708,8 @@ unsafe extern "system" fn wndproc(
             if let Some(worker) = &mut UI.get().unwrap().lock().unwrap().worker.take() {
                 worker.stop();
             }
-            let _ = mciSendStringW(w!("close syncstr_audio"), None, None);
+            UI.get().unwrap().lock().unwrap().playback.take();
+            let _ = KillTimer(Some(hwnd), 1);
             PostQuitMessage(0);
             LRESULT(0)
         }
@@ -728,6 +718,7 @@ unsafe extern "system" fn wndproc(
 }
 
 fn run() -> Result<()> {
+    let _apartment = crate::audio::Apartment::initialize()?;
     unsafe {
         let hinstance = GetModuleHandleW(None)?;
         let class = w!("SyncstrWindowsApp");
@@ -740,7 +731,7 @@ fn run() -> Result<()> {
             hbrBackground: HBRUSH((COLOR_WINDOW.0 + 1) as *mut _),
             ..Default::default()
         });
-        CreateWindowExW(
+        let hwnd = CreateWindowExW(
             WINDOW_EX_STYLE(0),
             class,
             w!("Syncstr for Windows"),
@@ -754,6 +745,7 @@ fn run() -> Result<()> {
             Some(hinstance.into()),
             None,
         )?;
+        SetTimer(Some(hwnd), 1, 250, None);
         let mut message = MSG::default();
         while GetMessageW(&mut message, None, 0, 0).into() {
             let _ = TranslateMessage(&message);
