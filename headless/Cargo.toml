@@ -55,6 +55,10 @@ name = "migration_batch"
 required-features = ["p2p"]
 
 [[example]]
+name = "backfill_addition_times"
+required-features = ["p2p"]
+
+[[example]]
 name = "shared_audio_fixture"
 required-features = ["p2p"]
 

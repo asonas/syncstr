@@ -2,6 +2,10 @@
 
 The `backfill_addition_times` example applies an independently verified source-library date map to an offline host data directory. It preserves audio files, track identifiers, artwork, organization, and existing history. It emits signed metadata revisions so the dates can reach other devices through normal synchronization. Legacy entries without history receive their first signed import record without copying audio.
 
+This helper targets the pre-v5 legacy cluster catalog. It does not update the
+v5 shared-audio catalog, and `Store::open` rejects an activated schema-5 store.
+Do not use it as a v5 metadata migration or activation step.
+
 Build with the `p2p` feature. The request contains the existing library identifier and an array of updates:
 
 ```json
