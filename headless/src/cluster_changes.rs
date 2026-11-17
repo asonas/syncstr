@@ -312,24 +312,33 @@ impl crate::store::Store {
         self.run(move |connection, _| {
             use sha2::Digest as _;
             let transaction = connection.transaction()?;
-            let actual: String = transaction.query_row("SELECT id FROM library", [], |row| row.get(0))?;
+            let actual: String =
+                transaction.query_row("SELECT id FROM library", [], |row| row.get(0))?;
             anyhow::ensure!(actual == library, "library changed");
             let proof = crate::enrollment::read_proof(&transaction)?;
             proof.verify(&authority.id)?;
             let records = crate::cluster_changes::records(&transaction)?;
             let active = crate::cluster_changes::projected_records(&transaction)?;
             let organization = crate::store::read_organization(&transaction)?;
-            let superseded: std::collections::HashSet<_> = records.iter().flat_map(|r| &r.previous).collect();
-            let mut previous: Vec<String> = records.iter()
+            let superseded: std::collections::HashSet<_> =
+                records.iter().flat_map(|r| &r.previous).collect();
+            let mut previous: Vec<String> = records
+                .iter()
                 .filter(|r| r.author == authority.member && !superseded.contains(&r.id))
-                .map(|r| r.id.clone()).collect();
+                .map(|r| r.id.clone())
+                .collect();
             let mut seen = std::collections::HashSet::new();
             let mut changed = 0;
             for update in updates {
-                anyhow::ensure!(update.added_at >= 0 && seen.insert(update.sha256.clone()), "invalid or duplicate date update");
+                anyhow::ensure!(
+                    update.added_at >= 0 && seen.insert(update.sha256.clone()),
+                    "invalid or duplicate date update"
+                );
                 let payload: Vec<u8> = transaction.query_row(
                     "SELECT payload FROM tracks WHERE id = ? AND sha256 = ?",
-                    rusqlite::params![update.track_id, update.sha256], |row| row.get(0))?;
+                    rusqlite::params![update.track_id, update.sha256],
+                    |row| row.get(0),
+                )?;
                 let mut stored: crate::model::Entry = serde_json::from_slice(&payload)?;
                 let heads = crate::cluster_changes::object_heads(&active, &update.sha256);
                 anyhow::ensure!(heads.len() <= 1, "conflicting object history");
@@ -338,18 +347,34 @@ impl crate::store::Store {
                 for _ in 0..=active.len() {
                     match selected.map(|r| &r.action) {
                         Some(crate::cluster_changes::Action::Resolve { selected: id }) => {
-                            selected = Some(active.iter().find(|r| r.id == *id)
-                                .ok_or_else(|| anyhow::anyhow!("missing selected revision"))?);
+                            selected = Some(
+                                active
+                                    .iter()
+                                    .find(|r| r.id == *id)
+                                    .ok_or_else(|| anyhow::anyhow!("missing selected revision"))?,
+                            );
                         }
                         _ => break,
                     }
                 }
                 let (mut entry, metadata) = match selected.map(|r| &r.action) {
-                    Some(crate::cluster_changes::Action::Import { entry, organization })
-                    | Some(crate::cluster_changes::Action::Edit { entry, organization })
-                    | Some(crate::cluster_changes::Action::Restore { entry, organization }) => ((**entry).clone(), (**organization).clone()),
+                    Some(crate::cluster_changes::Action::Import {
+                        entry,
+                        organization,
+                    })
+                    | Some(crate::cluster_changes::Action::Edit {
+                        entry,
+                        organization,
+                    })
+                    | Some(crate::cluster_changes::Action::Restore {
+                        entry,
+                        organization,
+                    }) => ((**entry).clone(), (**organization).clone()),
                     None => {
-                        anyhow::ensure!(!records.iter().any(|r| r.object == update.sha256), "inactive object history");
+                        anyhow::ensure!(
+                            !records.iter().any(|r| r.object == update.sha256),
+                            "inactive object history"
+                        );
                         (stored.clone(), organization.for_object(&update.sha256)?)
                     }
                     _ => anyhow::bail!("deleted or unresolved object"),
@@ -358,28 +383,51 @@ impl crate::store::Store {
                 projected.track.id = stored.track.id.clone();
                 projected.track.cover_art = stored.track.cover_art.clone();
                 anyhow::ensure!(projected == stored, "catalog differs from signed metadata");
-                if stored.track.added_at == Some(update.added_at) { continue; }
-                anyhow::ensure!(stored.track.added_at == update.expected_added_at, "addition date changed");
+                if stored.track.added_at == Some(update.added_at) {
+                    continue;
+                }
+                anyhow::ensure!(
+                    stored.track.added_at == update.expected_added_at,
+                    "addition date changed"
+                );
                 for record in active.iter().filter(|r| r.object == update.sha256) {
                     let date = match &record.action {
                         crate::cluster_changes::Action::Import { entry, .. }
                         | crate::cluster_changes::Action::Edit { entry, .. }
-                        | crate::cluster_changes::Action::Restore { entry, .. } => entry.track.added_at,
+                        | crate::cluster_changes::Action::Restore { entry, .. } => {
+                            entry.track.added_at
+                        }
                         _ => None,
                     };
-                    anyhow::ensure!(date.is_none_or(|date| date >= update.added_at), "history contains an earlier date");
+                    anyhow::ensure!(
+                        date.is_none_or(|date| date >= update.added_at),
+                        "history contains an earlier date"
+                    );
                 }
                 entry.track.added_at = Some(update.added_at);
                 stored.track.added_at = Some(update.added_at);
                 let action = if selected.is_none() {
-                    crate::cluster_changes::Action::Import { entry: Box::new(entry), organization: Box::new(metadata) }
+                    crate::cluster_changes::Action::Import {
+                        entry: Box::new(entry),
+                        organization: Box::new(metadata),
+                    }
                 } else {
-                    crate::cluster_changes::Action::Edit { entry: Box::new(entry), organization: Box::new(metadata) }
+                    crate::cluster_changes::Action::Edit {
+                        entry: Box::new(entry),
+                        organization: Box::new(metadata),
+                    }
                 };
                 let mut record = crate::cluster_changes::Change {
-                    version: 1, id: String::new(), cluster: authority.cluster.clone(),
-                    author: authority.member.clone(), grant: authority.id.clone(),
-                    previous, object: update.sha256, parents, action, signature: String::new(),
+                    version: 1,
+                    id: String::new(),
+                    cluster: authority.cluster.clone(),
+                    author: authority.member.clone(),
+                    grant: authority.id.clone(),
+                    previous,
+                    object: update.sha256,
+                    parents,
+                    action,
+                    signature: String::new(),
                 };
                 let bytes = record.signing_bytes()?;
                 record.id = hex::encode(sha2::Sha256::digest(&bytes));
@@ -387,13 +435,16 @@ impl crate::store::Store {
                 record.validate(&proof)?;
                 previous = vec![record.id.clone()];
                 crate::cluster_changes::insert(&transaction, &record)?;
-                transaction.execute("UPDATE tracks SET payload = ? WHERE id = ?",
-                    rusqlite::params![serde_json::to_vec(&stored)?, stored.track.id])?;
+                transaction.execute(
+                    "UPDATE tracks SET payload = ? WHERE id = ?",
+                    rusqlite::params![serde_json::to_vec(&stored)?, stored.track.id],
+                )?;
                 changed += 1;
             }
             transaction.commit()?;
             Ok(changed)
-        }).await
+        })
+        .await
     }
 
     pub async fn cluster_changes(&self) -> anyhow::Result<Vec<crate::cluster_changes::Change>> {

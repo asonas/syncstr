@@ -12,7 +12,9 @@ async fn source_addition_dates_are_atomic_signed_and_survive_projection() -> any
     let bytes = b"source date fixture";
     let source = root.path().join("audio.mp3");
     std::fs::write(&source, bytes)?;
-    store.import_cluster_file(&identity, fixture(bytes), None, &source, false).await?;
+    store
+        .import_cluster_file(&identity, fixture(bytes), None, &source, false)
+        .await?;
     let before = store.catalog().await?;
     let entry = before.entries[0].clone();
     drop(store);
@@ -21,25 +23,57 @@ async fn source_addition_dates_are_atomic_signed_and_survive_projection() -> any
     std::fs::copy(data.join("node.sqlite"), replica_root.join("node.sqlite"))?;
     for file in std::fs::read_dir(data.join("objects"))? {
         let file = file?;
-        std::fs::copy(file.path(), replica_root.join("objects").join(file.file_name()))?;
+        std::fs::copy(
+            file.path(),
+            replica_root.join("objects").join(file.file_name()),
+        )?;
     }
     let store = syncstr_headless::store::Store::open(&data)?;
     let replica = syncstr_headless::store::Store::open(&replica_root)?;
     let update = || syncstr_headless::cluster_changes::AdditionTimeUpdate {
-        sha256: entry.sha256.clone(), track_id: entry.track.id.clone(),
-        expected_added_at: entry.track.added_at, added_at: 1_234_567_890_000,
+        sha256: entry.sha256.clone(),
+        track_id: entry.track.id.clone(),
+        expected_added_at: entry.track.added_at,
+        added_at: 1_234_567_890_000,
     };
     let invalid = syncstr_headless::cluster_changes::AdditionTimeUpdate {
-        sha256: "0".repeat(64), track_id: "missing".into(), expected_added_at: None, added_at: 1,
+        sha256: "0".repeat(64),
+        track_id: "missing".into(),
+        expected_added_at: None,
+        added_at: 1,
     };
-    assert!(store.backfill_addition_times(syncstr_headless::peer::Identity::open(&peer)?,
-        before.id.clone(), vec![update(), invalid]).await.is_err());
+    assert!(
+        store
+            .backfill_addition_times(
+                syncstr_headless::peer::Identity::open(&peer)?,
+                before.id.clone(),
+                vec![update(), invalid]
+            )
+            .await
+            .is_err()
+    );
     assert_eq!(store.catalog().await?.entries, before.entries);
     assert_eq!(store.cluster_changes().await?.len(), 1);
-    assert_eq!(store.backfill_addition_times(syncstr_headless::peer::Identity::open(&peer)?,
-        before.id.clone(), vec![update()]).await?, 1);
-    assert_eq!(store.backfill_addition_times(syncstr_headless::peer::Identity::open(&peer)?,
-        before.id.clone(), vec![update()]).await?, 0);
+    assert_eq!(
+        store
+            .backfill_addition_times(
+                syncstr_headless::peer::Identity::open(&peer)?,
+                before.id.clone(),
+                vec![update()]
+            )
+            .await?,
+        1
+    );
+    assert_eq!(
+        store
+            .backfill_addition_times(
+                syncstr_headless::peer::Identity::open(&peer)?,
+                before.id.clone(),
+                vec![update()]
+            )
+            .await?,
+        0
+    );
     store.project_cluster_metadata(entry.sha256.clone()).await?;
     let after = store.catalog().await?;
     let mut expected = entry.clone();
@@ -47,23 +81,41 @@ async fn source_addition_dates_are_atomic_signed_and_survive_projection() -> any
     assert_eq!(after.entries, vec![expected]);
     assert_eq!(after.organization, before.organization);
     let changes = store.cluster_changes().await?;
-    assert_eq!(replica.receive_cluster_changes(identity.id().to_string(), changes.clone()).await?, 0);
-    replica.project_cluster_metadata(entry.sha256.clone()).await?;
+    assert_eq!(
+        replica
+            .receive_cluster_changes(identity.id().to_string(), changes.clone())
+            .await?,
+        0
+    );
+    replica
+        .project_cluster_metadata(entry.sha256.clone())
+        .await?;
     assert_eq!(replica.catalog().await?.entries, after.entries);
-    store.apply_cluster_changes(identity.id().to_string(), changes).await?;
+    store
+        .apply_cluster_changes(identity.id().to_string(), changes)
+        .await?;
     let head = store.cluster_selected_change(&entry.sha256).await?.unwrap();
-    store.receive_cluster_metadata(&identity, entry.clone(), before.organization, vec![head.id]).await?;
+    store
+        .receive_cluster_metadata(&identity, entry.clone(), before.organization, vec![head.id])
+        .await?;
     store.project_cluster_metadata(entry.sha256).await?;
-    assert_eq!(store.catalog().await?.entries[0].track.added_at, Some(1_234_567_890_000));
+    assert_eq!(
+        store.catalog().await?.entries[0].track.added_at,
+        Some(1_234_567_890_000)
+    );
     assert_eq!(std::fs::read(source)?, bytes);
     drop(store);
     let reopened = syncstr_headless::store::Store::open(&data)?;
-    assert_eq!(reopened.catalog().await?.entries[0].track.added_at, Some(1_234_567_890_000));
+    assert_eq!(
+        reopened.catalog().await?.entries[0].track.added_at,
+        Some(1_234_567_890_000)
+    );
     Ok(())
 }
 
 #[tokio::test]
-async fn source_addition_dates_register_legacy_metadata_without_reimporting_audio() -> anyhow::Result<()> {
+async fn source_addition_dates_register_legacy_metadata_without_reimporting_audio()
+-> anyhow::Result<()> {
     let root = tempfile::tempdir()?;
     let data = root.path().join("data");
     let peer = data.join("peer");
@@ -77,12 +129,21 @@ async fn source_addition_dates_register_legacy_metadata_without_reimporting_audi
     store.create_cluster(identity.id().to_string()).await?;
     let before = store.catalog().await?;
     assert!(store.cluster_changes().await?.is_empty());
-    assert_eq!(store.backfill_addition_times(identity, before.id.clone(), vec![
-        syncstr_headless::cluster_changes::AdditionTimeUpdate {
-            sha256: entry.sha256.clone(), track_id: entry.track.id.clone(),
-            expected_added_at: entry.track.added_at, added_at: 1_234_567_890_000,
-        },
-    ]).await?, 1);
+    assert_eq!(
+        store
+            .backfill_addition_times(
+                identity,
+                before.id.clone(),
+                vec![syncstr_headless::cluster_changes::AdditionTimeUpdate {
+                    sha256: entry.sha256.clone(),
+                    track_id: entry.track.id.clone(),
+                    expected_added_at: entry.track.added_at,
+                    added_at: 1_234_567_890_000,
+                },]
+            )
+            .await?,
+        1
+    );
     store.project_cluster_metadata(entry.sha256.clone()).await?;
     let after = store.catalog().await?;
     let mut expected = entry;
