@@ -235,22 +235,23 @@ Evidence that earlier builds refuse a marked store is in the [validation record]
 
 Designed for ASO-154. Not implemented.
 
-A journal halts for review in two cases (part 1):
+A journal halts for review in two cases (part 1, with the exceptions stated there for a revoked signer and a settled installation):
 
-- It holds a proposal and sees another unresolved proposal, or a second certificate, from the same head and epoch.
+- It holds a proposal or a certificate and sees another unresolved proposal, or another certificate, from the same head and epoch. Two certificates of one proposal count: they differ in the prepared acknowledgments they carry.
 - It sees a certificate beside an abort of its proposal or beside a host's withdrawal from it.
 
-The envelope that arrived second is stored as a conflict, outside the journal. From then on the host records no envelope, refuses writes and release, signs nothing for a session, and exchanges no data with other hosts. It keeps serving what it holds. Until this part is implemented nothing clears the halt.
+The envelope that arrived second is stored as a conflict, outside the journal. From then on the host takes in no envelope, signs nothing for a session, refuses writes and release, and reconciles no data with other hosts. It keeps serving its clients what it holds, and it keeps listing and serving the envelopes of its journal to other hosts. Until this part is implemented nothing clears the halt.
 
-Two facts of the current build shape the design:
+Three facts of the current build shape the design:
 
-- Which envelope is the conflict depends on the order of arrival, so two hosts can hold the same two proposals with the roles exchanged.
+- Which envelope is the conflict depends on the order of arrival, so two hosts can hold the same two envelopes with the roles exchanged.
 - A host does not list or serve its conflicts, and `status` shows only that the journal is halted. A host that never received the second envelope is not halted, and learns nothing about it from a halted peer.
+- A coordinator that holds every prepared acknowledgment signs the certificate without asking the hosts again, and a frozen host installs a certificate it holds. A host that is not halted goes on while another is.
 
 ### Terms
 
 - A **contest** is everything that descends from one head at one epoch: the proposals a host holds from that head, in its journal or among its conflicts, with their acknowledgments, certificates, withdrawals and aborts.
-- A **ruling** is the owner's decision on one contest. It names the head, the epoch, every proposal the owner reviewed, and which one of them stands, if any. The others are **void**.
+- A **ruling** is the owner's decision on one contest. It names the head, the epoch, what stands, and what is **void**. What stands is one certificate, named by its own digest, or one proposal without a certificate, or nothing. What is void is a list of proposals and certificates, each by its digest.
 
 ### C10. Who clears a halt, and with what evidence?
 
@@ -259,85 +260,137 @@ Two facts of the current build shape the design:
 
 ### C11. Is a ruling local?
 
-- **A (chosen 2026-11-17):** it is a local record on each host, and hosts compare it. A host shows the digests of its rulings to its peers. While two hosts differ, they exchange no data and take in no envelope from each other, and no coordinator proposes.
+- **A (chosen 2026-11-17):** it is a local record on each host, and hosts compare it. A host shows the digests of its rulings to its peers. While two hosts differ, they reconcile no data and take in no envelope from each other, and no coordinator proposes.
 - **B:** local only. A host works again as soon as its own halt is cleared. Two hosts that ruled differently would not notice.
 
 ### C12. What can a review decide?
 
-- **A (chosen 2026-11-17):** one proposal of the contest stands, or none does. Where a certificate exists, the owner lets its proposal stand and the session goes forward. A void envelope stays as evidence and is never accepted later.
+- **A (chosen 2026-11-17):** one proposal of the contest stands, or none does. A certificate that any host installed stands. A void envelope stays as evidence and is never accepted later.
 - **B:** always void every proposal and start again. This cannot be used once any host installed a certificate of the contest.
+
+Refined after review: where a certificate exists, the ruling names that certificate and not only its proposal. A certificate that no host installed stands as well, with one exception: beside an abort of its proposal the owner voids the certificate, because every host withdrew and may have been released since.
 
 ### C13. Does a halted host take in data while it waits?
 
 - **A (chosen 2026-11-17):** no. Data between hosts stays deferred, as in the table of part 2. The host keeps serving what it holds. This is what D2 of the activation design asks of a forked journal.
 - **B:** take in data from hosts at the same installed head. The halt may be about which head is right.
 
+### The principle
+
+A ruling removes the halt and tells a host which envelopes it must never act on. It releases nothing by itself:
+
+- A prepare lock is resolved only as before, by a signed abort or by an installation. This keeps the rule of D6 that locks are released by a signed abort after it is known that no certificate exists.
+- A void proposal is taken out through the abort of part 1: every host withdraws, and the proposal's coordinator signs the abort.
+- A standing certificate is installed through the installation of part 1, with every check it has.
+
+So a ruling that is wrong, or that only some hosts hold, leaves hosts waiting. It does not let two hosts install different certificates.
+
+### Procedure
+
+1. The owner stops every host of the membership. A host that cannot be reached and stopped keeps the review waiting: nobody knows what it installs meanwhile.
+2. The owner reads the evidence on every host, halted or not.
+3. The owner records the same ruling on every host.
+4. The owner starts the hosts. They stay frozen.
+
+The build cannot check that all hosts were stopped together. The rules below are made so that a ruling recorded without that fence stalls and does not fork. `release` needs no rule of its own: it is refused while a lock is pending, and a ruling resolves no lock.
+
 ### Seeing the evidence
 
-`shared-audio-control status` lists, for a journal that is halted or holds a ruling:
+`shared-audio-control status` shows, on every host with control storage and for each head and epoch that has more than one proposal, a conflict or a ruling:
 
-- each conflict: its digest, its kind, the host that signed it, the reason it was stored, and the proposal, head and epoch it belongs to;
-- each proposal of the contest that the host holds, and whether it is prepared here, certified, installed here, withdrawn from, or aborted;
-- each ruling and its digest.
+- each proposal: its digest, coordinator and session, and whether this host prepared it, withdrew from it, or holds its abort;
+- each certificate by its own digest, with its proposal, whether it is installed here, and whether it sits in the journal or among the conflicts. Certificates below the installed head are included;
+- each conflict: its digest, its kind, the host that signed it and the reason it was stored;
+- the ruling and its digest.
 
-The owner reads `status` on every host of the membership before ruling. The union of what the hosts show is the contest. A host that is not halted takes part: it may hold a certificate or an installation that decides the ruling.
+The union of what the hosts show is the contest. A host that is not halted takes part: it may hold a certificate or an installation that decides the ruling.
 
 ### The command
 
 `shared-audio-control rule` runs on the stopped host and takes:
 
 - the head and the epoch of the contest;
-- `--stands <proposal>` or `--none-stands`;
-- `--void <proposal>` for every other proposal of the contest, as many as the owner found on any host;
-- `--reviewed <conflict>` for every conflict this host holds for the contest.
+- `--stands-certificate <digest>`, `--stands-proposal <digest>` or `--none-stands`;
+- `--void <digest>` for every other proposal and certificate of the contest that the owner found on any host;
+- `--reviewed <digest>` for every conflict this host holds for the contest.
 
 It is refused:
 
-- when this host holds a conflict or a proposal of the contest that the command does not name. The owner cannot clear what they have not seen;
-- when a proposal to be voided has a certificate that this host installed. Installed state is not undone by a ruling. The owner lets that proposal stand, or the cluster needs the coordinated restore of D6 in the activation design;
-- when `--stands` names a proposal this host holds as aborted or withdrawn from, and it holds no certificate for it. An abort without a certificate already resolved the proposal; the owner uses `--none-stands`.
+- when this host holds a proposal, a certificate or a conflict of the contest that the command names nowhere. The owner cannot clear what they have not seen;
+- when a digest is named twice, or what this host holds under a digest does not belong to that head and epoch;
+- when a void certificate, or a certificate of a void proposal, is installed on this host. Installed state is not undone by a ruling;
+- when `--stands-proposal` names a proposal for which this host holds an abort or a certificate. An aborted proposal is resolved already, and a certified one stands by its certificate.
 
-When two proposals of the contest are installed on different hosts, every ruling is refused on one of them. That is the fork D6 covers.
+A host that holds none of the named envelopes accepts the command. A host that holds the abort of a proposal and not its certificate accepts `--stands-certificate` for it; it fetches the certificate afterwards.
 
-A host that holds none of the named envelopes accepts the command. It needs the ruling to agree with its peers, and to refuse the void envelopes when they arrive.
+A host holds one ruling for a contest. Recording another one replaces it, under the same refusals. This is also how a ruling is extended when a further envelope turns up.
 
 ### What a ruling does
 
-- The digest of a ruling covers the cluster, the head, the epoch, the standing proposal or none, and the sorted void proposals. It does not cover the reviewed conflicts, which differ between hosts.
-- A void proposal is resolved like an aborted one: its prepare lock stays as evidence, and no longer blocks release, pins the input history or raises the profile floor. The coordinator's request for it counts as aborted, so the next request needs a session with another nonce.
-- A host records no envelope of a void proposal: no acknowledgment, no certificate, no withdrawal, no abort. Such an envelope is refused without halting.
-- When a proposal stands and a certificate for it exists, the withdrawals and the abort of that proposal are void too, this host's own withdrawal included. This is the one case where the owner's ruling overrides a host's signed promise. The certificate carries every host's prepared acknowledgment, and the session goes forward as the abort rules of part 1 already require. A host that holds the abort and not yet the certificate takes the certificate in when a peer offers it.
-- Void envelopes that a host already holds stay stored as evidence. They are neither served to peers nor listed in the summary, so no peer fetches them again.
-- A ruling covers the named envelopes only. A further unresolved proposal from the same head halts the journal again.
-- The journal is halted while it holds a conflict that no ruling names. Clearing one contest does not clear another.
-- A ruling can be replaced while this host recorded no envelope since. After that it is final, and a wrong ruling is repaired under D6.
+Recording:
+
+- In one transaction the host stores the ruling and moves the conflicts it names into the journal. The standing certificate becomes an ordinary certificate with the proposal it carries. A void envelope is kept and marked void.
+- The journal is halted while it holds a conflict that no ruling names. The consistency check of the journal reads void envelopes as evidence: they are verified, and they neither count as rivals nor contradict what stands.
+- The digest of a ruling covers a label of its own, the cluster, the head, the epoch, what stands with its kind, and the sorted void digests. It does not cover the reviewed conflicts, which differ between hosts.
+
+A void proposal:
+
+- The host does not prepare it, and neither records nor installs a certificate for it. Such a certificate is refused without halting.
+- The host lists and serves the void proposal, and takes it in from a peer with the same ruling, so that every host can withdraw from it. A void certificate is neither listed nor served.
+- While frozen, the host signs its withdrawal from it, whatever session the proposal names.
+- Its lock, if this host prepared it, stays pending until the abort is stored, or until a certificate from the same head is installed here. After that installation nothing can follow the old head, so its other locks are resolved.
+- On the host that signed it, the ruling counts as the owner's `abort` request of part 3 for that proposal.
+- Until its abort is stored it still counts as a rival. A new proposal from the same head waits for the abort, as in part 1.
+
+A void certificate is never installed. It is refused without halting when a peer offers it again, also when its proposal stands with another certificate.
+
+A standing certificate:
+
+- A host installs it only after every host of its proposal showed the same ruling in an exchange since the ruling was recorded. The host stores which hosts it has seen. This is the barrier against a host that was not stopped or not ruled.
+- Installation keeps every check of part 1: the freeze, the ancestry, the profile floor, the membership rules of C2, and the input history that this host acknowledged. A host that was released after an abort and took in data since cannot install it. Then no ruling helps and D6 applies.
+- For that certificate alone, an abort of its proposal and the withdrawals from it are void, this host's own withdrawal included. This is the one case where the owner's ruling overrides a host's signed promise, and it is meant for a certificate that another host already installed.
+
+A standing proposal without a certificate goes on as before the halt. Its coordinator signs the certificate only when every host of the proposal answered in the same pass with the same ruling.
+
+A further envelope from the same head that the ruling does not name halts the journal again.
 
 ### Agreement between hosts
 
 - The summary of part 2 gains the digests of the host's rulings.
 - Two hosts whose digests differ treat each other as halted: data is deferred, and neither takes in envelopes from the other.
-- The coordinator proposes only when every host of the membership answered in the same pass with the same rulings as its own (part 3, one pass, step 1). Its abort keeps the rule that every host of the proposal answered with a journal that is not halted.
-- `release` is a command on a stopped host and sees no peer. It is refused while the journal is halted, and keeps its own conditions. It is not held back by a peer's different ruling.
+- The coordinator proposes only when every host of the membership answered in the same pass with the same rulings as its own (part 3, one pass, step 1).
+- Equal digests show that two hosts were told the same. They do not show that a host kept its ruling: a host restored from an earlier backup shows the digests it had then. Restoring stays under D6 and D7.
 - A build from before this part rejects a summary with a field it does not know, so its exchange fails and data is deferred. Every host needs a build with this part before a ruling leads to agreement.
 
 ### What the owner decides, by case
 
+The first row that matches applies.
+
 | Evidence across all hosts | Ruling |
 | --- | --- |
-| Two or more proposals, no certificate anywhere | `--none-stands` on every host, then a new session. `--stands` is allowed for a proposal that is unresolved everywhere |
-| One proposal has a certificate, installed or not | That proposal stands; the others are void |
-| A certificate beside an abort or a withdrawal of the same proposal | The proposal stands, and its abort and withdrawals are void. If no host installed the certificate the owner may void the proposal instead |
-| Certificates for two proposals, at most one of them installed anywhere | The installed one stands. With none installed the owner chooses |
-| Certificates for two proposals, each installed on some host | No ruling. Coordinated restore under D6 |
+| Two different certificates of the contest are each installed on some host | None. See below |
+| One certificate is installed on some host | That certificate stands. Every other proposal and certificate is void |
+| A certificate, installed nowhere, beside an abort of its proposal | The certificate is void. If no other proposal is left unresolved, nothing stands |
+| One or more certificates, installed nowhere | The owner lets one certificate stand. The others are void |
+| Proposals only | Nothing stands, and a new session follows once the aborts are stored. One proposal may stand instead if it is unresolved on every host |
 
-A host whose key signed two proposals from one head, or a certificate after its withdrawal, did what a correct build does not do. The ruling does not judge the host. Revoking or isolating it is the owner's separate decision under D3.
+When two certificates from one head are installed on different hosts, the cluster is forked and no ruling is accepted on every host. D6 decides what follows: forward repair once any host wrote under the new epoch, a coordinated restore only before that. Neither procedure is defined in this document.
+
+Two unresolved proposals from one head, or a certificate signed after a withdrawal, are what a correct build does not produce. An aborted proposal followed by a new one from the same head is ordinary. The ruling does not judge a host. Revoking or isolating it is the owner's separate decision under D3, and a ruling waives no membership check.
+
+### Waiting
+
+A ruling does not help where the protocol already waits:
+
+- A void proposal whose coordinator does not sign the abort keeps its locks. This is the unreachable host of part 1.
+- A host that is offline shows no ruling, so no standing certificate is installed and no coordinator proposes.
 
 ### What a ruling does not do
 
 - It does not repair a journal that cannot be read. That journal stays in review.
-- It does not prove that the owner read the same evidence on every host. The digests show that the rulings are equal, not that they are right.
+- It does not prove that the owner read the same evidence on every host.
 - It does not undo an installation, restore data, or revoke a host.
-- It does not reach a host that is offline. That host keeps the others waiting, as everywhere in this protocol.
+- It does not release a prepare lock or the freeze.
 
 ## Done-when mapping for ASO-145
 
@@ -357,6 +410,6 @@ A host whose key signed two proposals from one head, or a certificate after its 
 - Recovery when a coordinator lost its journal and aborted while a certificate exists elsewhere. The hosts detect the contradiction and halt for review; part 5 describes the ruling.
 - A host restored from a backup that still holds a freeze, a designation and a proposal. It reacts as after an ordinary restart, and learns of a later withdrawal, abort or release only when a peer returns it. Restoring is governed by D6 and D7 of the activation design and by the startup guard.
 - Implementing the review of a halted journal (part 5).
-- Recovery of a journal that cannot be read, and the coordinated restore after two installed certificates from one head (D6 of the activation design).
+- Recovery of a journal that cannot be read, and the repair or restore after two installed certificates from one head (D6 of the activation design).
 - A relay path between v5 hosts. A host that is reachable neither by discovery nor at a given address keeps the coordinator waiting (C7).
 - A live view of the coordinator's progress. It is logged; `status` reads the journal of a stopped host.
