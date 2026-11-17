@@ -46,7 +46,12 @@ def prepare(inventory_path, selection_path, output, ffmpeg, ffprobe):
         resolved = (reason == 'ownership_unresolved'
                     and observation.get('status') in ('uploaded', 'matched', 'purchased')
                     and observation.get('method') and observation.get('observed_at'))
-        if (decision != 'candidate' and not resolved) or record.get('duplicate_location'):
+        approval = pick.get('origin_approval', {})
+        approved_origin = (reason == 'ownership_unresolved'
+                           and approval.get('basis') in ('purchase_date', 'cddb', 'user_reviewed_unknown_origin')
+                           and approval.get('approved_at')
+                           and approval.get('audio_sha256') == pick['audio_sha256'])
+        if (decision != 'candidate' and not resolved and not approved_origin) or record.get('duplicate_location'):
             raise ValueError(f"Unconfirmed selection: {record['source_id']} ({reason})")
         if record['availability']['status'] != 'readable':
             raise ValueError('Only locally readable audio is supported; downloads are separate')
@@ -56,6 +61,16 @@ def prepare(inventory_path, selection_path, output, ffmpeg, ffprobe):
         hash_value = digest(path)
         if hash_value != pick['audio_sha256'] or hash_value in hashes:
             raise ValueError('Changed or duplicate audio requires review')
+        if approved_origin and approval['basis'] != 'user_reviewed_unknown_origin':
+            evidence = json.loads(subprocess.check_output([
+                ffprobe, '-v', 'error', '-show_format', '-of', 'json', str(path)]))
+            tags = evidence.get('format', {}).get('tags', {})
+            if approval['basis'] == 'purchase_date':
+                verified = bool(tags.get('purchase_date'))
+            else:
+                verified = any('cddb' in key.lower() for key in tags)
+            if not verified:
+                raise ValueError('Approved origin tags are absent from the selected audio')
         hashes.add(hash_value)
         chosen.append((pick, record, path))
     output.mkdir(parents=True)
@@ -140,6 +155,7 @@ def prepare(inventory_path, selection_path, output, ffmpeg, ffprobe):
         write_json(item / 'source-evidence.json', {
             'source_id': sid, 'library_metadata': meta, 'embedded_metadata': probe,
             'ownership': record['source_evidence'], 'cloud_observation': pick.get('cloud_observation'),
+            'origin_approval': pick.get('origin_approval'),
             'original_artwork_sha256': original_image_hash, 'normalized_artwork_sha256': asset,
             'artwork_status': artwork_status, 'artwork_error': artwork_error})
         files = ['entry.json', 'organization.json', 'source-evidence.json', 'audio.' + suffix]

@@ -213,5 +213,42 @@ class InventoryTests(unittest.TestCase):
         self.assertFalse(bundle.exists())
 
 
+    @unittest.skipUnless(shutil.which('ffmpeg') and shutil.which('ffprobe'), 'FFmpeg required')
+    def test_origin_approval_requires_matching_audio_tags_and_cannot_override_subscription(self):
+        audio = self.source / 'purchase.m4a'
+        subprocess.run(['ffmpeg', '-v', 'error', '-f', 'lavfi', '-i',
+                        'sine=frequency=440:duration=0.1', '-metadata',
+                        'purchase_date=2020-01-01', '-movflags', 'use_metadata_tags', str(audio)], check=True)
+        checksum = hashlib.sha256(audio.read_bytes()).hexdigest()
+        for case, basis, flags, success in [
+                ('purchase', 'purchase_date', {}, True),
+                ('missing-cddb', 'cddb', {}, False),
+                ('subscription', 'purchase_date', {'Apple Music': True}, False),
+                ('reviewed-unknown', 'user_reviewed_unknown_origin', {}, True),
+                ('reviewed-subscription', 'user_reviewed_unknown_origin', {'Apple Music': True}, False),
+                ('reviewed-protected', 'user_reviewed_unknown_origin', {'Protected': True}, False)]:
+            with self.subTest(case=case):
+                self.write_library([self.track(1, Location=audio.as_uri(), Album='Album',
+                                               **flags)])
+                inventory = self.root / ('inventory-' + case)
+                self.assertEqual(self.scan(inventory).returncode, 0)
+                source_id = '0123456789ABCDEF:0000000000000001'
+                approval = {'basis': basis, 'approved_at': '2026-01-01', 'audio_sha256': checksum}
+                selection = self.root / ('selection-' + case + '.json')
+                selection.write_text(json.dumps({'format_version': 1,
+                    'library_persistent_id': '0123456789ABCDEF', 'tracks': [{
+                        'source_id': source_id, 'audio_sha256': checksum,
+                        'origin_approval': approval}]}), encoding='utf-8')
+                bundle = self.root / ('bundle-' + case)
+                result = self.run_cli('prepare', '--inventory', str(inventory / 'inventory.json'),
+                                      '--selection', str(selection), '--output', str(bundle))
+                self.assertEqual(result.returncode == 0, success, result.stderr)
+                if success:
+                    evidence = json.loads(next(bundle.glob('*/source-evidence.json')).read_text(encoding='utf-8'))
+                    self.assertEqual(evidence['origin_approval'], approval)
+                    self.assertIsNone(evidence['cloud_observation'])
+        self.assertEqual(hashlib.sha256(audio.read_bytes()).hexdigest(), checksum)
+
+
 if __name__ == '__main__':
     unittest.main()
