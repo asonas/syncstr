@@ -1,0 +1,14 @@
+[package]
+name = "toolkit-probe-slint"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+toolkit-probe-common = { path = "../common" }
+slint = { git = "https://github.com/slint-ui/slint", rev = "f5481bdaa5a9ccb68fe3b948d1ee0d3efe592669", features = ["raw-window-handle-06"] }
+raw-window-handle = "0.6"
+windows = { version = "=0.62.2", features = ["Win32_Foundation"] }
+
+[profile.release]
+strip = true

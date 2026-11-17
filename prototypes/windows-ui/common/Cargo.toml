@@ -1,0 +1,8 @@
+[package]
+name = "toolkit-probe-common"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+windows = { version = "=0.62.2", features = ["Foundation", "Media", "Media_Control", "Win32_Foundation", "Win32_System_WinRT"] }
