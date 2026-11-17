@@ -92,7 +92,7 @@ target/debug/syncstr-headless shared-audio-control --data data designate \
   --coordinator <coordinator-host-key> --nonce <64-hex-digits>
 ```
 
-- `init` creates the control journal. A host that has never run it accepts writes as before.
+- `init` creates the control journal. A host that has never run it accepts writes as before. `init` also raises the schema generation of `node.sqlite` from 5 to 6. Builds from before this guard refuse such a store, so after `init` the executable cannot be replaced by an earlier one; going back means restoring a backup taken before `init`. The [inventory comparison](activation-inventory.md) blocks with `divergence:schema` while some hosts ran `init` and others did not, so run it on every host before taking the inventories that an activation request names.
 - `freeze` survives restarts. A frozen host refuses member mutations, administrative commits, playlist updates, new object uploads from members or the administrative route, revocations and imported membership. Members receive `deferred` with reason `maintenance-freeze` and keep their request queued.
 - A frozen host still serves the catalog and audio, replicates records and audio with other hosts, and answers requests it accepted earlier with their original reply. Answering an earlier object upload publishes nothing and records nothing.
 - A host signs a prepared acknowledgment, stores a certificate, or installs one only while frozen. It prepares or installs the next epoch only after the installation acknowledgment of every host that epoch still authorizes is recorded for the installed one.
@@ -156,7 +156,16 @@ target/debug/syncstr-headless shared-audio-control --data data abort
 - An aborted proposal cannot be proposed again under the same session. Once every host holds the abort, designate a new session with another nonce on every host; the hosts can stay frozen.
 - The coordinator logs each step and what it waits for as `Activation session ...`, once per change. Completion is logged too; `release` stays a command on each host.
 
-The startup guard is not implemented.
+`shared-audio-serve` checks the store before it opens its endpoint or its
+listener, and refuses to start:
+
+- when a profile of the stored floor is not implemented by this build. The floor holds the profiles of installed certificates and of unresolved prepare locks.
+- when control storage exists and the schema generation is still 5. Run `init` again with this build.
+- when the schema generation is above 6. A later build wrote the store.
+
+`shared-audio-control` stays available in the first two cases. A store above
+generation 6 needs the build that wrote it, also for `status`. A halted journal
+does not stop the host from serving; it refuses writes.
 The [control protocol design](../docs/v5-activation-control-protocol.md) describes
 the rules above and the parts that follow.
 

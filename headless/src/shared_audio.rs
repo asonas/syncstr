@@ -567,6 +567,15 @@ struct Inner {
     _lock: crate::node_lock::NodeLock,
 }
 
+/// Schema generation of an activated shared store.
+pub(crate) const ACTIVATED: i64 = 5;
+/// Schema generation of a store that holds activation control state. Every
+/// build since the first v5 one opens a shared store only at exactly
+/// `ACTIVATED`, so this value keeps the builds that do not know the control
+/// journal, its freeze or its profile floor away from such a store, also when
+/// they are started directly.
+pub(crate) const GUARDED: i64 = 6;
+
 #[derive(Clone)]
 pub struct Store(std::sync::Arc<crate::shared_audio::Inner>);
 
@@ -603,7 +612,10 @@ impl crate::shared_audio::Store {
         let (mut connection, lock, root) = Self::locked(root)?;
         let transaction = connection.transaction()?;
         let version: i64 = transaction.query_row("PRAGMA user_version", [], |r| r.get(0))?;
-        anyhow::ensure!(version == 4 || version == 5, "unsupported migration source");
+        anyhow::ensure!(
+            matches!(version, 4 | ACTIVATED | GUARDED),
+            "unsupported migration source"
+        );
         let baseline = crate::shared_audio::legacy(&transaction)?;
         let payload = serde_json::to_vec(&baseline)?;
         let fingerprint = crate::shared_audio::hash(&payload);
@@ -637,12 +649,25 @@ impl crate::shared_audio::Store {
     pub fn open(root: &std::path::Path) -> anyhow::Result<Self> {
         let (connection, lock, root) = Self::locked(root)?;
         let version: i64 = connection.query_row("PRAGMA user_version", [], |r| r.get(0))?;
-        anyhow::ensure!(version == 5, "shared audio is not activated");
+        // A later generation fences this build the way `GUARDED` fences earlier ones.
+        anyhow::ensure!(
+            version <= GUARDED,
+            "unsupported shared audio schema {version}"
+        );
+        anyhow::ensure!(
+            matches!(version, ACTIVATED | GUARDED),
+            "shared audio is not activated"
+        );
         Ok(Self(std::sync::Arc::new(crate::shared_audio::Inner {
             connection: std::sync::Mutex::new(connection),
             root,
             _lock: lock,
         })))
+    }
+
+    /// The schema generation of the open store.
+    pub fn generation(&self) -> anyhow::Result<i64> {
+        self.run(|db, _| Ok(db.query_row("PRAGMA user_version", [], |r| r.get(0))?))
     }
 
     pub(crate) fn run<T>(

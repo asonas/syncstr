@@ -4703,7 +4703,7 @@ async fn member_registration_cross_host_lost_ack_converges() -> anyhow::Result<(
         .await?,
         MutationReply::Rejected { .. }
     ));
-    // Legacy readers still have their original schema and shadow receipts.
+    // Without activation control the schema generation and shadow receipts stay.
     let db = rusqlite::Connection::open(fixture.data().join("node.sqlite"))?;
     assert_eq!(
         db.query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0))?,
@@ -6854,5 +6854,66 @@ async fn synchronize_refuses_ambiguous_or_too_many_given_addresses() -> anyhow::
     assert_eq!(many.len(), 257);
     let error = run(many).await?.unwrap_err();
     assert!(error.to_string().contains("too many"), "{error}");
+    Ok(())
+}
+
+/// `shared-audio-serve` on a store, with paths it must not get to open.
+fn serve_once(data: &std::path::Path) -> anyhow::Result<std::process::Output> {
+    let unused = data.join("unused");
+    Ok(
+        std::process::Command::new(env!("CARGO_BIN_EXE_syncstr-headless"))
+            .args(["shared-audio-serve", "--data"])
+            .arg(data)
+            .arg("--identity")
+            .arg(&unused)
+            .arg("--peer-state")
+            .arg(&unused)
+            .output()?,
+    )
+}
+
+#[tokio::test]
+async fn serve_refuses_to_start_below_the_profile_floor() -> anyhow::Result<()> {
+    let fixture = crate::Fixture::new().await?;
+    let store = fixture.activate()?;
+    store.control_initialize()?;
+    drop(store);
+    // Activating again with the same baseline still opens the marked store.
+    drop(fixture.activate()?);
+    let db = rusqlite::Connection::open(fixture.data().join("node.sqlite"))?;
+    assert_eq!(
+        db.query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0))?,
+        6
+    );
+    // The command reports the generation the store has, not the one it migrates to.
+    let baseline = syncstr_headless::shared_audio::Store::inspect(&fixture.data())?;
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_syncstr-headless"))
+        .args(["shared-audio-activate", "--data"])
+        .arg(fixture.data())
+        .args(["--expected-baseline", &baseline])
+        .output()?;
+    let reported: serde_json::Value = serde_json::from_slice(&output.stdout)?;
+    assert_eq!(reported["schema"], 6, "{reported}");
+    // The legacy store never opened an activated one; the marker keeps that.
+    assert!(syncstr_headless::store::Store::open(&fixture.data()).is_err());
+
+    // The guard passes, and the host stops at the paths it was not given.
+    let output = crate::serve_once(&fixture.data())?;
+    let message = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert!(!output.status.success());
+    assert!(!message.contains("required profiles"), "{message}");
+
+    // A floor that this build does not implement.
+    db.execute(
+        "UPDATE activation_control_state SET floor=?",
+        [br#"["profile-from-a-later-build"]"#.as_slice()],
+    )?;
+    let output = crate::serve_once(&fixture.data())?;
+    let message = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert!(!output.status.success());
+    assert!(
+        message.contains("required profiles: profile-from-a-later-build"),
+        "{message}"
+    );
     Ok(())
 }

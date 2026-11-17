@@ -52,7 +52,9 @@ observations. Reading can update filesystem access times.
 The JSON contains public membership proof, schema, baseline, operator-declared
 installed build/profiles, semantic categories, file hashes and findings. Schema
 4 uses the same pure legacy-baseline calculation as migration inspection;
-schema 5 retains its stored baseline and checks its payload digest. It never
+schema 5 retains its stored baseline and checks its payload digest, and so does
+schema 6, which a host has after `shared-audio-control init`. Comparison reports
+hosts at 5 and 6 together as blocking `divergence:schema`. It never
 reactivates an existing v5 host. Missing required schema data or unsupported
 schemas fail with an error rather than inventing empty evidence.
 
