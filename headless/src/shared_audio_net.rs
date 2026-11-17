@@ -1162,17 +1162,68 @@ async fn drive(
     Ok(())
 }
 
+/// Read the address file that the host `expected` wrote with
+/// `shared-audio-serve --peer-address-out`.
+pub fn address(
+    path: &std::path::Path,
+    expected: iroh::EndpointId,
+) -> anyhow::Result<iroh::EndpointAddr> {
+    use std::io::Read as _;
+    let mut bytes = Vec::new();
+    std::fs::File::open(path)?
+        .take(16 * 1024 + 1)
+        .read_to_end(&mut bytes)?;
+    anyhow::ensure!(bytes.len() <= 16 * 1024, "address file too large");
+    let address: iroh::EndpointAddr = serde_json::from_slice(&bytes)?;
+    anyhow::ensure!(address.id == expected, "address does not match the named host");
+    // The v5 endpoint runs without a relay, so only IP addresses can be reached.
+    anyhow::ensure!(
+        !address.addrs.is_empty()
+            && address.addrs.len() <= 32
+            && address
+                .addrs
+                .iter()
+                .all(|address| matches!(address, iroh::TransportAddr::Ip(_))),
+        "address file must list 1 to 32 IP addresses"
+    );
+    Ok(address)
+}
+
+/// Discovery adds to an address the owner gave; it does not replace it.
+fn joined(
+    given: &std::collections::BTreeMap<iroh::EndpointId, iroh::EndpointAddr>,
+    mut found: iroh::EndpointAddr,
+) -> iroh::EndpointAddr {
+    if let Some(given) = given.get(&found.id) {
+        found.addrs.extend(given.addrs.iter().cloned());
+    }
+    found
+}
+
+/// `given` holds the addresses the owner named, one per host. They stay for
+/// the whole run, and a host found there passes the same checks as a
+/// discovered one.
 pub async fn synchronize(
     endpoint: iroh::Endpoint,
     store: crate::shared_audio::Store,
     signer: std::sync::Arc<crate::peer::Identity>,
     mut discovered: tokio::sync::mpsc::Receiver<iroh::EndpointAddr>,
+    given: Vec<iroh::EndpointAddr>,
 ) -> anyhow::Result<()> {
     anyhow::ensure!(
         endpoint.id() == signer.id(),
         "host signer identity mismatch"
     );
+    anyhow::ensure!(given.len() <= 256, "too many given peer addresses");
     let mut peers = std::collections::BTreeMap::new();
+    for address in given {
+        anyhow::ensure!(
+            peers.insert(address.id, address).is_none(),
+            "a host was given two addresses"
+        );
+    }
+    peers.remove(&endpoint.id());
+    let given = peers.clone();
     let mut refused = crate::activation_control_net::Refused::default();
     let mut waiting = std::collections::BTreeMap::new();
     let mut reported = None;
@@ -1182,6 +1233,7 @@ pub async fn synchronize(
         tokio::select! {
             found = discovered.recv() => {
                 let Some(address) = found else { anyhow::bail!("discovery stopped"); };
+                let address = crate::shared_audio_net::joined(&given, address);
                 if address.id != endpoint.id() && (peers.len() < 256 || peers.contains_key(&address.id)) { peers.insert(address.id, address); }
             }
             _ = interval.tick() => {
@@ -1212,5 +1264,24 @@ pub async fn synchronize(
                 crate::shared_audio_net::react(&store, &signer, &mut waiting).await?;
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn discovery_adds_to_a_given_address() {
+        let id = |byte| iroh::SecretKey::from_bytes(&[byte; 32]).public();
+        let at = |byte, port| {
+            iroh::EndpointAddr::new(id(byte))
+                .with_ip_addr(std::net::SocketAddr::from(([192, 0, 2, 10], port)))
+        };
+        let given = [(id(1), at(1, 7000))].into_iter().collect();
+        assert_eq!(
+            crate::shared_audio_net::joined(&given, at(1, 7001)),
+            at(1, 7000).with_ip_addr("192.0.2.10:7001".parse().unwrap())
+        );
+        // A host the owner did not name keeps what discovery reported.
+        assert_eq!(crate::shared_audio_net::joined(&given, at(2, 7001)), at(2, 7001));
     }
 }

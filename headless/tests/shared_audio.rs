@@ -118,6 +118,7 @@ async fn quic_sync_preserves_ids_pins_and_recovers_after_reconnection() -> anyho
         replica.clone(),
         fixture.other.clone(),
         receiver,
+        Vec::new(),
     ));
     discovered.send(host_endpoint.addr()).await?;
     tokio::time::timeout(std::time::Duration::from_secs(20), async {
@@ -198,6 +199,7 @@ async fn quic_sync_preserves_ids_pins_and_recovers_after_reconnection() -> anyho
         replica.clone(),
         fixture.other.clone(),
         receiver,
+        Vec::new(),
     ));
     discovered.send(host_endpoint.addr()).await?;
     tokio::time::timeout(std::time::Duration::from_secs(20), async {
@@ -6483,6 +6485,7 @@ async fn synchronize_reacts_to_what_it_fetched() -> anyhow::Result<()> {
         hosts.b.clone(),
         fixture.other.clone(),
         receiver,
+        Vec::new(),
     ));
     discovered.send(hosts.a_endpoint.addr()).await?;
     tokio::time::timeout(std::time::Duration::from_secs(20), async {
@@ -6655,6 +6658,7 @@ async fn synchronize_drives_the_coordinators_request() -> anyhow::Result<()> {
             store.clone(),
             signer.clone(),
             receiver,
+            Vec::new(),
         ));
         discoveries.push(discovered);
     }
@@ -6717,5 +6721,138 @@ async fn a_refused_certificate_is_reported_as_withheld() -> anyhow::Result<()> {
         let pulled = session.pull(b, &mut refused).await?;
         assert_eq!((pulled.stored, pulled.withheld), (0, true));
     }
+    Ok(())
+}
+
+/// The address file a host writes with `--peer-address-out`.
+fn address_file(
+    fixture: &crate::Fixture,
+    name: &str,
+    address: &iroh::EndpointAddr,
+) -> anyhow::Result<std::path::PathBuf> {
+    let path = fixture.root.path().join(name);
+    std::fs::write(&path, serde_json::to_vec_pretty(address)?)?;
+    Ok(path)
+}
+
+#[tokio::test]
+async fn synchronize_reaches_a_host_by_its_given_address() -> anyhow::Result<()> {
+    use syncstr_headless::shared_audio_net::address;
+    let fixture = crate::Fixture::new().await?;
+    let hosts = crate::Hosts::designated(&fixture, vec![]).await?;
+    hosts
+        .a
+        .control_start(&Default::default(), [1; 32], [2; 32])?;
+    let a_file = crate::address_file(&fixture, "a.json", &hosts.a_endpoint.addr())?;
+    let b_file = crate::address_file(&fixture, "b.json", &hosts.b_endpoint.addr())?;
+    let mut loops = tokio::task::JoinSet::new();
+    // Discovery reports nothing to a.
+    let (a_discovered, receiver) = tokio::sync::mpsc::channel(4);
+    loops.spawn(syncstr_headless::shared_audio_net::synchronize(
+        hosts.a_endpoint.clone(),
+        hosts.a.clone(),
+        fixture.host.clone(),
+        receiver,
+        vec![address(&b_file, fixture.other.id())?],
+    ));
+    // Discovery reports nothing to b either.
+    let (b_discovered, receiver) = tokio::sync::mpsc::channel(4);
+    loops.spawn(syncstr_headless::shared_audio_net::synchronize(
+        hosts.b_endpoint.clone(),
+        hosts.b.clone(),
+        fixture.other.clone(),
+        receiver,
+        vec![address(&a_file, fixture.host.id())?],
+    ));
+    tokio::time::timeout(std::time::Duration::from_secs(60), async {
+        loop {
+            let (a, b) = (hosts.a.control_inspect()?, hosts.b.control_inspect()?);
+            if a.epoch == 1 && a.all_installations_recorded && b.all_installations_recorded {
+                break anyhow::Ok(());
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+    })
+    .await??;
+    loops.abort_all();
+    drop((a_discovered, b_discovered));
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_given_address_is_read_only_for_the_named_host() -> anyhow::Result<()> {
+    use syncstr_headless::shared_audio_net::address;
+    let fixture = crate::Fixture::new().await?;
+    let (host, other) = (fixture.host.id(), fixture.other.id());
+    let direct = iroh::EndpointAddr::new(host).with_ip_addr("192.0.2.10:7000".parse()?);
+    let file = crate::address_file(&fixture, "host.json", &direct)?;
+    assert_eq!(address(&file, host)?, direct);
+    assert!(address(&file, other).is_err());
+
+    // The v5 endpoint has no relay, and an address without an IP reaches nothing.
+    let relayed = direct.clone().with_relay_url("https://relay.example.".parse()?);
+    let file = crate::address_file(&fixture, "relayed.json", &relayed)?;
+    assert!(address(&file, host).is_err());
+    let file = crate::address_file(&fixture, "empty.json", &iroh::EndpointAddr::new(host))?;
+    assert!(address(&file, host).is_err());
+
+    let mut many = iroh::EndpointAddr::new(host);
+    for port in 7000..7033 {
+        many = many.with_ip_addr(std::net::SocketAddr::from(([192, 0, 2, 10], port)));
+    }
+    let file = crate::address_file(&fixture, "many.json", &many)?;
+    assert!(address(&file, host).is_err());
+
+    // The same address, padded beyond the size limit.
+    let mut large = serde_json::to_vec(&direct)?;
+    large.resize(16 * 1024 + 1, b' ');
+    let file = fixture.root.path().join("large.json");
+    std::fs::write(&file, &large)?;
+    assert!(address(&file, host).is_err());
+    large.truncate(16 * 1024);
+    std::fs::write(&file, &large)?;
+    assert_eq!(address(&file, host)?, direct);
+    assert!(address(&fixture.root.path().join("missing.json"), host).is_err());
+    Ok(())
+}
+
+#[tokio::test]
+async fn synchronize_refuses_ambiguous_or_too_many_given_addresses() -> anyhow::Result<()> {
+    let fixture = crate::Fixture::new().await?;
+    let store = fixture.activate()?;
+    let (endpoint, _lock) = fixture
+        .host
+        .cluster_endpoint(&["127.0.0.1:0".parse()?])
+        .await?;
+    let at = |byte: u8, high: u8, port| {
+        let mut key = [byte; 32];
+        key[0] = high;
+        iroh::EndpointAddr::new(iroh::SecretKey::from_bytes(&key).public())
+            .with_ip_addr(std::net::SocketAddr::from(([192, 0, 2, 10], port)))
+    };
+    let run = |given| {
+        // The loop would run until its discovery channel closes.
+        let (_discovered, receiver) = tokio::sync::mpsc::channel(1);
+        tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            syncstr_headless::shared_audio_net::synchronize(
+                endpoint.clone(),
+                store.clone(),
+                fixture.host.clone(),
+                receiver,
+                given,
+            ),
+        )
+    };
+    // Two files for one host: which one the owner meant is unknown.
+    let error = run(vec![at(1, 0, 7000), at(1, 0, 7001)]).await?.unwrap_err();
+    assert!(error.to_string().contains("two addresses"), "{error}");
+    let many: Vec<_> = (0..=255u8)
+        .map(|byte| at(byte, 0, 7000))
+        .chain([at(0, 1, 7000)])
+        .collect();
+    assert_eq!(many.len(), 257);
+    let error = run(many).await?.unwrap_err();
+    assert!(error.to_string().contains("too many"), "{error}");
     Ok(())
 }

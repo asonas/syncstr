@@ -167,6 +167,8 @@ Implemented.
 - **A (chosen 2026-11-15):** the coordinator waits and names the host. Static addresses for `shared-audio-serve` also change data synchronization and are a separate change.
 - **B:** add static peer addresses with the coordinator.
 
+That separate change (ASO-155) gave `shared-audio-serve` the option `--peer-address ID=ADDRESS_FILE`. The owner names the address file another host wrote. The address is added to what discovery reports, and the host passes the same membership check, control exchange and data gate. The coordinator still waits for a host it has no address for. The v5 endpoint uses no relay, so a given address must be reachable directly.
+
 ### The request
 
 A request holds the profiles, the two manifest digests, the proposal signed for it and whether an abort was asked for. It belongs to the designated session: `start` is refused unless the host is frozen and its local grant is the designated coordinator's, and designating another session or releasing the host deletes it. A new request replaces one that signed nothing yet, or whose proposal is aborted or installed on this host.
@@ -211,5 +213,5 @@ A proposal is identified by its content. The same request under the same session
 - Recovery when a coordinator lost its journal and aborted while a certificate exists elsewhere. The hosts detect the contradiction and halt for review.
 - A host restored from a backup that still holds a freeze, a designation and a proposal. It reacts as after an ordinary restart, and learns of a later withdrawal, abort or release only when a peer returns it. Restoring is governed by D6 and D7 of the activation design and by the startup guard.
 - Review and recovery of a halted journal (ASO-154).
-- Static addresses for hosts that discovery does not report (C7, ASO-155).
+- A relay path between v5 hosts. A host that is reachable neither by discovery nor at a given address keeps the coordinator waiting (C7).
 - A live view of the coordinator's progress. It is logged; `status` reads the journal of a stopped host.
