@@ -1,5 +1,7 @@
 mod audio;
 pub mod configuration;
+#[cfg(test)]
+mod discovery_tests;
 mod worker;
 
 #[derive(Clone)]
