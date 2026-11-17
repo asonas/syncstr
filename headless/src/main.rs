@@ -485,6 +485,12 @@ async fn run(cli: crate::Cli) -> anyhow::Result<()> {
                 })
                 .collect::<anyhow::Result<Vec<_>>>()?;
             let store = syncstr_headless::shared_audio::Store::open(&data)?;
+            store.control_guard(
+                &syncstr_headless::activation_control::PROFILES
+                    .iter()
+                    .map(|profile| (*profile).to_owned())
+                    .collect(),
+            )?;
             let signer = std::sync::Arc::new(syncstr_headless::peer::Identity::open(&peer_state)?);
             let (endpoint, _endpoint_lock) = signer.cluster_endpoint(&peer_listen).await?;
             if let Some(path) = peer_address_out {

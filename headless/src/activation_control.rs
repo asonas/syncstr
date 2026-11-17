@@ -10,6 +10,7 @@ mod coordinate;
 mod encoding;
 mod exchange;
 mod freeze;
+mod guard;
 mod intake;
 mod journal;
 mod react;

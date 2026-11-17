@@ -321,7 +321,7 @@ pub fn host(input: HostInput) -> anyhow::Result<HostReport> {
         .context("host is busy or read-only locking unsupported")?;
     let connection = readonly(&input.data)?;
     let schema: i64 = connection.query_row("PRAGMA user_version", [], |r| r.get(0))?;
-    anyhow::ensure!(matches!(schema, 4 | 5), "unsupported inventory schema");
+    anyhow::ensure!(matches!(schema, 4..=6), "unsupported inventory schema");
     let (cluster, member): (String, String) = connection.query_row(
         "SELECT id, member_id FROM cluster_identity WHERE singleton=1",
         [],
@@ -346,7 +346,8 @@ pub fn host(input: HostInput) -> anyhow::Result<HostReport> {
     let mut categories = BTreeMap::new();
     let baseline;
     let mut objects = BTreeMap::new();
-    if schema == 5 {
+    // 6 is an activated store that also holds activation control state.
+    if schema >= 5 {
         baseline = connection.query_row(
             "SELECT fingerprint FROM shared_baseline WHERE singleton=1",
             [],
@@ -941,7 +942,7 @@ fn compare_reports(input: Collection, host_reports: Vec<HostReport>) -> anyhow::
         anyhow::ensure!(
             report.version == VERSION
                 && report.cluster == input.cluster
-                && matches!(report.schema, 4 | 5)
+                && matches!(report.schema, 4..=6)
                 && valid_digest(&report.baseline),
             "invalid host report bindings"
         );
@@ -1368,6 +1369,19 @@ mod tests {
     }
 
     #[test]
+    fn compare_accepts_a_store_with_activation_control() -> anyhow::Result<()> {
+        let root = tempfile::tempdir()?;
+        let mut report = host(fixture(root.path())?)?;
+        for (schema, accepted) in [(6, true), (7, false)] {
+            report.schema = schema;
+            let path = report_path(root.path(), &report, &format!("host-{schema}.json"))?;
+            let compared = compare(collection(vec![path], &report.host));
+            assert_eq!(compared.is_ok(), accepted, "generation {schema}");
+        }
+        Ok(())
+    }
+
+    #[test]
     fn compare_detects_divergence_and_keeps_local_state_separate() -> anyhow::Result<()> {
         let root = tempfile::tempdir()?;
         let report = host(fixture(root.path())?)?;
@@ -1613,6 +1627,41 @@ mod tests {
         for path in ["/absolute", "a/../b", "a\\b", "C:/file", "a/./b"] {
             assert!(relative(path).is_err());
         }
+        Ok(())
+    }
+
+    #[test]
+    fn inventory_reads_a_store_with_activation_control_as_v5() -> anyhow::Result<()> {
+        let root = tempfile::tempdir()?;
+        let input = fixture(root.path())?;
+        let expected = digest(&serde_json::to_vec(&crate::shared_audio::legacy(
+            &readonly(&input.data)?,
+        )?)?);
+        drop(crate::shared_audio::Store::activate(
+            &input.data,
+            &expected,
+        )?);
+        let activated = host(input.clone())?;
+        rusqlite::Connection::open(input.data.join("node.sqlite"))?.pragma_update(
+            None,
+            "user_version",
+            6,
+        )?;
+        let guarded = host(input)?;
+        assert_eq!((activated.schema, guarded.schema), (5, 6));
+        // Only the generation and what is derived from the database file differ.
+        let (activated, guarded) = (
+            serde_json::to_value(&activated)?,
+            serde_json::to_value(&guarded)?,
+        );
+        let differing: Vec<_> = activated
+            .as_object()
+            .unwrap()
+            .iter()
+            .filter(|(key, value)| guarded[key.as_str()] != **value)
+            .map(|(key, _)| key.as_str())
+            .collect();
+        assert_eq!(differing, ["files", "schema"]);
         Ok(())
     }
 

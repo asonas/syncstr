@@ -1,6 +1,6 @@
 # v5 activation control protocol
 
-Status: Proposed 2026-11-15 for ASO-145. The owner chose the options marked "Chosen" in C1 to C7. Parts 1 to 3 are implemented. This document authorizes no production operation.
+Status: Proposed 2026-11-15 for ASO-145. The owner chose the options marked "Chosen" in C1 to C9. Parts 1 to 4 are implemented. This document authorizes no production operation.
 
 This document refines slice S3 of the [activation and recovery design](v5-activation-and-recovery.md), decisions D1 to D3 and the failure table in D6. It covers how hosts exchange the control journal, how a coordinator collects readiness from every authorized host, and how an activation that cannot finish is resolved. The local journal and the maintenance freeze are described in the [headless guide](../headless/README.md#maintenance-freeze-on-a-v5-host).
 
@@ -195,6 +195,40 @@ The coordinator compares what each host showed when its exchange began. A host c
 
 A proposal is identified by its content. The same request under the same session produces the aborted proposal again, so a retry needs a new session. Once every host holds the abort nothing is pending, and the owner designates another nonce on every host. The hosts can stay frozen; after a membership change behind an installed certificate they cannot be released before the next epoch (C2).
 
+## Part 4: startup guard
+
+D3 of the activation design asks for a guard that a build unaware of the profile floor cannot ignore (ASO-146).
+
+### C8. Where does the marker live?
+
+- **A (chosen 2026-11-17):** the schema generation of the host database, `PRAGMA user_version`. Every build since the first v5 one opens a shared store only when it is exactly 5, and the legacy store opens nothing above 4. Generation 6 therefore stops all of them by their own check, also when the executable is started directly. A restored copy of the data carries the marker with it.
+- **B:** a marker file and a launcher that checks it, as the activation design first said. An old binary started directly ignores both, so the service configuration of every platform would have to prevent that.
+
+### C9. When is the marker raised?
+
+- **A (chosen 2026-11-17):** when control storage is initialized (`shared-audio-control init`), in the same transaction. A build before the control journal knows neither the freeze nor the designation, and would accept writes on a frozen store.
+- **B:** when the profile floor first becomes non-empty. An earlier build could still open a frozen store.
+
+### Rules
+
+- `init` raises the generation to 6. It never goes back: returning to an earlier build means restoring a backup taken before `init`, under D6 of the activation design.
+- A store at a generation above 6 is refused by this build, so a later marker can fence it the same way.
+- Before `shared-audio-serve` opens its endpoint or its listener it checks the store:
+  - Without control storage the generation must be 5, and the host serves as before.
+  - With control storage the generation must be 6. Control storage written by a build before the marker is refused until `init` runs again.
+  - Every profile of the stored floor must be implemented by this build. The floor holds the profiles of installed certificates and of unresolved prepare locks, so a host that prepared a proposal does not come back on a build without its profiles.
+- The guard reads the stored floor, not the whole journal. A halted journal does not stop a host from serving what it holds; it refuses writes itself. A state row that cannot be read stops the host, because its floor is unknown.
+- The other commands of `shared-audio-control` stay available below the floor, so the owner can inspect the host.
+- The inventory reads generation 6 as an activated store.
+
+### What the marker does not do
+
+- It does not stop a build that deliberately ignores the generation. A host acknowledgment remains an assertion by a trusted host; operators verify installed builds separately (D2 of the activation design).
+- It does not cover a data directory restored from before `init`. Such a restore is a downgrade under D6.
+- It does not compare the floor between hosts. Admission of a host at the active floor is ASO-147.
+
+Evidence that earlier builds refuse a marked store is in the [validation record](validation/v5-startup-guard.md).
+
 ## Done-when mapping for ASO-145
 
 | Criterion | Where |
@@ -208,7 +242,7 @@ A proposal is identified by its content. The same request under the same session
 
 ## Not covered
 
-- The startup guard (ASO-146) and journaled enrollment or promotion (ASO-147).
+- Journaled enrollment or promotion (ASO-147).
 - Excluding a host that cannot return. D3 of the activation design requires isolation in addition to revocation.
 - Recovery when a coordinator lost its journal and aborted while a certificate exists elsewhere. The hosts detect the contradiction and halt for review.
 - A host restored from a backup that still holds a freeze, a designation and a proposal. It reacts as after an ordinary restart, and learns of a later withdrawal, abort or release only when a peer returns it. Restoring is governed by D6 and D7 of the activation design and by the startup guard.

@@ -1177,7 +1177,7 @@ fn additive_tables_preserve_existing_store() -> anyhow::Result<()> {
     assert_eq!(serde_json::to_value(f.store().catalog()?)?, catalog);
     f.store().run(|db, _| {
         let version: i64 = db.query_row("PRAGMA user_version", [], |r| r.get(0))?;
-        assert_eq!(version, 5);
+        assert_eq!(version, 6);
         let mut statement = db.prepare("SELECT name, sql FROM sqlite_master WHERE type='table' AND name NOT LIKE 'activation_control_%' ORDER BY name")?;
         assert_eq!(statement.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?.collect::<Result<Vec<_>, _>>()?, existing_schema);
         let receipt: (String, String) = db.query_row("SELECT digest, record FROM shared_requests WHERE id='retained-request'", [], |r| Ok((r.get(0)?, r.get(1)?)))?;
@@ -2310,4 +2310,93 @@ fn coordinator_proposes_the_next_epoch_after_every_acknowledgment() -> anyhow::R
     let p = proposal(&next)?;
     assert_eq!((p.epoch, p.previous), (2, Some(vector("certificate").id()?)));
     Ok(())
+}
+
+fn schema(f: &Fixture) -> anyhow::Result<i64> {
+    f.store()
+        .run(|db, _| Ok(db.query_row("PRAGMA user_version", [], |r| r.get(0))?))
+}
+
+/// Reopen the store at another schema generation, as a file left by another build.
+fn reopen_at(f: &mut Fixture, version: i64) -> anyhow::Result<()> {
+    f.store.take();
+    Connection::open(f.directory.path().join("node.sqlite"))?.pragma_update(
+        None,
+        "user_version",
+        version,
+    )?;
+    f.reopen()
+}
+
+#[test]
+fn initialization_raises_the_schema_generation() -> anyhow::Result<()> {
+    let mut f = Fixture::uninitialized()?;
+    // Builds before this one open a shared store only at generation 5.
+    assert_eq!(schema(&f)?, 5);
+    f.store().control_guard(&BTreeSet::new())?;
+    f.store().control_initialize()?;
+    assert_eq!(schema(&f)?, 6);
+    f.reopen()?;
+    f.store().control_guard(&BTreeSet::new())?;
+    // Initializing again keeps it.
+    f.store().control_initialize()?;
+    assert_eq!(schema(&f)?, 6);
+    Ok(())
+}
+
+#[test]
+fn store_refuses_a_later_schema_generation() -> anyhow::Result<()> {
+    let mut f = Fixture::unfrozen()?;
+    let error = reopen_at(&mut f, 7).unwrap_err();
+    assert!(error.to_string().contains("unsupported"), "{error}");
+    let error = reopen_at(&mut f, 4).unwrap_err();
+    assert!(error.to_string().contains("not activated"), "{error}");
+    reopen_at(&mut f, 6)
+}
+
+#[test]
+fn guard_refuses_a_build_below_the_profile_floor() -> anyhow::Result<()> {
+    let mut f = Fixture::new()?;
+    f.record(&vector("proposal"))?;
+    f.store().control_guard(&BTreeSet::new())?;
+    // The prepare lock raises the floor before any certificate exists.
+    f.prepare()?;
+    f.reopen()?;
+    let error = f.store().control_guard(&BTreeSet::new()).unwrap_err();
+    assert!(
+        error.to_string().contains("registration-equivalence-v1"),
+        "{error}"
+    );
+    f.store().control_guard(&supported())?;
+    let mut wider = supported();
+    wider.insert("another-profile".into());
+    f.store().control_guard(&wider)?;
+    Ok(())
+}
+
+#[test]
+fn guard_requires_marker_and_control_storage_together() -> anyhow::Result<()> {
+    // Control storage written by a build that did not raise the generation.
+    let mut f = Fixture::unfrozen()?;
+    reopen_at(&mut f, 5)?;
+    let error = f.store().control_guard(&supported()).unwrap_err();
+    assert!(error.to_string().contains("startup marker"), "{error}");
+    f.store().control_initialize()?;
+    f.store().control_guard(&supported())?;
+
+    let mut f = Fixture::uninitialized()?;
+    reopen_at(&mut f, 6)?;
+    assert!(f.store().control_guard(&supported()).is_err());
+    Ok(())
+}
+
+#[test]
+fn guard_passes_a_halted_journal() -> anyhow::Result<()> {
+    let f = Fixture::new()?;
+    f.store().run(|db, _| {
+        db.execute("UPDATE activation_control_state SET halted=1", [])?;
+        Ok(())
+    })?;
+    assert_eq!(f.refusal()?, Some(Refusal::Review));
+    f.store().control_guard(&BTreeSet::new())
 }

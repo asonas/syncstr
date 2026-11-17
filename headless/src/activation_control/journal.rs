@@ -48,7 +48,7 @@ pub(super) struct State {
     pub(super) baseline: Digest,
     pub(super) epoch: u64,
     pub(super) head: Option<Digest>,
-    floor: BTreeSet<String>,
+    pub(super) floor: BTreeSet<String>,
     halted: bool,
 }
 
@@ -417,7 +417,9 @@ fn mark_conflict(db: &Connection, candidate: &Signed, reason: &str) -> anyhow::R
 }
 
 impl crate::shared_audio::Store {
-    /// Explicitly initialize local evidence storage. Ordinary Store::open is unchanged.
+    /// Explicitly initialize local evidence storage. From here on only builds
+    /// that know the control journal open this store: the schema generation
+    /// rises in the same transaction.
     pub fn control_initialize(&self) -> anyhow::Result<()> {
         self.run(|db, _| {
             let tx = db.transaction()?;
@@ -437,6 +439,7 @@ impl crate::shared_audio::Store {
             let s = state(&tx)?;
             ensure!(s.cluster == cluster && s.root == key(&proof.root)? && s.baseline == baseline, "control storage scope changed");
             inspect(&tx)?;
+            tx.pragma_update(None, "user_version", crate::shared_audio::GUARDED)?;
             tx.commit()?;
             Ok(())
         })
