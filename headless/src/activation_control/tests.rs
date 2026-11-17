@@ -2349,6 +2349,9 @@ fn store_refuses_a_later_schema_generation() -> anyhow::Result<()> {
     let mut f = Fixture::unfrozen()?;
     let error = reopen_at(&mut f, 7).unwrap_err();
     assert!(error.to_string().contains("unsupported"), "{error}");
+    let activated = crate::shared_audio::Store::activate(f.directory.path(), "");
+    let error = activated.err().expect("a later generation is no migration source");
+    assert!(error.to_string().contains("migration source"), "{error}");
     let error = reopen_at(&mut f, 4).unwrap_err();
     assert!(error.to_string().contains("not activated"), "{error}");
     reopen_at(&mut f, 6)
@@ -2387,6 +2390,20 @@ fn guard_requires_marker_and_control_storage_together() -> anyhow::Result<()> {
     let mut f = Fixture::uninitialized()?;
     reopen_at(&mut f, 6)?;
     assert!(f.store().control_guard(&supported()).is_err());
+    Ok(())
+}
+
+#[test]
+fn guard_refuses_control_state_it_cannot_read() -> anyhow::Result<()> {
+    for damage in [
+        "UPDATE activation_control_state SET floor=x'00'",
+        "DELETE FROM activation_control_state",
+    ] {
+        let f = Fixture::new()?;
+        f.store().control_guard(&supported())?;
+        f.store().run(|db, _| Ok(db.execute(damage, [])?))?;
+        assert!(f.store().control_guard(&supported()).is_err(), "{damage}");
+    }
     Ok(())
 }
 

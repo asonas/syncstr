@@ -665,6 +665,11 @@ impl crate::shared_audio::Store {
         })))
     }
 
+    /// The schema generation of the open store.
+    pub fn generation(&self) -> anyhow::Result<i64> {
+        self.run(|db, _| Ok(db.query_row("PRAGMA user_version", [], |r| r.get(0))?))
+    }
+
     pub(crate) fn run<T>(
         &self,
         action: impl FnOnce(&mut rusqlite::Connection, &std::path::Path) -> anyhow::Result<T>,

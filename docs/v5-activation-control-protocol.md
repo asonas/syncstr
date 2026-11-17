@@ -218,8 +218,10 @@ D3 of the activation design asks for a guard that a build unaware of the profile
   - With control storage the generation must be 6. Control storage written by a build before the marker is refused until `init` runs again.
   - Every profile of the stored floor must be implemented by this build. The floor holds the profiles of installed certificates and of unresolved prepare locks, so a host that prepared a proposal does not come back on a build without its profiles.
 - The guard reads the stored floor, not the whole journal. A halted journal does not stop a host from serving what it holds; it refuses writes itself. A state row that cannot be read stops the host, because its floor is unknown.
-- The other commands of `shared-audio-control` stay available below the floor, so the owner can inspect the host.
-- The inventory reads generation 6 as an activated store.
+- The other commands of `shared-audio-control` stay available below the floor, so the owner can inspect the host. They open the store like every command, so a generation above 6 refuses them too.
+- `shared-audio-activate` on a marked store keeps generation 6 and reports it. It still checks the baseline and changes nothing.
+- The inventory reads generation 6 as an activated store. The comparison keeps the generation as a category: reports of a host at 5 and a host at 6 block with `divergence:schema`. The owner runs `init` on every host before taking the inventories that a request names.
+- The guard is a rule of the `shared-audio-serve` command. The library functions that serve do not call it themselves.
 
 ### What the marker does not do
 

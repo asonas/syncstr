@@ -1382,6 +1382,24 @@ mod tests {
     }
 
     #[test]
+    fn compare_blocks_hosts_at_different_generations() -> anyhow::Result<()> {
+        let root = tempfile::tempdir()?;
+        let mut report = host(fixture(root.path())?)?;
+        report.schema = 5;
+        let first = report_path(root.path(), &report, "first.json")?;
+        let mut other = report.clone();
+        other.host = "other-host".into();
+        let same = report_path(root.path(), &other, "same.json")?;
+        let compared = compare(collection(vec![first.clone(), same], &report.host))?;
+        assert!(!compared.blocking.contains("divergence:schema"));
+        other.schema = 6;
+        let marked = report_path(root.path(), &other, "marked.json")?;
+        let compared = compare(collection(vec![first, marked], &report.host))?;
+        assert!(compared.blocking.contains("divergence:schema"));
+        Ok(())
+    }
+
+    #[test]
     fn compare_detects_divergence_and_keeps_local_state_separate() -> anyhow::Result<()> {
         let root = tempfile::tempdir()?;
         let report = host(fixture(root.path())?)?;

@@ -6885,6 +6885,15 @@ async fn serve_refuses_to_start_below_the_profile_floor() -> anyhow::Result<()> 
         db.query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0))?,
         6
     );
+    // The command reports the generation the store has, not the one it migrates to.
+    let baseline = syncstr_headless::shared_audio::Store::inspect(&fixture.data())?;
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_syncstr-headless"))
+        .args(["shared-audio-activate", "--data"])
+        .arg(fixture.data())
+        .args(["--expected-baseline", &baseline])
+        .output()?;
+    let reported: serde_json::Value = serde_json::from_slice(&output.stdout)?;
+    assert_eq!(reported["schema"], 6, "{reported}");
     // The legacy store never opened an activated one; the marker keeps that.
     assert!(syncstr_headless::store::Store::open(&fixture.data()).is_err());
 

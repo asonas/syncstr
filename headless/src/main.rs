@@ -372,7 +372,7 @@ async fn run(cli: crate::Cli) -> anyhow::Result<()> {
         } => {
             let store = syncstr_headless::shared_audio::Store::activate(&data, &expected_baseline)?;
             let catalog = store.catalog()?;
-            println!("{}", serde_json::json!({"schema": 5, "baseline": catalog.baseline, "tracks": catalog.tracks.len()}));
+            println!("{}", serde_json::json!({"schema": store.generation()?, "baseline": catalog.baseline, "tracks": catalog.tracks.len()}));
         }
         #[cfg(feature = "p2p")]
         crate::Command::SharedAudioControl {
