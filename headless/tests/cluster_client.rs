@@ -167,8 +167,7 @@ async fn playback_client_reports_album_conflicts_and_keeps_unrelated_music() -> 
 }
 
 #[tokio::test]
-async fn album_visibility_survives_restart_and_syncs_between_clients_without_audio()
--> anyhow::Result<()> {
+async fn album_visibility_survives_restart_and_syncs_between_clients_without_audio() -> anyhow::Result<()> {
     let root = tempfile::tempdir()?;
     let host_key = root.path().join("host-identity");
     let host_id = syncstr_headless::peer::Identity::initialize(&host_key)?;
@@ -213,43 +212,15 @@ async fn album_visibility_survives_restart_and_syncs_between_clients_without_aud
     assert_eq!(hidden.catalog.entries.len(), 1);
     drop(client);
     let client = syncstr_headless::cluster_client::PlaybackClient::open(&data, [9; 32])?;
-    assert!(
-        client
-            .catalog()
-            .await?
-            .catalog
-            .organization
-            .is_hidden(&album)
-    );
+    assert!(client.catalog().await?.catalog.organization.is_hidden(&album));
     client.refresh(address.clone()).await?;
-    let invite = store
-        .create_cluster_invitation(&host, false, now, 600)
-        .await?;
-    let other = syncstr_headless::cluster_client::PlaybackClient::open(
-        &root.path().join("other"),
-        [7; 32],
-    )?;
-    other
-        .enroll(&serde_json::to_string(&invite)?, socket)
-        .await?;
-    assert!(
-        other
-            .refresh(address.clone())
-            .await?
-            .catalog
-            .organization
-            .is_hidden(&album)
-    );
+    let invite = store.create_cluster_invitation(&host, false, now, 600).await?;
+    let other = syncstr_headless::cluster_client::PlaybackClient::open(&root.path().join("other"), [7; 32])?;
+    other.enroll(&serde_json::to_string(&invite)?, socket).await?;
+    assert!(other.refresh(address.clone()).await?.catalog.organization.is_hidden(&album));
     other.set_album_hidden(&album, false).await?;
     other.refresh(address.clone()).await?;
-    assert!(
-        !client
-            .refresh(address)
-            .await?
-            .catalog
-            .organization
-            .is_hidden(&album)
-    );
+    assert!(!client.refresh(address).await?.catalog.organization.is_hidden(&album));
     assert!(client.local_file(&entry.sha256).await?.is_none());
     assert_eq!(std::fs::read(&file)?, b"abc");
     endpoint.close().await;

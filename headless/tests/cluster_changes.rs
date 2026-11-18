@@ -6,41 +6,13 @@ async fn client_observed_parents_preserve_a_concurrent_deletion() -> anyhow::Res
     let nodes = crate::hosts(root.path()).await?;
     let (host, store) = &nodes[0];
     let (object, import) = crate::fixture();
-    let first = store
-        .publish_cluster_change(host, object.clone(), import.clone())
-        .await?;
-    let deleted = store
-        .publish_cluster_change(
-            host,
-            object.clone(),
-            syncstr_headless::cluster_changes::Action::Delete,
-        )
-        .await?;
-    let syncstr_headless::cluster_changes::Action::Import {
-        entry,
-        organization,
-    } = import
-    else {
-        unreachable!()
-    };
-    let edit = store
-        .publish_observed_cluster_change(
-            host,
-            object.clone(),
-            syncstr_headless::cluster_changes::Action::Edit {
-                entry,
-                organization,
-            },
-            vec![first.id],
-        )
-        .await?;
+    let first = store.publish_cluster_change(host, object.clone(), import.clone()).await?;
+    let deleted = store.publish_cluster_change(host, object.clone(), syncstr_headless::cluster_changes::Action::Delete).await?;
+    let syncstr_headless::cluster_changes::Action::Import { entry, organization } = import else { unreachable!() };
+    let edit = store.publish_observed_cluster_change(host, object.clone(), syncstr_headless::cluster_changes::Action::Edit { entry, organization }, vec![first.id]).await?;
     let mut expected = vec![deleted.id, edit.id];
     expected.sort();
-    let mut heads: Vec<_> = store.cluster_object_states().await?[0]
-        .heads
-        .iter()
-        .map(|record| record.id.clone())
-        .collect();
+    let mut heads: Vec<_> = store.cluster_object_states().await?[0].heads.iter().map(|record| record.id.clone()).collect();
     heads.sort();
     assert_eq!(heads, expected);
     assert!(store.cluster_selected_change(&object).await.is_err());

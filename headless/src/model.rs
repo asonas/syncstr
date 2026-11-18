@@ -55,10 +55,7 @@ pub struct Entry {
 
 impl crate::model::Entry {
     pub fn validate(&self) -> anyhow::Result<()> {
-        anyhow::ensure!(
-            self.track.added_at.is_none_or(|value| value >= 0),
-            "invalid addition time"
-        );
+        anyhow::ensure!(self.track.added_at.is_none_or(|value| value >= 0), "invalid addition time");
         anyhow::ensure!(
             self.sha256.len() == 64
                 && self

@@ -321,7 +321,10 @@ fn gate(local: &Journal, remote: &Journal) -> anyhow::Result<()> {
     anyhow::ensure!(!local.halted, "control journal is halted for review");
     match remote {
         Journal::Readable { summary } => {
-            anyhow::ensure!(!summary.halted, "peer control journal is halted for review");
+            anyhow::ensure!(
+                !summary.halted,
+                "peer control journal is halted for review"
+            );
             anyhow::ensure!(
                 summary.head == local.head,
                 "peer is at another activation epoch"

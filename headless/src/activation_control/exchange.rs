@@ -31,9 +31,7 @@ pub enum Journal {
     Absent,
     /// The journal exists and needs review before anything relies on it.
     Unreadable,
-    Readable {
-        summary: Box<Summary>,
-    },
+    Readable { summary: Box<Summary> },
 }
 
 fn proposed(db: &Connection, signed: &Signed) -> anyhow::Result<Signed> {

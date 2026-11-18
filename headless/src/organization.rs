@@ -86,237 +86,93 @@ pub struct Organization {
 
 impl crate::organization::Organization {
     pub fn is_hidden(&self, album: &str) -> bool {
-        let superseded: std::collections::BTreeSet<_> =
-            self.choices.iter().flat_map(|c| &c.parents).collect();
-        self.choices.iter().any(|c| {
-            c.kind == "visibility"
-                && self.canonical(&c.subject).ok() == self.canonical(album).ok()
-                && !superseded.contains(&c.id)
-                && c.value.as_deref() == Some("true")
-        })
+        let superseded: std::collections::BTreeSet<_> = self.choices.iter().flat_map(|c| &c.parents).collect();
+        self.choices.iter().any(|c| c.kind == "visibility"
+            && self.canonical(&c.subject).ok() == self.canonical(album).ok()
+            && !superseded.contains(&c.id) && c.value.as_deref() == Some("true"))
     }
 
     pub fn set_hidden(&mut self, album: &str, hidden: bool) -> anyhow::Result<()> {
         let target = self.canonical(album)?.to_owned();
         anyhow::ensure!(self.albums.iter().any(|a| a.id == target), "unknown album");
         let aliases = self.automatic_aliases.clone();
-        let members = self
-            .albums
-            .iter()
-            .filter(|a| self.canonical(&a.id).ok() == Some(target.as_str()))
-            .map(|a| a.id.clone())
-            .collect::<Vec<_>>();
+        let members = self.albums.iter().filter(|a| self.canonical(&a.id).ok() == Some(target.as_str()))
+            .map(|a| a.id.clone()).collect::<Vec<_>>();
         self.automatic_aliases = None;
-        let subjects = members
-            .iter()
-            .map(|id| self.canonical(id).map(str::to_owned))
-            .collect::<anyhow::Result<std::collections::BTreeSet<_>>>()?;
+        let subjects = members.iter().map(|id| self.canonical(id).map(str::to_owned)).collect::<anyhow::Result<std::collections::BTreeSet<_>>>()?;
         for subject in subjects {
-            let superseded: std::collections::BTreeSet<_> =
-                self.choices.iter().flat_map(|c| &c.parents).collect();
-            let parents = self
-                .choices
-                .iter()
-                .filter(|c| {
-                    c.kind == "visibility"
-                        && self.subject(c) == subject
-                        && !superseded.contains(&c.id)
-                })
-                .map(|c| c.id.clone())
-                .collect();
-            self.choices.push(crate::organization::Choice {
-                id: uuid::Uuid::new_v4().to_string(),
-                subject,
-                kind: "visibility".into(),
-                value: Some(hidden.to_string()),
-                parents,
-            });
+            let superseded: std::collections::BTreeSet<_> = self.choices.iter().flat_map(|c| &c.parents).collect();
+            let parents = self.choices.iter().filter(|c| c.kind == "visibility"
+                && self.subject(c) == subject && !superseded.contains(&c.id)).map(|c| c.id.clone()).collect();
+            self.choices.push(crate::organization::Choice { id: uuid::Uuid::new_v4().to_string(),
+                subject, kind: "visibility".into(), value: Some(hidden.to_string()), parents });
         }
         self.automatic_aliases = aliases;
         self.validate()
     }
 
     #[cfg(feature = "p2p")]
-    pub(crate) fn exclude_objects(
-        &mut self,
-        objects: &std::collections::BTreeSet<String>,
-    ) -> anyhow::Result<()> {
+    pub(crate) fn exclude_objects(&mut self, objects: &std::collections::BTreeSet<String>) -> anyhow::Result<()> {
         self.tracks.retain(|track| !objects.contains(&track.sha256));
-        let tracks: std::collections::BTreeSet<_> =
-            self.tracks.iter().map(|track| track.id.clone()).collect();
-        let albums: std::collections::BTreeSet<_> = self
-            .tracks
-            .iter()
-            .map(|track| track.imported_album_id.as_str())
-            .chain(
-                self.choices
-                    .iter()
-                    .filter(|choice| {
-                        choice.kind == "membership"
-                            && tracks.contains(&self.canonical_track(&choice.subject))
-                    })
-                    .filter_map(|choice| choice.value.as_deref()),
-            )
-            .map(|id| self.canonical(id).map(str::to_owned))
-            .collect::<anyhow::Result<_>>()?;
-        let choices: Vec<_> = self
-            .choices
-            .iter()
-            .filter(|choice| match choice.kind.as_str() {
-                "membership" => tracks.contains(&self.canonical_track(&choice.subject)),
-                "classification" | "artwork" | "visibility" => {
-                    albums.contains(&self.subject(choice))
-                }
-                "proposal" => choice
-                    .subject
-                    .split(',')
-                    .any(|album| self.canonical(album).is_ok_and(|id| albums.contains(id))),
-                _ => false,
-            })
-            .cloned()
-            .collect();
+        let tracks: std::collections::BTreeSet<_> = self.tracks.iter().map(|track| track.id.clone()).collect();
+        let albums: std::collections::BTreeSet<_> = self.tracks.iter().map(|track| track.imported_album_id.as_str())
+            .chain(self.choices.iter().filter(|choice| choice.kind == "membership" && tracks.contains(&self.canonical_track(&choice.subject))).filter_map(|choice| choice.value.as_deref()))
+            .map(|id| self.canonical(id).map(str::to_owned)).collect::<anyhow::Result<_>>()?;
+        let choices: Vec<_> = self.choices.iter().filter(|choice| match choice.kind.as_str() {
+            "membership" => tracks.contains(&self.canonical_track(&choice.subject)),
+            "classification" | "artwork" | "visibility" => albums.contains(&self.subject(choice)),
+            "proposal" => choice.subject.split(',').any(|album| self.canonical(album).is_ok_and(|id| albums.contains(id))),
+            _ => false,
+        }).cloned().collect();
         self.choices = choices;
-        self.preferred
-            .retain(|_, id| self.choices.iter().any(|choice| &choice.id == id));
+        self.preferred.retain(|_, id| self.choices.iter().any(|choice| &choice.id == id));
         if let Some(artwork) = &mut self.artwork {
-            artwork
-                .candidates
-                .retain(|candidate| tracks.contains(&candidate.track));
-            let assets: std::collections::BTreeSet<_> = artwork
-                .candidates
-                .iter()
-                .map(|candidate| candidate.asset.as_str())
-                .chain(
-                    self.choices
-                        .iter()
-                        .filter(|choice| choice.kind == "artwork")
-                        .filter_map(|choice| choice.value.as_deref()),
-                )
-                .collect();
+            artwork.candidates.retain(|candidate| tracks.contains(&candidate.track));
+            let assets: std::collections::BTreeSet<_> = artwork.candidates.iter().map(|candidate| candidate.asset.as_str())
+                .chain(self.choices.iter().filter(|choice| choice.kind == "artwork").filter_map(|choice| choice.value.as_deref())).collect();
             artwork.assets.retain(|id, _| assets.contains(id.as_str()));
-            artwork
-                .preferred
-                .retain(|_, asset| assets.contains(asset.as_str()));
+            artwork.preferred.retain(|_, asset| assets.contains(asset.as_str()));
         }
-        if let Some(aliases) = &mut self.track_aliases {
-            aliases.retain(|_, target| tracks.contains(target));
-        }
+        if let Some(aliases) = &mut self.track_aliases { aliases.retain(|_, target| tracks.contains(target)); }
         self.validate()
     }
     #[cfg(feature = "p2p")]
     pub fn for_object(&self, hash: &str) -> anyhow::Result<Self> {
         self.validate()?;
-        let tracks: Vec<_> = self
-            .tracks
-            .iter()
-            .filter(|track| track.sha256 == hash)
-            .cloned()
-            .collect();
-        let track_ids: std::collections::BTreeSet<_> =
-            tracks.iter().map(|track| track.id.as_str()).collect();
+        let tracks: Vec<_> = self.tracks.iter().filter(|track| track.sha256 == hash).cloned().collect();
+        let track_ids: std::collections::BTreeSet<_> = tracks.iter().map(|track| track.id.as_str()).collect();
         let mut albums = std::collections::BTreeSet::new();
-        for track in &tracks {
-            albums.insert(self.canonical(&track.imported_album_id)?.to_owned());
-        }
+        for track in &tracks { albums.insert(self.canonical(&track.imported_album_id)?.to_owned()); }
         for choice in &self.choices {
-            if choice.kind == "membership"
-                && track_ids.contains(choice.subject.as_str())
-                && let Some(album) = &choice.value
-            {
+            if choice.kind == "membership" && track_ids.contains(choice.subject.as_str()) && let Some(album) = &choice.value {
                 albums.insert(self.canonical(album)?.to_owned());
             }
         }
-        let choices: Vec<_> = self
-            .choices
-            .iter()
-            .filter(|choice| match choice.kind.as_str() {
-                "membership" => track_ids.contains(choice.subject.as_str()),
-                "classification" | "artwork" | "visibility" => {
-                    albums.contains(&self.subject(choice))
-                }
-                "proposal" => choice
-                    .subject
-                    .split(',')
-                    .any(|album| self.canonical(album).is_ok_and(|id| albums.contains(id))),
-                _ => false,
-            })
-            .cloned()
-            .collect();
-        let aliases = self
-            .aliases
-            .iter()
-            .filter(|(id, _)| self.canonical(id).is_ok_and(|id| albums.contains(id)))
-            .map(|(a, b)| (a.clone(), b.clone()))
-            .collect();
-        let automatic_aliases = self.automatic_aliases.as_ref().map(|aliases| {
-            aliases
-                .iter()
-                .filter(|(id, _)| self.canonical(id).is_ok_and(|id| albums.contains(id)))
-                .map(|(a, b)| (a.clone(), b.clone()))
-                .collect()
-        });
-        let track_aliases = self.track_aliases.as_ref().map(|aliases| {
-            aliases
-                .iter()
-                .filter(|(id, _)| track_ids.contains(self.canonical_track(id).as_str()))
-                .map(|(a, b)| (a.clone(), b.clone()))
-                .collect()
-        });
-        let preferred = self
-            .preferred
-            .iter()
-            .filter(|(_, id)| choices.iter().any(|choice| &choice.id == *id))
-            .map(|(a, b)| (a.clone(), b.clone()))
-            .collect();
+        let choices: Vec<_> = self.choices.iter().filter(|choice| match choice.kind.as_str() {
+            "membership" => track_ids.contains(choice.subject.as_str()),
+            "classification" | "artwork" | "visibility" => albums.contains(&self.subject(choice)),
+            "proposal" => choice.subject.split(',').any(|album| self.canonical(album).is_ok_and(|id| albums.contains(id))),
+            _ => false,
+        }).cloned().collect();
+        let aliases = self.aliases.iter().filter(|(id, _)| self.canonical(id).is_ok_and(|id| albums.contains(id))).map(|(a,b)| (a.clone(),b.clone())).collect();
+        let automatic_aliases = self.automatic_aliases.as_ref().map(|aliases| aliases.iter().filter(|(id, _)| self.canonical(id).is_ok_and(|id| albums.contains(id))).map(|(a,b)| (a.clone(),b.clone())).collect());
+        let track_aliases = self.track_aliases.as_ref().map(|aliases| aliases.iter().filter(|(id, _)| track_ids.contains(self.canonical_track(id).as_str())).map(|(a,b)| (a.clone(),b.clone())).collect());
+        let preferred = self.preferred.iter().filter(|(_, id)| choices.iter().any(|choice| &choice.id == *id)).map(|(a,b)| (a.clone(),b.clone())).collect();
         let artwork = self.artwork.as_ref().map(|artwork| {
-            let candidates: Vec<_> = artwork
-                .candidates
-                .iter()
-                .filter(|candidate| track_ids.contains(candidate.track.as_str()))
-                .cloned()
-                .collect();
-            let assets: std::collections::BTreeSet<_> = candidates
-                .iter()
-                .map(|candidate| &candidate.asset)
-                .chain(
-                    choices
-                        .iter()
-                        .filter(|choice| choice.kind == "artwork")
-                        .filter_map(|choice| choice.value.as_ref()),
-                )
-                .collect();
+            let candidates: Vec<_> = artwork.candidates.iter()
+                .filter(|candidate| track_ids.contains(candidate.track.as_str())).cloned().collect();
+            let assets: std::collections::BTreeSet<_> = candidates.iter().map(|candidate| &candidate.asset)
+                .chain(choices.iter().filter(|choice| choice.kind == "artwork").filter_map(|choice| choice.value.as_ref())).collect();
             crate::artwork::Artwork {
-                assets: artwork
-                    .assets
-                    .iter()
-                    .filter(|(id, _)| assets.contains(id))
-                    .map(|(id, bytes)| (id.clone(), bytes.clone()))
-                    .collect(),
-                preferred: artwork
-                    .preferred
-                    .iter()
-                    .filter(|(_, asset)| assets.contains(asset))
-                    .map(|(key, asset)| (key.clone(), asset.clone()))
-                    .collect(),
+                assets: artwork.assets.iter().filter(|(id, _)| assets.contains(id)).map(|(id, bytes)| (id.clone(), bytes.clone())).collect(),
+                preferred: artwork.preferred.iter().filter(|(_, asset)| assets.contains(asset)).map(|(key, asset)| (key.clone(), asset.clone())).collect(),
                 candidates,
             }
         });
         let subset = Self {
             artwork,
-            albums: self
-                .albums
-                .iter()
-                .filter(|album| {
-                    self.canonical(&album.id)
-                        .is_ok_and(|id| albums.contains(id))
-                })
-                .cloned()
-                .collect(),
-            tracks,
-            choices,
-            aliases,
-            automatic_aliases,
-            track_aliases,
+            albums: self.albums.iter().filter(|album| self.canonical(&album.id).is_ok_and(|id| albums.contains(id))).cloned().collect(),
+            tracks, choices, aliases, automatic_aliases, track_aliases,
             preferred,
         };
         subset.validate()?;

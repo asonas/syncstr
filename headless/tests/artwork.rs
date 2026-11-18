@@ -12,15 +12,10 @@ fn fixture() -> (syncstr_headless::organization::Organization, String, String) {
 #[test]
 fn object_subset_keeps_cover_choices_and_excludes_unrelated_images() {
     let (mut organization, blue, red) = crate::fixture();
-    organization
-        .choices
-        .push(syncstr_headless::organization::Choice {
-            id: "manual-cover".into(),
-            subject: "album-a".into(),
-            kind: "artwork".into(),
-            value: Some(red.clone()),
-            parents: vec![],
-        });
+    organization.choices.push(syncstr_headless::organization::Choice {
+        id: "manual-cover".into(), subject: "album-a".into(), kind: "artwork".into(),
+        value: Some(red.clone()), parents: vec![],
+    });
     let subset = organization.for_object(&"a".repeat(64)).unwrap();
     assert_eq!(subset.choices, organization.choices);
     let artwork = subset.artwork.unwrap();

@@ -66,128 +66,50 @@ fn selected(
 }
 
 impl crate::store::Store {
-    pub async fn recover_cluster_evidence(
-        &self,
-        identity: &crate::peer::Identity,
-        object: &str,
-    ) -> anyhow::Result<bool> {
+    pub async fn recover_cluster_evidence(&self, identity: &crate::peer::Identity, object: &str) -> anyhow::Result<bool> {
         let records = self.cluster_active_changes().await?;
-        if crate::cluster_changes::object_heads(&records, object).len() != 1 {
-            return Ok(false);
-        }
-        let Some(selected) = self.cluster_selected_change(object).await? else {
-            return Ok(false);
-        };
+        if crate::cluster_changes::object_heads(&records, object).len() != 1 { return Ok(false); }
+        let Some(selected) = self.cluster_selected_change(object).await? else { return Ok(false); };
         let (mut entry, mut organization) = match selected.action {
-            crate::cluster_changes::Action::Import {
-                entry,
-                organization,
-            }
-            | crate::cluster_changes::Action::Edit {
-                entry,
-                organization,
-            }
-            | crate::cluster_changes::Action::Restore {
-                entry,
-                organization,
-            } => (*entry, *organization),
+            crate::cluster_changes::Action::Import { entry, organization }
+            | crate::cluster_changes::Action::Edit { entry, organization }
+            | crate::cluster_changes::Action::Restore { entry, organization } => (*entry, *organization),
             _ => return Ok(false),
         };
-        if !organization
-            .tracks
-            .iter()
-            .any(|track| track.sha256 == object && track.imported.tag_values.is_none())
-        {
-            return Ok(false);
-        }
-        let Some(local) = self.cluster_local_file(object).await? else {
-            return Ok(false);
-        };
+        if !organization.tracks.iter().any(|track| track.sha256 == object && track.imported.tag_values.is_none()) { return Ok(false); }
+        let Some(local) = self.cluster_local_file(object).await? else { return Ok(false); };
         let path = self.path(&local);
-        let values = tokio::task::spawn_blocking(
-            move || -> anyhow::Result<std::collections::BTreeMap<String, Vec<String>>> {
-                use lofty::file::TaggedFileExt as _;
-                lofty::config::apply_global_options(
-                    lofty::config::GlobalOptions::new()
-                        .allocation_limit(crate::model::MAX_METADATA),
-                );
-                let tagged = lofty::probe::Probe::open(path)?
-                    .guess_file_type()?
-                    .options(
-                        lofty::config::ParseOptions::new()
-                            .read_properties(false)
-                            .read_cover_art(false)
-                            .parsing_mode(lofty::config::ParsingMode::BestAttempt),
-                    )
-                    .read()?;
-                let mut values = std::collections::BTreeMap::new();
-                for (name, key) in [
-                    ("TITLE", lofty::tag::ItemKey::TrackTitle),
-                    ("ALBUM", lofty::tag::ItemKey::AlbumTitle),
-                    ("ARTIST", lofty::tag::ItemKey::TrackArtist),
-                    ("ALBUMARTIST", lofty::tag::ItemKey::AlbumArtist),
-                    ("COMPILATION", lofty::tag::ItemKey::FlagCompilation),
-                    (
-                        "MUSICBRAINZ_ALBUMID",
-                        lofty::tag::ItemKey::MusicBrainzReleaseId,
-                    ),
-                    ("DISCNUMBER", lofty::tag::ItemKey::DiscNumber),
-                    ("TRACKNUMBER", lofty::tag::ItemKey::TrackNumber),
-                ] {
-                    let items: Vec<_> = tagged
-                        .tags()
-                        .iter()
-                        .flat_map(|tag| tag.get_strings(key))
-                        .map(str::to_owned)
-                        .collect();
-                    if !items.is_empty() {
-                        values.insert(name.to_owned(), items);
-                    }
-                }
-                anyhow::ensure!(
-                    serde_json::to_vec(&values)?.len() <= crate::model::MAX_METADATA,
-                    "embedded metadata too large"
-                );
-                Ok(values)
-            },
-        )
-        .await?;
-        let Ok(values) = values else {
-            return Ok(false);
-        };
-        if crate::cluster_replica::verify_file(self.path(&local), local)
-            .await
-            .is_err()
-        {
-            return Ok(false);
-        }
+        let values = tokio::task::spawn_blocking(move || -> anyhow::Result<std::collections::BTreeMap<String, Vec<String>>> {
+            use lofty::file::TaggedFileExt as _;
+            lofty::config::apply_global_options(lofty::config::GlobalOptions::new().allocation_limit(crate::model::MAX_METADATA));
+            let tagged = lofty::probe::Probe::open(path)?.guess_file_type()?.options(
+                lofty::config::ParseOptions::new().read_properties(false).read_cover_art(false)
+                    .parsing_mode(lofty::config::ParsingMode::BestAttempt)
+            ).read()?;
+            let mut values = std::collections::BTreeMap::new();
+            for (name, key) in [("TITLE", lofty::tag::ItemKey::TrackTitle), ("ALBUM", lofty::tag::ItemKey::AlbumTitle), ("ARTIST", lofty::tag::ItemKey::TrackArtist),
+                ("ALBUMARTIST", lofty::tag::ItemKey::AlbumArtist), ("COMPILATION", lofty::tag::ItemKey::FlagCompilation),
+                ("MUSICBRAINZ_ALBUMID", lofty::tag::ItemKey::MusicBrainzReleaseId), ("DISCNUMBER", lofty::tag::ItemKey::DiscNumber),
+                ("TRACKNUMBER", lofty::tag::ItemKey::TrackNumber)] {
+                let items: Vec<_> = tagged.tags().iter().flat_map(|tag| tag.get_strings(key)).map(str::to_owned).collect();
+                if !items.is_empty() { values.insert(name.to_owned(), items); }
+            }
+            anyhow::ensure!(serde_json::to_vec(&values)?.len() <= crate::model::MAX_METADATA, "embedded metadata too large");
+            Ok(values)
+        }).await?;
+        let Ok(values) = values else { return Ok(false); };
+        if crate::cluster_replica::verify_file(self.path(&local), local).await.is_err() { return Ok(false); }
         let first = |key: &str| values.get(key).and_then(|items| items.first()).cloned();
-        let releases: std::collections::BTreeSet<_> = values
-            .get("MUSICBRAINZ_ALBUMID")
-            .into_iter()
-            .flatten()
-            .filter_map(|value| uuid::Uuid::parse_str(value).ok())
-            .map(|id| id.to_string())
-            .collect();
+        let releases: std::collections::BTreeSet<_> = values.get("MUSICBRAINZ_ALBUMID").into_iter().flatten()
+            .filter_map(|value| uuid::Uuid::parse_str(value).ok()).map(|id| id.to_string()).collect();
         let imported = crate::organization::Imported {
-            title: first("ALBUM"),
-            artist: first("ARTIST"),
-            album_artist: first("ALBUMARTIST"),
+            title: first("ALBUM"), artist: first("ARTIST"), album_artist: first("ALBUMARTIST"),
             compilation_values: values.get("COMPILATION").cloned().unwrap_or_default(),
-            release: (releases.len() == 1
-                && values
-                    .get("MUSICBRAINZ_ALBUMID")
-                    .into_iter()
-                    .flatten()
-                    .all(|value| uuid::Uuid::parse_str(value).is_ok()))
-            .then(|| crate::organization::Release {
-                source: "musicbrainz-release".into(),
-                value: releases.first().unwrap().clone(),
-            }),
+            release: (releases.len() == 1 && values.get("MUSICBRAINZ_ALBUMID").into_iter().flatten().all(|value| uuid::Uuid::parse_str(value).is_ok()))
+                .then(|| crate::organization::Release { source: "musicbrainz-release".into(), value: releases.first().unwrap().clone() }),
             tag_values: Some(values.clone()),
         };
-        let number =
-            |key: &str| first(key).and_then(|value| value.split('/').next()?.parse::<i64>().ok());
+        let number = |key: &str| first(key).and_then(|value| value.split('/').next()?.parse::<i64>().ok());
         entry.imported_album = Some(imported.clone());
         entry.track.disc_number = entry.track.disc_number.or_else(|| number("DISCNUMBER"));
         entry.track.track = entry.track.track.or_else(|| number("TRACKNUMBER"));
@@ -199,95 +121,52 @@ impl crate::store::Store {
             }
         }
         for album in &mut organization.albums {
-            let titles: Vec<_> = organization
-                .tracks
-                .iter()
-                .filter(|track| track.imported_album_id == album.id)
-                .filter_map(|track| track.imported.title.as_deref())
-                .collect();
-            if let Some(title) = titles
-                .first()
-                .filter(|title| !title.is_empty() && titles.iter().all(|other| other == *title))
-            {
+            let titles: Vec<_> = organization.tracks.iter().filter(|track| track.imported_album_id == album.id)
+                .filter_map(|track| track.imported.title.as_deref()).collect();
+            if let Some(title) = titles.first().filter(|title| !title.is_empty() && titles.iter().all(|other| other == *title)) {
                 album.title = (*title).to_owned();
             }
         }
         organization.repair_membership()?;
-        self.publish_observed_cluster_change(
-            identity,
-            object.to_owned(),
-            crate::cluster_changes::Action::Edit {
-                entry: Box::new(entry),
-                organization: Box::new(organization),
-            },
-            vec![selected.id],
-        )
-        .await?;
+        self.publish_observed_cluster_change(identity, object.to_owned(), crate::cluster_changes::Action::Edit {
+            entry: Box::new(entry), organization: Box::new(organization),
+        }, vec![selected.id]).await?;
         self.project_cluster_metadata(object.to_owned()).await?;
         Ok(true)
     }
 
-    pub async fn reconcile_cluster_organization(
-        &self,
-        identity: &crate::peer::Identity,
-    ) -> anyhow::Result<()> {
+    pub async fn reconcile_cluster_organization(&self, identity: &crate::peer::Identity) -> anyhow::Result<()> {
         let records = self.cluster_active_changes().await?;
-        let objects: std::collections::BTreeSet<_> =
-            records.iter().map(|record| record.object.clone()).collect();
+        let objects: std::collections::BTreeSet<_> = records.iter().map(|record| record.object.clone()).collect();
         for object in objects {
             let heads = crate::cluster_changes::object_heads(&records, &object);
-            if heads.len() < 2 || heads.len() > 64 {
-                continue;
-            }
+            if heads.len() < 2 || heads.len() > 64 { continue; }
             let mut entry = None;
             let mut baseline = None;
             let mut merged = crate::organization::Organization::default();
             let mut compatible = true;
             for head in &heads {
                 let (incoming_entry, organization) = match &head.action {
-                    crate::cluster_changes::Action::Import {
-                        entry,
-                        organization,
-                    }
-                    | crate::cluster_changes::Action::Edit {
-                        entry,
-                        organization,
-                    } => (entry, organization),
-                    _ => {
-                        compatible = false;
-                        break;
-                    }
+                    crate::cluster_changes::Action::Import { entry, organization }
+                    | crate::cluster_changes::Action::Edit { entry, organization } => (entry, organization),
+                    _ => { compatible = false; break; }
                 };
                 let mut metadata = organization.as_ref().clone();
                 metadata.artwork = None;
                 metadata.choices.clear();
                 metadata.preferred.clear();
                 if entry.as_ref().is_some_and(|entry| entry != incoming_entry)
-                    || baseline
-                        .as_ref()
-                        .is_some_and(|baseline| baseline != &metadata)
-                {
-                    compatible = false;
-                    break;
+                    || baseline.as_ref().is_some_and(|baseline| baseline != &metadata) {
+                    compatible = false; break;
                 }
                 entry = Some(incoming_entry.clone());
                 baseline = Some(metadata);
-                if merged.merge(organization).is_err() {
-                    compatible = false;
-                    break;
-                }
+                if merged.merge(organization).is_err() { compatible = false; break; }
             }
             if compatible {
-                self.publish_observed_cluster_change(
-                    identity,
-                    object,
-                    crate::cluster_changes::Action::Edit {
-                        entry: entry.expect("nonempty heads"),
-                        organization: Box::new(merged),
-                    },
-                    heads.into_iter().map(|head| head.id).collect(),
-                )
-                .await?;
+                self.publish_observed_cluster_change(identity, object, crate::cluster_changes::Action::Edit {
+                    entry: entry.expect("nonempty heads"), organization: Box::new(merged),
+                }, heads.into_iter().map(|head| head.id).collect()).await?;
             }
         }
         Ok(())
@@ -304,42 +183,22 @@ impl crate::store::Store {
         let organization = organization.for_object(&entry.sha256)?;
         let records = self.cluster_active_changes().await?;
         entry.track.added_at = original_addition_time(&records, &entry.sha256);
-        anyhow::ensure!(
-            !parents.is_empty() && parents.len() <= 64,
-            "metadata needs observed object history"
-        );
+        anyhow::ensure!(!parents.is_empty() && parents.len() <= 64, "metadata needs observed object history");
         for id in &parents {
-            let mut parent = records
-                .iter()
-                .find(|record| record.id == *id && record.object == entry.sha256)
+            let mut parent = records.iter().find(|record| record.id == *id && record.object == entry.sha256)
                 .ok_or_else(|| anyhow::anyhow!("unknown metadata parent"))?;
             for _ in 0..records.len() {
-                let crate::cluster_changes::Action::Resolve { selected } = &parent.action else {
-                    break;
-                };
-                parent = records
-                    .iter()
-                    .find(|record| record.id == *selected)
+                let crate::cluster_changes::Action::Resolve { selected } = &parent.action else { break; };
+                parent = records.iter().find(|record| record.id == *selected)
                     .ok_or_else(|| anyhow::anyhow!("unknown metadata history"))?;
             }
-            anyhow::ensure!(
-                !matches!(parent.action, crate::cluster_changes::Action::Delete),
-                "metadata cannot restore a deletion"
-            );
+            anyhow::ensure!(!matches!(parent.action, crate::cluster_changes::Action::Delete), "metadata cannot restore a deletion");
         }
-        let action = crate::cluster_changes::Action::Edit {
-            entry: Box::new(entry.clone()),
-            organization: Box::new(organization),
-        };
-        if let Some(existing) = records.iter().find(|record| {
-            record.object == entry.sha256 && record.parents == parents && record.action == action
-        }) {
+        let action = crate::cluster_changes::Action::Edit { entry: Box::new(entry.clone()), organization: Box::new(organization) };
+        if let Some(existing) = records.iter().find(|record| record.object == entry.sha256 && record.parents == parents && record.action == action) {
             return Ok(existing.id.clone());
         }
-        Ok(self
-            .publish_observed_cluster_change(identity, entry.sha256, action, parents)
-            .await?
-            .id)
+        Ok(self.publish_observed_cluster_change(identity, entry.sha256, action, parents).await?.id)
     }
 
     pub async fn resolve_cluster_album_title(
@@ -349,10 +208,7 @@ impl crate::store::Store {
         title: &str,
         observed: std::collections::BTreeMap<String, String>,
     ) -> anyhow::Result<()> {
-        anyhow::ensure!(
-            !observed.is_empty() && observed.len() <= 1024,
-            "invalid album resolution size"
-        );
+        anyhow::ensure!(!observed.is_empty() && observed.len() <= 1024, "invalid album resolution size");
         let records = self.cluster_active_changes().await?;
         let mut organization = self.catalog().await?.organization;
         let mut selected = Vec::new();
@@ -373,23 +229,11 @@ impl crate::store::Store {
         let mut updates = Vec::new();
         for change in selected {
             let heads = crate::cluster_changes::object_heads(&records, &change.object);
-            anyhow::ensure!(
-                heads.len() == 1 && observed.get(&change.object) == Some(&heads[0].id),
-                "album changed; refresh before resolving"
-            );
+            anyhow::ensure!(heads.len() == 1 && observed.get(&change.object) == Some(&heads[0].id), "album changed; refresh before resolving");
             let (entry, mut metadata) = match change.action {
-                crate::cluster_changes::Action::Import {
-                    entry,
-                    organization,
-                }
-                | crate::cluster_changes::Action::Edit {
-                    entry,
-                    organization,
-                }
-                | crate::cluster_changes::Action::Restore {
-                    entry,
-                    organization,
-                } => (entry, organization),
+                crate::cluster_changes::Action::Import { entry, organization }
+                | crate::cluster_changes::Action::Edit { entry, organization }
+                | crate::cluster_changes::Action::Restore { entry, organization } => (entry, organization),
                 _ => unreachable!(),
             };
             let mut affected = false;
@@ -403,21 +247,9 @@ impl crate::store::Store {
             anyhow::ensure!(affected, "object does not belong to this album");
             updates.push((change.object, entry, metadata, vec![heads[0].id.clone()]));
         }
-        anyhow::ensure!(
-            alternatives.contains(title),
-            "select an observed album title"
-        );
+        anyhow::ensure!(alternatives.contains(title), "select an observed album title");
         for (object, entry, organization, parents) in updates {
-            self.publish_observed_cluster_change(
-                identity,
-                object,
-                crate::cluster_changes::Action::Edit {
-                    entry,
-                    organization,
-                },
-                parents,
-            )
-            .await?;
+            self.publish_observed_cluster_change(identity, object, crate::cluster_changes::Action::Edit { entry, organization }, parents).await?;
         }
         Ok(())
     }
@@ -442,74 +274,38 @@ impl crate::store::Store {
         anyhow::ensure!(parents.len() <= 64, "too many import parents");
         let mut observed_deletion = false;
         for id in &parents {
-            let mut parent = records
-                .iter()
-                .find(|record| record.id == *id && record.object == entry.sha256)
+            let mut parent = records.iter().find(|record| record.id == *id && record.object == entry.sha256)
                 .ok_or_else(|| anyhow::anyhow!("unknown import history"))?;
             for _ in 0..records.len() {
-                let crate::cluster_changes::Action::Resolve { selected } = &parent.action else {
-                    break;
-                };
-                parent = records
-                    .iter()
-                    .find(|record| record.id == *selected && record.object == entry.sha256)
+                let crate::cluster_changes::Action::Resolve { selected } = &parent.action else { break; };
+                parent = records.iter().find(|record| record.id == *selected && record.object == entry.sha256)
                     .ok_or_else(|| anyhow::anyhow!("unknown resolution history"))?;
             }
             observed_deletion |= matches!(parent.action, crate::cluster_changes::Action::Delete);
         }
-        anyhow::ensure!(
-            restore == observed_deletion,
-            "restoration requires explicit confirmation and observed deletion"
-        );
+        anyhow::ensure!(restore == observed_deletion, "restoration requires explicit confirmation and observed deletion");
         if let Ok(Some(selected)) = self.cluster_selected_change(&entry.sha256).await
-            && let crate::cluster_changes::Action::Import {
-                entry: previous,
-                organization: metadata,
-            }
-            | crate::cluster_changes::Action::Edit {
-                entry: previous,
-                organization: metadata,
-            }
-            | crate::cluster_changes::Action::Restore {
-                entry: previous,
-                organization: metadata,
-            } = &selected.action
-        {
-            let mut comparable = entry.clone();
-            comparable.track.id = previous.track.id.clone();
-            comparable.track.cover_art = previous.track.cover_art.clone();
-            if comparable == **previous && organization == **metadata {
-                return self
-                    .commit_cluster_replica(identity, selected, temporary, None)
-                    .await;
-            }
+            && let crate::cluster_changes::Action::Import { entry: previous, organization: metadata }
+                | crate::cluster_changes::Action::Edit { entry: previous, organization: metadata }
+                | crate::cluster_changes::Action::Restore { entry: previous, organization: metadata } = &selected.action {
+                let mut comparable = entry.clone();
+                comparable.track.id = previous.track.id.clone();
+                comparable.track.cover_art = previous.track.cover_art.clone();
+                if comparable == **previous && organization == **metadata {
+                    return self.commit_cluster_replica(identity, selected, temporary, None).await;
+                }
         }
         let known = records.iter().any(|record| record.object == entry.sha256);
-        anyhow::ensure!(
-            !known || !parents.is_empty(),
-            "refresh before editing an existing object"
-        );
+        anyhow::ensure!(!known || !parents.is_empty(), "refresh before editing an existing object");
         let action = if restore {
-            crate::cluster_changes::Action::Restore {
-                entry: Box::new(entry.clone()),
-                organization: Box::new(organization),
-            }
+            crate::cluster_changes::Action::Restore { entry: Box::new(entry.clone()), organization: Box::new(organization) }
         } else if known {
-            crate::cluster_changes::Action::Edit {
-                entry: Box::new(entry.clone()),
-                organization: Box::new(organization),
-            }
+            crate::cluster_changes::Action::Edit { entry: Box::new(entry.clone()), organization: Box::new(organization) }
         } else {
-            crate::cluster_changes::Action::Import {
-                entry: Box::new(entry.clone()),
-                organization: Box::new(organization),
-            }
+            crate::cluster_changes::Action::Import { entry: Box::new(entry.clone()), organization: Box::new(organization) }
         };
-        let change = self
-            .publish_observed_cluster_change(identity, entry.sha256.clone(), action, parents)
-            .await?;
-        self.commit_cluster_replica(identity, change, temporary, None)
-            .await
+        let change = self.publish_observed_cluster_change(identity, entry.sha256.clone(), action, parents).await?;
+        self.commit_cluster_replica(identity, change, temporary, None).await
     }
 
     pub async fn import_cluster_file(
@@ -535,9 +331,7 @@ impl crate::store::Store {
             .any(|state| state.object == entry.sha256);
         entry.track.added_at = if known {
             original_addition_time(&self.cluster_changes().await?, &entry.sha256)
-        } else {
-            Some(crate::model::addition_time())
-        };
+        } else { Some(crate::model::addition_time()) };
         let mut organization = organization;
         if known && !restore {
             let selected = self
@@ -924,25 +718,19 @@ pub struct AlbumMetadataConflict(pub String);
 
 impl std::fmt::Display for crate::cluster_replica::AlbumMetadataConflict {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            formatter,
-            "album metadata conflict requires user resolution: {}",
-            self.0
-        )
+        write!(formatter, "album metadata conflict requires user resolution: {}", self.0)
     }
 }
 
 impl std::error::Error for crate::cluster_replica::AlbumMetadataConflict {}
 
 fn original_addition_time(records: &[crate::cluster_changes::Change], object: &str) -> Option<i64> {
-    records
-        .iter()
-        .filter(|record| record.object == object)
-        .filter_map(|record| match &record.action {
+    records.iter().filter(|record| record.object == object).filter_map(|record| {
+        match &record.action {
             crate::cluster_changes::Action::Import { entry, .. }
             | crate::cluster_changes::Action::Restore { entry, .. }
             | crate::cluster_changes::Action::Edit { entry, .. } => entry.track.added_at,
             _ => None,
-        })
-        .min()
+        }
+    }).min()
 }

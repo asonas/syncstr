@@ -522,10 +522,7 @@ impl crate::peer::Identity {
         fs2::FileExt::try_lock_exclusive(&lock)?;
         let builder = iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
             .secret_key(self.key.clone())
-            .alpns(vec![
-                crate::peer::ALPN.to_vec(),
-                crate::playlist_sync::ALPN.to_vec(),
-            ])
+            .alpns(vec![crate::peer::ALPN.to_vec(), crate::playlist_sync::ALPN.to_vec()])
             .relay_mode(if mode != crate::peer::Mode::Direct {
                 iroh::RelayMode::Default
             } else {
@@ -679,10 +676,7 @@ impl crate::peer::Address {
             self.version == 1 && self.addresses.len() <= 32,
             "invalid peer address"
         );
-        anyhow::ensure!(
-            self.directory.is_none(),
-            "cluster addresses must be explicit"
-        );
+        anyhow::ensure!(self.directory.is_none(), "cluster addresses must be explicit");
         anyhow::ensure!(
             !self.addresses.is_empty() || self.relay.is_some(),
             "no reachable address"

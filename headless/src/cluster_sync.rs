@@ -32,11 +32,7 @@ pub async fn run_lan(
         .into_iter()
         .map(|address| (address.id, address))
         .collect();
-    let relay = store
-        .cluster_relay()
-        .await?
-        .map(|url| crate::cluster_remote::validate_url(&url))
-        .transpose()?;
+    let relay = store.cluster_relay().await?.map(|url| crate::cluster_remote::validate_url(&url)).transpose()?;
     let mut interval = tokio::time::interval(std::time::Duration::from_secs(3));
     interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     loop {
@@ -102,37 +98,13 @@ pub(crate) struct Hello {
 #[derive(serde::Serialize, serde::Deserialize)]
 #[serde(tag = "operation", rename_all = "kebab-case", deny_unknown_fields)]
 enum Request {
-    Evidence {
-        object: String,
-    },
-    Changes {
-        after: i64,
-    },
-    Audio {
-        object: String,
-    },
-    Upload {
-        entry: Box<crate::model::Entry>,
-        organization: Box<crate::organization::Organization>,
-        parents: Vec<String>,
-        #[serde(default)]
-        restore: bool,
-    },
-    Resolve {
-        object: String,
-        selected: String,
-        parents: Vec<String>,
-    },
-    AlbumTitle {
-        album: String,
-        title: String,
-        heads: std::collections::BTreeMap<String, String>,
-    },
-    Metadata {
-        entry: Box<crate::model::Entry>,
-        organization: Box<crate::organization::Organization>,
-        parents: Vec<String>,
-    },
+    Evidence { object: String },
+    Changes { after: i64 },
+    Audio { object: String },
+    Upload { entry: Box<crate::model::Entry>, organization: Box<crate::organization::Organization>, parents: Vec<String>, #[serde(default)] restore: bool },
+    Resolve { object: String, selected: String, parents: Vec<String> },
+    AlbumTitle { album: String, title: String, heads: std::collections::BTreeMap<String, String> },
+    Metadata { entry: Box<crate::model::Entry>, organization: Box<crate::organization::Organization>, parents: Vec<String> },
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -147,26 +119,13 @@ enum Response {
         entry: Box<crate::model::Entry>,
     },
     Unavailable,
-    Stored {
-        object: String,
-    },
-    NeedsAttention {
-        object: String,
-    },
-    Resolved {
-        object: String,
-    },
-    Edited {
-        object: String,
-        revision: String,
-    },
+    Stored { object: String },
+    NeedsAttention { object: String },
+    Resolved { object: String },
+    Edited { object: String, revision: String },
 }
 
-pub(crate) async fn authorized(
-    store: &crate::store::Store,
-    member: &str,
-    host: bool,
-) -> anyhow::Result<()> {
+pub(crate) async fn authorized(store: &crate::store::Store, member: &str, host: bool) -> anyhow::Result<()> {
     let proof = store.cluster_membership_proof().await?;
     anyhow::ensure!(
         proof.grants.iter().any(|grant| grant.member == member
@@ -177,9 +136,7 @@ pub(crate) async fn authorized(
     Ok(())
 }
 
-pub(crate) async fn hello(
-    store: &crate::store::Store,
-) -> anyhow::Result<crate::cluster_sync::Hello> {
+pub(crate) async fn hello(store: &crate::store::Store) -> anyhow::Result<crate::cluster_sync::Hello> {
     Ok(crate::cluster_sync::Hello {
         capabilities: crate::cluster::Capabilities {
             version: 1,
@@ -216,16 +173,9 @@ pub(crate) async fn serve_connection(
         let request: crate::cluster_sync::Request =
             crate::cluster_net::receive(&mut input, crate::cluster_changes::MAX_CHANGE).await?;
         match request {
-            crate::cluster_sync::Request::Metadata {
-                entry,
-                organization,
-                parents,
-            } => {
+            crate::cluster_sync::Request::Metadata { entry, organization, parents } => {
                 let object = entry.sha256.clone();
-                let response = match store
-                    .receive_cluster_metadata(identity, *entry, *organization, parents)
-                    .await
-                {
+                let response = match store.receive_cluster_metadata(identity, *entry, *organization, parents).await {
                     Ok(revision) => crate::cluster_sync::Response::Edited { object, revision },
                     Err(error) => {
                         eprintln!("Cluster metadata requires attention: {error:#}");
@@ -234,78 +184,32 @@ pub(crate) async fn serve_connection(
                 };
                 crate::cluster_net::send(&mut output, &response).await?;
             }
-            crate::cluster_sync::Request::AlbumTitle {
-                album,
-                title,
-                heads,
-            } => {
-                store
-                    .resolve_cluster_album_title(identity, &album, &title, heads)
-                    .await?;
-                crate::cluster_net::send(
-                    &mut output,
-                    &crate::cluster_sync::Response::Resolved { object: album },
-                )
-                .await?;
+            crate::cluster_sync::Request::AlbumTitle { album, title, heads } => {
+                store.resolve_cluster_album_title(identity, &album, &title, heads).await?;
+                crate::cluster_net::send(&mut output, &crate::cluster_sync::Response::Resolved { object: album }).await?;
             }
-            crate::cluster_sync::Request::Resolve {
-                object,
-                selected,
-                parents,
-            } => {
+            crate::cluster_sync::Request::Resolve { object, selected, parents } => {
                 let records = store.cluster_active_changes().await?;
                 let heads = crate::cluster_changes::object_heads(&records, &object);
-                let mut choice = records
-                    .iter()
-                    .find(|record| record.id == selected && record.object == object)
+                let mut choice = records.iter().find(|record| record.id == selected && record.object == object)
                     .ok_or_else(|| anyhow::anyhow!("unknown conflict choice"))?;
                 for _ in 0..records.len() {
-                    let crate::cluster_changes::Action::Resolve { selected } = &choice.action
-                    else {
-                        break;
-                    };
-                    choice = records
-                        .iter()
-                        .find(|record| record.id == *selected && record.object == object)
+                    let crate::cluster_changes::Action::Resolve { selected } = &choice.action else { break; };
+                    choice = records.iter().find(|record| record.id == *selected && record.object == object)
                         .ok_or_else(|| anyhow::anyhow!("unknown conflict history"))?;
                 }
                 if matches!(choice.action, crate::cluster_changes::Action::Delete) {
                     crate::cluster_sync::authorized(store, &peer, true).await?;
                 }
-                let repeated = heads.len() == 1
-                    && matches!(&heads[0].action, crate::cluster_changes::Action::Resolve { selected: previous } if previous == &selected)
-                    && heads[0].parents == parents;
+                let repeated = heads.len() == 1 && matches!(&heads[0].action, crate::cluster_changes::Action::Resolve { selected: previous } if previous == &selected) && heads[0].parents == parents;
                 if !repeated {
-                    let current: std::collections::BTreeSet<_> =
-                        heads.iter().map(|record| &record.id).collect();
-                    anyhow::ensure!(
-                        parents.len() <= 64
-                            && current.len() == parents.len()
-                            && current == parents.iter().collect()
-                            && parents.contains(&selected),
-                        "conflict changed; refresh before resolving"
-                    );
-                    store
-                        .publish_observed_cluster_change(
-                            identity,
-                            object.clone(),
-                            crate::cluster_changes::Action::Resolve { selected },
-                            parents,
-                        )
-                        .await?;
+                    let current: std::collections::BTreeSet<_> = heads.iter().map(|record| &record.id).collect();
+                    anyhow::ensure!(parents.len() <= 64 && current.len() == parents.len() && current == parents.iter().collect() && parents.contains(&selected), "conflict changed; refresh before resolving");
+                    store.publish_observed_cluster_change(identity, object.clone(), crate::cluster_changes::Action::Resolve { selected }, parents).await?;
                 }
-                crate::cluster_net::send(
-                    &mut output,
-                    &crate::cluster_sync::Response::Resolved { object },
-                )
-                .await?;
+                crate::cluster_net::send(&mut output, &crate::cluster_sync::Response::Resolved { object }).await?;
             }
-            crate::cluster_sync::Request::Upload {
-                entry,
-                organization,
-                parents,
-                restore,
-            } => {
+            crate::cluster_sync::Request::Upload { entry, organization, parents, restore } => {
                 use tokio::io::AsyncWriteExt as _;
                 entry.validate()?;
                 organization.validate()?;
@@ -321,25 +225,12 @@ pub(crate) async fn serve_connection(
                     file.write_all(&buffer[..size]).await?;
                     remaining -= size as u64;
                 }
-                anyhow::ensure!(
-                    input.read_to_end(1).await?.is_empty(),
-                    "trailing upload bytes"
-                );
+                anyhow::ensure!(input.read_to_end(1).await?.is_empty(), "trailing upload bytes");
                 file.sync_all().await?;
                 drop(file);
                 crate::cluster_sync::authorized(store, &peer, false).await?;
                 let object = entry.sha256.clone();
-                let response = match store
-                    .receive_cluster_import(
-                        identity,
-                        *entry,
-                        *organization,
-                        parents,
-                        restore,
-                        temporary,
-                    )
-                    .await
-                {
+                let response = match store.receive_cluster_import(identity, *entry, *organization, parents, restore, temporary).await {
                     Ok(()) => crate::cluster_sync::Response::Stored { object },
                     Err(error) => {
                         eprintln!("Cluster import requires attention: {error}");
@@ -350,15 +241,9 @@ pub(crate) async fn serve_connection(
             }
             crate::cluster_sync::Request::Evidence { object } => {
                 let recovered = store.recover_cluster_evidence(identity, &object).await?;
-                crate::cluster_net::send(
-                    &mut output,
-                    &if recovered {
-                        crate::cluster_sync::Response::Stored { object }
-                    } else {
-                        crate::cluster_sync::Response::Unavailable
-                    },
-                )
-                .await?;
+                crate::cluster_net::send(&mut output, &if recovered {
+                    crate::cluster_sync::Response::Stored { object }
+                } else { crate::cluster_sync::Response::Unavailable }).await?;
             }
             crate::cluster_sync::Request::Changes { after } => {
                 store.reconcile_cluster_organization(identity).await?;
@@ -366,19 +251,10 @@ pub(crate) async fn serve_connection(
                 let (next, change) = page.map_or((after, None), |(next, change)| {
                     (next, Some(Box::new(change)))
                 });
-                let signing_payload = change
-                    .as_ref()
-                    .map(|change| {
-                        Ok::<_, anyhow::Error>(String::from_utf8(change.signing_bytes()?)?)
-                    })
-                    .transpose()?;
+                let signing_payload = change.as_ref().map(|change| Ok::<_, anyhow::Error>(String::from_utf8(change.signing_bytes()?)?)).transpose()?;
                 crate::cluster_net::send(
                     &mut output,
-                    &crate::cluster_sync::Response::Page {
-                        next,
-                        change,
-                        signing_payload,
-                    },
+                    &crate::cluster_sync::Response::Page { next, change, signing_payload },
                 )
                 .await?;
             }
@@ -432,15 +308,11 @@ impl Drop for crate::cluster_sync::Session {
 
 impl crate::cluster_sync::Session {
     pub fn selected_path(&self) -> Option<&'static str> {
-        self.connection
-            .paths()
-            .iter()
-            .find(|path| path.is_selected())
-            .and_then(|path| match path.remote_addr() {
-                iroh::TransportAddr::Ip(_) => Some("direct"),
-                iroh::TransportAddr::Relay(_) => Some("relay"),
-                _ => None,
-            })
+        self.connection.paths().iter().find(|path| path.is_selected()).and_then(|path| match path.remote_addr() {
+            iroh::TransportAddr::Ip(_) => Some("direct"),
+            iroh::TransportAddr::Relay(_) => Some("relay"),
+            _ => None,
+        })
     }
     pub async fn connect(
         endpoint: &iroh::Endpoint,
@@ -502,22 +374,13 @@ impl crate::cluster_sync::Session {
             output.finish()?;
             let response: crate::cluster_sync::Response =
                 crate::cluster_net::receive(&mut input, crate::cluster_net::MAX_FRAME).await?;
-            let crate::cluster_sync::Response::Page {
-                next,
-                change,
-                signing_payload,
-            } = response
-            else {
+            let crate::cluster_sync::Response::Page { next, change, signing_payload } = response else {
                 anyhow::bail!("invalid change response");
             };
             let Some(change) = change else {
                 break;
             };
-            anyhow::ensure!(
-                signing_payload.as_deref().map(str::as_bytes)
-                    == Some(change.signing_bytes()?.as_slice()),
-                "signed payload mismatch"
-            );
+            anyhow::ensure!(signing_payload.as_deref().map(str::as_bytes) == Some(change.signing_bytes()?.as_slice()), "signed payload mismatch");
             anyhow::ensure!(next > after, "non-progressing history cursor");
             store
                 .receive_cluster_changes(peer.clone(), vec![*change])
@@ -533,59 +396,24 @@ impl crate::cluster_sync::Session {
         Ok(())
     }
 
-    pub async fn edit_metadata(
-        &self,
-        entry: crate::model::Entry,
-        organization: crate::organization::Organization,
-        parents: Vec<String>,
-    ) -> anyhow::Result<()> {
+    pub async fn edit_metadata(&self, entry: crate::model::Entry, organization: crate::organization::Organization, parents: Vec<String>) -> anyhow::Result<()> {
         let object = entry.sha256.clone();
         let (mut output, mut input) = self.connection.open_bi().await?;
-        crate::cluster_net::send(
-            &mut output,
-            &crate::cluster_sync::Request::Metadata {
-                entry: Box::new(entry),
-                organization: Box::new(organization),
-                parents,
-            },
-        )
-        .await?;
+        crate::cluster_net::send(&mut output, &crate::cluster_sync::Request::Metadata { entry: Box::new(entry), organization: Box::new(organization), parents }).await?;
         output.finish()?;
-        match crate::cluster_net::receive::<crate::cluster_sync::Response>(
-            &mut input,
-            crate::model::MAX_METADATA,
-        )
-        .await?
-        {
-            crate::cluster_sync::Response::Edited {
-                object: received, ..
-            } if received == object => Ok(()),
-            crate::cluster_sync::Response::NeedsAttention { .. } => {
-                anyhow::bail!("album changes require conflict resolution")
-            }
+        match crate::cluster_net::receive::<crate::cluster_sync::Response>(&mut input, crate::model::MAX_METADATA).await? {
+            crate::cluster_sync::Response::Edited { object: received, .. } if received == object => Ok(()),
+            crate::cluster_sync::Response::NeedsAttention { .. } => anyhow::bail!("album changes require conflict resolution"),
             _ => anyhow::bail!("invalid metadata response"),
         }
     }
 
     pub async fn recover_evidence(&self, object: String) -> anyhow::Result<bool> {
         let (mut output, mut input) = self.connection.open_bi().await?;
-        crate::cluster_net::send(
-            &mut output,
-            &crate::cluster_sync::Request::Evidence {
-                object: object.clone(),
-            },
-        )
-        .await?;
+        crate::cluster_net::send(&mut output, &crate::cluster_sync::Request::Evidence { object: object.clone() }).await?;
         output.finish()?;
-        match crate::cluster_net::receive::<crate::cluster_sync::Response>(
-            &mut input,
-            crate::model::MAX_METADATA,
-        )
-        .await?
-        {
-            crate::cluster_sync::Response::Stored { object: received } if received == object => {
-                Ok(true)
-            }
+        match crate::cluster_net::receive::<crate::cluster_sync::Response>(&mut input, crate::model::MAX_METADATA).await? {
+            crate::cluster_sync::Response::Stored { object: received } if received == object => Ok(true),
             crate::cluster_sync::Response::Unavailable => Ok(false),
             _ => anyhow::bail!("invalid evidence response"),
         }
