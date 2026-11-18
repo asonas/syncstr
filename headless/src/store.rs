@@ -41,6 +41,7 @@ impl crate::store::Store {
             CREATE TABLE IF NOT EXISTS tracks (id TEXT PRIMARY KEY, sha256 TEXT NOT NULL, suffix TEXT NOT NULL, payload BLOB NOT NULL, UNIQUE(sha256, suffix));
             CREATE TABLE IF NOT EXISTS organization (singleton INTEGER PRIMARY KEY CHECK(singleton = 1), payload BLOB NOT NULL);
             CREATE TABLE IF NOT EXISTS artwork_assets (id TEXT PRIMARY KEY, payload BLOB NOT NULL);
+            CREATE TABLE IF NOT EXISTS peer_artwork_tracks (track_id TEXT PRIMARY KEY);
             PRAGMA user_version = 4;")?;
         let stored: Option<Vec<u8>> = {
             use rusqlite::OptionalExtension as _;
@@ -58,17 +59,23 @@ impl crate::store::Store {
             crate::organization::Organization::default()
         };
         {
-            let mut statement = transaction.prepare("SELECT payload FROM tracks ORDER BY id")?;
-            for row in statement.query_map([], |row| row.get::<_, Vec<u8>>(0))? {
-                let entry: crate::model::Entry = serde_json::from_slice(&row?)?;
+            let mut statement = transaction.prepare(
+                "SELECT tracks.payload, peer.track_id IS NOT NULL FROM tracks
+                 LEFT JOIN peer_artwork_tracks peer ON peer.track_id = tracks.id ORDER BY tracks.id",
+            )?;
+            for row in statement.query_map([], |row| {
+                Ok((row.get::<_, Vec<u8>>(0)?, row.get::<_, bool>(1)?))
+            })? {
+                let (payload, from_peer) = row?;
+                let entry: crate::model::Entry = serde_json::from_slice(&payload)?;
                 if stored.is_none() {
                     organization.import(&entry);
                 }
-                if version < 4 || stored.is_none() {
-                    import_entry_artwork(&mut organization, &entry);
-                } else {
-                    // Reopening a projected track must preserve the signed display candidates.
+                if from_peer {
+                    // A peer's empty candidate list is authoritative even after a restart.
                     register_entry_artwork(&mut organization, &entry);
+                } else {
+                    import_entry_artwork(&mut organization, &entry);
                 }
             }
         }
@@ -216,7 +223,7 @@ impl crate::store::Store {
             let transaction = connection.transaction()?;
             let mut organization = crate::store::read_organization(&transaction)?;
             let original_id = entry.track.id.clone();
-            if let Some(incoming) = incoming { organization.merge(&incoming)?; }
+            if let Some(incoming) = &incoming { organization.merge(incoming)?; }
             let previous: Option<Vec<u8>> = transaction
                 .query_row(
                     "SELECT payload FROM tracks WHERE sha256 = ? AND suffix = ?",
@@ -241,7 +248,13 @@ impl crate::store::Store {
             if original_id != entry.track.id && organization.tracks.iter().any(|t| t.id == original_id) {
                 organization.track_aliases.get_or_insert_with(Default::default).insert(entry.track.id.clone(), original_id);
             } else { organization.import(&entry); }
-            import_entry_artwork(&mut organization, &entry);
+            if incoming.is_some() {
+                mark_peer_artwork(&transaction, &entry.track.id)?;
+                register_entry_artwork(&mut organization, &entry);
+            } else {
+                transaction.execute("DELETE FROM peer_artwork_tracks WHERE track_id = ?", [&entry.track.id])?;
+                import_entry_artwork(&mut organization, &entry);
+            }
             crate::store::write_organization(&transaction, &organization)?;
             let destination = root
                 .join("objects")
@@ -323,6 +336,17 @@ pub(crate) fn read_organization(
     }
     organization.validate()?;
     Ok(organization)
+}
+
+pub(crate) fn mark_peer_artwork(
+    connection: &rusqlite::Connection,
+    track: &str,
+) -> rusqlite::Result<()> {
+    connection.execute(
+        "INSERT OR IGNORE INTO peer_artwork_tracks VALUES (?)",
+        [track],
+    )?;
+    Ok(())
 }
 
 pub(crate) fn register_entry_artwork(

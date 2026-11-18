@@ -424,6 +424,7 @@ impl crate::store::Store {
             let Some(selected) = crate::cluster_replica::selected(&records, &object)? else {
                 let mut organization = crate::store::read_organization(&transaction)?;
                 organization.exclude_objects(&std::collections::BTreeSet::from([object.clone()]))?;
+                transaction.execute("DELETE FROM peer_artwork_tracks WHERE track_id IN (SELECT id FROM tracks WHERE sha256 = ?)", [&object])?;
                 transaction.execute("DELETE FROM tracks WHERE sha256 = ?", [&object])?;
                 transaction.execute("DELETE FROM cluster_receipts WHERE object = ?", [&object])?;
                 crate::store::write_organization(&transaction, &organization)?;
@@ -526,6 +527,7 @@ impl crate::store::Store {
                     "INSERT INTO tracks (id, sha256, suffix, payload) VALUES (?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET payload = excluded.payload",
                     rusqlite::params![previous.track.id, projected.sha256, projected.track.suffix, serde_json::to_vec(&projected)?],
                 )?;
+                crate::store::mark_peer_artwork(&transaction, &previous.track.id)?;
             }
             crate::store::register_entry_artwork(&mut organization, &entry);
             crate::store::write_organization(&transaction, &organization)?;

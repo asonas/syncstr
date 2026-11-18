@@ -410,6 +410,17 @@ async fn audio(
     headers: HeaderMap,
 ) -> Result<Response, ApiError> {
     let Path(id) = path.map_err(|_| ApiError::Missing)?;
+    audio_with_verifier(host, id, headers, stored_audio).await
+}
+
+async fn audio_with_verifier(
+    host: Host,
+    id: String,
+    headers: HeaderMap,
+    verify: impl FnOnce(PathBuf, &str, Vec<(String, i64)>) -> Result<(std::fs::File, u64), ApiError>
+    + Send
+    + 'static,
+) -> Result<Response, ApiError> {
     let permit = host.slot()?;
     if id.len() != 64
         || !id
@@ -429,9 +440,12 @@ async fn audio(
         })
         .await?;
     let lookup = id.clone();
-    let (file, size) = tokio::task::spawn_blocking(move || stored_audio(objects, &lookup, indexed))
-        .await
-        .map_err(anyhow::Error::from)??;
+    // A disconnected request cannot cancel a running file hash.
+    let (file, size, permit) = tokio::task::spawn_blocking(move || {
+        verify(objects, &lookup, indexed).map(|(file, size)| (file, size, permit))
+    })
+    .await
+    .map_err(anyhow::Error::from)??;
     Ok(crate::api::file_response(
         tokio::fs::File::from_std(file),
         size,
@@ -540,6 +554,44 @@ async fn artwork(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn cancelled_audio_request_holds_slot_until_verification_finishes() -> anyhow::Result<()>
+    {
+        use sha2::Digest as _;
+        let root = tempfile::tempdir()?;
+        let host = Host::new(
+            crate::store::Store::open(root.path())?,
+            "https://music.example.test".into(),
+        );
+        let id = hex::encode(sha2::Sha256::digest(b"abc"));
+        std::fs::write(
+            root.path().join("objects").join(format!("{id}.wav")),
+            b"abc",
+        )?;
+        let _occupied = host.files.clone().try_acquire_many_owned(15)?;
+        let (started, verifying) = tokio::sync::oneshot::channel();
+        let (resume, paused) = std::sync::mpsc::channel();
+        let request = tokio::spawn(audio_with_verifier(
+            host.clone(),
+            id,
+            HeaderMap::new(),
+            move |objects, id, indexed| {
+                assert!(indexed.is_empty());
+                started.send(()).unwrap();
+                paused.recv().unwrap();
+                stored_audio(objects, id, indexed)
+            },
+        ));
+        verifying.await?;
+        request.abort();
+        assert!(matches!(request.await, Err(e) if e.is_cancelled()));
+        assert!(matches!(host.slot(), Err(ApiError::Busy)));
+        resume.send(())?;
+        let _released =
+            tokio::time::timeout(std::time::Duration::from_secs(5), host.files.acquire()).await??;
+        Ok(())
+    }
 
     #[tokio::test]
     async fn concurrent_refreshes_and_conditional_reads_reuse_the_snapshot() -> anyhow::Result<()> {

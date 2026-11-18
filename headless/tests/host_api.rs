@@ -501,6 +501,85 @@ async fn special_audio_objects_fail_with_a_storage_error_with_and_without_an_ind
 }
 
 #[tokio::test]
+async fn reopening_a_schema_four_upload_backfills_its_legacy_candidate_once() -> anyhow::Result<()>
+{
+    let root = tempfile::tempdir()?;
+    let store = Store::open(root.path())?;
+    let image = include_bytes!("../fixtures/blue.jpg");
+    let mut entry: Entry = serde_json::from_slice(include_bytes!("../fixtures/local-entry.json"))?;
+    entry.artwork = Some(image.to_vec());
+    let mut file = store.stage().await?;
+    file.write_all(b"abc")?;
+    let saved = store.commit(entry, file, false).await?;
+    drop(store);
+    {
+        // Main committed the upload and its membership before importing artwork on the next open.
+        let db = rusqlite::Connection::open(root.path().join("node.sqlite"))?;
+        assert_eq!(
+            db.query_row("PRAGMA user_version", [], |row| row.get::<_, i64>(0))?,
+            4
+        );
+        db.execute_batch(
+            "UPDATE organization SET payload = CAST(json_remove(payload, '$.artwork') AS BLOB);
+                          DELETE FROM artwork_assets;
+                          DROP TABLE peer_artwork_tracks;",
+        )?;
+    }
+    let store = Store::open(root.path())?;
+    let artwork = store.catalog().await?.organization.artwork.unwrap();
+    assert_eq!(artwork.candidates.len(), 1);
+    let candidate = &artwork.candidates[0];
+    assert_eq!(candidate.track, saved.track.id);
+    assert_eq!(candidate.source, "legacy");
+    assert_eq!(candidate.context, saved.sha256);
+    assert_eq!(candidate.asset, hex::encode(Sha256::digest(image)));
+    assert_eq!(artwork.assets[&candidate.asset], image.as_slice());
+    drop(store);
+    assert_eq!(
+        Store::open(root.path())?
+            .catalog()
+            .await?
+            .organization
+            .artwork,
+        Some(artwork)
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn cluster_save_registers_embedded_image_without_creating_a_candidate() -> anyhow::Result<()>
+{
+    let root = tempfile::tempdir()?;
+    let store = Store::open(root.path())?;
+    let image = include_bytes!("../fixtures/blue.jpg");
+    let mut entry: Entry = serde_json::from_slice(include_bytes!("../fixtures/local-entry.json"))?;
+    entry.artwork = Some(image.to_vec());
+    let mut incoming = syncstr_headless::organization::Organization::default();
+    incoming.import(&entry);
+    let mut file = store.stage().await?;
+    file.write_all(b"abc")?;
+    store
+        .commit_organized(entry, file, true, Some(incoming))
+        .await?;
+    let artwork = store.catalog().await?.organization.artwork.unwrap();
+    assert_eq!(
+        artwork.assets[&hex::encode(Sha256::digest(image))],
+        image.as_slice()
+    );
+    assert!(artwork.candidates.is_empty());
+    drop(store);
+    assert_eq!(
+        Store::open(root.path())?
+            .catalog()
+            .await?
+            .organization
+            .artwork,
+        Some(artwork)
+    );
+    Ok(())
+}
+
+#[tokio::test]
 async fn updated_embedded_image_preserves_the_existing_display_candidate() -> anyhow::Result<()> {
     let host = Host::start().await?;
     let mut entry: Entry = serde_json::from_slice(include_bytes!("../fixtures/local-entry.json"))?;
