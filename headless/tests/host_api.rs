@@ -60,6 +60,23 @@ impl Host {
 }
 
 #[tokio::test]
+async fn catalog_rejects_a_json5_track_payload() -> anyhow::Result<()> {
+    let host = Host::start().await?;
+    host.upload().await?;
+    let db = rusqlite::Connection::open(host.root.path().join("node.sqlite"))?;
+    db.execute(
+        "UPDATE tracks SET payload = CAST('/* fixture */' || CAST(payload AS TEXT) AS BLOB)",
+        [],
+    )?;
+    assert_error(
+        host.get("catalog").send().await?,
+        StatusCode::INTERNAL_SERVER_ERROR,
+        "storage-failed",
+    )
+    .await
+}
+
+#[tokio::test]
 async fn catalog_marker_tracks_wire_content_and_survives_conditional_reads() -> anyhow::Result<()> {
     let host = Host::start().await?;
     let info = host.get("library").send().await?;
@@ -315,10 +332,24 @@ async fn peer_projection_publishes_image(embedded_only: bool) -> anyhow::Result<
     host.store.project_cluster_metadata(object).await?;
     let catalog: Value = host.get("catalog").send().await?.json().await?;
     assert_eq!(catalog["organization"]["artwork"]["assets"][id], "");
+    if embedded_only {
+        assert_eq!(catalog["organization"]["artwork"]["candidates"], json!([]));
+    }
     assert!(catalog["entries"][0].get("artwork").is_none());
     let response = host.get(&format!("artwork/{id}")).send().await?;
     assert_eq!(response.status(), 200);
     assert_eq!(response.bytes().await?.as_ref(), image);
+    if embedded_only {
+        // Use a consistent copy so the live HTTP listener can keep its store lock.
+        let copy = tempfile::tempdir()?;
+        let db = rusqlite::Connection::open(host.root.path().join("node.sqlite"))?;
+        db.execute(
+            "VACUUM INTO ?",
+            [copy.path().join("node.sqlite").to_str().unwrap()],
+        )?;
+        let reopened = Store::open(copy.path())?.catalog().await?;
+        assert!(reopened.organization.artwork.unwrap().candidates.is_empty());
+    }
     Ok(())
 }
 
@@ -362,6 +393,10 @@ async fn two_track_ids_share_an_audio_route_that_survives_removal() -> anyhow::R
     let response = host.get(&path).send().await?;
     assert_eq!(response.status(), 200);
     assert_eq!(response.bytes().await?.as_ref(), b"abc");
+    // The indexed aiff copy sorts before the intact wav copy.
+    std::fs::write(host.store.path(&second), b"short copy")?;
+    let response = host.get(&path).send().await?.error_for_status()?;
+    assert_eq!(response.bytes().await?.as_ref(), b"abc");
     std::fs::remove_file(host.store.path(&second))?;
     let response = host.get(&path).send().await?.error_for_status()?;
     assert_eq!(response.bytes().await?.as_ref(), b"abc");
@@ -383,9 +418,29 @@ async fn two_track_ids_share_an_audio_route_that_survives_removal() -> anyhow::R
     assert_eq!(response.status(), 206);
     assert_eq!(response.headers()[header::CONTENT_RANGE], "bytes 1-2/3");
     assert_eq!(response.bytes().await?.as_ref(), b"bc");
-    let file = std::fs::File::create(host.store.path(&first))?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn unindexed_audio_rechecks_a_replacement_with_the_same_size_and_mtime() -> anyhow::Result<()>
+{
+    let host = Host::start().await?;
+    let id = hex::encode(Sha256::digest(b"abc"));
+    let object = host.root.path().join("objects").join(format!("{id}.wav"));
+    let path = format!("audio/{id}");
+    let mtime = std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(123456);
+    let original = std::fs::File::create(&object)?;
+    (&original).write_all(b"abc")?;
+    original.set_modified(mtime)?;
+    drop(original);
+    let response = host.get(&path).send().await?.error_for_status()?;
+    assert_eq!(response.headers()[header::ETAG], format!("\"{id}\""));
+    assert_eq!(response.bytes().await?.as_ref(), b"abc");
+    std::fs::remove_file(&object)?;
+    let file = std::fs::File::create(&object)?;
     (&file).write_all(b"bad")?;
-    file.set_modified(std::time::SystemTime::UNIX_EPOCH)?;
+    file.set_modified(mtime)?;
+    drop(file);
     assert_error(
         host.get(&path).send().await?,
         StatusCode::INTERNAL_SERVER_ERROR,
@@ -397,7 +452,8 @@ async fn two_track_ids_share_an_audio_route_that_survives_removal() -> anyhow::R
 
 #[cfg(unix)]
 #[tokio::test]
-async fn special_audio_objects_are_missing_with_and_without_an_index() -> anyhow::Result<()> {
+async fn special_audio_objects_fail_with_a_storage_error_with_and_without_an_index()
+-> anyhow::Result<()> {
     let host = Host::start().await?;
     let entry = host.upload().await?;
     let object = host.store.path(&entry);
@@ -412,8 +468,8 @@ async fn special_audio_objects_are_missing_with_and_without_an_index() -> anyhow
         std::os::unix::fs::symlink(&target, &object)?;
         assert_error(
             host.get(&route).send().await?,
-            StatusCode::NOT_FOUND,
-            "not-found",
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "storage-failed",
         )
         .await?;
         std::fs::remove_file(&object)?;
@@ -433,7 +489,12 @@ async fn special_audio_objects_are_missing_with_and_without_an_index() -> anyhow
             .read(true)
             .write(true)
             .open(&object)?;
-        assert_error(response?, StatusCode::NOT_FOUND, "not-found").await?;
+        assert_error(
+            response?,
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "storage-failed",
+        )
+        .await?;
         std::fs::remove_file(&object)?;
     }
     Ok(())
@@ -480,10 +541,12 @@ async fn disconnecting_mid_download_releases_a_production_listener_slot() -> any
     let host = Host::start().await?;
     let data = vec![0x51; 16 * 1024 * 1024];
     let id = hex::encode(Sha256::digest(&data));
-    std::fs::write(
-        host.root.path().join("objects").join(format!("{id}.wav")),
-        data,
-    )?;
+    let mut entry: Entry = serde_json::from_slice(include_bytes!("../fixtures/local-entry.json"))?;
+    entry.sha256 = id.clone();
+    entry.track.size = data.len() as u64;
+    let mut file = host.store.stage().await?;
+    file.write_all(&data)?;
+    host.store.commit(entry, file, false).await?;
     let path = format!("audio/{id}");
     let mut active = Vec::new();
     for _ in 0..16 {

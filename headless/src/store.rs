@@ -64,7 +64,12 @@ impl crate::store::Store {
                 if stored.is_none() {
                     organization.import(&entry);
                 }
-                import_entry_artwork(&mut organization, &entry);
+                if version < 4 || stored.is_none() {
+                    import_entry_artwork(&mut organization, &entry);
+                } else {
+                    // Reopening a projected track must preserve the signed display candidates.
+                    register_entry_artwork(&mut organization, &entry);
+                }
             }
         }
         organization.repair_membership()?;
@@ -320,34 +325,46 @@ pub(crate) fn read_organization(
     Ok(organization)
 }
 
-pub(crate) fn import_entry_artwork(
+pub(crate) fn register_entry_artwork(
+    organization: &mut crate::organization::Organization,
+    entry: &crate::model::Entry,
+) -> Option<String> {
+    use sha2::Digest as _;
+    let bytes = entry
+        .artwork
+        .as_ref()
+        .filter(|b| b.len() <= 512 * 1024 && crate::artwork::bounded_jpeg(b))?;
+    let asset = hex::encode(sha2::Sha256::digest(bytes));
+    organization
+        .artwork
+        .get_or_insert_with(Default::default)
+        .assets
+        .insert(asset.clone(), bytes.clone());
+    Some(asset)
+}
+
+fn import_entry_artwork(
     organization: &mut crate::organization::Organization,
     entry: &crate::model::Entry,
 ) {
-    use sha2::Digest as _;
+    let Some(asset) = register_entry_artwork(organization, entry) else {
+        return;
+    };
     let track = organization.canonical_track(&entry.track.id);
-    if let Some(bytes) = entry
-        .artwork
-        .as_ref()
-        .filter(|b| b.len() <= 512 * 1024 && crate::artwork::bounded_jpeg(b))
+    let artwork = organization.artwork.as_mut().expect("registered artwork");
+    if !organization.tracks.iter().any(|t| t.id == track)
+        || artwork.candidates.iter().any(|c| c.track == track)
     {
-        let artwork = organization.artwork.get_or_insert_with(Default::default);
-        let asset = hex::encode(sha2::Sha256::digest(bytes));
-        artwork.assets.insert(asset.clone(), bytes.clone());
-        if !organization.tracks.iter().any(|t| t.id == track)
-            || artwork.candidates.iter().any(|c| c.track == track)
-        {
-            return;
-        }
-        artwork.candidates.push(crate::artwork::Candidate {
-            id: uuid::Uuid::new_v4().to_string(),
-            track,
-            source: "legacy".into(),
-            context: entry.sha256.clone(),
-            asset,
-            parents: vec![],
-        });
+        return;
     }
+    artwork.candidates.push(crate::artwork::Candidate {
+        id: uuid::Uuid::new_v4().to_string(),
+        track,
+        source: "legacy".into(),
+        context: entry.sha256.clone(),
+        asset,
+        parents: vec![],
+    });
 }
 
 pub(crate) fn write_organization(

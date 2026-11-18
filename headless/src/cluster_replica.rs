@@ -527,7 +527,7 @@ impl crate::store::Store {
                     rusqlite::params![previous.track.id, projected.sha256, projected.track.suffix, serde_json::to_vec(&projected)?],
                 )?;
             }
-            crate::store::import_entry_artwork(&mut organization, &entry);
+            crate::store::register_entry_artwork(&mut organization, &entry);
             crate::store::write_organization(&transaction, &organization)?;
             transaction.commit()?;
             Ok(())

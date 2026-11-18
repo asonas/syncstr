@@ -278,10 +278,9 @@ async fn download(
 pub(crate) fn open_audio(
     path: &std::path::Path,
 ) -> std::io::Result<(std::fs::File, std::fs::Metadata)> {
-    use std::io::{Error, ErrorKind};
-    // Only regular objects are servable. Treat special files as absent so v1 returns 404.
+    use std::io::Error;
     if !std::fs::symlink_metadata(path)?.is_file() {
-        return Err(ErrorKind::NotFound.into());
+        return Err(Error::other("not a regular audio file"));
     }
     let mut options = std::fs::OpenOptions::new();
     options.read(true);
@@ -296,16 +295,10 @@ pub(crate) fn open_audio(
         use std::os::windows::fs::OpenOptionsExt as _;
         options.custom_flags(windows_sys::Win32::Storage::FileSystem::FILE_FLAG_OPEN_REPARSE_POINT);
     }
-    let file = options.open(path).map_err(|error| {
-        #[cfg(unix)]
-        if error.raw_os_error() == Some(libc::ELOOP) {
-            return Error::from(ErrorKind::NotFound);
-        }
-        error
-    })?;
+    let file = options.open(path)?;
     let metadata = file.metadata()?;
     if !metadata.is_file() {
-        return Err(ErrorKind::NotFound.into());
+        return Err(Error::other("not a regular audio file"));
     }
     Ok((file, metadata))
 }

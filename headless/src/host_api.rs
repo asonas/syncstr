@@ -11,10 +11,9 @@ use rusqlite::OptionalExtension as _;
 use serde_json::json;
 pub use socket::listener;
 use std::{
-    collections::HashMap,
+    io::{self, Seek as _},
     path::PathBuf,
-    sync::{Arc, Mutex},
-    time::SystemTime,
+    sync::Arc,
 };
 use tokio::sync::Semaphore;
 
@@ -24,15 +23,6 @@ struct Host {
     address: String,
     files: Arc<Semaphore>,
     cache: Arc<tokio::sync::Mutex<Option<Arc<Snapshot>>>>,
-    verified: Arc<Mutex<HashMap<PathBuf, Verification>>>,
-}
-
-type Verification = Arc<Mutex<Option<FileStamp>>>;
-
-#[derive(PartialEq, Eq)]
-struct FileStamp {
-    size: u64,
-    modified: SystemTime,
 }
 
 pub fn router(store: crate::store::Store, address: String) -> Router {
@@ -164,7 +154,9 @@ impl SnapshotRows {
             // Strip Base64 artwork before copying rows out of SQLite under the store lock.
             entries: crate::store::payloads(
                 db,
-                "SELECT CAST(json_remove(CAST(payload AS TEXT), '$.artwork') AS BLOB) FROM tracks ORDER BY id",
+                "SELECT CASE WHEN json_valid(CAST(payload AS TEXT))
+                        THEN CAST(json_remove(CAST(payload AS TEXT), '$.artwork') AS BLOB)
+                 END FROM tracks ORDER BY id",
             )?,
             organization: db.query_row(
                 "SELECT payload FROM organization WHERE singleton = 1",
@@ -288,7 +280,6 @@ impl Host {
             store,
             address,
             cache: Default::default(),
-            verified: Default::default(),
             files: Arc::new(Semaphore::new(16)),
         }
     }
@@ -438,10 +429,9 @@ async fn audio(
         })
         .await?;
     let lookup = id.clone();
-    let (file, size) =
-        tokio::task::spawn_blocking(move || host.stored_audio(objects, &lookup, indexed))
-            .await
-            .map_err(anyhow::Error::from)??;
+    let (file, size) = tokio::task::spawn_blocking(move || stored_audio(objects, &lookup, indexed))
+        .await
+        .map_err(anyhow::Error::from)??;
     Ok(crate::api::file_response(
         tokio::fs::File::from_std(file),
         size,
@@ -453,74 +443,65 @@ async fn audio(
     .await?)
 }
 
-impl Host {
-    fn stored_audio(
-        &self,
-        objects: PathBuf,
-        id: &str,
-        indexed: Vec<(String, i64)>,
-    ) -> Result<(std::fs::File, u64), ApiError> {
-        let candidates = indexed
-            .iter()
-            .map(|(suffix, size)| (suffix.as_str(), Some(*size)))
-            .chain(
-                crate::model::AUDIO_SUFFIXES
-                    .iter()
-                    .copied()
-                    .filter(|suffix| !indexed.iter().any(|(s, _)| s == suffix))
-                    .map(|suffix| (suffix, None)),
-            );
-        for (suffix, expected) in candidates {
-            if !crate::model::AUDIO_SUFFIXES.contains(&suffix) {
-                return Err(ApiError::Storage(anyhow::anyhow!(
-                    "unsupported audio suffix"
-                )));
-            }
-            let path = objects.join(format!("{id}.{suffix}"));
-            let (mut file, metadata) = match crate::api::open_audio(&path) {
-                Ok(opened) => opened,
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
-                Err(error) => return Err(ApiError::Storage(error.into())),
-            };
-            let size = metadata.len();
-            if !(1..=crate::model::MAX_AUDIO).contains(&size)
-                || expected.is_some_and(|n| u64::try_from(n) != Ok(size))
-            {
-                return Err(ApiError::Storage(anyhow::anyhow!(
-                    "invalid stored audio size"
-                )));
-            }
-            if expected.is_none() {
-                use sha2::Digest as _;
-                let stamp = FileStamp {
-                    size,
-                    modified: metadata.modified().map_err(anyhow::Error::from)?,
-                };
-                // A range request can reuse verification only for the same object path and file stamp.
-                let cached = self
-                    .verified
-                    .lock()
-                    .unwrap()
-                    .entry(path)
-                    .or_default()
-                    .clone();
-                let mut verified = cached.lock().unwrap();
-                if verified.as_ref() != Some(&stamp) {
-                    let mut digest = sha2::Sha256::new();
-                    let read =
-                        std::io::copy(&mut file, &mut digest).map_err(anyhow::Error::from)?;
-                    if read != size || hex::encode(digest.finalize()) != id {
-                        return Err(ApiError::Storage(anyhow::anyhow!(
-                            "stored audio hash mismatch"
-                        )));
-                    }
-                    *verified = Some(stamp);
-                }
-            }
-            return Ok((file, size));
+fn stored_audio(
+    objects: PathBuf,
+    id: &str,
+    indexed: Vec<(String, i64)>,
+) -> Result<(std::fs::File, u64), ApiError> {
+    let candidates = indexed
+        .iter()
+        .map(|(suffix, size)| (suffix.as_str(), Some(*size)))
+        .chain(
+            crate::model::AUDIO_SUFFIXES
+                .iter()
+                .copied()
+                .filter(|suffix| !indexed.iter().any(|(s, _)| s == suffix))
+                .map(|suffix| (suffix, None)),
+        );
+    let mut failures = Vec::new();
+    for (suffix, expected) in candidates {
+        match audio_candidate(&objects, id, suffix, expected) {
+            Ok(opened) => return Ok(opened),
+            Err(error) => failures.push((suffix, error)),
         }
-        Err(ApiError::Missing)
     }
+    if failures
+        .iter()
+        .all(|(_, error)| error.kind() == io::ErrorKind::NotFound)
+    {
+        Err(ApiError::Missing)
+    } else {
+        Err(ApiError::Storage(anyhow::anyhow!(
+            "no usable audio copy: {failures:?}"
+        )))
+    }
+}
+
+fn audio_candidate(
+    objects: &std::path::Path,
+    id: &str,
+    suffix: &str,
+    expected: Option<i64>,
+) -> io::Result<(std::fs::File, u64)> {
+    if !crate::model::AUDIO_SUFFIXES.contains(&suffix) {
+        return Err(io::Error::other("unsupported audio suffix"));
+    }
+    let (mut file, metadata) = crate::api::open_audio(&objects.join(format!("{id}.{suffix}")))?;
+    let size = metadata.len();
+    if !(1..=crate::model::MAX_AUDIO).contains(&size)
+        || expected.is_some_and(|n| u64::try_from(n) != Ok(size))
+    {
+        return Err(io::Error::other("invalid stored audio size"));
+    }
+    if expected.is_none() {
+        use sha2::Digest as _;
+        let mut digest = sha2::Sha256::new();
+        if io::copy(&mut file, &mut digest)? != size || hex::encode(digest.finalize()) != id {
+            return Err(io::Error::other("stored audio hash mismatch"));
+        }
+        file.rewind()?;
+    }
+    Ok((file, size))
 }
 
 async fn artwork(
