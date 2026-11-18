@@ -6,7 +6,7 @@ These reports preserve investigations performed before product implementation. T
 
 - [Synchronization core](sync-core-report.md): use Swift as the reference implementation; do not adopt a shared Rust core.
 - [Apple playback](apple-playback-report.md): the macOS build succeeded; XCTest and physical iPhone playback results were BLOCKED.
-- [Tailscale device spike](tailscale-device-spike.md): the protocol for downloading from a host over Tailscale on a physical iPhone (ASO-159). Not run yet.
+- [Tailscale device spike](tailscale-device-spike.md): the protocol for downloading from a host over Tailscale on a physical iPhone (ASO-159). Q7 records the read-only NAS inspection and the catalog probe from a Mac. Physical iPhone runs are pending.
 
 ## Interpreting results
 

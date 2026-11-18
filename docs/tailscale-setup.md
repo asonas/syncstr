@@ -39,40 +39,40 @@ Use the Standalone or the Mac App Store variant of Tailscale. Both can publish a
    tailscale serve --bg 8441
    ```
 
-   Do not publish today's `serve` for a real library. Its `/v4` token also allows uploads and organization changes. The [device spike](validation/tailscale-device-spike.md) publishes it only for a disposable fixture.
+   Do not publish the full legacy `serve` router for a real library. Its `/v4` token also allows uploads and organization changes. The [device spike](validation/tailscale-device-spike.md) publishes the full router only for a disposable fixture.
 6. Run `tailscale serve status` and note the host address that it shows.
 
 Do not use `tailscale funnel`. Funnel publishes a service to the internet.
 
 ## Publish a NAS host
 
-The NAS host joins the tailnet through Tailscale installed on the NAS, or through a Tailscale container in the same network namespace as the host. Q7 of the [device spike](validation/tailscale-device-spike.md) compares the two.
+For an existing library, follow the [migration plan](private-network-migration-plan.md#steps-that-need-the-owners-go-ahead).
 
 | Option | What you add | What you maintain | Host address |
 | --- | --- | --- | --- |
 | A Tailscale container next to the host | One `tailscale/tailscale` container in the host's Compose file | One more image, updated with the host. The Serve setting is a file. | `music.<tailnet>.ts.net`, for the host only |
 | Tailscale on the NAS | The Tailscale package for your NAS system | A package whose install and update route differs by system. Synology's Package Center build is no longer supported. | The NAS's own name. The whole NAS joins the tailnet. |
 
-Use the Tailscale container if you want the least to maintain. It works the same on every NAS that runs containers, starts and stops with the host, and puts only the host on your tailnet. The device spike (ASO-159) tests this choice.
+The recommended Compose setup uses a Tailscale container. It starts and stops with the host and puts only the host on your tailnet. The planned host uses plain HTTP on loopback port 8441. ASO-161 and ASO-163 will supply the trial host's Compose file after the store and the shared namespace have been verified.
 
-1. Choose the host's machine name, such as `music`, for the `hostname` setting in step 4. The warning about public certificate logs in step 3 of the Mac section applies here. Then turn on HTTPS as in step 4 of the Mac section.
-2. In the admin console, open **Keys**, select **Generate auth key**, keep it one-off, and copy the key. This key enrolls the NAS container in Tailscale. The listener never enters it in Syncstr.
-3. Next to the host's `compose.yaml`, create `tailscale/config/serve.json`. Step 4 mounts the `config` directory, not the file, because Tailscale detects changes to the file only through a directory mount ([Docker configuration parameters](https://tailscale.com/docs/features/containers/docker/docker-params)). The container replaces `${TS_CERT_DOMAIN}` with the machine's full name.
+The following steps publish the full legacy HTTPS router for a disposable fixture. Use a new project directory named `trial` beside the `headless` source directory. All relative mounts start at the directory containing `trial/compose.yaml`.
+
+1. Choose an unused machine name for the `hostname` setting in step 4. `music` is a placeholder for the machine name. The warning about public certificate logs in step 3 of the Mac section applies here. Then turn on HTTPS as in step 4 of the Mac section.
+2. In the admin console, open **Keys**, select **Generate auth key**, keep it one-off, and set `TS_AUTHKEY` in the project shell to that key. This key enrolls the NAS container in Tailscale. The listener never enters it in Syncstr.
+3. Check the paths for `tailscale/state` and `tailscale/config` under `trial`. Stop if either directory exists or any path component is a symlink. Create both directories empty. Check that `tailscale/config/serve.json` is absent, including as a dangling symlink. Create it as a new file without overwriting any entry. Step 4 mounts the `config` directory, not the file, because Tailscale detects changes to the file only through a directory mount ([Docker configuration parameters](https://tailscale.com/docs/features/containers/docker/docker-params)). The container replaces `${TS_CERT_DOMAIN}` with the machine's full name.
 
    ```json
    {
      "TCP": { "443": { "HTTPS": true } },
      "Web": {
        "${TS_CERT_DOMAIN}:443": {
-         "Handlers": { "/": { "Proxy": "http://127.0.0.1:8441" } }
+         "Handlers": { "/": { "Proxy": "https+insecure://127.0.0.1:8443" } }
        }
      }
    }
    ```
 
-   Today's container listens on `0.0.0.0:8443` with HTTPS ([`Dockerfile`](../headless/Dockerfile)). Publish it only for a disposable fixture, as the device spike does, with `https+insecure://127.0.0.1:8443` as the proxy.
-
-4. Add a `tailscale` service, attach the host to its network, and delete the host's `ports` entry. After this change, the LAN does not reach the host directly.
+4. Save this as `trial/compose.yaml`. The sidecar forwards to the fixture's HTTPS listener in their shared namespace. The Compose file publishes no LAN port.
 
    ```yaml
    services:
@@ -80,7 +80,7 @@ Use the Tailscale container if you want the least to maintain. It works the same
        image: tailscale/tailscale:latest
        hostname: music
        environment:
-         - TS_AUTHKEY=tskey-auth-EXAMPLE
+         - TS_AUTHKEY
          - TS_AUTH_ONCE=true
          - TS_STATE_DIR=/var/lib/tailscale
          - TS_SERVE_CONFIG=/config/serve.json
@@ -89,14 +89,34 @@ Use the Tailscale container if you want the least to maintain. It works the same
          - ./tailscale/config:/config:ro
        restart: unless-stopped
      syncstr:
-       # Keep the existing build, user, and volume settings.
+       build: ../headless
+       user: "${SYNCSTR_UID:-1000}:${SYNCSTR_GID:-1000}"
+       restart: unless-stopped
+       read_only: true
+       cap_drop: [ALL]
+       security_opt: [no-new-privileges:true]
+       volumes:
+         - ./data:/data
+         - ./identity:/identity:ro
        network_mode: service:tailscale
        depends_on: [tailscale]
    ```
 
    `TS_STATE_DIR` on a volume keeps the machine signed in across restarts. `TS_AUTH_ONCE=true` stops the container from signing in again at every start, which fails after the auth key expires.
-5. Start both containers with `docker compose up -d`.
-6. In the admin console, open **Machines**, open the menu of `music`, and select **Disable Key Expiry**. Otherwise the machine leaves the tailnet after 180 days until you sign it in again.
+
+5. From `trial`, prepare fresh `data` and `identity` directories owned by the configured UID and GID. Check that both mounts resolve inside the fixture. Build the fixture and start its sidecar before running the [headless initialization command](../headless/README.md#docker-on-a-nas). Give `init` a writable identity mount for this command only. Replace the example certificate name with the fixture name from step 1 and its tailnet DNS suffix.
+
+   ```sh
+   docker compose build syncstr
+   docker compose up -d tailscale
+   docker compose run --rm --no-deps --volume "$PWD/identity:/identity:rw" \
+     syncstr init --identity /identity --host music.example.ts.net
+   docker compose up -d syncstr
+   ```
+
+   At startup, `serve` reads the token and TLS identity from the read-only mount.
+
+6. In the admin console, open **Machines**. Open the menu for the machine name from step 1 and select **Disable Key Expiry**. Otherwise the machine leaves the tailnet after 180 days until you sign it in again.
 
 For Tailscale on the NAS, follow Tailscale's guide for your system, then run the Mac section's `tailscale serve` command on the NAS. The planned host listens on `127.0.0.1` inside its own network namespace, so a port mapping such as the one in [`headless/compose.yaml`](../headless/compose.yaml) does not reach it. Run the host container with `network_mode: host`, so that its loopback is the NAS's loopback where Serve forwards. Every process on the NAS can then read the library through that port. Today's image listens on `0.0.0.0:8443` by default, so with host networking it would also answer on the NAS's LAN address. Give it an explicit loopback listener and a port that no other service uses before trying this. Tailscale's NAS guides do not mention Serve, so this path is untested.
 
@@ -105,7 +125,7 @@ For Tailscale on the NAS, follow Tailscale's guide for your system, then run the
 1. Install Tailscale from the App Store.
 2. Open it, tap **Get Started**, accept the prompt to add a VPN configuration, and log in with the account that owns the host machine.
 3. To check the path with today's `serve`, open `https://music.example.ts.net/v4/catalog` in Safari. It answers `unauthorized` to a request without a token ([`api.rs`](../headless/src/api.rs)). That answer shows that Tailscale, the certificate, Serve, and the host all work.
-4. For the planned read API, open the host’s tailnet HTTPS address in Syncstr. An allowed phone can browse and download immediately. The legacy fixture token in step 3 belongs only to the ASO-159 experiment.
+4. For the planned read API, open the host’s tailnet HTTPS address in Syncstr. An allowed phone can browse and download immediately. The legacy probe in step 3 needs no token.
 
 Tailscale must be connected whenever Syncstr downloads. To connect it automatically, tap your profile picture in the Tailscale app, select **VPN On Demand**, and set Wi-Fi and cellular to **Always**.
 
@@ -145,7 +165,7 @@ See [Tailscale Serve](https://tailscale.com/docs/reference/tailscale-cli/serve) 
 
 ## Open questions
 
-- Which NAS option becomes the one documented command? Q7 of the [device spike](validation/tailscale-device-spike.md) informs it. ASO-163.
+- Which NAS option becomes the one documented command? ASO-163 verifies the recommended Compose setup in a disposable environment before choosing the command.
 - Can the macOS app configure Serve with one confirmation, so that you copy no command? A prototype settles it, as open question 1 of [Onboarding and connection states](onboarding-and-connection-states.md#open-questions) describes. ASO-163.
 
 ASO-159 uses the direct-IP path as a measurement comparison. What the macOS app shows when Tailscale is missing or HTTPS is off is in [Onboarding and connection states](onboarding-and-connection-states.md#on-the-mac-as-a-host).
