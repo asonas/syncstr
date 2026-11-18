@@ -40,7 +40,7 @@ Create a minimal SwiftUI app outside the product targets, for example under `exp
 - A path selector with separate credentials and trust settings for N and the fixture paths. Bind the N token to the exact HTTPS origin `https://music.example.ts.net` (scheme, host, and port). In both sessions, attach it only to `GET /v4/catalog` and `GET /v4/tracks/{id}/audio` on that origin. Never fall back to the NAS's LAN address.
 - Refuse redirects in the foreground. A background session follows redirects automatically, even to another path on the same origin. Before any background measurement with the N token, the owner confirms the exact origin registered in the build. For that origin, the owner confirms that Serve, Caddy, and the legacy host each return no redirect on either GET route. If either confirmation is missing, skip all background measurements on N and record them as BLOCKED.
 - Use the fixture's token on its three paths. Use system trust on N and A-name. Use the fixture pin for A-ip and A-lan when the step calls for it.
-- On the Mac, read each catalog with its own token. Give the phone the selected track IDs, SHA-256 values, and sizes for each host.
+- On the Mac, read each catalog with its own token. Attach the real token only to `GET /v4/catalog` on N's confirmed HTTPS origin. Stop the read on any `3xx` response without following the redirect. Give the phone the selected track IDs, SHA-256 values, and sizes for each host.
 - One foreground session from `URLSessionConfiguration.default`, and one background session from `URLSessionConfiguration.background(withIdentifier:)`. The app recreates the background session at launch and implements `application(_:handleEventsForBackgroundURLSession:completionHandler:)`.
 - Download tasks for `GET /v4/tracks/{id}/audio`. In `didFinishDownloadingTo`, the app moves the file, computes its SHA-256, and compares it with the catalog value.
 - A probe: `GET /v4/catalog` with no token. A `401` answer means that the host is reachable. The probe keeps the default `timeoutIntervalForRequest` of 60 seconds, so that the log shows when each failure arrives on its own.
@@ -75,7 +75,9 @@ headless/target/debug/syncstr-headless upload --url https://100.x.y.z:8443 \
 tailscale serve --bg https+insecure://127.0.0.1:8443
 ```
 
-The `upload` command checks that the certificate names the address in `--url`, so the URL uses the tailnet address. Copy `tls.crt` into the build for the pinned paths.
+The `upload` command checks that the certificate names the address in `--url`, so the URL uses the tailnet address. For the pinned paths, copy `tls.crt` directly into the build product from outside the repository or from the ignored `tmp/spike/` directory. Never copy the certificate into tracked sources.
+
+Supply N's real HTTPS origin and the local track mapping to the app at run time. Never write either value into tracked files.
 
 | Path | Address the phone uses | Certificate | Used by |
 | --- | --- | --- | --- |

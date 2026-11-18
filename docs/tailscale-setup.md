@@ -59,7 +59,7 @@ The recommended Compose setup uses a Tailscale container. It starts and stops wi
 
 1. Choose an unused machine name for the `hostname` setting in step 4. Replace the example `music` if the old sidecar already uses it. The warning about public certificate logs in step 3 of the Mac section applies here. Then turn on HTTPS as in step 4 of the Mac section.
 2. In the admin console, open **Keys**, select **Generate auth key**, keep it one-off, and copy the key. This key enrolls the NAS container in Tailscale. The listener never enters it in Syncstr.
-3. Next to the host's `compose.yaml`, create `tailscale/config/serve.json`. Step 4 mounts the `config` directory, not the file, because Tailscale detects changes to the file only through a directory mount ([Docker configuration parameters](https://tailscale.com/docs/features/containers/docker/docker-params)). The container replaces `${TS_CERT_DOMAIN}` with the machine's full name.
+3. Before writing any files, resolve `./tailscale/state` and `./tailscale/config` relative to the trial project's `compose.yaml`. Confirm that neither path points into the old sidecar's state or configuration directory. Confirm that the trial state directory is empty. Only then create `tailscale/config/serve.json` in the trial project. Step 4 mounts the `config` directory, not the file, because Tailscale detects changes to the file only through a directory mount ([Docker configuration parameters](https://tailscale.com/docs/features/containers/docker/docker-params)). The container replaces `${TS_CERT_DOMAIN}` with the machine's full name.
 
    ```json
    {
@@ -91,13 +91,18 @@ The recommended Compose setup uses a Tailscale container. It starts and stops wi
          - ./tailscale/config:/config:ro
        restart: unless-stopped
      syncstr:
-       # Keep the existing build, user, and volume settings.
+       # Keep the existing build and user settings.
+       volumes:
+         - ./rehearsal:/data
        network_mode: service:tailscale
        depends_on: [tailscale]
    ```
 
    `TS_STATE_DIR` on a volume keeps the machine signed in across restarts. `TS_AUTH_ONCE=true` stops the container from signing in again at every start, which fails after the auth key expires.
-5. Before the first start, check the resolved host directories for `./tailscale/state` and `./tailscale/config` in the trial project. Confirm that neither mount points into the old sidecar's state or configuration directory. Confirm that the trial state directory is empty. Then start both trial containers with `docker compose up -d`.
+
+   Replace `./rehearsal` with the rehearsal directory from the [migration plan](private-network-migration-plan.md#steps-that-need-the-owners-go-ahead). Before the first start, confirm that the Syncstr container's `/data` mount resolves to that directory. Stop if it points to production data.
+
+5. Start both trial containers with `docker compose up -d`.
 6. In the admin console, open **Machines**. Open the menu for the machine name from step 1 and select **Disable Key Expiry**. Otherwise the machine leaves the tailnet after 180 days until you sign it in again.
 
 For Tailscale on the NAS, follow Tailscale's guide for your system, then run the Mac section's `tailscale serve` command on the NAS. The planned host listens on `127.0.0.1` inside its own network namespace, so a port mapping such as the one in [`headless/compose.yaml`](../headless/compose.yaml) does not reach it. Run the host container with `network_mode: host`, so that its loopback is the NAS's loopback where Serve forwards. Every process on the NAS can then read the library through that port. Today's image listens on `0.0.0.0:8443` by default, so with host networking it would also answer on the NAS's LAN address. Give it an explicit loopback listener and a port that no other service uses before trying this. Tailscale's NAS guides do not mention Serve, so this path is untested.
