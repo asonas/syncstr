@@ -18,6 +18,13 @@ The cost came from one requirement: several hosts that all accept changes must a
 
 The price is real. A listener cannot edit the library on two hosts and merge the results later. If the primary is lost, the changes it accepted after the mirror was last caught up are lost, unless the old primary comes back, and then they are kept aside for the owner rather than merged. Remote library access depends on Tailscale. Music already saved on a device remains playable offline.
 
+The access decision carries these risks:
+
+- A listener who does not use Tailscale cannot reach the library from another device.
+- iOS runs one VPN at a time, so a phone that needs another VPN cannot reach the host at that moment.
+- Every device that the effective tailnet policy lets reach the host reads the whole library. A rule broader than intended exposes it, and Syncstr adds no check of its own.
+- Serve's certificate puts the host's machine name in public certificate transparency logs.
+
 ## What follows
 
 The host publishes its read-only library API through Tailscale Serve. The owner controls which devices can reach that host and port in the tailnet policy. An allowed iPhone opens the host’s HTTPS address and reads the library directly, without a Syncstr token or pairing code. Removing network access stops future remote reads. Local playback and existing offline saves remain available.
@@ -40,7 +47,6 @@ The design is described in [the architecture overview](../private-network-archit
 
 - Accepted on 2026-11-17: one primary, mirrors, the explicit switch, no simultaneous writers, and no connectivity built by Syncstr.
 - On 2026-11-18 the owner accepted the Mac and NAS host roles, the first-release iPhone scope, playback from mirrors, recovery by manual promotion, and the cutover order. Keep the everyday path until the owner's library works on its replacement. Earlier removal is limited to code the library has never used and on which no active client depends. ASO-170 tracks the separate decision on the Windows, Android and gpui clients.
-
 - Later on 2026-11-18 the owner replaced optional Tailscale connectivity and per-device pairing with tailnet-controlled access for the first release. The host itself joins the tailnet. The legacy /v4 fixture still requires its own bearer token for ASO-159.
 
 [ASO-159's physical-device spike](../validation/tailscale-device-spike.md) will test certificate handling, background transfers, network changes, connection failures, and time to playback. Its measurements will guide the connection and download design.

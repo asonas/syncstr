@@ -8,7 +8,7 @@ This guide puts a Syncstr host and your iPhone on one tailnet, so that the phone
 | Publish the host with `tailscale serve` | Works with the `serve` command of [headless Syncstr](../headless/README.md) | The macOS app shows the `tailscale serve` command for you to copy and run, because the sandboxed app may be unable to run it ([the publish confirmation](onboarding-and-connection-states.md#the-publish-confirmation), ASO-163) |
 | Put the phone on your tailnet | Works | Same |
 | Open the host address from the phone | Works in Safari | The macOS app checks the address after you run the command (ASO-163) |
-| Open the library in Syncstr | ASO-159 uses the legacy fixture and its token | Enter the tailnet HTTPS address. The first-release app fetches the library immediately if tailnet policy allows the connection. |
+| Open the library in Syncstr | Not possible. The apps find a host only by mDNS at a private LAN address ([`ClusterDiscovery.swift`](../apps/macos/ClusterDiscovery.swift)). ASO-159 tests the path with a throwaway build and the legacy token. | Scan the host's QR code or enter its host address. The app opens the library if the tailnet policy lets the phone reach the host (ASO-164). |
 
 ## What you need
 
@@ -46,7 +46,7 @@ Do not use `tailscale funnel`. Funnel publishes a service to the internet.
 
 ## Publish a NAS host
 
-The NAS host joins the tailnet using the NAS installation or a Tailscale container in the same network namespace as Syncstr. Q7 compares the deployment options.
+The NAS host joins the tailnet through Tailscale installed on the NAS, or through a Tailscale container in the same network namespace as the host. Q7 of the [device spike](validation/tailscale-device-spike.md) compares the two.
 
 | Option | What you add | What you maintain | Host address |
 | --- | --- | --- | --- |
