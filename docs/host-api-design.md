@@ -140,7 +140,7 @@ Before the device puts a file in the playback cache or an offline save, it check
 
 ### Artwork by image hash
 
-`GET /api/v1/artwork/{id}` returns one JPEG with `Content-Type: image/jpeg` and `ETag: "<id>"`, and it takes the same range headers as audio. The host serves every image it holds and has verified. The device checks that the SHA-256 of the bytes equals the ID. The catalog states no image sizes. Each image is at most 512 KiB, which bounds the space a full copy needs.
+`GET /api/v1/artwork/{id}` returns one JPEG with `Content-Type: image/jpeg` and `ETag: "<id>"`, and it takes the same range headers as audio. The host serves every image it holds and has verified, except images that exist only in a held copy. The device checks that the SHA-256 of the bytes equals the ID. The catalog states no image sizes. Each image is at most 512 KiB, which bounds the space a full copy needs.
 
 ## Connecting by host address
 
@@ -150,7 +150,8 @@ A device opens a library by its host address, such as `https://music.example.ts.
 - The iPhone app registers the `syncstr` URL scheme, which no app target registers today. The link uses a custom scheme because universal links need an association file on a public website, and Syncstr runs none.
 - A device ignores link parameters it does not know.
 - The confirmation shows the host name from the address, such as `studio.example.ts.net`, next to the library name, because only the address is not chosen by the host that answers.
-- A device does not follow a redirect from a host address. A redirect gets the same answer as an address without a Syncstr library.
+- When it first opens a host address, a device does not follow a redirect from `GET /api/v1/library`, and treats it like an address without a Syncstr library. A host never redirects, and a background download session follows redirects without asking the app, so later requests rely on the hash check, not on refusing redirects.
+- The confirmation shows a port when the address has one other than 443.
 - The first version does not offer hosts found on the tailnet. iOS has no official way for an app to list tailnet machines.
 - A device that reads another library ID at an address it knew asks the person before it replaces the library it shows.
 
@@ -210,10 +211,10 @@ Any device that reaches a host can read, so writes need their own decision about
 
 ## Errors, limits, and timeouts
 
-Every error response except 304, 416, and an audio body has a JSON body. A device acts on `error` and writes its own wording. `message` is for logs and the CLI.
+Every error response except 304, 416, and an answer to `HEAD` has a JSON body. A device acts on `error` and writes its own wording. `message` is for logs and the CLI.
 
 ```json
-{"error": "not-primary", "message": "This host is a mirror. Changes go to the primary.", "role": "mirror", "primary": "https://music.example.ts.net"}
+{"error": "method-not-allowed", "message": "This route accepts only GET."}
 ```
 
 | Status | `error` | When |
@@ -223,12 +224,9 @@ Every error response except 304, 416, and an audio body has a JSON body. A devic
 | 416 | none | An unsatisfiable range, or more than one range |
 | 429 | `rate-limited` | Too many concurrent downloads. `Retry-After` gives seconds. |
 | 500 | `storage-failed` | The host could not read its store or a file |
-| 503 | `mirror-incomplete` | A catalog request to a mirror without a complete copy |
-| 503 | `not-serving` | A catalog, audio, or artwork request to a replaced or retired host |
+The 503 `mirror-incomplete` and `not-serving` answers of [what a mirror needs](#what-a-mirror-needs-beyond-a-device) join this table with mirrors (ASO-172), and the 409 `not-primary` and 412 answers of [changes from devices](#changes-from-devices-come-later) join this table with the first write route.
 
-The 409 `not-primary` and 412 answers of [changes from devices](#changes-from-devices-come-later) join this table with the first write route.
-
-Limits: 16 concurrent file responses in total, with 429 and `Retry-After: 5` beyond that. The limit is global because the host cannot tell callers apart: every request through Serve arrives from loopback. 16 is provisional. ASO-160 sets it from measurements of a slow download, a whole-library save, and the start of playback running together. A device that gets 429 waits for `Retry-After` before its own backoff applies, and a device saving many files keeps at most 4 downloads open, so that playback still finds a free slot. 20 GiB for an audio file (`MAX_AUDIO` in `model.rs`).
+Limits: 16 concurrent file responses in total, with 429 and `Retry-After: 5` beyond that. The limit is global because the host cannot tell callers apart: every request through Serve arrives from loopback. 16 is provisional. ASO-160 sets it from measurements of a slow download, a whole-library save, and the start of playback running together. A device that gets 429 waits for `Retry-After` before its own backoff applies, and a device saving many files keeps at most 4 downloads open, so that one device cannot take every slot. Whether playback still starts while several devices save is part of the ASO-160 measurement. 20 GiB for an audio file (`MAX_AUDIO` in `model.rs`).
 
 Today `api.rs` and `shared_audio_api.rs` end every request after two hours, and the cluster transport closes a download after 240 seconds (`ClusterTransport.swift`). A 20 GiB file on a slow cellular link needs more than either. The new rules limit idle time, not total time.
 
@@ -245,12 +243,12 @@ Today `api.rs` and `shared_audio_api.rs` end every request after two hours, and 
 
 The contract follows the accepted [API contract gate](api-contract-gate-design.md). The `contracts/` directory that the gate plans does not exist yet.
 
-- `contracts/host-api-v1.yaml` is a hand-written OpenAPI 3.1 file (gate decision D2) that covers every route, header, field, status, and error code above.
+- `contracts/host-api-v1.yaml` is a hand-written OpenAPI 3.1 file (gate decision D2) that covers every first-release route, header, field, status, and error code above. The mirror fields and answers join it with ASO-172, and the write routes with ASO-168.
 - `oasdiff breaking --fail-on ERR` compares it with the base branch (gate decision D4). It takes the place of the `/v5` contract that gate slice S5 planned.
 - `contracts/fixtures/host-api-v1/` holds a JSON file for each response shape and each error, including a catalog with two entries that share a `sha256`. The catalog entry reuses `headless/fixtures/local-entry.json` without `artwork`. Rust and Swift tests decode every fixture, and a schema validator checks each one against the YAML file.
 - A Rust integration test runs the real router on `127.0.0.1:0` with a temporary store. It covers library information, the catalog and its 304, an image, and audio whole, by range, resumed, with a stale `If-Range`, and with two ranges. It validates every JSON body against the contract. Another test checks that the host refuses a listener outside loopback.
 - The Swift tests of ASO-165 start the executable that `SYNCSTR_HEADLESS_TEST_BINARY` names, on loopback. The host writes the address it bound to the file that `--address-out` names, like `--peer-address-out` today.
-- A mirror test runs two host processes on loopback with separate data directories.
+- From ASO-172 on, a mirror test runs two host processes on loopback with separate data directories.
 
 No test needs multicast, a relay, a second machine, a certificate, or the Simulator's network. Whether the tailnet policy lets a device in is checked by hand on the owner's tailnet, as the [migration plan](private-network-migration-plan.md#the-test-that-says-the-library-runs-on-the-new-path) describes.
 
@@ -264,7 +262,7 @@ Neither protects:
 
 - Files already on a device. Removing its access stops new requests and cannot erase saved music.
 - The loopback listener, from other local users and processes of the host machine, or from other containers in the NAS host's network namespace. They read the library without going through the tailnet.
-- Audio removed from the catalog. Until the host deletes the file, a device that kept its hash can still download it.
+- Audio and images removed from the catalog. Until the host deletes the file, a device that kept its hash can still download it.
 - The host's data directory. Whoever reads it has the audio and the catalog.
 - The machine name, which Serve's certificate puts in public certificate transparency logs.
 

@@ -15,7 +15,7 @@ Q1 to Q7 come from ASO-159. Q8, Q9, the resume check in Q3, and the other cases 
 | Q1 | Does a foreground download from `https://<machine>.<tailnet>.ts.net` work, and does the file play, with no App Transport Security key in `Info.plist`? | ADR 0008 assumes that a device reaches the host like any web service, with a public certificate and no exception. | ASO-165 |
 | Q2 | Does a background `URLSession` download continue over the tunnel while the app is suspended, and after the phone locks? | Today, transfers stop when the iPhone app goes to the background. Background downloads are planned. | ASO-166 |
 | Q3 | What happens when the phone moves between Wi-Fi and cellular during a download? Does the download continue, resume at its offset, or restart? | Decides whether the app needs its own retry logic. | ASO-165, ASO-166 |
-| Q4 | What does the app see when Tailscale is off, when the host machine is offline, when the host process is down, and when another VPN takes over? How quickly does it see it? | Decides the "host unreachable" state and the probe timeout. | ASO-167 |
+| Q4 | What does the app see when Tailscale is off, when the host machine is offline, when the host process is down, when the tailnet policy refuses this phone, and when another VPN takes over? How quickly does it see it? | Decides the "host unreachable" state and the probe timeout. | ASO-167 |
 | Q5 | How long does one album take over the tailnet, compared with the same host over the LAN? | Decides whether whole-file download before playback stays acceptable. | ASO-165 |
 | Q6 | Does a direct `100.x` address with the host's self-signed certificate work, with the certificate pinned? Is it worth supporting? | Provides a direct-IP comparison with the Serve hostname. | ASO-163, ASO-165 |
 | Q7 | Which way to put a container host on the tailnet is better: Tailscale on the NAS, or a Tailscale container next to the host? | Decides the one documented command for a NAS host. | ASO-163 |
@@ -140,7 +140,7 @@ For each case below, run the probe and one foreground download. Record the error
 4. Tailscale off. Start one task on the background session, wait 2 minutes, and connect Tailscale. Record whether the task starts by itself and how long after.
 5. Tailscale off in the middle of a foreground download and of a background download.
 6. Everything on, with the tailnet policy changed so that this iPhone cannot reach the Mac. Probe and download from this iPhone, and from a second device that the policy still allows. This is the only remote access control of the first release, so record how the refusal looks and how long it takes.
-6. If the phone has another VPN app, connect it during a download. Record what Tailscale and the app do, and whether VPN On Demand comes back after the other VPN disconnects.
+7. If the phone has another VPN app, connect it during a download. Record what Tailscale and the app do, and whether VPN On Demand comes back after the other VPN disconnects.
 
 Expected: unknown. A guess for step 1 is a fast `-1003` (cannot find host) by name, because the name resolves inside the tunnel, and a timeout by address. Step 3 should return an HTTP error status from Serve.
 
@@ -181,7 +181,7 @@ This question needs the owner's go-ahead, because it installs something on the N
 2. From the phone, open `https://spike.example.ts.net/v4/catalog` and expect `unauthorized`.
 3. Run `docker compose restart`, and then restart the NAS. Repeat step 2 after each.
 4. Record the number of steps, the time taken, and what an update of each container takes.
-5. If the owner accepts Tailscale on the NAS itself, record the same for it.
+5. If the owner accepts Tailscale on the NAS itself, record the same for it. The fixture container then uses `network_mode: host`, so start it with `--listen 127.0.0.1:<port>` on a port that no NAS service uses, and remove its `ports` entry, so that it does not answer on the NAS's LAN address.
 6. Remove the project, its data, and the `spike` machine from the tailnet.
 
 - The container passes steps 2 and 3: ASO-163 ships it as the one documented command.
@@ -250,7 +250,9 @@ PASS, FAIL, and BLOCKED have the meanings in the [validation README](README.md).
 | A-ip | Wi-Fi | | | | | | |
 | A-lan | Wi-Fi | | | | | | |
 | A-name | Cellular | | | | | | |
-| B | Wi-Fi | | | | | | |
+| C | Wi-Fi | | | | | | |
+
+Record C as not measured if the owner does not allow Q7.
 
 ## Limits
 

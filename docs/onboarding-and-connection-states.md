@@ -82,7 +82,7 @@ This flow runs on a Mac whose library is local. It starts from **iPhoneを追加
    - If Tailscale is not installed, the sheet shows [the recommendation](#recommend-tailscale).
 2. The app starts the host. After the listener runs the copied command, the app checks from this Mac that the host address answers. A failure shows its cause from the [host states](#on-the-mac-as-a-host).
 3. The connect sheet shows a QR code of the host address, the address as selectable text, **リンクをコピー** ("Copy link"), and **共有…** ("Share"). The code does not expire, and any number of devices can use it.
-4. The sheet reminds the listener that the iPhone must be on the same tailnet and allowed to reach this Mac, with **Tailscaleのアクセス設定を開く** ("Open Tailscale access settings"), which opens the admin console in the browser. Only the iPhone itself can show that it is allowed. **完了** ("Done") closes the sheet.
+4. The sheet reminds the listener that the iPhone must reach this Mac over Tailscale and be allowed by the access settings, either on the same tailnet or through a share of this Mac, with **Tailscaleのアクセス設定を開く** ("Open Tailscale access settings"), which opens the admin console in the browser. Only the iPhone itself can show that it is allowed. **完了** ("Done") closes the sheet.
 
 | Element | Japanese draft | Gloss |
 | --- | --- | --- |
@@ -180,7 +180,7 @@ The state changes by these rules:
 | --- | --- | --- | --- |
 | Not accepting | Accepting connections was never turned on. | このMacでだけ再生しています。 ("Playing on this Mac only.") and **iPhoneを追加…**. | The offer line, until dismissed. |
 | Reachable | The host runs and its address answers the host's own check. | ほかの端末からの接続を受け付けています。 ("Accepting connections from other devices.") and the address as selectable text. The check cannot tell whether a given device is allowed. | Nothing. |
-| Not reachable | The host runs and the check fails. | The cause, with **Tailscaleを開く** or **もう一度設定…** ("Set up again"). | ほかの端末から接続できません。 ("Other devices can't connect.") in the notice area at the bottom of the window. |
+| Not reachable | The host runs and the check fails. | The cause, with **Tailscaleを開く** or **もう一度設定…** ("Set up again"). | このMacからライブラリのアドレスを確認できません。 ("This Mac can't check the library's address.") in the notice area at the bottom of the window, with the cause and **再試行**. |
 | Stopped | The listener turned off accepting connections. | 接続の受け付けを停止しています。ほかの端末では、保存した音楽だけを聴けます。 ("Not accepting connections. Other devices play only their saved music.") and **再開** ("Resume"). | Nothing. |
 
 The causes of "not reachable" are Tailscaleがオフです。 ("Tailscale is off."), Tailscaleからログアウトしています。 ("Tailscale is logged out."), tailnetでHTTPSがオフです。 ("HTTPS is off for the tailnet."), and Tailscaleの設定がなくなりました。 ("The Tailscale setting is gone."). The notice area is `catalogNotice` in [Syncstr.swift](../apps/macos/Syncstr.swift) (line 76).
@@ -307,7 +307,7 @@ The Mac shows this text in the add-device flow when Tailscale is not installed. 
 | Element | Japanese draft | Gloss |
 | --- | --- | --- |
 | Lead | iPhoneで聴くには、このMacとiPhoneにTailscaleを入れます。 | To listen on your iPhone, install Tailscale on this Mac and the iPhone. |
-| Step 1 | このMacとiPhoneにTailscaleを入れ、同じアカウントでログインします。 | Install Tailscale on this Mac and the iPhone, and log in with the same account. |
+| Step 1 | このMacとiPhoneにTailscaleを入れ、同じアカウントでログインします。 | Install Tailscale on this Mac and the iPhone, and log in with the same account. Someone else's iPhone uses their own account and a share of this Mac, as [Tailscale setup](tailscale-setup.md#share-the-host-with-another-person) describes. |
 | Step 2 | Syncstrに戻り、「iPhoneを追加」を選びます。 | Come back to Syncstr and choose Add iPhone. On the iPhone, the step says to choose Add iPhone on the Mac and scan the code. |
 | Without it | Tailscaleがなくても、このMacで音楽を聴けます。 | Without Tailscale, this Mac still plays your music. |
 | Buttons | Tailscaleを入手, 閉じる | Get Tailscale, Close. |

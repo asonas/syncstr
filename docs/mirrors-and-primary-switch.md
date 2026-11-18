@@ -78,25 +78,25 @@ The command names are working names for `syncstr-headless`, and ASO-162 gives th
 4. The mirror reads the primary's library information. If its data directory holds another library, `follow` refuses and changes nothing. Otherwise it stores the library id, the switch record, and the primary's host id and address.
 5. The mirror makes its first copy. Until that copy is whole, it serves its library information and the files it holds, and it answers a catalog request with `mirror-incomplete`, because a half-copied catalog would show devices albums with missing tracks.
 
-A device token is per device per library, and every host accepts it. At every pull a mirror copies the primary's device list, which holds token hashes and never tokens. A device paired once therefore downloads from every host and keeps working after a switch without pairing again. The cost is that a revocation reaches a mirror only at its next pull, and that nobody can pair or revoke a device while the primary is unreachable, because both are changes. The first primary of a library also creates a token of kind `host` for itself, so every host holds a token that the others accept.
+A device needs no credential at any host. One that the tailnet policy lets reach every host of the library downloads from each of them and keeps working after a switch. The first primary of a library creates a token of kind `host` for itself, so every host holds a token that the others accept. That host-to-host part is the one ASO-172 redesigns.
 
 ## How a mirror pulls
 
 A mirror reads its primary's library information once a minute by default. When the primary's marker differs from its own, it pulls:
 
 1. Check the library id and apply [the meeting rules](#meeting-another-host). If the primary's marker is older than the mirror's, stop and report it. The primary was restored from an older backup, and pulling would delete newer data.
-2. Read the catalog, with its playlists and organization, and the device list.
+2. Read the catalog, with its playlists and organization.
 3. List the audio and artwork files that the catalog references and the mirror lacks. If they do not fit in free space, stop. The catalog states each audio file's size, and `Artwork::validate` in [`headless/src/artwork.rs`](../headless/src/artwork.rs) limits an image to 512 KiB.
 4. Fetch each file into `staging/`, artwork first because it is small, then audio. Resume an interrupted file with `Range`. If the primary no longer has a file, the catalog has moved on, so go back to step 2 and keep the files already fetched.
 5. Compute the SHA-256 of each whole file and compare it with the catalog. Add a verified file to the store, audio to `objects/<sha256>.<suffix>` and artwork to the `artwork_assets` table as today. Delete a file that fails and fetch it again from the start.
-6. Replace the catalog, playlists, organization, and device list in one SQLite transaction, and record the new marker. This publishes the copy.
+6. Replace the catalog, playlists, and organization in one SQLite transaction, and record the new marker. This publishes the copy.
 7. Remove each audio object and artwork asset that the published catalog no longer references. [ADR 0006](adr/0006-preserve-source-track-identity-independently-of-audio.md) lets two library tracks share one audio object, so removing one track never removes audio that another still uses.
 
 A mirror publishes a catalog only when every file it references is verified, so it always serves the primary's catalog at some marker, complete with its audio. Deletions and edits arrive as part of the next catalog. A mirror that was offline for any length of time starts again at step 1, fetches only what it lacks, and serves the copy it published last until it publishes again.
 
 ### Caught up
 
-A mirror is caught up when, at its most recent read of the primary's library information, the marker it serves equals the primary's marker and its device list equals the primary's. A published catalog always has every file, so nothing else is needed.
+A mirror is caught up when, at its most recent read of the primary's library information, the marker it serves equals the primary's marker. A published catalog always has every file, so nothing else is needed.
 
 The mirror records the time of the latest read at which it was caught up. That time says the copy holds every change the primary made up to then, even if the primary changed nothing for a week. Times come from each host's clock and are only shown to people. Hosts order states by marker, never by time.
 
@@ -167,13 +167,13 @@ A is the primary at switch number N and B is a mirror of A.
 
 Only A and B take part. Other mirrors of A learn of N+1 when they read A after step 4, or when A does not answer and they read B, and then follow B.
 
-If the owner stops after step 1 or 2, no host accepts changes, A stays handing over across restarts, and devices keep playing. The owner continues with `take-over` on B, or goes back with `hand-over --cancel` on A. The cancel reads B's library information. If B is still a mirror at N, A accepts changes again. If B has taken over, the cancel refuses and A goes on to step 4. If B cannot be reached, the cancel refuses unless repeated with `--force`, and if B had in fact taken over, both accept changes until they meet.
+If the owner stops after step 1 or 2, no host accepts changes, A stays handing over across restarts, and devices keep playing. The owner continues with `take-over` on B, or goes back with `hand-over --cancel` on A. The cancel reads B's library information. If B is still a mirror at N, A accepts changes again. If B has taken over, the cancel refuses and A goes on to step 4. If B cannot be reached, the cancel refuses unless repeated with `--force`, and if B had in fact taken over, both accept changes until they meet. Unresolved: a cancel and a `take-over` that run at the same moment can each read the other's old state, so both hosts accept changes. ASO-173 closes this before it is built.
 
 If `take-over` cannot reach A, it refuses. The owner can wait or promote B. That promotion loses nothing if B is caught up at A's final marker, and A still becomes what the owner chose. After step 3, A is handing over and accepts nothing, so stopping there risks nothing.
 
 ## Promotion after the primary is lost
 
-1. The owner runs `promote` on mirror B. B reads the library information of A and every known host.
+1. The owner runs `promote` on mirror B. B reads the library information of A and every known host. Unresolved: a mirror that never completed a copy has no marker to start from and must refuse here. ASO-173 adds the rule and its test.
 2. If A answers, `promote` refuses and points to the planned switch, which loses nothing while A is alive. To promote anyway, the owner shuts A down first. On a host in conflict, `promote` skips this check, because the other primary answering is the reason for the command.
 3. Before it changes anything, B shows a copy report. It gives when B last reached A, the marker B serves, when B was last caught up, and how many changes A had made beyond that marker at B's last read. For every other mirror that answered, it gives the marker and caught-up time, and warns when one is newer than B.
 4. The owner confirms explicitly.
@@ -181,7 +181,7 @@ If `take-over` cannot reach A, it refuses. The owner can wait or promote B. That
 
 Other hosts learn of N+1 when they read B or a host that knows it. Devices learn it from whichever host they reach and move to B without pairing again.
 
-Promotion loses every change A accepted after B's starting marker, the pull B discarded, and device pairings and revocations made on A after B's last pull. A device token revoked in that window works again on B until the owner revokes it there. If A, or a mirror that copied A's later changes, comes back, those changes return in a held copy, not in the library.
+Promotion loses every change A accepted after B's starting marker and the pull B discarded. Device access is not part of the copy, so promotion restores no access that the owner removed in Tailscale. If A, or a mirror that copied A's later changes, comes back, those changes return in a held copy, not in the library.
 
 ## When the old primary comes back
 
@@ -203,10 +203,10 @@ A mirror whose copy is not included in the new primary's record sets it aside th
 | A file fails its hash | The mirror fetches it again. After a second failure it stops the pull, keeps serving its last copy, and retries at every pull. It never publishes a catalog without that file, so a promotion cannot silently lack it. The cost is that the copy ages, and the changes at risk grow, until the owner acts. `hand-over` refuses meanwhile. | The track and both hashes. The same wrong bytes twice usually mean the file is damaged on the primary. Once the owner adds the audio again there or removes the track, the pull goes on. |
 | The mirror's disk is full | It checks free space before it fetches. If the disk fills anyway, it deletes its staged files and publishes nothing. It serves its last copy and retries at every pull. | The space it still needs, and the copy age. |
 | Two hosts both believe they are the primary | With different numbers, the lower one sets its copy aside if needed and becomes replaced at the first meeting. With the same number, both stop accepting changes. Until they meet, both accept changes. | The conflict, on both hosts and on devices. The owner runs `promote` on the host that should be the primary. |
-| A device holds a token for a retired host | The retired host serves only library information, which names the current primary. The device moves there, and its token works because tokens are per library. If the retired host is gone, the device uses the other hosts it knows. | With no reachable host, the device shows the "host unreachable" state of [onboarding](onboarding-and-connection-states.md#on-a-device). Offline saves keep playing. |
+| A device knows only a retired host | The retired host serves only library information, which names the current primary. The device moves there if the tailnet policy lets it reach that host. If the retired host is gone, the device uses the other hosts it knows. | With no reachable host, the device shows the "host unreachable" state of [onboarding](onboarding-and-connection-states.md#on-a-device). Offline saves keep playing. |
 | A host is restored from an older backup | A restored primary at the same switch number has an older marker, so its mirrors stop pulling and keep their copies. A host restored from before a switch has a lower number and follows the meeting rules. | Both markers. The owner stops the restored primary and promotes the newest mirror, or runs `follow` on the mirror again, which first sets its newer copy aside. |
 | A mirror is pointed at another library | `follow` or the pull refuses because the library ids differ. Nothing is removed. | Both library ids. |
-| A device is lost while the primary is unreachable | Nobody can revoke its token, because a revocation is a change. | The owner stops the mirrors, or promotes one and revokes the token there. |
+| A device is lost while the primary is unreachable | Its access does not depend on the primary. | The owner removes the device's access to every host in the tailnet policy, or removes the device from the tailnet. |
 
 ## What to test
 
@@ -221,7 +221,7 @@ The tests run two or three hosts on loopback addresses with short intervals, so 
 - A, cut off from B while it accepts one change, becomes replaced at the first meeting, keeps that change in `held/`, and leaves B's catalog unchanged. An old primary that starts while B is reachable refuses its first change.
 - Two mirrors promoted under one number both refuse changes after they meet, and `promote` on one makes the other replaced.
 - A replaced host and a host in conflict keep their state after a restart. A lower switch number changes nothing. No change commits after a higher record is stored, even when the two race.
-- A device paired once downloads from the mirror while the primary is stopped, keeps its newer catalog when the mirror is behind, and uses the new primary after a switch without pairing again.
+- A connected device downloads from the mirror while the primary is stopped, keeps its newer catalog when the mirror is behind, and uses the new primary after a switch without connecting again.
 
 ## Open questions
 
