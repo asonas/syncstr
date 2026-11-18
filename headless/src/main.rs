@@ -5,6 +5,41 @@ struct Cli {
     command: crate::Command,
 }
 
+fn configure_http(
+    builder: &mut hyper_util::server::conn::auto::Builder<hyper_util::rt::TokioExecutor>,
+) {
+    builder
+        .http1()
+        .timer(hyper_util::rt::TokioTimer::new())
+        .header_read_timeout(std::time::Duration::from_secs(10))
+        .max_buf_size(16384);
+}
+
+fn loopback_address(value: &str) -> anyhow::Result<std::net::SocketAddr> {
+    let address: std::net::SocketAddr = value.parse()?;
+    anyhow::ensure!(
+        address.ip().is_loopback(),
+        "--api-listen must be a loopback address"
+    );
+    Ok(address)
+}
+
+fn host_origin(value: &str) -> anyhow::Result<String> {
+    let error = "expected an HTTPS origin without a path, query, fragment or user info";
+    let (scheme, authority) = value
+        .split_once("://")
+        .ok_or_else(|| anyhow::anyhow!(error))?;
+    anyhow::ensure!(
+        scheme.eq_ignore_ascii_case("https")
+            && !authority.contains(['/', '?', '#', '@', '\\'])
+            && !value.chars().any(char::is_whitespace),
+        error
+    );
+    let url = reqwest::Url::parse(value)?;
+    anyhow::ensure!(url.has_host(), error);
+    Ok(url.origin().ascii_serialization())
+}
+
 async fn wait_for_shutdown() {
     #[cfg(unix)]
     {
@@ -114,6 +149,12 @@ enum Command {
         identity: std::path::PathBuf,
         #[arg(long, default_value = "127.0.0.1:8443")]
         listen: std::net::SocketAddr,
+        /// Serve the token-free read API on a separate loopback HTTP socket.
+        #[arg(long, value_parser = loopback_address)]
+        api_listen: Option<std::net::SocketAddr>,
+        /// HTTPS origin reported to devices in library information.
+        #[arg(long, value_parser = host_origin)]
+        api_address: Option<String>,
         #[cfg(feature = "p2p")]
         #[arg(long, requires = "peer_address_out")]
         peer_state: Option<std::path::PathBuf>,
@@ -372,7 +413,10 @@ async fn run(cli: crate::Cli) -> anyhow::Result<()> {
         } => {
             let store = syncstr_headless::shared_audio::Store::activate(&data, &expected_baseline)?;
             let catalog = store.catalog()?;
-            println!("{}", serde_json::json!({"schema": store.generation()?, "baseline": catalog.baseline, "tracks": catalog.tracks.len()}));
+            println!(
+                "{}",
+                serde_json::json!({"schema": store.generation()?, "baseline": catalog.baseline, "tracks": catalog.tracks.len()})
+            );
         }
         #[cfg(feature = "p2p")]
         crate::Command::SharedAudioControl {
@@ -424,7 +468,10 @@ async fn run(cli: crate::Cli) -> anyhow::Result<()> {
                 Ok(state) => state,
                 // Freezing succeeds on a journal that cannot be inspected.
                 Err(error) if matches!(action, crate::ControlAction::Freeze) => {
-                    println!("{}", serde_json::json!({"frozen": true, "review_required": error.to_string()}));
+                    println!(
+                        "{}",
+                        serde_json::json!({"frozen": true, "review_required": error.to_string()})
+                    );
                     return Ok(());
                 }
                 Err(error) => return Err(error),
@@ -481,7 +528,10 @@ async fn run(cli: crate::Cli) -> anyhow::Result<()> {
                     let (id, path) = value
                         .split_once('=')
                         .ok_or_else(|| anyhow::anyhow!("expected ID=ADDRESS_FILE"))?;
-                    syncstr_headless::shared_audio_net::address(std::path::Path::new(path), id.parse()?)
+                    syncstr_headless::shared_audio_net::address(
+                        std::path::Path::new(path),
+                        id.parse()?,
+                    )
                 })
                 .collect::<anyhow::Result<Vec<_>>>()?;
             let store = syncstr_headless::shared_audio::Store::open(&data)?;
@@ -511,7 +561,11 @@ async fn run(cli: crate::Cli) -> anyhow::Result<()> {
                 anyhow::Ok(())
             });
             cluster_tasks.spawn(syncstr_headless::shared_audio_net::synchronize(
-                endpoint.clone(), store.clone(), signer.clone(), discoveries, given,
+                endpoint.clone(),
+                store.clone(),
+                signer.clone(),
+                discoveries,
+                given,
             ));
             let token = syncstr_headless::identity::token(&identity.join("token"))?;
             let tls = syncstr_headless::identity::tls(&identity).await?;
@@ -525,7 +579,10 @@ async fn run(cli: crate::Cli) -> anyhow::Result<()> {
             });
             let server = axum_server::from_tcp_rustls(listener, tls)?
                 .handle(handle)
-                .serve(syncstr_headless::shared_audio_api::router(store, signer, &token).into_make_service());
+                .serve(
+                    syncstr_headless::shared_audio_api::router(store, signer, &token)
+                        .into_make_service(),
+                );
             tokio::select! {
                 result = server => result?,
                 result = cluster_tasks.join_next() => {
@@ -546,6 +603,8 @@ async fn run(cli: crate::Cli) -> anyhow::Result<()> {
             data,
             identity,
             listen,
+            api_listen,
+            api_address,
             #[cfg(feature = "p2p")]
             peer_state,
             #[cfg(feature = "p2p")]
@@ -638,23 +697,34 @@ async fn run(cli: crate::Cli) -> anyhow::Result<()> {
             };
             let listener = std::net::TcpListener::bind(listen)?;
             listener.set_nonblocking(true)?;
-            println!("Listening on https://{}", listener.local_addr()?);
+            let api_listener = api_listen.map(std::net::TcpListener::bind).transpose()?;
             let handle = axum_server::Handle::new();
             let shutdown = handle.clone();
+            let api_handle = axum_server::Handle::new();
+            let api_shutdown = api_handle.clone();
             tokio::spawn(async move {
                 wait_for_shutdown().await;
-                shutdown.graceful_shutdown(Some(std::time::Duration::from_secs(30)));
+                let grace = Some(std::time::Duration::from_secs(30));
+                shutdown.graceful_shutdown(grace);
+                api_shutdown.graceful_shutdown(grace);
             });
+            println!("Listening on https://{}", listener.local_addr()?);
             let mut server = axum_server::from_tcp_rustls(listener, tls)?.handle(handle);
-            server
-                .http_builder()
-                .http1()
-                .timer(hyper_util::rt::TokioTimer::new())
-                .header_read_timeout(std::time::Duration::from_secs(10))
-                .max_buf_size(16384);
-            server
-                .serve(syncstr_headless::api::router(store, &token).into_make_service())
-                .await?;
+            configure_http(server.http_builder());
+            let legacy = server
+                .serve(syncstr_headless::api::router(store.clone(), &token).into_make_service());
+            if let Some(listener) = api_listener {
+                listener.set_nonblocking(true)?;
+                println!("Host API listening on http://{}", listener.local_addr()?);
+                let mut api = axum_server::from_tcp(listener)?
+                    .acceptor(syncstr_headless::host_api::WriteIdleTimeout)
+                    .handle(api_handle);
+                configure_http(api.http_builder());
+                let router = syncstr_headless::host_api::router(store, api_address);
+                tokio::try_join!(legacy, api.serve(router.into_make_service()))?;
+            } else {
+                legacy.await?;
+            }
             #[cfg(feature = "p2p")]
             if let Some((endpoint, _lock, task, publisher)) = peer {
                 if let Some(publisher) = publisher {
@@ -825,7 +895,9 @@ async fn run(cli: crate::Cli) -> anyhow::Result<()> {
             let discovery = if no_discovery {
                 None
             } else {
-                Some(syncstr_headless::cluster_discovery::Discovery::start(&endpoint)?)
+                Some(syncstr_headless::cluster_discovery::Discovery::start(
+                    &endpoint,
+                )?)
             };
             println!("Cluster LAN endpoint {}", identity.id());
             let task = tokio::spawn(syncstr_headless::cluster_net::serve(

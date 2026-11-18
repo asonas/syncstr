@@ -5790,7 +5790,11 @@ async fn prepare_lock_refuses_unknown_replicated_records_until_the_abort() -> an
     let later = source.page(cursor)?;
     let later_playlists = source.playlist_page(playlist_cursor)?;
     assert!(!later.is_empty() && !later_playlists.is_empty());
-    assert!(replica.receive_page("source", cursor, later.clone()).is_err());
+    assert!(
+        replica
+            .receive_page("source", cursor, later.clone())
+            .is_err()
+    );
     assert!(
         replica
             .receive_playlist_page("source/playlists", playlist_cursor, later_playlists.clone())
@@ -5833,7 +5837,9 @@ async fn prepare_lock_refuses_unknown_replicated_records_until_the_abort() -> an
 
 /// A second v5 host of the fixture cluster: the replica's data with the other
 /// host's own grant as its local one.
-fn control_other(fixture: &crate::Fixture) -> anyhow::Result<syncstr_headless::shared_audio::Store> {
+fn control_other(
+    fixture: &crate::Fixture,
+) -> anyhow::Result<syncstr_headless::shared_audio::Store> {
     let replica = fixture.replica()?;
     let other = fixture.other.id().to_string();
     let grant = replica
@@ -6247,10 +6253,7 @@ async fn data_reconciles_only_between_hosts_whose_control_journals_agree() -> an
     let error = reconcile(&b_endpoint, &b, a_endpoint.addr(), &mut refused)
         .await
         .unwrap_err();
-    assert!(
-        error.to_string().contains("no control journal"),
-        "{error}"
-    );
+    assert!(error.to_string().contains("no control journal"), "{error}");
     server.abort();
     Ok(())
 }
@@ -6396,12 +6399,14 @@ impl crate::Hosts {
 async fn hosts_complete_an_activation_by_reacting_to_fetched_records() -> anyhow::Result<()> {
     use syncstr_headless::activation_control::{Body, Certificate, Signed, Step};
     let fixture = crate::Fixture::new().await?;
-    let hosts =
-        crate::Hosts::new(&fixture, vec!["registration-equivalence-v1".to_owned()]).await?;
+    let hosts = crate::Hosts::new(&fixture, vec!["registration-equivalence-v1".to_owned()]).await?;
     let (a, b, m) = (&hosts.a, &hosts.b, &hosts.m);
 
     let mut prepared = hosts.react(a, &fixture.host)?;
-    assert!(hosts.react(b, &fixture.other)?.is_empty(), "nothing fetched");
+    assert!(
+        hosts.react(b, &fixture.other)?.is_empty(),
+        "nothing fetched"
+    );
     hosts.exchange().await?;
     prepared.extend(hosts.react(b, &fixture.other)?);
     assert_eq!(
@@ -6450,8 +6455,7 @@ async fn hosts_complete_an_activation_by_reacting_to_fetched_records() -> anyhow
 async fn hosts_follow_the_coordinator_out_of_an_abandoned_proposal() -> anyhow::Result<()> {
     use syncstr_headless::activation_control::Step;
     let fixture = crate::Fixture::new().await?;
-    let hosts =
-        crate::Hosts::new(&fixture, vec!["registration-equivalence-v1".to_owned()]).await?;
+    let hosts = crate::Hosts::new(&fixture, vec!["registration-equivalence-v1".to_owned()]).await?;
     let (a, b, m) = (&hosts.a, &hosts.b, &hosts.m);
     let id = m.proposed.id()?;
     hosts.react(a, &fixture.host)?;
@@ -6460,7 +6464,10 @@ async fn hosts_follow_the_coordinator_out_of_an_abandoned_proposal() -> anyhow::
 
     a.control_withdraw(id, m.host(&fixture.host), &fixture.host, &m.session)?;
     assert!(hosts.react(a, &fixture.host)?.is_empty());
-    assert!(hosts.react(b, &fixture.other)?.is_empty(), "nothing fetched");
+    assert!(
+        hosts.react(b, &fixture.other)?.is_empty(),
+        "nothing fetched"
+    );
     hosts.exchange().await?;
     assert_eq!(hosts.react(b, &fixture.other)?[0].0, Step::Withdraw);
     assert!(hosts.react(b, &fixture.other)?.is_empty());
@@ -6506,11 +6513,11 @@ async fn synchronize_reacts_to_what_it_fetched() -> anyhow::Result<()> {
 }
 
 #[tokio::test]
-async fn hosts_that_never_prepared_only_withdraw_from_an_abandoned_proposal() -> anyhow::Result<()> {
+async fn hosts_that_never_prepared_only_withdraw_from_an_abandoned_proposal() -> anyhow::Result<()>
+{
     use syncstr_headless::activation_control::Step;
     let fixture = crate::Fixture::new().await?;
-    let hosts =
-        crate::Hosts::new(&fixture, vec!["registration-equivalence-v1".to_owned()]).await?;
+    let hosts = crate::Hosts::new(&fixture, vec!["registration-equivalence-v1".to_owned()]).await?;
     let (a, b, m) = (&hosts.a, &hosts.b, &hosts.m);
     let id = m.proposed.id()?;
     a.control_withdraw(id, m.host(&fixture.host), &fixture.host, &m.session)?;
@@ -6533,8 +6540,7 @@ async fn hosts_that_never_prepared_only_withdraw_from_an_abandoned_proposal() ->
 async fn hosts_follow_only_the_coordinators_withdrawal() -> anyhow::Result<()> {
     use syncstr_headless::activation_control::Step;
     let fixture = crate::Fixture::new().await?;
-    let hosts =
-        crate::Hosts::new(&fixture, vec!["registration-equivalence-v1".to_owned()]).await?;
+    let hosts = crate::Hosts::new(&fixture, vec!["registration-equivalence-v1".to_owned()]).await?;
     let (a, b, m) = (&hosts.a, &hosts.b, &hosts.m);
     hosts.exchange().await?;
     b.control_withdraw(
@@ -6605,7 +6611,10 @@ async fn coordinator_waits_for_a_host_that_differs() -> anyhow::Result<()> {
     let Progress::Waiting(reason) = hosts.pass(&fixture).await? else {
         panic!("b is not designated");
     };
-    assert!(reason.contains("is not designated for this session"), "{reason}");
+    assert!(
+        reason.contains("is not designated for this session"),
+        "{reason}"
+    );
     assert!(a.control_inspect()?.pending_preparations.is_empty());
     b.control_designate(&m.session)?;
     assert!(matches!(hosts.pass(&fixture).await?, Progress::Proposed(_)));
@@ -6648,8 +6657,18 @@ async fn synchronize_drives_the_coordinators_request() -> anyhow::Result<()> {
     // A loop stops when its discovery channel closes.
     let mut discoveries = Vec::new();
     for (endpoint, store, signer, peer) in [
-        (&hosts.a_endpoint, &hosts.a, &fixture.host, &hosts.b_endpoint),
-        (&hosts.b_endpoint, &hosts.b, &fixture.other, &hosts.a_endpoint),
+        (
+            &hosts.a_endpoint,
+            &hosts.a,
+            &fixture.host,
+            &hosts.b_endpoint,
+        ),
+        (
+            &hosts.b_endpoint,
+            &hosts.b,
+            &fixture.other,
+            &hosts.a_endpoint,
+        ),
     ] {
         let (discovered, receiver) = tokio::sync::mpsc::channel(4);
         discovered.send(peer.addr()).await?;
@@ -6681,8 +6700,7 @@ async fn a_refused_certificate_is_reported_as_withheld() -> anyhow::Result<()> {
     use syncstr_headless::activation_control::{Body, Prepared, Session as Designation, Signed};
     use syncstr_headless::activation_control_net::{Refused, Session};
     let fixture = crate::Fixture::new().await?;
-    let hosts =
-        crate::Hosts::new(&fixture, vec!["registration-equivalence-v1".to_owned()]).await?;
+    let hosts = crate::Hosts::new(&fixture, vec!["registration-equivalence-v1".to_owned()]).await?;
     let (a, m) = (&hosts.a, &hosts.m);
     let id = m.proposed.id()?;
     m.prepare(a, &fixture.host)?;
@@ -6790,7 +6808,9 @@ async fn a_given_address_is_read_only_for_the_named_host() -> anyhow::Result<()>
     assert!(address(&file, other).is_err());
 
     // The v5 endpoint has no relay, and an address without an IP reaches nothing.
-    let relayed = direct.clone().with_relay_url("https://relay.example.".parse()?);
+    let relayed = direct
+        .clone()
+        .with_relay_url("https://relay.example.".parse()?);
     let file = crate::address_file(&fixture, "relayed.json", &relayed)?;
     assert!(address(&file, host).is_err());
     let file = crate::address_file(&fixture, "empty.json", &iroh::EndpointAddr::new(host))?;
@@ -6845,7 +6865,9 @@ async fn synchronize_refuses_ambiguous_or_too_many_given_addresses() -> anyhow::
         )
     };
     // Two files for one host: which one the owner meant is unknown.
-    let error = run(vec![at(1, 0, 7000), at(1, 0, 7001)]).await?.unwrap_err();
+    let error = run(vec![at(1, 0, 7000), at(1, 0, 7001)])
+        .await?
+        .unwrap_err();
     assert!(error.to_string().contains("two addresses"), "{error}");
     let many: Vec<_> = (0..=255u8)
         .map(|byte| at(byte, 0, 7000))

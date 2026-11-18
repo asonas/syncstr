@@ -221,10 +221,17 @@ fn decode_kind(bytes: &[u8], expected: Option<&[u8]>) -> anyhow::Result<Signed> 
     let signing = outer.blob(MAX_BYTES)?;
     let signature = outer.array()?;
     outer.done()?;
-    let domain = [PROPOSAL, PREPARED, CERTIFICATE, INSTALLED, WITHDRAWN, ABORTED]
-        .into_iter()
-        .find(|d| signing.starts_with(d))
-        .context("unknown control domain")?;
+    let domain = [
+        PROPOSAL,
+        PREPARED,
+        CERTIFICATE,
+        INSTALLED,
+        WITHDRAWN,
+        ABORTED,
+    ]
+    .into_iter()
+    .find(|d| signing.starts_with(d))
+    .context("unknown control domain")?;
     ensure!(
         expected.is_none_or(|e| e == domain),
         "unexpected nested envelope"

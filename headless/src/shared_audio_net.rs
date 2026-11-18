@@ -1175,7 +1175,10 @@ pub fn address(
         .read_to_end(&mut bytes)?;
     anyhow::ensure!(bytes.len() <= 16 * 1024, "address file too large");
     let address: iroh::EndpointAddr = serde_json::from_slice(&bytes)?;
-    anyhow::ensure!(address.id == expected, "address does not match the named host");
+    anyhow::ensure!(
+        address.id == expected,
+        "address does not match the named host"
+    );
     // The v5 endpoint runs without a relay, so only IP addresses can be reached.
     anyhow::ensure!(
         !address.addrs.is_empty()
@@ -1282,6 +1285,9 @@ mod tests {
             at(1, 7000).with_ip_addr("192.0.2.10:7001".parse().unwrap())
         );
         // A host the owner did not name keeps what discovery reported.
-        assert_eq!(crate::shared_audio_net::joined(&given, at(2, 7001)), at(2, 7001));
+        assert_eq!(
+            crate::shared_audio_net::joined(&given, at(2, 7001)),
+            at(2, 7001)
+        );
     }
 }

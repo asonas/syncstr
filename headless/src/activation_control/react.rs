@@ -117,8 +117,8 @@ fn plan(
             }
             continue;
         }
-        let acknowledged = inspection.prepare_locks.contains(id)
-            && !inspection.unsigned_preparations.contains(id);
+        let acknowledged =
+            inspection.prepare_locks.contains(id) && !inspection.unsigned_preparations.contains(id);
         // A readable, unhalted journal holds no other open proposal than one
         // that extends the installed head: a sibling halts it.
         if inspection.withdrawn.contains(id) || acknowledged {

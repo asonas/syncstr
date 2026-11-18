@@ -489,7 +489,13 @@ impl crate::store::Store {
                 "object already known; explicit restoration or resolution required"
             );
         }
-        self.publish_observed_cluster_change(identity, object, action, heads.into_iter().map(|record| record.id).collect()).await
+        self.publish_observed_cluster_change(
+            identity,
+            object,
+            action,
+            heads.into_iter().map(|record| record.id).collect(),
+        )
+        .await
     }
 
     pub async fn publish_observed_cluster_change(

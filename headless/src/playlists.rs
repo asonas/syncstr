@@ -277,7 +277,9 @@ pub(crate) fn migrate(connection: &rusqlite::Connection) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn records(connection: &rusqlite::Connection) -> anyhow::Result<Vec<crate::playlists::Signed>> {
+pub(crate) fn records(
+    connection: &rusqlite::Connection,
+) -> anyhow::Result<Vec<crate::playlists::Signed>> {
     let mut statement =
         connection.prepare("SELECT payload FROM playlist_records ORDER BY rowid")?;
     statement

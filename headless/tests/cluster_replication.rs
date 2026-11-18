@@ -195,9 +195,20 @@ async fn incompatible_album_titles_remain_in_history_until_consistent_edits() ->
         store.catalog().await?.organization.albums[0].title,
         original.albums[0].title
     );
-    let heads = store.cluster_object_states().await?.into_iter()
-        .map(|state| (state.object, state.heads[0].id.clone())).collect();
-    store.resolve_cluster_album_title(&identity, &original.albums[0].id, "Alternative title", heads).await?;
+    let heads = store
+        .cluster_object_states()
+        .await?
+        .into_iter()
+        .map(|state| (state.object, state.heads[0].id.clone()))
+        .collect();
+    store
+        .resolve_cluster_album_title(
+            &identity,
+            &original.albums[0].id,
+            "Alternative title",
+            heads,
+        )
+        .await?;
     store.project_cluster_metadata(a.sha256).await?;
     store.project_cluster_metadata(b.sha256).await?;
     assert_eq!(
@@ -210,7 +221,8 @@ async fn incompatible_album_titles_remain_in_history_until_consistent_edits() ->
 }
 
 #[tokio::test]
-async fn client_restore_requires_confirmation_and_keeps_concurrent_deletion() -> anyhow::Result<()> {
+async fn client_restore_requires_confirmation_and_keeps_concurrent_deletion() -> anyhow::Result<()>
+{
     let root = tempfile::tempdir()?;
     let state = root.path().join("identity");
     syncstr_headless::peer::Identity::initialize(&state)?;
@@ -224,31 +236,118 @@ async fn client_restore_requires_confirmation_and_keeps_concurrent_deletion() ->
     std::fs::write(&source, bytes)?;
     let mut organization = syncstr_headless::organization::Organization::default();
     organization.import(&entry);
-    store.import_cluster_file(&identity, entry.clone(), Some(organization.clone()), &source, false).await?;
+    store
+        .import_cluster_file(
+            &identity,
+            entry.clone(),
+            Some(organization.clone()),
+            &source,
+            false,
+        )
+        .await?;
     let imported = store.cluster_selected_change(&entry.sha256).await?.unwrap();
     let added_at = store.catalog().await?.entries[0].track.added_at;
     assert!(added_at.is_some_and(|value| value > 1));
     let mut edited = organization.clone();
     edited.albums[0].title = "Edited without uploading audio".into();
-    let revision = store.receive_cluster_metadata(&identity, entry.clone(), edited.clone(), vec![imported.id.clone()]).await?;
-    assert_eq!(store.receive_cluster_metadata(&identity, entry.clone(), edited, vec![imported.id]).await?, revision);
+    let revision = store
+        .receive_cluster_metadata(
+            &identity,
+            entry.clone(),
+            edited.clone(),
+            vec![imported.id.clone()],
+        )
+        .await?;
+    assert_eq!(
+        store
+            .receive_cluster_metadata(&identity, entry.clone(), edited, vec![imported.id])
+            .await?,
+        revision
+    );
     assert_eq!(store.cluster_changes().await?.len(), 2);
     assert_eq!(store.catalog().await?.entries[0].track.added_at, added_at);
-    let removed = store.publish_cluster_change(&identity, entry.sha256.clone(), syncstr_headless::cluster_changes::Action::Delete).await?;
-    assert!(store.receive_cluster_metadata(&identity, entry.clone(), organization.clone(), vec![removed.id.clone()]).await.is_err());
+    let removed = store
+        .publish_cluster_change(
+            &identity,
+            entry.sha256.clone(),
+            syncstr_headless::cluster_changes::Action::Delete,
+        )
+        .await?;
+    assert!(
+        store
+            .receive_cluster_metadata(
+                &identity,
+                entry.clone(),
+                organization.clone(),
+                vec![removed.id.clone()]
+            )
+            .await
+            .is_err()
+    );
     let stage = || -> anyhow::Result<tempfile::NamedTempFile> {
         let file = tempfile::NamedTempFile::new()?;
         std::fs::write(file.path(), bytes)?;
         file.as_file().sync_all()?;
         Ok(file)
     };
-    assert!(store.receive_cluster_import(&identity, entry.clone(), organization.clone(), vec![removed.id.clone()], false, stage()?).await.is_err());
-    assert!(store.cluster_selected_change(&entry.sha256).await?.is_none());
-    store.receive_cluster_import(&identity, entry.clone(), organization.clone(), vec![removed.id.clone()], true, stage()?).await?;
+    assert!(
+        store
+            .receive_cluster_import(
+                &identity,
+                entry.clone(),
+                organization.clone(),
+                vec![removed.id.clone()],
+                false,
+                stage()?
+            )
+            .await
+            .is_err()
+    );
+    assert!(
+        store
+            .cluster_selected_change(&entry.sha256)
+            .await?
+            .is_none()
+    );
+    store
+        .receive_cluster_import(
+            &identity,
+            entry.clone(),
+            organization.clone(),
+            vec![removed.id.clone()],
+            true,
+            stage()?,
+        )
+        .await?;
     assert_eq!(store.catalog().await?.entries[0].track.added_at, added_at);
-    assert!(matches!(store.cluster_selected_change(&entry.sha256).await?.unwrap().action, syncstr_headless::cluster_changes::Action::Restore { .. }));
-    store.publish_cluster_change(&identity, entry.sha256.clone(), syncstr_headless::cluster_changes::Action::Delete).await?;
-    assert!(store.receive_cluster_import(&identity, entry.clone(), organization, vec![removed.id], true, stage()?).await.is_err());
+    assert!(matches!(
+        store
+            .cluster_selected_change(&entry.sha256)
+            .await?
+            .unwrap()
+            .action,
+        syncstr_headless::cluster_changes::Action::Restore { .. }
+    ));
+    store
+        .publish_cluster_change(
+            &identity,
+            entry.sha256.clone(),
+            syncstr_headless::cluster_changes::Action::Delete,
+        )
+        .await?;
+    assert!(
+        store
+            .receive_cluster_import(
+                &identity,
+                entry.clone(),
+                organization,
+                vec![removed.id],
+                true,
+                stage()?
+            )
+            .await
+            .is_err()
+    );
     assert!(store.cluster_object_states().await?[0].conflicted());
     assert_eq!(std::fs::read(source)?, bytes);
     Ok(())

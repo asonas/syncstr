@@ -1,6 +1,7 @@
 struct Inner {
     connection: std::sync::Mutex<rusqlite::Connection>,
     root: std::path::PathBuf,
+    host_id: uuid::Uuid,
     _lock: crate::node_lock::NodeLock,
 }
 
@@ -101,6 +102,18 @@ impl crate::store::Store {
             "INSERT OR IGNORE INTO library VALUES (1, ?)",
             [uuid::Uuid::new_v4().to_string()],
         )?;
+        transaction.execute_batch("CREATE TABLE IF NOT EXISTS host_identity (singleton INTEGER PRIMARY KEY CHECK(singleton = 1), id TEXT NOT NULL)")?;
+        transaction.execute(
+            "INSERT OR IGNORE INTO host_identity VALUES (1, ?)",
+            [uuid::Uuid::new_v4().to_string()],
+        )?;
+        let host_id = transaction
+            .query_row(
+                "SELECT id FROM host_identity WHERE singleton = 1",
+                [],
+                |row| row.get::<_, String>(0),
+            )?
+            .parse()?;
         crate::cluster::migrate(&transaction)?;
         #[cfg(feature = "p2p")]
         crate::enrollment::migrate(&transaction)?;
@@ -123,6 +136,7 @@ impl crate::store::Store {
         Ok(Self(std::sync::Arc::new(crate::store::Inner {
             connection: std::sync::Mutex::new(connection),
             root,
+            host_id,
             _lock: lock,
         })))
     }
@@ -145,6 +159,10 @@ impl crate::store::Store {
         .await?
     }
 
+    pub(crate) fn host_id(&self) -> uuid::Uuid {
+        self.0.host_id
+    }
+
     pub async fn stage(&self) -> anyhow::Result<tempfile::NamedTempFile> {
         self.run(|_, root| {
             Ok(tempfile::Builder::new()
@@ -155,24 +173,8 @@ impl crate::store::Store {
     }
 
     pub async fn catalog(&self) -> anyhow::Result<crate::model::Catalog> {
-        self.run(|connection, _| {
-            let id =
-                connection.query_row("SELECT id FROM library WHERE singleton = 1", [], |row| {
-                    row.get(0)
-                })?;
-            let mut statement = connection.prepare("SELECT payload FROM tracks ORDER BY id")?;
-            let rows = statement.query_map([], |row| row.get::<_, Vec<u8>>(0))?;
-            let entries = rows
-                .map(|data| Ok(serde_json::from_slice(&data?)?))
-                .collect::<anyhow::Result<Vec<_>>>()?;
-            Ok(crate::model::Catalog {
-                id,
-                name: "Syncstr".to_owned(),
-                entries,
-                organization: crate::store::read_organization(connection)?,
-            })
-        })
-        .await
+        self.run(|connection, _| read_catalog(connection, CatalogImages::Embedded))
+            .await
     }
 
     pub async fn get(&self, id: String) -> anyhow::Result<Option<crate::model::Entry>> {
@@ -283,7 +285,41 @@ impl crate::store::Store {
     }
 }
 
-pub(crate) fn read_organization(
+pub(crate) enum CatalogImages {
+    Embedded,
+    References,
+}
+
+pub(crate) fn read_catalog(
+    connection: &rusqlite::Connection,
+    images: CatalogImages,
+) -> anyhow::Result<crate::model::Catalog> {
+    let id = connection.query_row("SELECT id FROM library WHERE singleton = 1", [], |row| {
+        row.get(0)
+    })?;
+    let mut statement = connection.prepare("SELECT payload FROM tracks ORDER BY id")?;
+    let rows = statement.query_map([], |row| row.get::<_, Vec<u8>>(0))?;
+    let entries = rows
+        .map(|data| {
+            let mut entry: crate::model::Entry = serde_json::from_slice(&data?)?;
+            if matches!(images, CatalogImages::References) {
+                entry.artwork = None;
+            }
+            Ok(entry)
+        })
+        .collect::<anyhow::Result<Vec<_>>>()?;
+    Ok(crate::model::Catalog {
+        id,
+        name: "Syncstr".to_owned(),
+        entries,
+        organization: match images {
+            CatalogImages::Embedded => read_organization(connection)?,
+            CatalogImages::References => organization_metadata(connection)?,
+        },
+    })
+}
+
+pub(crate) fn organization_metadata(
     connection: &rusqlite::Connection,
 ) -> anyhow::Result<crate::organization::Organization> {
     let payload: Vec<u8> = connection.query_row(
@@ -291,7 +327,13 @@ pub(crate) fn read_organization(
         [],
         |row| row.get(0),
     )?;
-    let mut organization: crate::organization::Organization = serde_json::from_slice(&payload)?;
+    Ok(serde_json::from_slice(&payload)?)
+}
+
+pub(crate) fn read_organization(
+    connection: &rusqlite::Connection,
+) -> anyhow::Result<crate::organization::Organization> {
+    let mut organization = organization_metadata(connection)?;
     if let Some(artwork) = &mut organization.artwork {
         let mut statement = connection.prepare("SELECT id, payload FROM artwork_assets")?;
         for row in statement.query_map([], |row| {

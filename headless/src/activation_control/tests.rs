@@ -373,7 +373,13 @@ fn membership_revision_vectors() -> anyhow::Result<()> {
 
 #[test]
 fn bounded_noncanonical_decode() -> anyhow::Result<()> {
-    for name in ["proposal", "certificate", "installed", "successor", "aborted"] {
+    for name in [
+        "proposal",
+        "certificate",
+        "installed",
+        "successor",
+        "aborted",
+    ] {
         let bytes = vector(name).canonical()?;
         for length in [0, 1, 4, bytes.len() - 1] {
             assert!(Signed::decode(&bytes[..length]).is_err());
@@ -403,7 +409,13 @@ fn bounded_noncanonical_decode() -> anyhow::Result<()> {
 
 #[test]
 fn tampered_envelopes() -> anyhow::Result<()> {
-    for name in ["proposal", "certificate", "installed", "successor", "aborted"] {
+    for name in [
+        "proposal",
+        "certificate",
+        "installed",
+        "successor",
+        "aborted",
+    ] {
         let bytes = vector(name).canonical()?;
         // Cover each digest-sized signing region and every signature byte.
         for offset in (4..bytes.len())
@@ -1392,7 +1404,10 @@ fn prepare_and_install_require_this_hosts_input_history() -> anyhow::Result<()> 
     let f = Fixture::new()?;
     f.record(&vector("proposal"))?;
     f.sql("INSERT INTO shared_records VALUES ('a', X'00')")?;
-    assert!(f.prepare().is_err(), "the fixture acknowledges an empty history");
+    assert!(
+        f.prepare().is_err(),
+        "the fixture acknowledges an empty history"
+    );
     assert!(f.store().control_inspect()?.prepare_locks.is_empty());
     let mut ack = root_prepared();
     ack.input_history = f.store().control_input_history()?;
@@ -1803,7 +1818,9 @@ fn withdrawal_cannot_reopen_a_settled_installation() -> anyhow::Result<()> {
 fn evidence_answer_stops_at_its_budget() -> anyhow::Result<()> {
     let f = Fixture::new()?;
     f.record(&vector("certificate"))?;
-    let ids: Vec<Digest> = f.store().run(|db, _| Ok(journal::all(db)?.into_keys().collect()))?;
+    let ids: Vec<Digest> = f
+        .store()
+        .run(|db, _| Ok(journal::all(db)?.into_keys().collect()))?;
     assert_eq!(ids.len(), 5);
     let (all, snapshots) = f.store().control_evidence(&ids, usize::MAX)?;
     assert_eq!((all.len(), snapshots.len()), (5, 1));
@@ -2042,23 +2059,41 @@ fn coordinator_proposes_once_every_host_is_ready() -> anyhow::Result<()> {
     };
     type Change = Box<dyn Fn(&mut Peer)>;
     let cases: Vec<(&str, Change)> = vec![
-        ("has no control journal", Box::new(|p| p.journal = Journal::Absent)),
-        ("needs review", Box::new(|p| p.journal = Journal::Unreadable)),
-        ("is halted for review", Box::new(summary(|s| s.halted = true))),
+        (
+            "has no control journal",
+            Box::new(|p| p.journal = Journal::Absent),
+        ),
+        (
+            "needs review",
+            Box::new(|p| p.journal = Journal::Unreadable),
+        ),
+        (
+            "is halted for review",
+            Box::new(summary(|s| s.halted = true)),
+        ),
         ("is not frozen", Box::new(summary(|s| s.frozen = false))),
         ("is not designated", Box::new(summary(|s| s.session = None))),
         (
             "is not designated",
             Box::new(summary(|s| s.session.as_mut().unwrap().nonce = [1; 32])),
         ),
-        ("another installed head", Box::new(summary(|s| s.head = Some([1; 32])))),
+        (
+            "another installed head",
+            Box::new(summary(|s| s.head = Some([1; 32]))),
+        ),
         ("another installed head", Box::new(summary(|s| s.epoch = 1))),
         (
             "another membership revision",
             Box::new(summary(|s| s.membership = Some([1; 32]))),
         ),
-        ("another membership revision", Box::new(summary(|s| s.membership = None))),
-        ("another input history", Box::new(summary(|s| s.input_history = [1; 32]))),
+        (
+            "another membership revision",
+            Box::new(summary(|s| s.membership = None)),
+        ),
+        (
+            "another input history",
+            Box::new(summary(|s| s.input_history = [1; 32])),
+        ),
     ];
     for (expected, change) in &cases {
         let shown = peers(&f, |seed, peer| {
@@ -2103,7 +2138,10 @@ fn coordinator_certifies_and_reports_completion() -> anyhow::Result<()> {
     others_prepared(&f)?;
     assert_eq!(drive(&f, &none)?, Progress::Certified(id));
     let certificate = vector("certificate").id()?;
-    assert_eq!(f.store().control_inspect()?.pending_certificates, [certificate]);
+    assert_eq!(
+        f.store().control_inspect()?.pending_certificates,
+        [certificate]
+    );
     assert!(waiting(&f, &none)?.contains("not installed"));
     // With a certificate the session only goes forward.
     assert!(f.store().control_request_abort().is_err());
@@ -2231,8 +2269,7 @@ fn requests_need_the_frozen_designated_coordinator() -> anyhow::Result<()> {
     // A request that signed nothing is replaced, or dropped by an abort.
     f.store().control_designate(&session())?;
     start(&f)?;
-    f.store()
-        .control_start(&supported(), [3; 32], [4; 32])?;
+    f.store().control_start(&supported(), [3; 32], [4; 32])?;
     assert_eq!(f.store().control_request()?.unwrap().inventory, [3; 32]);
     f.store().control_request_abort()?;
     assert_eq!(f.store().control_request()?, None);
@@ -2250,10 +2287,7 @@ fn requests_need_the_frozen_designated_coordinator() -> anyhow::Result<()> {
     // The other hosts show nothing wrong, so the refusal is this host's own.
     let healthy = peers(&f, |_, _| {})?;
     f.sql("DELETE FROM activation_control_freeze")?;
-    assert_eq!(
-        waiting(&f, &healthy)?,
-        "host is not frozen for maintenance"
-    );
+    assert_eq!(waiting(&f, &healthy)?, "host is not frozen for maintenance");
     f.store().control_freeze()?;
     f.record(&vector("proposal"))?;
     let mut rival = proposal(&vector("proposal"))?.clone();
@@ -2308,7 +2342,10 @@ fn coordinator_proposes_the_next_epoch_after_every_acknowledgment() -> anyhow::R
     };
     let next = f.store().run(|db, _| super::journal::get(db, &next))?;
     let p = proposal(&next)?;
-    assert_eq!((p.epoch, p.previous), (2, Some(vector("certificate").id()?)));
+    assert_eq!(
+        (p.epoch, p.previous),
+        (2, Some(vector("certificate").id()?))
+    );
     Ok(())
 }
 
@@ -2350,7 +2387,9 @@ fn store_refuses_a_later_schema_generation() -> anyhow::Result<()> {
     let error = reopen_at(&mut f, 7).unwrap_err();
     assert!(error.to_string().contains("unsupported"), "{error}");
     let activated = crate::shared_audio::Store::activate(f.directory.path(), "");
-    let error = activated.err().expect("a later generation is no migration source");
+    let error = activated
+        .err()
+        .expect("a later generation is no migration source");
     assert!(error.to_string().contains("migration source"), "{error}");
     let error = reopen_at(&mut f, 4).unwrap_err();
     assert!(error.to_string().contains("not activated"), "{error}");

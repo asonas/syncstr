@@ -23,7 +23,10 @@ pub(crate) async fn send<T: serde::Serialize>(
     message: &T,
 ) -> anyhow::Result<()> {
     let payload = serde_json::to_vec(message)?;
-    anyhow::ensure!(payload.len() <= crate::cluster_net::MAX_FRAME, "cluster frame too large");
+    anyhow::ensure!(
+        payload.len() <= crate::cluster_net::MAX_FRAME,
+        "cluster frame too large"
+    );
     stream
         .write_all(&(payload.len() as u32).to_be_bytes())
         .await?;
@@ -125,7 +128,9 @@ pub async fn enroll(
     invitation: &crate::enrollment::Invitation,
     store: &crate::store::Store,
 ) -> anyhow::Result<()> {
-    if let Some(relay) = &invitation.relay { crate::cluster_remote::validate_url(relay)?; }
+    if let Some(relay) = &invitation.relay {
+        crate::cluster_remote::validate_url(relay)?;
+    }
     anyhow::ensure!(
         invitation.version == 1 && invitation.host == address.id.to_string(),
         "invitation host mismatch"

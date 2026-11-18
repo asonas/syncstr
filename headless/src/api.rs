@@ -245,9 +245,6 @@ async fn download(
     axum::extract::Path(id): axum::extract::Path<String>,
     headers: axum::http::HeaderMap,
 ) -> Result<axum::response::Response, crate::api::Error> {
-    use axum::response::IntoResponse as _;
-    use tokio::io::AsyncReadExt as _;
-    use tokio::io::AsyncSeekExt as _;
     let entry = state
         .store
         .get(id)
@@ -257,75 +254,113 @@ async fn download(
             axum::http::StatusCode::NOT_FOUND,
             "track not found",
         ))?;
-    entry.validate().map_err(crate::api::Error::internal)?;
-    let mut file = tokio::fs::File::open(state.store.path(&entry))
+    let file = open_audio(&state.store, &entry)
         .await
-        .map_err(crate::api::Error::internal)?;
-    let metadata = file.metadata().await.map_err(crate::api::Error::internal)?;
-    if !metadata.is_file() || metadata.len() != entry.track.size {
-        return Err(crate::api::Error::internal("audio size mismatch"));
-    }
-    let etag = format!("\"{}\"", entry.sha256);
-    let range = if headers
-        .get(axum::http::header::IF_RANGE)
-        .is_none_or(|value| value == etag.as_str())
-    {
-        headers
-            .get(axum::http::header::RANGE)
-            .and_then(|value| value.to_str().ok())
-    } else {
-        None
-    };
-    let (start, end, status) = if let Some(range) = range {
-        match crate::api::range(range, entry.track.size) {
-            Some((start, end)) => (start, end, axum::http::StatusCode::PARTIAL_CONTENT),
-            None => {
+        .map_err(Error::internal)?;
+    file_response(
+        file,
+        entry.track.size,
+        &entry.sha256,
+        "application/octet-stream",
+        &headers,
+        Download::Legacy,
+    )
+    .await
+    .map_err(Error::internal)
+}
+
+pub(crate) async fn open_audio(
+    store: &crate::store::Store,
+    entry: &crate::model::Entry,
+) -> anyhow::Result<tokio::fs::File> {
+    entry.validate()?;
+    let file = tokio::fs::File::open(store.path(entry)).await?;
+    let metadata = file.metadata().await?;
+    anyhow::ensure!(
+        metadata.is_file() && metadata.len() == entry.track.size,
+        "audio size mismatch"
+    );
+    Ok(file)
+}
+
+pub(crate) enum Download {
+    Legacy,
+    Host(tokio::sync::OwnedSemaphorePermit),
+}
+
+pub(crate) async fn file_response<
+    R: tokio::io::AsyncRead + tokio::io::AsyncSeek + Unpin + Send + 'static,
+>(
+    mut reader: R,
+    size: u64,
+    id: &str,
+    content_type: &'static str,
+    headers: &axum::http::HeaderMap,
+    download: Download,
+) -> anyhow::Result<axum::response::Response> {
+    use axum::http::{StatusCode, header};
+    use axum::response::IntoResponse as _;
+    use futures_util::StreamExt as _;
+    use tokio::io::{AsyncReadExt as _, AsyncSeekExt as _};
+    anyhow::ensure!(size > 0, "empty file");
+    let etag = format!("\"{id}\"");
+    let requested = headers
+        .get(header::IF_RANGE)
+        .is_none_or(|v| v == etag.as_str())
+        .then(|| headers.get(header::RANGE))
+        .flatten();
+    let legacy = matches!(download, Download::Legacy);
+    let (start, end, status) = match requested {
+        Some(value) if !legacy || value.to_str().is_ok() => {
+            let single = legacy || headers.get_all(header::RANGE).iter().count() == 1;
+            let range = value
+                .to_str()
+                .ok()
+                .and_then(|v| range(v, size))
+                .filter(|_| single);
+            let Some((start, end)) = range else {
+                let status = StatusCode::RANGE_NOT_SATISFIABLE;
+                let headers = [(header::CONTENT_RANGE, format!("bytes */{size}"))];
+                if legacy {
+                    return Ok((status, headers, "invalid range").into_response());
+                }
                 return Ok((
-                    axum::http::StatusCode::RANGE_NOT_SATISFIABLE,
-                    [(
-                        axum::http::header::CONTENT_RANGE,
-                        format!("bytes */{}", entry.track.size),
-                    )],
-                    "invalid range",
+                    status,
+                    headers,
+                    [
+                        (header::ACCEPT_RANGES, "bytes"),
+                        (header::CONTENT_TYPE, content_type),
+                        (header::ETAG, etag.as_str()),
+                        (header::CONTENT_LENGTH, "0"),
+                    ],
                 )
                     .into_response());
-            }
+            };
+            (start, end, StatusCode::PARTIAL_CONTENT)
         }
-    } else {
-        (0, entry.track.size - 1, axum::http::StatusCode::OK)
+        _ => (0, size - 1, StatusCode::OK),
     };
-    file.seek(std::io::SeekFrom::Start(start))
-        .await
-        .map_err(crate::api::Error::internal)?;
-    let mut response = axum::response::Response::new(axum::body::Body::from_stream(
-        tokio_util::io::ReaderStream::new(file.take(end - start + 1)),
-    ));
-    *response.status_mut() = status;
-    for (name, value) in [
-        (
-            axum::http::header::CONTENT_TYPE,
-            "application/octet-stream".to_owned(),
-        ),
-        (
-            axum::http::header::CONTENT_LENGTH,
-            (end - start + 1).to_string(),
-        ),
-        (axum::http::header::ACCEPT_RANGES, "bytes".to_owned()),
-        (axum::http::header::ETAG, etag),
-    ] {
-        response
-            .headers_mut()
-            .insert(name, value.parse().map_err(crate::api::Error::internal)?);
+    reader.seek(std::io::SeekFrom::Start(start)).await?;
+    let length = end - start + 1;
+    // The response owns the slot until its body finishes or the caller disconnects.
+    let permit = match download {
+        Download::Legacy => None,
+        Download::Host(slot) => Some(slot),
+    };
+    let stream = tokio_util::io::ReaderStream::new(reader.take(length)).map(move |chunk| {
+        let _ = &permit;
+        chunk
+    });
+    let mut response = axum::response::Response::builder()
+        .status(status)
+        .header(header::CONTENT_TYPE, content_type)
+        .header(header::CONTENT_LENGTH, length)
+        .header(header::ACCEPT_RANGES, "bytes")
+        .header(header::ETAG, etag);
+    if status == StatusCode::PARTIAL_CONTENT {
+        response = response.header(header::CONTENT_RANGE, format!("bytes {start}-{end}/{size}"));
     }
-    if range.is_some() {
-        response.headers_mut().insert(
-            axum::http::header::CONTENT_RANGE,
-            format!("bytes {start}-{end}/{}", entry.track.size)
-                .parse()
-                .map_err(crate::api::Error::internal)?,
-        );
-    }
-    Ok(response)
+    Ok(response.body(axum::body::Body::from_stream(stream))?)
 }
 
 pub(crate) fn range(value: &str, size: u64) -> Option<(u64, u64)> {
