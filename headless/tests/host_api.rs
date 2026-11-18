@@ -21,8 +21,11 @@ impl Drop for Host {
 
 impl Host {
     async fn start() -> anyhow::Result<Self> {
+        Self::open(tempfile::tempdir()?).await
+    }
+
+    async fn open(root: tempfile::TempDir) -> anyhow::Result<Self> {
         let _ = rustls::crypto::ring::default_provider().install_default();
-        let root = tempfile::tempdir()?;
         let store = Store::open(root.path())?;
         let router =
             syncstr_headless::host_api::router(store.clone(), "https://music.example.test".into());
@@ -598,6 +601,49 @@ fn stored_organization(db: &rusqlite::Connection) -> rusqlite::Result<Vec<u8>> {
         [],
         |row| row.get(0),
     )
+}
+
+#[tokio::test]
+async fn reopening_serves_changed_embedded_image_and_preserves_existing_candidate()
+-> anyhow::Result<()> {
+    let root = tempfile::tempdir()?;
+    let store = Store::open(root.path())?;
+    let red = include_bytes!("../fixtures/red.jpg");
+    let blue = include_bytes!("../fixtures/blue.jpg");
+    let mut entry: Entry = serde_json::from_slice(include_bytes!("../fixtures/local-entry.json"))?;
+    entry.artwork = Some(red.to_vec());
+    let mut file = store.stage().await?;
+    file.write_all(b"abc")?;
+    let mut entry = store.commit(entry, file, false).await?;
+    drop(store);
+
+    let store = Store::open(root.path())?;
+    let artwork = store.catalog().await?.organization.artwork.unwrap();
+    assert_eq!(artwork.candidates.len(), 1);
+    assert_eq!(
+        artwork.candidates[0].asset,
+        hex::encode(Sha256::digest(red))
+    );
+    drop(store);
+
+    // Older stores persisted updated track metadata without registering the new image.
+    let db = rusqlite::Connection::open(root.path().join("node.sqlite"))?;
+    let before = stored_organization(&db)?;
+    entry.artwork = Some(blue.to_vec());
+    db.execute(
+        "UPDATE tracks SET payload = ? WHERE id = ?",
+        (serde_json::to_vec(&entry)?, &entry.track.id),
+    )?;
+
+    let host = Host::open(root).await?;
+    assert_eq!(stored_organization(&db)?, before);
+    let response = host
+        .get(&format!("artwork/{}", hex::encode(Sha256::digest(blue))))
+        .send()
+        .await?;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(response.bytes().await?.as_ref(), blue);
+    Ok(())
 }
 
 async fn save_and_reopen_with_embedded_image(include_organization: bool) -> anyhow::Result<()> {

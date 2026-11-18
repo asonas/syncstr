@@ -64,6 +64,8 @@ impl crate::store::Store {
                 if stored.is_none() {
                     organization.import(&entry);
                 }
+                // The embedded image can differ from an existing display candidate.
+                register_entry_artwork(&transaction, &entry)?;
                 import_entry_artwork(&mut organization, &entry);
             }
         }
@@ -330,13 +332,12 @@ pub(crate) fn read_organization(
 ) -> anyhow::Result<crate::organization::Organization> {
     let mut organization = organization_metadata(connection)?;
     if let Some(artwork) = &mut organization.artwork {
-        let mut statement = connection.prepare("SELECT id, payload FROM artwork_assets")?;
-        for row in statement.query_map([], |row| {
-            Ok((row.get::<_, String>(0)?, row.get::<_, Vec<u8>>(1)?))
-        })? {
-            let (id, bytes) = row?;
-            if artwork.assets.contains_key(&id) {
-                artwork.assets.insert(id, bytes);
+        use rusqlite::OptionalExtension as _;
+        let mut statement =
+            connection.prepare("SELECT payload FROM artwork_assets WHERE id = ?")?;
+        for (id, bytes) in &mut artwork.assets {
+            if let Some(payload) = statement.query_row([id], |row| row.get(0)).optional()? {
+                *bytes = payload;
             }
         }
     }
