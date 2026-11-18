@@ -1,5 +1,7 @@
 # P2P music transfer
 
+> [ADR 0008](adr/0008-one-primary-host-over-a-private-network.md), accepted on 2026-11-18, replaces the design that this document describes. This document stays as the record of the code that still implements that design. See [Syncstr on a private network](private-network-architecture.md).
+
 The macOS and iPhone apps can explicitly connect to a headless node over iroh QUIC, browse its catalog, save albums, and upload selected audio files. The HTTPS API and Bonjour transfer remain available. P2P is an opt-in headless build feature; enabling it does not migrate the database or change existing pairing credentials.
 
 ## Start a node

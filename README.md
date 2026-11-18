@@ -2,9 +2,13 @@
 
 A native macOS and iPhone player for a music library you manage yourself.
 
+## Planned direction
+
+Syncstr is being redesigned to stop building its own connectivity. A library will have one primary host that devices reach over Tailscale HTTPS from devices allowed by the tailnet policy, with optional mirrors for backup. Both the host and the phone join Tailscale. Opening the library requires no Syncstr pairing. [ADR 0008](docs/adr/0008-one-primary-host-over-a-private-network.md) records the decision, and [Syncstr on a private network](docs/private-network-architecture.md) explains the design and links to each part. None of it is implemented. The sections below describe what the code does today, including the cluster, peer-to-peer and v5 work that the redesign removes.
+
 ## Current implementation
 
-For the current design backlog, see the [product-gap audit](docs/product-gap-audit-2026-11-06.md) and [v5 completion design](docs/v5-completion-design.md). The latter is a design draft, not implemented behavior. PR #15 merged the Apple v5 work into main on 2026-11-06. Physical-device audio output and the cross-platform acceptance in ASO-12 are not yet verified.
+The [product-gap audit](docs/product-gap-audit-2026-11-06.md) and the [v5 completion design](docs/v5-completion-design.md) record the design backlog before ADR 0008. ADR 0008 replaces the v5 design, so the latter is history, not a plan. PR #15 merged the Apple v5 work into main on 2026-11-06. Physical-device audio output and the cross-platform acceptance in ASO-12 are not yet verified.
 
 Both Apple apps can join an existing cluster library using an invitation, or import music for local playback without enrollment. macOS also supports a selected music folder. The retained catalog stays visible offline, and playback and explicit offline saves automatically select an authorized source. Track and album saves retain pending requests across restarts, report partial results, and resume under the communication policy while the app is active.
 
@@ -36,6 +40,7 @@ continue to use the existing conflict-resolution flow.
 
 | Task | Start here |
 |---|---|
+| Planned redesign: one primary host over a private network | [Overview](docs/private-network-architecture.md), [ADR 0008](docs/adr/0008-one-primary-host-over-a-private-network.md), [host read API](docs/host-api-design.md), [mirrors and the primary switch](docs/mirrors-and-primary-switch.md), [onboarding and connection states](docs/onboarding-and-connection-states.md), [migration plan](docs/private-network-migration-plan.md), [Tailscale setup](docs/tailscale-setup.md), [device spike](docs/validation/tailscale-device-spike.md). Design only |
 | macOS UI and launch | [Syncstr.swift](apps/macos/Syncstr.swift), [macOS guide](apps/macos/README.md) |
 | Local catalog, pairing, and transfer | [LocalCatalog.swift](apps/macos/LocalCatalog.swift), [CatalogDatabase.swift](apps/macos/CatalogDatabase.swift), [LocalTransfer.swift](apps/macos/LocalTransfer.swift), [LocalSetup.swift](apps/macos/LocalSetup.swift), [protocol and setup](docs/local-music-transfer.md) |
 | Compilation album organization | [Retention policy](docs/compilation-data-design.md), [revised membership and artwork policy](docs/compilation-policy-review.md), [revision implementation plan](docs/compilation-revision-implementation-plan.md), [earlier implementation](docs/compilation-implementation-spec.md), [verification](docs/validation/compilation-albums.md), [glossary](GLOSSARY.md), [metadata preservation decision](docs/adr/0001-preserve-imported-metadata-and-user-choices.md) |
@@ -47,7 +52,7 @@ continue to use the existing conflict-resolution flow.
 | iPhone UI and device features | [Sources](apps/ios/Sources/), [iPhone guide](apps/ios/README.md) |
 | Folder settings | [SettingsView.swift](apps/macos/SettingsView.swift) |
 | Headless NAS node and CLI | [Headless guide](headless/README.md), [HTTPS API](headless/src/api.rs), [node catalog](headless/src/store.rs) |
-| Music/iTunes owned-library migration | [Existing inventory/prepare/import/resume CLI](tools/music-migration/README.md), [Windows-to-NAS plan](docs/music-library-migration-plan.md), [source metadata precedence](docs/adr/0004-preserve-source-library-metadata-during-migration.md); v5 correspondence integration and acquisition follow-ups remain planned |
+| Music/iTunes owned-library migration | [Existing inventory/prepare/import/resume CLI](tools/music-migration/README.md), [Windows-to-NAS plan](docs/music-library-migration-plan.md), [source metadata precedence](docs/adr/0004-preserve-source-library-metadata-during-migration.md); v5 correspondence integration is replaced by ADR 0008, and ASO-41 rewrites it for the new store |
 | Read-only Windows playlist inspection | [Audit tool](tools/playlist-audit/README.md), [observations and verification gaps](docs/validation/windows-playlist-audit.md) |
 | Shared playlists and playlist XML migration | [Implementation plan](docs/playlist-implementation-plan.md), [updating imported playlists and verification](docs/playlist-reconciliation.md); full editing and smart-rule evaluation remain planned |
 | Source track identity and Windows evidence collection | [Shared-audio server design](docs/shared-audio-server-design.md), [implementation and verification](docs/shared-audio-server-implementation.md), [Inventory and correspondence commands](tools/playlist-audit/README.md#source-registration-inventory), [report format](tools/playlist-audit/inventory-format.md), [Windows validation](docs/validation/source-track-identity-windows.md), [Windows implementation handoff](docs/source-track-identity-windows-handoff.md), [identity boundary](docs/adr/0006-preserve-source-track-identity-independently-of-audio.md) |
@@ -84,7 +89,7 @@ Record the expected behavior before, during, and after the interaction, includin
 
 Cross-device playback-state synchronization remains deferred. Music XML migration and Windows/Android clients have partial implementations; see their guides for supported behavior and outstanding acceptance. Passkey authentication belongs to the superseded account-based design and is not a requirement for the current cluster product.
 
-The service specification preserves the local-transfer milestone. The [cluster model](docs/cluster-model-design.md), identity ADRs and specific player/save/playlist contracts define subsequent direction. Historical plans do not reinstate NAS authority or account requirements. Use the app guides and source code for implemented behavior, and Linear issues for work status.
+The service specification preserves the local-transfer milestone. [ADR 0008](docs/adr/0008-one-primary-host-over-a-private-network.md), the identity ADRs and specific player/save/playlist contracts define subsequent direction. The [cluster model](docs/cluster-model-design.md) describes the design that ADR 0008 replaces. Historical plans do not reinstate NAS authority or account requirements. Use the app guides and source code for implemented behavior, and Linear issues for work status.
 
 - [Service specification](docs/design-spec.md), [service overview](docs/service-overview.md), [design decisions](docs/decisions.md)
 - [Design interview](docs/grill-me.md), [long-term plans](docs/plans/README.md), [initial roadmap](docs/plans/2026-08-15-syncstr-implementation-plan.md)

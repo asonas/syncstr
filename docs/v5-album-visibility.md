@@ -1,5 +1,7 @@
 # v5 album visibility records
 
+> [ADR 0008](adr/0008-one-primary-host-over-a-private-network.md), accepted on 2026-11-18, replaces the member mutation contract that this design extends. Hiding albums returns as an edit on the primary under ASO-168, as the [migration plan](private-network-migration-plan.md#devices-read-and-download-in-the-first-release) describes.
+
 Status: accepted design (ASO-66). The owner accepted the recommended option A of D1 to D4 on 2026-11-07. Implementation follows the bounded slice below under its own issues. It extends the [member mutation contract](v5-member-mutation-contract.md); its older current-state inventory is historical, not a description of today's implemented operations.
 
 ## Problem

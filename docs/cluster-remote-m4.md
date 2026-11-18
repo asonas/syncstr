@@ -1,5 +1,7 @@
 # M4 optional remote access
 
+> [ADR 0008](adr/0008-one-primary-host-over-a-private-network.md), accepted on 2026-11-18, replaces the design that this document describes. This document stays as the record of the code that still implements that design. See [Syncstr on a private network](private-network-architecture.md).
+
 Status: M4 acceptance passed in an isolated user-operated NAS test setup.
 Physical cellular relay transfer and relay-off LAN direct transfer were verified
 separately. The limits of that evidence are recorded below.
