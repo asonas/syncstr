@@ -259,7 +259,7 @@ impl crate::store::Store {
             if create_legacy_candidate {
                 import_entry_artwork(&mut organization, &entry);
             } else {
-                register_entry_artwork(&mut organization, &entry);
+                register_entry_artwork(&transaction, &entry)?;
             }
             crate::store::write_organization(&transaction, &organization)?;
             let destination = root
@@ -344,38 +344,54 @@ pub(crate) fn read_organization(
     Ok(organization)
 }
 
+fn embedded_jpeg(entry: &crate::model::Entry) -> Option<&[u8]> {
+    entry
+        .artwork
+        .as_deref()
+        .filter(|b| b.len() <= 512 * 1024 && crate::artwork::bounded_jpeg(b))
+}
+
+fn insert_artwork_asset(
+    connection: &rusqlite::Connection,
+    id: &str,
+    bytes: &[u8],
+) -> rusqlite::Result<()> {
+    connection.execute(
+        "INSERT OR IGNORE INTO artwork_assets VALUES (?, ?)",
+        (id, bytes),
+    )?;
+    Ok(())
+}
+
 pub(crate) fn register_entry_artwork(
-    organization: &mut crate::organization::Organization,
+    connection: &rusqlite::Connection,
     entry: &crate::model::Entry,
-) -> Option<String> {
+) -> rusqlite::Result<()> {
     use sha2::Digest as _;
-    let bytes = entry
-        .artwork
-        .as_ref()
-        .filter(|b| b.len() <= 512 * 1024 && crate::artwork::bounded_jpeg(b))?;
-    let asset = hex::encode(sha2::Sha256::digest(bytes));
-    organization
-        .artwork
-        .get_or_insert_with(Default::default)
-        .assets
-        .insert(asset.clone(), bytes.clone());
-    Some(asset)
+    if let Some(bytes) = embedded_jpeg(entry) {
+        insert_artwork_asset(connection, &hex::encode(sha2::Sha256::digest(bytes)), bytes)?;
+    }
+    Ok(())
 }
 
 fn import_entry_artwork(
     organization: &mut crate::organization::Organization,
     entry: &crate::model::Entry,
 ) {
-    let Some(asset) = register_entry_artwork(organization, entry) else {
-        return;
-    };
+    use sha2::Digest as _;
     let track = organization.canonical_track(&entry.track.id);
-    let artwork = organization.artwork.as_mut().expect("registered artwork");
-    if !organization.tracks.iter().any(|t| t.id == track)
-        || artwork.candidates.iter().any(|c| c.track == track)
-    {
+    if !organization.tracks.iter().any(|t| t.id == track) {
         return;
     }
+    let Some(bytes) = embedded_jpeg(entry) else {
+        return;
+    };
+    let artwork = organization.artwork.get_or_insert_with(Default::default);
+    if artwork.candidates.iter().any(|c| c.track == track) {
+        return;
+    }
+    let asset = hex::encode(sha2::Sha256::digest(bytes));
+    artwork.assets.insert(asset.clone(), bytes.to_vec());
     artwork.candidates.push(crate::artwork::Candidate {
         id: uuid::Uuid::new_v4().to_string(),
         track,
@@ -386,19 +402,26 @@ fn import_entry_artwork(
     });
 }
 
-pub(crate) fn write_organization(
+pub(crate) fn register_organization_assets(
+    connection: &rusqlite::Connection,
+    organization: &crate::organization::Organization,
+) -> rusqlite::Result<()> {
+    if let Some(artwork) = &organization.artwork {
+        for (id, bytes) in &artwork.assets {
+            insert_artwork_asset(connection, id, bytes)?;
+        }
+    }
+    Ok(())
+}
+
+fn write_organization(
     connection: &rusqlite::Connection,
     organization: &crate::organization::Organization,
 ) -> anyhow::Result<()> {
     organization.validate()?;
+    register_organization_assets(connection, organization)?;
     let mut metadata = organization.clone();
     if let Some(artwork) = &mut metadata.artwork {
-        for (id, bytes) in &artwork.assets {
-            connection.execute(
-                "INSERT OR IGNORE INTO artwork_assets VALUES (?, ?)",
-                rusqlite::params![id, bytes],
-            )?;
-        }
         for bytes in artwork.assets.values_mut() {
             bytes.clear();
         }

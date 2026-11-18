@@ -351,9 +351,14 @@ async fn peer_projection_publishes_image(embedded_only: bool) -> anyhow::Result<
         .await?;
     host.store.project_cluster_metadata(object).await?;
     let catalog: Value = host.get("catalog").send().await?.json().await?;
-    assert_eq!(catalog["organization"]["artwork"]["assets"][id], "");
     if embedded_only {
-        assert_eq!(catalog["organization"]["artwork"]["candidates"], json!([]));
+        assert!(catalog["organization"]["artwork"].is_null());
+    } else {
+        assert_eq!(catalog["organization"]["artwork"]["assets"][id], "");
+        let db = rusqlite::Connection::open(host.root.path().join("node.sqlite"))?;
+        let stored: syncstr_headless::organization::Organization =
+            serde_json::from_slice(&stored_organization(&db)?)?;
+        assert_eq!(stored.artwork.unwrap().assets[id], image);
     }
     assert!(catalog["entries"][0].get("artwork").is_none());
     let response = host.get(&format!("artwork/{id}")).send().await?;
@@ -587,12 +592,20 @@ async fn legacy_put_without_organization_backfills_candidate_on_open() -> anyhow
     save_and_reopen_with_embedded_image(false).await
 }
 
+fn stored_organization(db: &rusqlite::Connection) -> rusqlite::Result<Vec<u8>> {
+    db.query_row(
+        "SELECT payload FROM organization WHERE singleton = 1",
+        [],
+        |row| row.get(0),
+    )
+}
+
 async fn save_and_reopen_with_embedded_image(include_organization: bool) -> anyhow::Result<()> {
     let host = Host::start().await?;
     let store = &host.store;
     let image = include_bytes!("../fixtures/blue.jpg");
     let mut entry: Entry = serde_json::from_slice(include_bytes!("../fixtures/local-entry.json"))?;
-    entry.artwork = Some(image.to_vec());
+    entry.artwork = None;
     let incoming = include_organization.then(|| {
         let mut organization = syncstr_headless::organization::Organization::default();
         organization.import(&entry);
@@ -601,32 +614,57 @@ async fn save_and_reopen_with_embedded_image(include_organization: bool) -> anyh
     let original_id = entry.track.id.clone();
     let mut file = store.stage().await?;
     file.write_all(b"abc")?;
+    store
+        .commit_organized(entry.clone(), file, true, incoming.clone())
+        .await?;
+    let db = rusqlite::Connection::open(host.root.path().join("node.sqlite"))?;
+    let before = stored_organization(&db)?;
+    entry.artwork = Some(image.to_vec());
+    let mut file = store.stage().await?;
+    file.write_all(b"abc")?;
     let saved = store.commit_organized(entry, file, true, incoming).await?;
     let canonical = if include_organization {
         original_id
     } else {
         saved.track.id
     };
-    let artwork = store.catalog().await?.organization.artwork.unwrap();
+    assert_eq!(stored_organization(&db)?, before);
     let id = hex::encode(Sha256::digest(image));
-    assert_eq!(artwork.assets[&id], image.as_slice());
-    assert!(artwork.candidates.is_empty());
     let response = host
         .get(&format!("artwork/{id}"))
         .send()
         .await?
         .error_for_status()?;
     assert_eq!(response.bytes().await?.as_ref(), image);
-    let candidates = reopen_catalog(&host)
-        .await?
-        .organization
-        .artwork
-        .unwrap()
-        .candidates;
+    let artwork = reopen_catalog(&host).await?.organization.artwork.unwrap();
+    assert_eq!(artwork.assets[&id], image.as_slice());
+    let candidates = artwork.candidates;
     assert_eq!(candidates.len(), 1);
     assert_eq!(candidates[0].source, "legacy");
     assert_eq!(candidates[0].track, canonical);
     assert_eq!(candidates[0].asset, id);
+    Ok(())
+}
+
+#[tokio::test]
+async fn invalid_embedded_image_is_saved_without_registering_artwork() -> anyhow::Result<()> {
+    let host = Host::start().await?;
+    let saved = host.upload().await?;
+    let bytes = saved.artwork.as_ref().unwrap();
+    assert_eq!(bytes, &[1, 2, 3]);
+    assert!(host.store.get(saved.track.id).await?.is_some());
+    let id = hex::encode(Sha256::digest(bytes));
+    let db = rusqlite::Connection::open(host.root.path().join("node.sqlite"))?;
+    assert_eq!(
+        db.query_row("SELECT count(*) FROM artwork_assets", [], |row| row
+            .get::<_, i64>(0))?,
+        0
+    );
+    assert_eq!(
+        host.get(&format!("artwork/{id}")).send().await?.status(),
+        StatusCode::NOT_FOUND
+    );
+    assert!(reopen_catalog(&host).await?.organization.artwork.is_none());
     Ok(())
 }
 
@@ -655,7 +693,9 @@ async fn updated_embedded_image_preserves_the_existing_display_candidate() -> an
             candidates
         );
         let id = hex::encode(Sha256::digest(image));
-        assert_eq!(catalog["organization"]["artwork"]["assets"][&id], "");
+        let assets = &catalog["organization"]["artwork"]["assets"];
+        assert_eq!(assets.as_object().unwrap().len(), 1);
+        assert_eq!(assets[candidates[0]["asset"].as_str().unwrap()], "");
         assert_eq!(
             host.get(&format!("artwork/{id}"))
                 .send()
@@ -667,6 +707,16 @@ async fn updated_embedded_image_preserves_the_existing_display_candidate() -> an
             image
         );
     }
+    assert_eq!(
+        reopen_catalog(&host)
+            .await?
+            .organization
+            .artwork
+            .unwrap()
+            .assets
+            .len(),
+        1
+    );
     Ok(())
 }
 
