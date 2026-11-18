@@ -1,5 +1,7 @@
 # M5 Android playback client
 
+> [ADR 0008](adr/0008-one-primary-host-over-a-private-network.md), accepted on 2026-11-18, replaces the design that this document describes. ASO-170 decides the future of this client. See [Syncstr on a private network](private-network-architecture.md).
+
 Status: first Android LAN playback slice accepted. Windows remains a subsequent slice.
 
 ## Initial scope

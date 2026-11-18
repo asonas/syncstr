@@ -94,7 +94,7 @@ These terms belong to the design in [ADR 0008](docs/adr/0008-one-primary-host-ov
 The music a listener manages, with its catalog, artwork and playlists, as one unit that hosts hold and devices play.
 
 **Host**:
-A machine that holds a full copy of a library and serves it over HTTPS. A host is either the primary or a mirror. The macOS app can run a host, and Headless Syncstr is a host without playback.
+A machine that holds a full copy of a library and serves it over HTTPS. A host is the primary or a mirror, or, after a switch, a replaced or retired host that serves only library information. The macOS app can run a host, and Headless Syncstr is a host without playback.
 _Avoid_: Library Host, server, node
 
 **Primary**:

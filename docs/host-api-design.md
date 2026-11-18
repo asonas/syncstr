@@ -154,6 +154,7 @@ A device opens a library by its host address, such as `https://music.example.ts.
 - The confirmation shows a port when the address has one other than 443.
 - The first version does not offer hosts found on the tailnet. iOS has no official way for an app to list tailnet machines.
 - A device that reads another library ID at an address it knew asks the person before it replaces the library it shows.
+- A device keeps the address the person confirmed and sends every request there. The `host.address` in library information only names the host. If it differs from the confirmed address, the device keeps using the confirmed one.
 
 ### When the device cannot reach the host address
 

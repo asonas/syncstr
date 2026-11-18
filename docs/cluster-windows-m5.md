@@ -1,5 +1,7 @@
 # M5 Windows implementation handoff
 
+> [ADR 0008](adr/0008-one-primary-host-over-a-private-network.md), accepted on 2026-11-18, replaces the design that this document describes. ASO-170 decides the future of this client. See [Syncstr on a private network](private-network-architecture.md).
+
 Status: the initial native Windows playback client is implemented and builds on
 Windows. Protocol integration tests and Windows identity-restoration tests pass.
 Real LAN enrollment, firewall behavior, audible playback, offline restart and

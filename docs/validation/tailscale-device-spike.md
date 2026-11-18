@@ -100,7 +100,7 @@ Expected: status `200`, a matching hash, and playback. The range check returns `
 
 - PASS: ADR 0008's premise holds. A device uses `URLSession` with default trust.
 - FAIL with `-1022` or `-1202`: the host address design needs an exception that App Review asks about. ADR 0008 and ASO-165 change.
-- A range check without `206`: Serve does not pass `Range`. ASO-160 must not rely on ranges through Serve.
+- A range check without `206` over A-name, while the same check over A-ip returns `206`: Serve does not pass `Range`. ASO-160 must not rely on ranges through Serve. If A-ip fails too, the fixture is the cause, not Serve.
 
 ### Q2. Background download while suspended and locked
 
@@ -152,13 +152,13 @@ Expected: unknown. A guess for step 1 is a fast `-1003` (cannot find host) by na
 ### Q5. Time for one album
 
 1. Delete the album's files from the build between runs.
-2. Start all of the album's tracks at once on the foreground session. Record the time to the first verified track and to the last verified track.
+2. Start the album's first track, then the others, on the foreground session. Record the time until the first track is verified, which is the wait before playback, and until the last track is verified.
 3. Run three times each over A-name on Wi-Fi, A-ip on Wi-Fi, A-lan on Wi-Fi, and A-name on cellular. Once path C exists for Q7, add three runs over C with the same album copied to it.
 4. Run once over A-name on the background session.
 
 Record the track count, total bytes, and formats once. Report the median of each path. Compute MB/s from the bytes and the time.
 
-- The first verified track arrives before the listener would give up: whole-file download stays the playback model of ADR 0008. The owner records the wait that they accept.
+- The first track is verified before the listener would give up: whole-file download stays the playback model of ADR 0008. The owner records the wait that they accept.
 - The first track takes longer than that: ADR 0008's statement that whole-file download stays the playback model needs to be reopened, and ASO-165 considers playback that starts before the file completes.
 - Tailnet much slower than LAN on a direct path: the cost is in the tunnel or in Serve. A-ip skips Serve, so A-name against A-ip gives Serve's share, and A-ip against A-lan gives the tunnel's share.
 - Slow only on DERP paths: the cost is the network path. The [setup guide](../tailscale-setup.md) covers it in troubleshooting.
@@ -178,8 +178,8 @@ Record success or failure separately for foreground and background. Q6 compares 
 This question needs the owner's go-ahead, because it installs something on the NAS. Without it, mark Q7 as BLOCKED, and the choice rests on the [setup guide](../tailscale-setup.md).
 
 1. On the NAS, create a second Compose project with an empty data directory and a new identity, not the real library. Create the identity with the `init` step of "Docker on a NAS" in [`headless/README.md`](../../headless/README.md). Add the Tailscale container from the setup guide with `hostname: spike`. Today's container listens with HTTPS on 8443, so the proxy in `serve.json` is `https+insecure://127.0.0.1:8443`, not the planned `http://127.0.0.1:8441`.
-2. From the phone, open `https://spike.example.ts.net/v4/catalog` and expect `unauthorized`.
-3. Run `docker compose restart`, and then restart the NAS. Repeat step 2 after each.
+2. From the phone, open `https://spike.example.ts.net/v4/catalog` and expect `unauthorized`. Upload one test file to it with the `upload` command, as for the Mac fixture. After each restart in step 3, read the catalog from the Mac with the fixture token and check that the file is still listed, so that a restart is seen to keep the data.
+3. Run `docker compose restart` and repeat step 2. Restarting the NAS itself stops the owner's everyday library, so it needs a separate go-ahead from the owner, at a time the owner chooses. With it, restart the NAS and repeat step 2. Without it, record the NAS restart as not tested.
 4. Record the number of steps, the time taken, and what an update of each container takes.
 5. If the owner accepts Tailscale on the NAS itself, record the same for it. The fixture container then uses `network_mode: host`, so start it with `--listen 127.0.0.1:<port>` on a port that no NAS service uses, and remove its `ports` entry, so that it does not answer on the NAS's LAN address.
 6. Remove the project, its data, and the `spike` machine from the tailnet.
@@ -191,7 +191,8 @@ This question needs the owner's go-ahead, because it installs something on the N
 
 1. On cellular with Wi-Fi off, download one track over A-name with `allowsCellularAccess = false`.
 2. Repeat with `allowsCellularAccess = true` and `allowsExpensiveNetworkAccess = false`.
-3. Record what `NWPathMonitor` reports for the path in each case.
+3. Start a large download on Wi-Fi with `allowsCellularAccess = false`, then turn Wi-Fi off. Record whether the task pauses or continues over cellular.
+4. Record what `NWPathMonitor` reports for the path in each case.
 
 - The task waits or fails: a Wi-Fi-only setting can rely on `URLSession`.
 - The task downloads over cellular: the tunnel hides the interface. ASO-166 checks the path itself before it starts a download.

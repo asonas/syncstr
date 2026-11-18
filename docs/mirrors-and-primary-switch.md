@@ -72,9 +72,9 @@ The command names are working names for `syncstr-headless`, and ASO-162 gives th
 
 ## Create a mirror
 
-1. The owner creates a host code on the primary with `syncstr-headless pair --host` or in the macOS app.
-2. On the second machine, the owner starts a host with `follow`, the pairing link, and the mirror's own host address, such as `https://mac.example.ts.net`, given with `--address`.
-3. The mirror pairs with the primary as a device does (ASO-164). It creates its own token, and its record has kind `host`, so the owner sees it as a mirror and can revoke it.
+1. The owner lets the second machine reach the primary in the tailnet policy.
+2. On the second machine, the owner starts a host with `follow`, the primary's host address, and the mirror's own host address, such as `https://mac.example.ts.net`, given with `--address`.
+3. How the mirror proves to the primary that it is a host of the library, and how the owner later revokes that, is not decided. ASO-172 defines this step on the tailnet. Devices take no part in it.
 4. The mirror reads the primary's library information. If its data directory holds another library, `follow` refuses and changes nothing. Otherwise it stores the library id, the switch record, and the primary's host id and address.
 5. The mirror makes its first copy. Until that copy is whole, it serves its library information and the files it holds, and it answers a catalog request with `mirror-incomplete`, because a half-copied catalog would show devices albums with missing tracks.
 

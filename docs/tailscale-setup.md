@@ -57,7 +57,7 @@ Use the Tailscale container if you want the least to maintain. It works the same
 
 1. Choose the host's machine name, such as `music`, for the `hostname` setting in step 4. The warning about public certificate logs in step 3 of the Mac section applies here. Then turn on HTTPS as in step 4 of the Mac section.
 2. In the admin console, open **Keys**, select **Generate auth key**, keep it one-off, and copy the key. This key enrolls the NAS container in Tailscale. The listener never enters it in Syncstr.
-3. Next to the host's `compose.yaml`, create `tailscale/serve.json`. The container replaces `${TS_CERT_DOMAIN}` with the machine's full name.
+3. Next to the host's `compose.yaml`, create `tailscale/config/serve.json`. Step 4 mounts the `config` directory, not the file, because Tailscale detects changes to the file only through a directory mount ([Docker configuration parameters](https://tailscale.com/docs/features/containers/docker/docker-params)). The container replaces `${TS_CERT_DOMAIN}` with the machine's full name.
 
    ```json
    {
@@ -86,7 +86,7 @@ Use the Tailscale container if you want the least to maintain. It works the same
          - TS_SERVE_CONFIG=/config/serve.json
        volumes:
          - ./tailscale/state:/var/lib/tailscale
-         - ./tailscale/serve.json:/config/serve.json:ro
+         - ./tailscale/config:/config:ro
        restart: unless-stopped
      syncstr:
        # Keep the existing build, user, and volume settings.

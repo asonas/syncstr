@@ -6,7 +6,7 @@ This overview explains the planned shape of Syncstr and where each part is desig
 
 ## What changes for a listener
 
-Today a listener who wants music on their phone joins a cluster. Someone creates an invitation on a stopped host from a terminal, the phone must be on the same LAN, and the apps contain screens for hosts, conflicts, relays, and legacy connections.
+Today the shipped design asks a listener who wants music on their phone to join a cluster, although the owner's own library still runs on the older `serve`. Someone creates an invitation on a stopped host from a terminal, the phone must be on the same LAN, and the apps contain screens for hosts, conflicts, relays, and legacy connections.
 
 In the first release, both the Mac or NAS host and the phone connect to Tailscale. The owner allows the phone to reach the host’s HTTPS service in the tailnet policy. The listener opens the host address in Syncstr and saves albums for offline use. ASO-159 measures what happens when the phone locks.
 

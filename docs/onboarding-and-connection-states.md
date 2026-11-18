@@ -123,7 +123,7 @@ Today the empty library offers 既存のライブラリに参加 and 音楽フ�
 
 The QR code holds the custom `syncstr:` link that [Host API design](host-api-design.md#connecting-by-host-address) defines. A phone without Syncstr ignores the link, so the Mac's sheet says to install Syncstr first.
 
-The phone does not look for hosts on the tailnet, for the reasons in [Host API design](host-api-design.md#connecting-by-host-address). The host tells the phone about the library's mirrors, and the phone suggests nothing else.
+The phone does not look for hosts on the tailnet, for the reasons in [Host API design](host-api-design.md#connecting-by-host-address). From ASO-172 on, the host tells the phone about the library's mirrors. The phone suggests nothing else.
 
 ### When connecting fails
 
@@ -137,8 +137,7 @@ The phone does not look for hosts on the tailnet, for the reasons in [Host API d
 | The phone has no network at all. | このiPhoneはネットワークにつながっていません。 | This iPhone is not connected to a network. | 再試行 |
 | The phone does not trust the certificate, because the address is not the host's full tailnet name. | 「studio」に安全に接続できません。「studio.example.ts.net」のような完全な名前で入力してください。 | Can't connect to studio securely. Enter the full name, such as studio.example.ts.net. | 閉じる |
 | The address answers, but not as a Syncstr host. | このアドレスにはSyncstrのライブラリがありません。 | There is no Syncstr library at this address. | 閉じる |
-| The link is newer than this app. | このiPhoneのSyncstrを更新してください。 | Update Syncstr on this iPhone. | 閉じる |
-| The host is older than this app. | 「studio」のSyncstrを更新してください。 | Update Syncstr on studio. | 閉じる |
+| The host answers `404 not-found` for a route that this app needs, so the host is older than this app. | 「studio」のSyncstrを更新してください。 | Update Syncstr on studio. | 閉じる |
 
 ## Connection states
 
@@ -221,6 +220,7 @@ A Mac whose library is local, as a host or for local playback only, shows no sav
 | --- | --- | --- | --- |
 | No host is reachable. | 接続待ち | Waiting for the connection. | On the first successful request. |
 | On cellular, with saves over cellular off. | Wi-Fi接続待ち | Waiting for Wi-Fi. | On Wi-Fi, or at once after **今回はモバイル通信で保存** ("Save over cellular this time"). |
+| The host answers 429 because it is busy. | 接続待ち | Waiting for the connection. The host's `Retry-After` sets when the save retries. ASO-160 measures how often this happens. | When the host accepts the download. |
 | Storage is full. | 空き容量が足りません。あと1.2 GB必要です。 | Not enough space. 1.2 GB more is needed. | When the app becomes active or a save is removed and the space is enough, or on **再試行**. |
 
 Before a save waits for storage, the device evicts the playback cache that ADR 0005 lets it evict. It never evicts an offline save. Today a full disk ends the save as a failure (OfflineSaves.swift lines 240-241). It becomes a waiting reason because the listener's fix, removing something, should let the save continue without a new request.
@@ -255,7 +255,7 @@ The settings tab 端末 holds everything about serving:
 - The state line and its action, from the [host states](#on-the-mac-as-a-host).
 - The host address as selectable text.
 - The switch **ほかの端末からの接続を受け付ける** ("Accept connections from other devices"). Turning it off asks 接続の受け付けを停止しますか？ ("Stop accepting connections?") and repeats the "stopped" line.
-- The library's mirrors, as [Mirrors and the primary switch](mirrors-and-primary-switch.md) describes.
+- From ASO-172 on, the library's mirrors, as [Mirrors and the primary switch](mirrors-and-primary-switch.md) describes. The first release has none.
 - **端末を追加…**, which opens the connect sheet of [Add a device from the Mac](#add-a-device-from-the-mac).
 - **Tailscaleのアクセス設定を開く**, with the line どの端末が接続できるかは、Tailscaleのアクセス設定で決まります。 ("Which devices can connect is set in your Tailscale access settings.").
 - **ログイン時に開く** ("Open at login"), if ASO-162 keeps the host inside the app.
