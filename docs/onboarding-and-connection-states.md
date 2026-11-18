@@ -165,7 +165,7 @@ Through a mirror, the device keeps its own catalog when that is newer than the m
 
 A device that was never connected shows no reason line. When the owner withdraws a device's access in Tailscale, the device sees the "host unreachable" state, because a refused connection looks like an unreachable host. It keeps its offline saves and its playback cache, because withdrawing access stops requests to the host and cannot reach files already on the device.
 
-The line for two hosts that accept changes appears on the library landing and in Settings. It is the case where two hosts report the same switch number, which the mirrors design leaves to this document for wording. A device in the first release makes no change, so the line asks for a fix on the hosts and nothing on the device stops.
+The line for two hosts that accept changes appears on the library landing and in Settings. It is the case where two hosts report the same switch number with different primaries, which the mirrors design leaves to this document for wording. A device in the first release makes no change, so the line asks for a fix on the hosts and nothing on the device stops.
 
 The state changes by these rules:
 

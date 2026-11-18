@@ -23,7 +23,7 @@ A second read-only inspection on 2026-11-17 counted what the owner's database ho
 | Cluster identity and enrollment grant | Not carried |
 | Signed cluster changes, about two per track | Not carried |
 | Cluster object and peer rows | Not carried |
-| Playlist records with their history | Each playlist's latest record becomes a plain row |
+| Playlist records with their history | The single head of each playlist becomes a plain row. A playlist with more than one head stops the migration. |
 
 The signed cluster changes take about three quarters of the database, and the `tracks` table most of the rest. The volume that holds the library has room for a full copy of the audio many times over. Its filesystem supports hard links within one dataset. Whether the original and the new data directory would be in one dataset is not known.
 
@@ -133,16 +133,16 @@ The owner's store keeps its library ID and starts at switch number 1 with itself
 	- Cluster tables, signed history, grants, cursors and the `peer` identity directory are not carried, and the report counts them.
 
 	The checks are a hash per copied table that matches the source, every track ID and alias resolving to one track, and every track's audio file present.
-5. **Repeat.** The migration runs steps 1 to 4 again on a fresh snapshot, after the first snapshot is deleted. Both runs are rehearsals at revision 1, so the two outputs match, or the report explains every difference by a track added on the old path between the snapshots.
+5. **Repeat.** The migration runs steps 1 to 4 again on a fresh snapshot, after the first snapshot is deleted. Both runs are rehearsals at revision 1, so the two outputs match, or the report explains every difference by a change made on the old path between the snapshots, such as an added track or an edited playlist. Two runs on the same snapshot must match exactly.
 6. **Report.** The migration writes a JSON file for tools and a one-page summary for the owner. The summary gives counts in and out, everything not carried and why, the time of each step, and the free disk space before and after. The report stays out of the repository, because it holds the owner's library metadata.
 
-Steps 1 to 6 are the rehearsal. They run on a snapshot in a disposable directory and repeat until two runs agree. The real run at the cutover is the same command on a final snapshot. It hashes only the files that the rehearsal did not verify and checks the size of all of them. A rebuild of the trial host and the real run also copy the host ID from the trial host's directory, so the host's identity survives. Devices keep working because the host address does not change.
+Steps 1 to 6 are the rehearsal. They run on a snapshot in a disposable directory and repeat until two runs agree, or differ only by changes on the old path that the report explains. The real run at the cutover is the same command on a final snapshot. It hashes only the files that the rehearsal did not verify and checks the size of all of them. A rebuild of the trial host and the real run also copy the host ID from the trial host's directory, so the host's identity survives. Devices keep working because the host address does not change.
 
 ### How to go back
 
 The original directory is never written. Going back means stopping the new host and starting the old `serve` on the original directory. The devices still speak the legacy connection until removal step 4 ships. A change made on the new path after the cutover is not in the old store. Going back loses every such change: imports, and edits of metadata and playlists on the primary. `addedAt` lists the tracks imported after the cutover, so the owner can import them again on the old path, but they get new track IDs, and playlists that referred to them do not follow. Until ASO-161 defines how these changes are kept, going back is not lossless.
 
-Going back stays possible until removal step 4 reaches every device the owner uses. Until removal step 5, the old `serve` keeps running the image it runs today. Nothing built from main is deployed to it, because main loses v5 in removal step 3 and gains the new store. That image and the original directory are kept until removal step 5.
+Every device can go back until the first device gets removal step 4. While that step rolls out, only devices that do not have it yet can go back, because the others no longer speak the legacy connection. Until removal step 5, the old `serve` keeps running the image it runs today. Nothing built from main is deployed to it, because main loses v5 in removal step 3 and gains the new store. That image and the original directory are kept until removal step 5.
 
 ### Steps that need the owner's go-ahead
 
@@ -165,7 +165,7 @@ ASO-165 replaces the transport in four pull requests:
 
 ### The order
 
-1. **Trial host.** After the first two go-aheads, the trial host runs on the NAS. It accepts no change and is rebuilt from a fresh snapshot, not updated. The old `serve` keeps running as the primary, and the devices paired with it keep using it. ASO-162 (a host in the macOS app) is not on this path, because the owner's primary is the NAS.
+1. **Trial host.** After the first two go-aheads, the trial host runs on the NAS. It accepts no change except the one test import of the cutover test, and it is rebuilt from a fresh snapshot, not updated. The old `serve` keeps running as the primary, and the devices paired with it keep using it. ASO-162 (a host in the macOS app) is not on this path, because the owner's primary is the NAS.
 2. **Mac.** The macOS app connects to the trial host by its host address, browses, downloads and plays. The Mac comes first because it needs no TestFlight and compiles the same `Library` code as the iPhone.
 3. **iPhone.** The iPhone app, installed through TestFlight, connects to the trial host over Tailscale. It saves albums (ASO-166), in the background or with Syncstr open as Q2 of the device spike decides, and plays offline saves made on the old path.
 4. **Cutover.** After the third go-ahead, the owner stops changing the library on the old path. The old `serve` stops, the final migration runs, and the new host starts as the primary at the trial host's host address. Devices connected to the trial host keep working, because the address stays.

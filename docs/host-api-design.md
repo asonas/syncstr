@@ -147,7 +147,7 @@ Before the device puts a file in the playback cache or an offline save, it check
 A device opens a library by its host address, such as `https://music.example.ts.net`. The person types it once, or opens a `syncstr://open?host=<percent-encoded address>` link that the host shows as a QR code (ASO-162, ASO-164). The link only names the host and grants nothing. The device reads `GET /api/v1/library`, keeps the library ID and the known hosts, and shows the catalog.
 
 - A host address is an `https` origin with an optional port and no path, query, fragment, or user info.
-- The iPhone app registers the `syncstr` URL scheme, which no app target registers today. The link uses a custom scheme because universal links need an association file on a public website, and Syncstr runs none.
+- The iPhone and macOS apps register the `syncstr` URL scheme, which no app target registers today, and a link opened from outside the app leads to the same confirmation as a scanned or typed address. The link uses a custom scheme because universal links need an association file on a public website, and Syncstr runs none.
 - A device ignores link parameters it does not know.
 - The confirmation shows the host name from the address, such as `studio.example.ts.net`, next to the library name, because only the address is not chosen by the host that answers.
 - A host never redirects. A device refuses a redirect on every request it makes in the foreground, including library information and the catalog, and treats it like an address without a Syncstr library. A background download session follows redirects without asking the app, so background audio and artwork downloads rely on their hash check instead.
