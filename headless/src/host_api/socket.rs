@@ -11,6 +11,22 @@ use tokio::{
     time::Sleep,
 };
 
+pub fn listener(
+    socket: std::net::TcpListener,
+) -> io::Result<axum_server::Server<std::net::SocketAddr, WriteIdleTimeout>> {
+    socket.set_nonblocking(true)?;
+    let mut server = axum_server::from_tcp(socket)?
+        .acceptor(WriteIdleTimeout)
+        .http1_only();
+    server
+        .http_builder()
+        .http1()
+        .timer(hyper_util::rt::TokioTimer::new())
+        .header_read_timeout(Duration::from_secs(30))
+        .max_buf_size(16384);
+    Ok(server)
+}
+
 #[derive(Clone)]
 pub struct WriteIdleTimeout;
 

@@ -24,11 +24,16 @@ impl Host {
         let _ = rustls::crypto::ring::default_provider().install_default();
         let root = tempfile::tempdir()?;
         let store = Store::open(root.path())?;
-        let router = syncstr_headless::host_api::router(store.clone(), None);
-        let socket = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+        let router =
+            syncstr_headless::host_api::router(store.clone(), "https://music.example.test".into());
+        let socket = std::net::TcpListener::bind("127.0.0.1:0")?;
         let url = format!("http://{}/api/v1", socket.local_addr()?);
         let server = tokio::spawn(async move {
-            axum::serve(socket, router).await.unwrap();
+            syncstr_headless::host_api::listener(socket)
+                .unwrap()
+                .serve(router.into_make_service())
+                .await
+                .unwrap();
         });
         Ok(Self {
             root,
@@ -65,8 +70,8 @@ async fn catalog_marker_tracks_wire_content_and_survives_conditional_reads() -> 
     assert_eq!(switch, format!("1.{id}"));
     assert_eq!(
         info,
-        json!({"library":host.store.catalog().await?.id,"name":"Syncstr","host":{"id":id,"address":null},
-        "primary":id,"switchNumber":1,"startingMarker":null,"marker":info["marker"],"role":"primary","hosts":[{"id":id,"address":null,"role":"primary"}]})
+        json!({"library":host.store.catalog().await?.id,"name":"Syncstr","host":{"id":id,"address":"https://music.example.test"},
+        "primary":id,"switchNumber":1,"startingMarker":null,"marker":info["marker"],"role":"primary","hosts":[{"id":id,"address":"https://music.example.test","role":"primary"}]})
     );
     let before: Value = host.get("catalog").send().await?.json().await?;
     assert_eq!(before["marker"], info["marker"]);
@@ -75,16 +80,10 @@ async fn catalog_marker_tracks_wire_content_and_survives_conditional_reads() -> 
     let etag = response.headers()[header::ETAG].to_str()?.to_owned();
     let catalog: Value = response.json().await?;
     assert_ne!(catalog["marker"], before["marker"]);
-    let revision = catalog["marker"]
-        .as_str()
-        .unwrap()
-        .strip_prefix(&format!("{switch}."))
-        .unwrap();
-    assert_eq!(hex::decode(revision)?.len(), 32);
     assert_eq!(
         etag,
         format!(
-            "\"{}.{}\"",
+            "W/\"{}.{}\"",
             catalog["id"].as_str().unwrap(),
             catalog["marker"].as_str().unwrap()
         )
@@ -106,6 +105,15 @@ async fn catalog_marker_tracks_wire_content_and_survives_conditional_reads() -> 
         .header(header::ACCEPT_ENCODING, "gzip")
         .send()
         .await?;
+    assert_eq!(gzip.headers()[header::ETAG], etag);
+    assert_eq!(
+        host.get("catalog")
+            .header(header::IF_NONE_MATCH, etag.strip_prefix("W/").unwrap())
+            .send()
+            .await?
+            .status(),
+        304
+    );
     assert_eq!(gzip.headers()[header::CONTENT_ENCODING], "gzip");
     let compressed = gzip.bytes().await?;
     let mut decoded = Vec::new();
@@ -175,7 +183,7 @@ async fn assert_error(
 }
 
 #[tokio::test]
-async fn artwork_requires_a_current_reference() -> anyhow::Result<()> {
+async fn artwork_serves_stored_images_after_the_reference_is_removed() -> anyhow::Result<()> {
     let host = Host::start().await?;
     let image = include_bytes!("../fixtures/red.jpg").as_slice();
     let id = hex::encode(Sha256::digest(image));
@@ -185,6 +193,7 @@ async fn artwork_requires_a_current_reference() -> anyhow::Result<()> {
         .get_or_insert_with(Default::default)
         .assets
         .insert(id.clone(), image.to_vec());
+    let legacy = serde_json::to_vec(&org)?;
     host.store.merge_organization(org).await?;
     let catalog: Value = host.get("catalog").send().await?.json().await?;
     assert_eq!(
@@ -204,16 +213,188 @@ async fn artwork_requires_a_current_reference() -> anyhow::Result<()> {
     assert_eq!(range.status(), 206);
     assert_eq!(range.bytes().await?.as_ref(), &image[image.len() - 3..]);
     let db = rusqlite::Connection::open(host.root.path().join("node.sqlite"))?;
+    db.execute("UPDATE organization SET payload = ?", [legacy])?;
+    let legacy_catalog: Value = host.get("catalog").send().await?.json().await?;
+    assert_eq!(
+        legacy_catalog["organization"]["artwork"]["assets"],
+        json!({&id:""})
+    );
     db.execute(
         "UPDATE organization SET payload = CAST(json_remove(payload, '$.artwork') AS BLOB)",
         [],
     )?;
+    let unreferenced = host.get(&path).send().await?;
+    assert_eq!(unreferenced.status(), 200);
+    assert_eq!(unreferenced.bytes().await?.as_ref(), image);
     assert_error(
-        host.get(&path).send().await?,
+        host.get(&format!("artwork/{}", "0".repeat(64)))
+            .send()
+            .await?,
         StatusCode::NOT_FOUND,
         "not-found",
     )
     .await
+}
+
+#[tokio::test]
+async fn v4_upload_publishes_its_cover_with_the_track() -> anyhow::Result<()> {
+    let host = Host::start().await?;
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+    let url = format!("http://{}/v4/tracks", listener.local_addr()?);
+    let api = syncstr_headless::api::router(host.store.clone(), "fixture-token");
+    let upload = tokio::spawn(async move { axum::serve(listener, api).await });
+    let mut entry: Entry = serde_json::from_slice(include_bytes!("../fixtures/local-entry.json"))?;
+    let image = include_bytes!("../fixtures/red.jpg").as_slice();
+    let id = hex::encode(Sha256::digest(image));
+    entry.artwork = Some(image.to_vec());
+    let form = reqwest::multipart::Form::new()
+        .text("entry", serde_json::to_string(&entry)?)
+        .text("audio", "abc");
+    host.client
+        .post(url)
+        .bearer_auth("fixture-token")
+        .multipart(form)
+        .send()
+        .await?
+        .error_for_status()?;
+    upload.abort();
+    let catalog: Value = host.get("catalog").send().await?.json().await?;
+    assert_eq!(
+        catalog["organization"]["artwork"]["assets"],
+        json!({&id:""})
+    );
+    assert!(catalog["entries"][0].get("artwork").is_none());
+    let response = host.get(&format!("artwork/{id}")).send().await?;
+    assert_eq!(response.status(), 200);
+    assert_eq!(response.bytes().await?.as_ref(), image);
+    Ok(())
+}
+
+#[cfg(feature = "p2p")]
+#[tokio::test]
+async fn peer_projection_publishes_image_bytes_only_on_the_artwork_route() -> anyhow::Result<()> {
+    let host = Host::start().await?;
+    let key = host.root.path().join("fixture-key");
+    syncstr_headless::peer::Identity::initialize(&key)?;
+    let signer = syncstr_headless::peer::Identity::open(&key)?;
+    host.store.create_cluster(signer.id().to_string()).await?;
+    let fixture: Value = serde_json::from_slice(include_bytes!("../fixtures/album-artwork.json"))?;
+    let organization: syncstr_headless::organization::Organization =
+        serde_json::from_value(fixture["organization"].clone())?;
+    let id = fixture["blue"].as_str().unwrap();
+    let image = organization.artwork.as_ref().unwrap().assets[id].clone();
+    let mut entry: Entry = serde_json::from_slice(include_bytes!("../fixtures/local-entry.json"))?;
+    entry.sha256 = "a".repeat(64);
+    entry.track.id = "track-a".into();
+    let object = entry.sha256.clone();
+    host.store
+        .publish_cluster_change(
+            &signer,
+            object.clone(),
+            syncstr_headless::cluster_changes::Action::Import {
+                entry: Box::new(entry),
+                organization: Box::new(organization),
+            },
+        )
+        .await?;
+    host.store.project_cluster_metadata(object).await?;
+    let catalog: Value = host.get("catalog").send().await?.json().await?;
+    assert_eq!(catalog["organization"]["artwork"]["assets"][id], "");
+    let response = host.get(&format!("artwork/{id}")).send().await?;
+    assert_eq!(response.status(), 200);
+    assert_eq!(response.bytes().await?.as_ref(), image);
+    Ok(())
+}
+
+#[cfg(not(feature = "p2p"))]
+#[tokio::test]
+async fn catalog_requires_verification_when_playlist_records_exist() -> anyhow::Result<()> {
+    let host = Host::start().await?;
+    let db = rusqlite::Connection::open(host.root.path().join("node.sqlite"))?;
+    db.execute("CREATE TABLE playlist_records (payload BLOB)", [])?;
+    assert_eq!(host.get("catalog").send().await?.status(), 200);
+    db.execute("INSERT INTO playlist_records VALUES (?)", [b"record"])?;
+    assert_error(
+        host.get("catalog").send().await?,
+        StatusCode::INTERNAL_SERVER_ERROR,
+        "storage-failed",
+    )
+    .await
+}
+
+#[tokio::test]
+async fn two_track_ids_share_an_audio_route_that_survives_removal() -> anyhow::Result<()> {
+    let host = Host::start().await?;
+    let first = host.upload().await?;
+    let mut copy = first.clone();
+    copy.track.suffix = "aiff".into();
+    let mut file = host.store.stage().await?;
+    file.write_all(b"abc")?;
+    let second = host.store.commit(copy, file, false).await?;
+    assert_ne!(first.track.id, second.track.id);
+    let catalog: Value = host.get("catalog").send().await?.json().await?;
+    let entries = catalog["entries"].as_array().unwrap();
+    assert_eq!(entries.len(), 2);
+    for id in [&first.track.id, &second.track.id] {
+        assert!(
+            entries
+                .iter()
+                .any(|e| e["track"]["id"] == *id && e["sha256"] == first.sha256)
+        );
+    }
+    let path = format!("audio/{}", first.sha256);
+    let response = host.get(&path).send().await?;
+    assert_eq!(response.status(), 200);
+    assert_eq!(response.bytes().await?.as_ref(), b"abc");
+    let db = rusqlite::Connection::open(host.root.path().join("node.sqlite"))?;
+    db.execute("DELETE FROM tracks", [])?;
+    let response = host
+        .get(&path)
+        .header(header::RANGE, "bytes=1-")
+        .send()
+        .await?;
+    assert_eq!(response.status(), 206);
+    assert_eq!(response.headers()[header::CONTENT_RANGE], "bytes 1-2/3");
+    assert_eq!(response.bytes().await?.as_ref(), b"bc");
+    Ok(())
+}
+
+#[tokio::test]
+async fn disconnecting_mid_download_releases_a_production_listener_slot() -> anyhow::Result<()> {
+    let host = Host::start().await?;
+    let data = vec![0x51; 16 * 1024 * 1024];
+    let id = hex::encode(Sha256::digest(&data));
+    std::fs::write(
+        host.root.path().join("objects").join(format!("{id}.wav")),
+        data,
+    )?;
+    let path = format!("audio/{id}");
+    let mut active = Vec::new();
+    for _ in 0..16 {
+        let mut response = host.get(&path).send().await?;
+        assert_eq!(response.status(), 200);
+        assert!(response.chunk().await?.is_some());
+        active.push(response);
+    }
+    assert_eq!(host.get(&path).send().await?.status(), 429);
+    drop(active.pop());
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            let response = host
+                .get(&path)
+                .header(header::RANGE, "bytes=0-0")
+                .send()
+                .await?;
+            if response.status() != 429 {
+                assert_eq!(response.status(), 206);
+                assert_eq!(response.bytes().await?.as_ref(), &[0x51]);
+                return Ok::<_, anyhow::Error>(());
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await??;
+    Ok(())
 }
 
 #[tokio::test]

@@ -85,11 +85,13 @@ Any other change is breaking and goes to `/api/v2`. The host then serves both ve
 
 `switchNumber`, `primary`, and `startingMarker` are the host's switch record. A change marker is written `<switchNumber>.<primary>.<revision>`. The primary commits each change to the catalog, the organization, an image, or a playlist under its switch record and raises the revision by one. A new primary continues from the revision of its starting marker. A mirror serves the marker of the copy it holds unchanged, so its `marker` can name an older switch than its switch record. Markers are ordered by switch number, then by revision. Two markers with one switch number and different primaries come from two primaries under one number, and neither is newer. Times are RFC 3339 and are only shown to people. The [mirrors design](mirrors-and-primary-switch.md) owns the rules that use these fields.
 
+Until ASO-161 adds a counter, the first release uses a content digest as the revision, which devices compare only for equality.
+
 Every response carries `Syncstr-Switch: <switchNumber>.<primary>` with the host's switch record, so a device notices a switch on any request.
 
 ### Catalog, refreshed with a conditional request
 
-`GET /api/v1/catalog` returns 200 with `ETag: "<library>.<marker>"`. A request with a matching `If-None-Match` gets 304 and no body. The library ID is in the tag, so an address that now serves another library never answers 304 by mistake.
+`GET /api/v1/catalog` returns 200 with `ETag: W/"<library>.<marker>"`. A request with a matching `If-None-Match` gets 304 and no body. The library ID is in the tag, so an address that now serves another library never answers 304 by mistake.
 
 ```json
 {

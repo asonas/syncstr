@@ -1,3 +1,6 @@
+pub(crate) const AUDIO_SUFFIXES: &[&str] =
+    &["mp3", "m4a", "aac", "flac", "wav", "aiff", "aif", "alac"];
+
 pub const MAX_AUDIO: u64 = 20 * 1024 * 1024 * 1024;
 pub const MAX_METADATA: usize = 1024 * 1024;
 
@@ -55,7 +58,10 @@ pub struct Entry {
 
 impl crate::model::Entry {
     pub fn validate(&self) -> anyhow::Result<()> {
-        anyhow::ensure!(self.track.added_at.is_none_or(|value| value >= 0), "invalid addition time");
+        anyhow::ensure!(
+            self.track.added_at.is_none_or(|value| value >= 0),
+            "invalid addition time"
+        );
         anyhow::ensure!(
             self.sha256.len() == 64
                 && self
@@ -74,10 +80,7 @@ impl crate::model::Entry {
             "artwork too large"
         );
         anyhow::ensure!(
-            matches!(
-                self.track.suffix.as_str(),
-                "mp3" | "m4a" | "aac" | "flac" | "wav" | "aiff" | "aif" | "alac"
-            ),
+            AUDIO_SUFFIXES.contains(&self.track.suffix.as_str()),
             "unsupported suffix"
         );
         anyhow::ensure!(

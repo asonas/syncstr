@@ -58,36 +58,13 @@ impl crate::store::Store {
             crate::organization::Organization::default()
         };
         {
-            use sha2::Digest as _;
             let mut statement = transaction.prepare("SELECT payload FROM tracks ORDER BY id")?;
             for row in statement.query_map([], |row| row.get::<_, Vec<u8>>(0))? {
                 let entry: crate::model::Entry = serde_json::from_slice(&row?)?;
                 if stored.is_none() {
                     organization.import(&entry);
                 }
-                let track = organization.canonical_track(&entry.track.id);
-                if !organization.tracks.iter().any(|t| t.id == track) {
-                    continue;
-                }
-                if let Some(bytes) = entry
-                    .artwork
-                    .filter(|b| b.len() <= 512 * 1024 && crate::artwork::bounded_jpeg(b))
-                {
-                    let artwork = organization.artwork.get_or_insert_with(Default::default);
-                    if artwork.candidates.iter().any(|c| c.track == track) {
-                        continue;
-                    }
-                    let asset = hex::encode(sha2::Sha256::digest(&bytes));
-                    artwork.assets.insert(asset.clone(), bytes);
-                    artwork.candidates.push(crate::artwork::Candidate {
-                        id: uuid::Uuid::new_v4().to_string(),
-                        track,
-                        source: "legacy".into(),
-                        context: entry.sha256,
-                        asset,
-                        parents: vec![],
-                    });
-                }
+                import_entry_artwork(&mut organization, &entry);
             }
         }
         organization.repair_membership()?;
@@ -173,8 +150,7 @@ impl crate::store::Store {
     }
 
     pub async fn catalog(&self) -> anyhow::Result<crate::model::Catalog> {
-        self.run(|connection, _| read_catalog(connection, CatalogImages::Embedded))
-            .await
+        self.run(|connection, _| read_catalog(connection)).await
     }
 
     pub async fn get(&self, id: String) -> anyhow::Result<Option<crate::model::Entry>> {
@@ -260,7 +236,7 @@ impl crate::store::Store {
             if original_id != entry.track.id && organization.tracks.iter().any(|t| t.id == original_id) {
                 organization.track_aliases.get_or_insert_with(Default::default).insert(entry.track.id.clone(), original_id);
             } else { organization.import(&entry); }
-            organization.validate()?;
+            import_entry_artwork(&mut organization, &entry);
             crate::store::write_organization(&transaction, &organization)?;
             let destination = root
                 .join("objects")
@@ -285,37 +261,32 @@ impl crate::store::Store {
     }
 }
 
-pub(crate) enum CatalogImages {
-    Embedded,
-    References,
+pub(crate) fn payloads(db: &rusqlite::Connection, sql: &str) -> rusqlite::Result<Vec<Vec<u8>>> {
+    db.prepare(sql)?.query_map([], |row| row.get(0))?.collect()
 }
 
-pub(crate) fn read_catalog(
-    connection: &rusqlite::Connection,
-    images: CatalogImages,
-) -> anyhow::Result<crate::model::Catalog> {
+pub(crate) fn decode_rows<T: serde::de::DeserializeOwned>(
+    rows: Vec<Vec<u8>>,
+) -> anyhow::Result<Vec<T>> {
+    rows.into_iter()
+        .map(|row| Ok(serde_json::from_slice(&row)?))
+        .collect()
+}
+
+fn read_catalog(connection: &rusqlite::Connection) -> anyhow::Result<crate::model::Catalog> {
     let id = connection.query_row("SELECT id FROM library WHERE singleton = 1", [], |row| {
         row.get(0)
     })?;
     let mut statement = connection.prepare("SELECT payload FROM tracks ORDER BY id")?;
     let rows = statement.query_map([], |row| row.get::<_, Vec<u8>>(0))?;
     let entries = rows
-        .map(|data| {
-            let mut entry: crate::model::Entry = serde_json::from_slice(&data?)?;
-            if matches!(images, CatalogImages::References) {
-                entry.artwork = None;
-            }
-            Ok(entry)
-        })
+        .map(|data| Ok(serde_json::from_slice(&data?)?))
         .collect::<anyhow::Result<Vec<_>>>()?;
     Ok(crate::model::Catalog {
         id,
         name: "Syncstr".to_owned(),
         entries,
-        organization: match images {
-            CatalogImages::Embedded => read_organization(connection)?,
-            CatalogImages::References => organization_metadata(connection)?,
-        },
+        organization: read_organization(connection)?,
     })
 }
 
@@ -349,7 +320,38 @@ pub(crate) fn read_organization(
     Ok(organization)
 }
 
-fn write_organization(
+fn import_entry_artwork(
+    organization: &mut crate::organization::Organization,
+    entry: &crate::model::Entry,
+) {
+    use sha2::Digest as _;
+    let track = organization.canonical_track(&entry.track.id);
+    if !organization.tracks.iter().any(|t| t.id == track) {
+        return;
+    }
+    if let Some(bytes) = entry
+        .artwork
+        .as_ref()
+        .filter(|b| b.len() <= 512 * 1024 && crate::artwork::bounded_jpeg(b))
+    {
+        let artwork = organization.artwork.get_or_insert_with(Default::default);
+        if artwork.candidates.iter().any(|c| c.track == track) {
+            return;
+        }
+        let asset = hex::encode(sha2::Sha256::digest(bytes));
+        artwork.assets.insert(asset.clone(), bytes.clone());
+        artwork.candidates.push(crate::artwork::Candidate {
+            id: uuid::Uuid::new_v4().to_string(),
+            track,
+            source: "legacy".into(),
+            context: entry.sha256.clone(),
+            asset,
+            parents: vec![],
+        });
+    }
+}
+
+pub(crate) fn write_organization(
     connection: &rusqlite::Connection,
     organization: &crate::organization::Organization,
 ) -> anyhow::Result<()> {

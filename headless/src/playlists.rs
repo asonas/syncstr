@@ -280,12 +280,14 @@ pub(crate) fn migrate(connection: &rusqlite::Connection) -> anyhow::Result<()> {
 pub(crate) fn records(
     connection: &rusqlite::Connection,
 ) -> anyhow::Result<Vec<crate::playlists::Signed>> {
-    let mut statement =
-        connection.prepare("SELECT payload FROM playlist_records ORDER BY rowid")?;
-    statement
-        .query_map([], |row| row.get::<_, Vec<u8>>(0))?
-        .map(|row| Ok(serde_json::from_slice(&row?)?))
-        .collect()
+    crate::store::decode_rows(record_rows(connection)?)
+}
+
+pub(crate) fn record_rows(connection: &rusqlite::Connection) -> rusqlite::Result<Vec<Vec<u8>>> {
+    crate::store::payloads(
+        connection,
+        "SELECT payload FROM playlist_records ORDER BY rowid",
+    )
 }
 
 impl crate::store::Store {

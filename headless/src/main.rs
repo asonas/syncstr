@@ -150,7 +150,7 @@ enum Command {
         #[arg(long, default_value = "127.0.0.1:8443")]
         listen: std::net::SocketAddr,
         /// Serve the token-free read API on a separate loopback HTTP socket.
-        #[arg(long, value_parser = loopback_address)]
+        #[arg(long, requires = "api_address", value_parser = loopback_address)]
         api_listen: Option<std::net::SocketAddr>,
         /// HTTPS origin reported to devices in library information.
         #[arg(long, value_parser = host_origin)]
@@ -714,13 +714,12 @@ async fn run(cli: crate::Cli) -> anyhow::Result<()> {
             let legacy = server
                 .serve(syncstr_headless::api::router(store.clone(), &token).into_make_service());
             if let Some(listener) = api_listener {
-                listener.set_nonblocking(true)?;
                 println!("Host API listening on http://{}", listener.local_addr()?);
-                let mut api = axum_server::from_tcp(listener)?
-                    .acceptor(syncstr_headless::host_api::WriteIdleTimeout)
-                    .handle(api_handle);
-                configure_http(api.http_builder());
-                let router = syncstr_headless::host_api::router(store, api_address);
+                let api = syncstr_headless::host_api::listener(listener)?.handle(api_handle);
+                let router = syncstr_headless::host_api::router(
+                    store,
+                    api_address.expect("required by --api-listen"),
+                );
                 tokio::try_join!(legacy, api.serve(router.into_make_service()))?;
             } else {
                 legacy.await?;

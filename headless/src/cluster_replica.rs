@@ -426,7 +426,7 @@ impl crate::store::Store {
                 organization.exclude_objects(&std::collections::BTreeSet::from([object.clone()]))?;
                 transaction.execute("DELETE FROM tracks WHERE sha256 = ?", [&object])?;
                 transaction.execute("DELETE FROM cluster_receipts WHERE object = ?", [&object])?;
-                transaction.execute("UPDATE organization SET payload = ? WHERE singleton = 1", [serde_json::to_vec(&organization)?])?;
+                crate::store::write_organization(&transaction, &organization)?;
                 transaction.commit()?;
                 return Ok(());
             };
@@ -527,11 +527,7 @@ impl crate::store::Store {
                     rusqlite::params![previous.track.id, projected.sha256, projected.track.suffix, serde_json::to_vec(&projected)?],
                 )?;
             }
-            organization.validate()?;
-            transaction.execute(
-                "UPDATE organization SET payload = ? WHERE singleton = 1",
-                [serde_json::to_vec(&organization)?],
-            )?;
+            crate::store::write_organization(&transaction, &organization)?;
             transaction.commit()?;
             Ok(())
         })

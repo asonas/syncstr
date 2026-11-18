@@ -9,18 +9,19 @@ use axum::{
 };
 use rusqlite::OptionalExtension as _;
 use serde_json::json;
-pub use socket::WriteIdleTimeout;
+pub use socket::listener;
 use std::sync::Arc;
 use tokio::sync::Semaphore;
 
 #[derive(Clone)]
 struct Host {
     store: crate::store::Store,
-    address: Option<String>,
+    address: String,
     files: Arc<Semaphore>,
+    cache: Arc<tokio::sync::Mutex<Option<Arc<Snapshot>>>>,
 }
 
-pub fn router(store: crate::store::Store, address: Option<String>) -> Router {
+pub fn router(store: crate::store::Store, address: String) -> Router {
     let host = Host::new(store, address);
     Router::new()
         .route("/api/v1/library", get(library).head(method_error))
@@ -120,67 +121,168 @@ struct Playlists {
     conflicted_playlists: Vec<String>,
 }
 
-#[cfg(feature = "p2p")]
-fn read_playlists(connection: &rusqlite::Connection) -> anyhow::Result<Playlists> {
-    let mut result = Playlists::default();
-    let records = crate::playlists::records(connection)?;
-    if !records.is_empty() {
-        let proof = crate::enrollment::read_proof(connection)?;
-        for (id, snapshot) in crate::playlists::project(&records, &proof)? {
-            if snapshot.conflicted {
-                result.conflicted_playlists.push(id);
-            }
-            result.playlists.push(snapshot.document);
+struct SnapshotRows {
+    id: String,
+    entries: Vec<Vec<u8>>,
+    organization: Vec<u8>,
+    #[cfg(feature = "p2p")]
+    playlist_records: Vec<Vec<u8>>,
+    #[cfg(feature = "p2p")]
+    proof: Option<crate::enrollment::ProofRows>,
+}
+
+impl SnapshotRows {
+    fn read(db: &rusqlite::Connection) -> anyhow::Result<Self> {
+        #[cfg(feature = "p2p")]
+        let playlist_records = crate::playlists::record_rows(db)?;
+        #[cfg(not(feature = "p2p"))]
+        if db.table_exists(None, "playlist_records")? {
+            let present: bool =
+                db.query_row("SELECT EXISTS(SELECT 1 FROM playlist_records)", [], |row| {
+                    row.get(0)
+                })?;
+            anyhow::ensure!(!present, "playlist verification requires p2p");
         }
+        Ok(Self {
+            id: db.query_row("SELECT id FROM library WHERE singleton = 1", [], |row| {
+                row.get(0)
+            })?,
+            entries: crate::store::payloads(db, "SELECT payload FROM tracks ORDER BY id")?,
+            organization: db.query_row(
+                "SELECT payload FROM organization WHERE singleton = 1",
+                [],
+                |row| row.get(0),
+            )?,
+            #[cfg(feature = "p2p")]
+            proof: if playlist_records.is_empty() {
+                None
+            } else {
+                Some(crate::enrollment::ProofRows::read(db)?)
+            },
+            #[cfg(feature = "p2p")]
+            playlist_records,
+        })
     }
-    Ok(result)
+
+    fn build(self, host_id: uuid::Uuid, generation: Generation) -> anyhow::Result<Snapshot> {
+        use sha2::Digest as _;
+        let entries: Vec<CatalogEntry> = crate::store::decode_rows(self.entries)?;
+        let mut organization: crate::organization::Organization =
+            serde_json::from_slice(&self.organization)?;
+        if let Some(artwork) = &mut organization.artwork {
+            for bytes in artwork.assets.values_mut() {
+                bytes.clear();
+            }
+        }
+        let playlists = Playlists::default();
+        #[cfg(feature = "p2p")]
+        let playlists = {
+            let mut playlists = playlists;
+            if let Some(proof) = self.proof {
+                let records = crate::store::decode_rows(self.playlist_records)?;
+                for (id, snapshot) in crate::playlists::project(&records, &proof.decode()?)? {
+                    if snapshot.conflicted {
+                        playlists.conflicted_playlists.push(id);
+                    }
+                    playlists.playlists.push(snapshot.document);
+                }
+            }
+            playlists
+        };
+        // Until ASO-161 adds a revision counter, hash the ordered wire content.
+        let mut digest = sha2::Sha256::new();
+        serde_json::to_writer(&mut digest, &(&entries, &organization, &playlists))?;
+        let marker = format!("1.{host_id}.{:x}", digest.finalize());
+        let body = serde_json::to_vec(&Catalog {
+            id: &self.id,
+            name: "Syncstr",
+            entries,
+            organization,
+            playlists,
+            marker: &marker,
+        })?
+        .into();
+        Ok(Snapshot {
+            id: self.id,
+            marker,
+            body,
+            generation,
+        })
+    }
+}
+
+// Serde skips the legacy embedded artwork field without decoding the JPEG.
+#[derive(serde::Deserialize, serde::Serialize)]
+struct CatalogEntry {
+    track: crate::model::Track,
+    sha256: String,
+    #[serde(rename = "importedAlbum", skip_serializing_if = "Option::is_none")]
+    imported_album: Option<crate::organization::Imported>,
 }
 
 #[derive(serde::Serialize)]
-struct Catalog {
-    #[serde(flatten)]
-    catalog: crate::model::Catalog,
+struct Catalog<'a> {
+    id: &'a str,
+    name: &'a str,
+    entries: Vec<CatalogEntry>,
+    organization: crate::organization::Organization,
     #[serde(flatten)]
     playlists: Playlists,
+    marker: &'a str,
+}
+
+#[derive(Clone, Copy, PartialEq)]
+struct Generation {
+    local: u64,
+    external: i64,
+}
+
+struct Snapshot {
+    generation: Generation,
+    id: String,
     marker: String,
+    body: axum::body::Bytes,
 }
 
 impl Host {
-    fn new(store: crate::store::Store, address: Option<String>) -> Self {
+    fn new(store: crate::store::Store, address: String) -> Self {
         Self {
             store,
             address,
+            cache: Default::default(),
             files: Arc::new(Semaphore::new(16)),
         }
     }
 
-    async fn snapshot(&self) -> anyhow::Result<Catalog> {
-        use sha2::Digest as _;
-        let host_id = self.store.host_id();
-        self.store
+    async fn snapshot(&self) -> anyhow::Result<Arc<Snapshot>> {
+        let mut cache = self.cache.clone().lock_owned().await;
+        let previous = cache.as_ref().map(|snapshot| snapshot.generation);
+        let changed = self
+            .store
             .run(move |db, _| {
                 let tx = db.transaction()?;
-                let catalog =
-                    crate::store::read_catalog(&tx, crate::store::CatalogImages::References)?;
-                #[cfg(feature = "p2p")]
-                let playlists = read_playlists(&tx)?;
-                #[cfg(not(feature = "p2p"))]
-                let playlists = Playlists::default();
-                tx.commit()?;
-                // Until ASO-161 adds a revision counter, hash the ordered wire content.
-                let mut digest = sha2::Sha256::new();
-                serde_json::to_writer(
-                    &mut digest,
-                    &(&catalog.entries, &catalog.organization, &playlists),
-                )?;
-                let marker = format!("1.{host_id}.{:x}", digest.finalize());
-                Ok(Catalog {
-                    catalog,
-                    playlists,
-                    marker,
-                })
+                // total_changes covers Store writers. data_version also detects out-of-band commits.
+                let generation = Generation {
+                    local: tx.total_changes(),
+                    external: tx.query_row("PRAGMA data_version", [], |row| row.get(0))?,
+                };
+                if previous == Some(generation) {
+                    return Ok(None);
+                }
+                let rows = SnapshotRows::read(&tx)?;
+                Ok(Some((generation, rows)))
             })
-            .await
+            .await?;
+        let Some((generation, rows)) = changed else {
+            return Ok(cache.as_ref().expect("matching cached generation").clone());
+        };
+        let host_id = self.store.host_id();
+        tokio::task::spawn_blocking(move || {
+            let snapshot = Arc::new(rows.build(host_id, generation)?);
+            *cache = Some(snapshot.clone());
+            Ok(snapshot)
+        })
+        .await?
     }
 
     fn slot(&self) -> Result<tokio::sync::OwnedSemaphorePermit, ApiError> {
@@ -195,8 +297,8 @@ async fn library(State(host): State<Host>) -> Result<Json<serde_json::Value>, Ap
     let snapshot = host.snapshot().await?;
     let id = host.store.host_id().to_string();
     Ok(Json(json!({
-        "library": snapshot.catalog.id,
-        "name": snapshot.catalog.name,
+        "library": snapshot.id,
+        "name": "Syncstr",
         "host": {"id": id, "address": host.address},
         "role": "primary",
         "switchNumber": 1,
@@ -235,7 +337,7 @@ fn accepts_gzip(headers: &HeaderMap) -> bool {
 
 async fn catalog(State(host): State<Host>, headers: HeaderMap) -> Result<Response, ApiError> {
     let snapshot = host.snapshot().await?;
-    let tag = format!("\"{}.{}\"", snapshot.catalog.id, snapshot.marker);
+    let tag = format!("\"{}.{}\"", snapshot.id, snapshot.marker);
     let matches = headers
         .get_all(header::IF_NONE_MATCH)
         .iter()
@@ -249,7 +351,7 @@ async fn catalog(State(host): State<Host>, headers: HeaderMap) -> Result<Respons
         let bytes = tokio::task::spawn_blocking(move || -> anyhow::Result<Vec<u8>> {
             let mut encoder =
                 flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
-            serde_json::to_writer(&mut encoder, &snapshot)?;
+            std::io::Write::write_all(&mut encoder, &snapshot.body)?;
             Ok(encoder.finish()?)
         })
         .await
@@ -263,11 +365,16 @@ async fn catalog(State(host): State<Host>, headers: HeaderMap) -> Result<Respons
         )
             .into_response()
     } else {
-        Json(snapshot).into_response()
+        (
+            [(header::CONTENT_TYPE, "application/json")],
+            snapshot.body.clone(),
+        )
+            .into_response()
     };
-    response
-        .headers_mut()
-        .insert(header::ETAG, tag.parse().map_err(anyhow::Error::from)?);
+    response.headers_mut().insert(
+        header::ETAG,
+        format!("W/{tag}").parse().map_err(anyhow::Error::from)?,
+    );
     response
         .headers_mut()
         .insert(header::VARY, HeaderValue::from_static("Accept-Encoding"));
@@ -281,35 +388,69 @@ async fn audio(
 ) -> Result<Response, ApiError> {
     let Path(id) = path.map_err(|_| ApiError::Missing)?;
     let permit = host.slot()?;
-    let entry: crate::model::Entry = host
+    if id.len() != 64
+        || !id
+            .bytes()
+            .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
+    {
+        return Err(ApiError::Missing);
+    }
+    let lookup = id.clone();
+    let (payload, objects) = host
         .store
-        .run(move |db, _| {
-            let data: Option<Vec<u8>> = db
+        .run(move |db, root| {
+            let payload: Option<Vec<u8>> = db
                 .query_row(
                     "SELECT payload FROM tracks WHERE sha256 = ? ORDER BY suffix LIMIT 1",
-                    [&id],
+                    [lookup],
                     |row| row.get(0),
                 )
                 .optional()?;
-            data.map(|bytes| {
-                let entry: crate::model::Entry = serde_json::from_slice(&bytes)?;
-                anyhow::ensure!(entry.sha256 == id, "audio hash mismatch");
-                Ok(entry)
-            })
-            .transpose()
+            Ok((payload, root.join("objects")))
         })
-        .await?
-        .ok_or(ApiError::Missing)?;
-    let file = crate::api::open_audio(&host.store, &entry).await?;
+        .await?;
+    let (file, size) = if let Some(payload) = payload {
+        let entry: crate::model::Entry =
+            serde_json::from_slice(&payload).map_err(anyhow::Error::from)?;
+        if entry.sha256 != id {
+            return Err(ApiError::Storage(anyhow::anyhow!("audio hash mismatch")));
+        }
+        (
+            crate::api::open_audio(&host.store, &entry).await?,
+            entry.track.size,
+        )
+    } else {
+        stored_audio(&objects, &id).await?
+    };
     Ok(crate::api::file_response(
         file,
-        entry.track.size,
-        &entry.sha256,
+        size,
+        &id,
         "application/octet-stream",
         &headers,
         crate::api::Download::Host(permit),
     )
     .await?)
+}
+
+async fn stored_audio(
+    objects: &std::path::Path,
+    id: &str,
+) -> Result<(tokio::fs::File, u64), ApiError> {
+    for suffix in crate::model::AUDIO_SUFFIXES {
+        match tokio::fs::File::open(objects.join(format!("{id}.{suffix}"))).await {
+            Ok(file) => {
+                let metadata = file.metadata().await.map_err(anyhow::Error::from)?;
+                if !metadata.is_file() || !(1..=crate::model::MAX_AUDIO).contains(&metadata.len()) {
+                    return Err(ApiError::Storage(anyhow::anyhow!("invalid stored audio")));
+                }
+                return Ok((file, metadata.len()));
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(ApiError::Storage(error.into())),
+        }
+    }
+    Err(ApiError::Missing)
 }
 
 async fn artwork(
@@ -323,19 +464,13 @@ async fn artwork(
     let bytes: Vec<u8> = host
         .store
         .run(move |db, _| {
-            let tx = db.transaction()?;
-            if !crate::store::organization_metadata(&tx)?
-                .artwork
-                .is_some_and(|art| art.assets.contains_key(&lookup))
-            {
-                return Ok(None);
-            }
-            let bytes = tx.query_row(
-                "SELECT payload FROM artwork_assets WHERE id = ?",
-                [lookup],
-                |r| r.get(0),
-            )?;
-            Ok(Some(bytes))
+            Ok(db
+                .query_row(
+                    "SELECT payload FROM artwork_assets WHERE id = ?",
+                    [lookup],
+                    |r| r.get(0),
+                )
+                .optional()?)
         })
         .await?
         .ok_or(ApiError::Missing)?;
@@ -356,6 +491,41 @@ mod tests {
     use super::*;
 
     #[tokio::test]
+    async fn concurrent_refreshes_and_conditional_reads_reuse_the_snapshot() -> anyhow::Result<()> {
+        use axum::response::IntoResponse;
+        let root = tempfile::tempdir()?;
+        let host = Host::new(
+            crate::store::Store::open(root.path())?,
+            "https://music.example.test".into(),
+        );
+        let (first, other) = tokio::try_join!(host.snapshot(), host.snapshot())?;
+        assert!(Arc::ptr_eq(&first, &other));
+        for _ in 0..2 {
+            assert_eq!(
+                library(State(host.clone())).await.into_response().status(),
+                200
+            );
+        }
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            header::IF_NONE_MATCH,
+            format!("W/\"{}.{}\"", first.id, first.marker).parse()?,
+        );
+        assert_eq!(
+            catalog(State(host.clone()), headers)
+                .await
+                .into_response()
+                .status(),
+            304
+        );
+        assert!(Arc::ptr_eq(
+            &first,
+            host.cache.lock().await.as_ref().unwrap()
+        ));
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn sixteen_active_bodies_share_the_limit_and_release_slots_on_drop() -> anyhow::Result<()>
     {
         use std::io::Write as _;
@@ -370,7 +540,7 @@ mod tests {
                 false,
             )
             .await?;
-        let host = Host::new(store, None);
+        let host = Host::new(store, "https://music.example.test".into());
         let mut active = Vec::new();
         for _ in 0..16 {
             let response = audio(
