@@ -10,7 +10,7 @@ On iPad the iOS app follows the iPhone design, so "iPhone" below includes the iP
 
 ## Keep the network out of sight
 
-A listener never sees or types a port, a certificate, a node ID, or an address file. After the first connection a device never asks which host to use. The host address appears in the Mac's settings, in the publish confirmation, and in the QR code that a device scans. A listener types it only on a device that cannot scan the code.
+A listener never sees or types a certificate, a node ID, or an address file, and sees a port only in a host address that has one other than 443. After the first connection a device never asks which host to use. The host address appears in the Mac's settings, in the publish confirmation, and in the QR code that a device scans. A listener types it only on a device that cannot scan the code.
 
 The network is named at three moments:
 

@@ -16,7 +16,7 @@ This guide puts a Syncstr host and your iPhone on one tailnet, so that the phone
 - An iPhone with the Syncstr app.
 - A tailnet. A free Tailscale Personal account is enough.
 
-When you finish, the phone downloads from the host wherever Tailscale is connected, at home or on cellular, with no Syncstr account and no server in between. Offline saves keep playing when the phone cannot reach the host.
+When you finish, the phone downloads from the host wherever Tailscale is connected, at home or on cellular, with no Syncstr account and no relay that Syncstr runs. Offline saves keep playing when the phone cannot reach the host.
 
 Before publishing the read service, check who can reach the host's HTTPS port under the effective tailnet policy. For example, allow the personal phone and check that a work computer outside the intended set cannot connect. All devices with effective access to that port can read the library.
 

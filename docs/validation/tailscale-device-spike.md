@@ -139,7 +139,7 @@ For each case below, run the probe and one foreground download. Record the error
 3. Tailscale on, with the fixture `serve` stopped and Serve still on.
 4. Tailscale off. Start one task on the background session, wait 2 minutes, and connect Tailscale. Record whether the task starts by itself and how long after.
 5. Tailscale off in the middle of a foreground download and of a background download.
-6. Everything on, with the tailnet policy changed so that this iPhone cannot reach the Mac. Probe and download from this iPhone, and from a second device that the policy still allows. This is the only remote access control of the first release, so record how the refusal looks and how long it takes.
+6. Everything on, with the tailnet policy changed so that this iPhone cannot reach the Mac. Probe and download from this iPhone, and from a second device that the policy still allows. This is the only remote access control of the first release, so record how the refusal looks and how long it takes. Then restore the policy and check that the probe from this iPhone answers `401` again before the next step.
 7. If the phone has another VPN app, connect it during a download. Record what Tailscale and the app do, and whether VPN On Demand comes back after the other VPN disconnects.
 
 Expected: unknown. A guess for step 1 is a fast `-1003` (cannot find host) by name, because the name resolves inside the tunnel, and a timeout by address. Step 3 should return an HTTP error status from Serve.

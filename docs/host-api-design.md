@@ -150,7 +150,7 @@ A device opens a library by its host address, such as `https://music.example.ts.
 - The iPhone app registers the `syncstr` URL scheme, which no app target registers today. The link uses a custom scheme because universal links need an association file on a public website, and Syncstr runs none.
 - A device ignores link parameters it does not know.
 - The confirmation shows the host name from the address, such as `studio.example.ts.net`, next to the library name, because only the address is not chosen by the host that answers.
-- When it first opens a host address, a device does not follow a redirect from `GET /api/v1/library`, and treats it like an address without a Syncstr library. A host never redirects, and a background download session follows redirects without asking the app, so later requests rely on the hash check, not on refusing redirects.
+- A host never redirects. A device refuses a redirect on every request it makes in the foreground, including library information and the catalog, and treats it like an address without a Syncstr library. A background download session follows redirects without asking the app, so background audio and artwork downloads rely on their hash check instead.
 - The confirmation shows a port when the address has one other than 443.
 - The first version does not offer hosts found on the tailnet. iOS has no official way for an app to list tailnet machines.
 - A device that reads another library ID at an address it knew asks the person before it replaces the library it shows.
@@ -224,6 +224,7 @@ Every error response except 304, 416, and an answer to `HEAD` has a JSON body. A
 | 416 | none | An unsatisfiable range, or more than one range |
 | 429 | `rate-limited` | Too many concurrent downloads. `Retry-After` gives seconds. |
 | 500 | `storage-failed` | The host could not read its store or a file |
+
 The 503 `mirror-incomplete` and `not-serving` answers of [what a mirror needs](#what-a-mirror-needs-beyond-a-device) join this table with mirrors (ASO-172), and the 409 `not-primary` and 412 answers of [changes from devices](#changes-from-devices-come-later) join this table with the first write route.
 
 Limits: 16 concurrent file responses in total, with 429 and `Retry-After: 5` beyond that. The limit is global because the host cannot tell callers apart: every request through Serve arrives from loopback. 16 is provisional. ASO-160 sets it from measurements of a slow download, a whole-library save, and the start of playback running together. A device that gets 429 waits for `Retry-After` before its own backoff applies, and a device saving many files keeps at most 4 downloads open, so that one device cannot take every slot. Whether playback still starts while several devices save is part of the ASO-160 measurement. 20 GiB for an audio file (`MAX_AUDIO` in `model.rs`).
