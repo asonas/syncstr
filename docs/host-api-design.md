@@ -178,7 +178,7 @@ A connection that the tailnet policy refuses looks the same as an unreachable ma
 - The host refuses to start with a listener outside 127.0.0.0/8 and `::1`. A direct LAN or VPN listener is outside the first release.
 - On a NAS the host shares its network namespace with a Tailscale container, or runs where Tailscale is installed on the NAS. In both cases its loopback is reachable only from that namespace.
 - `tailscale serve` publishes the listener to the tailnet over HTTPS with a certificate from Let's Encrypt, which iOS trusts without an exception. [Tailscale setup](tailscale-setup.md) configures it. Do not use `tailscale funnel`, which publishes to the internet.
-- The owner sets the host address with `--address`, and the Tailscale setup fills it in. The host puts it in library information.
+- The owner enables the read API with `syncstr-headless serve --api-listen 127.0.0.1:8441 --api-address https://music.example.ts.net`. Library information reports the HTTPS origin supplied by the Tailscale setup.
 
 Serve adds `Tailscale-User-Login`, `Tailscale-User-Name`, and `Tailscale-User-Profile-Pic` for devices that belong to a user. The first version never allows or refuses a request by them. A tagged device sends none, and on loopback any local process can set them.
 
@@ -251,7 +251,7 @@ The contract follows the accepted [API contract gate](api-contract-gate-design.m
 - `oasdiff breaking --fail-on ERR` compares it with the base branch (gate decision D4). It takes the place of the `/v5` contract that gate slice S5 planned.
 - `contracts/fixtures/host-api-v1/` holds a JSON file for each response shape and each error, including a catalog with two entries that share a `sha256`. The catalog entry reuses `headless/fixtures/local-entry.json` without `artwork`. Rust and Swift tests decode every fixture, and a schema validator checks each one against the YAML file.
 - A Rust integration test runs the real router on `127.0.0.1:0` with a temporary store. It covers library information, the catalog and its 304, an image, and audio whole, by range, resumed, with a stale `If-Range`, and with two ranges. It validates every JSON body against the contract. Another test checks that the host refuses a listener outside loopback.
-- The Swift tests of ASO-165 start the executable that `SYNCSTR_HEADLESS_TEST_BINARY` names, on loopback. The host writes the address it bound to the file that `--address-out` names, like `--peer-address-out` today.
+- The Swift tests of ASO-165 start the executable that `SYNCSTR_HEADLESS_TEST_BINARY` names, on loopback. With `--api-listen 127.0.0.1:0 --api-address https://music.example.ts.net`, the host prints the bound HTTP address on stdout after `Host API listening on `.
 - From ASO-172 on, a mirror test runs two host processes on loopback with separate data directories.
 
 No test needs multicast, a relay, a second machine, a certificate, or the Simulator's network. Whether the tailnet policy lets a device in is checked by hand on the owner's tailnet, as the [migration plan](private-network-migration-plan.md#the-test-that-says-the-library-runs-on-the-new-path) describes.

@@ -273,19 +273,34 @@ async fn v4_upload_publishes_its_cover_with_the_track() -> anyhow::Result<()> {
 #[cfg(feature = "p2p")]
 #[tokio::test]
 async fn peer_projection_publishes_image_bytes_only_on_the_artwork_route() -> anyhow::Result<()> {
+    peer_projection_publishes_image(false).await
+}
+
+#[cfg(feature = "p2p")]
+#[tokio::test]
+async fn peer_projection_registers_an_image_embedded_only_in_the_entry() -> anyhow::Result<()> {
+    peer_projection_publishes_image(true).await
+}
+
+#[cfg(feature = "p2p")]
+async fn peer_projection_publishes_image(embedded_only: bool) -> anyhow::Result<()> {
     let host = Host::start().await?;
     let key = host.root.path().join("fixture-key");
     syncstr_headless::peer::Identity::initialize(&key)?;
     let signer = syncstr_headless::peer::Identity::open(&key)?;
     host.store.create_cluster(signer.id().to_string()).await?;
     let fixture: Value = serde_json::from_slice(include_bytes!("../fixtures/album-artwork.json"))?;
-    let organization: syncstr_headless::organization::Organization =
+    let mut organization: syncstr_headless::organization::Organization =
         serde_json::from_value(fixture["organization"].clone())?;
     let id = fixture["blue"].as_str().unwrap();
     let image = organization.artwork.as_ref().unwrap().assets[id].clone();
     let mut entry: Entry = serde_json::from_slice(include_bytes!("../fixtures/local-entry.json"))?;
     entry.sha256 = "a".repeat(64);
     entry.track.id = "track-a".into();
+    if embedded_only {
+        organization.artwork = None;
+        entry.artwork = Some(image.clone());
+    }
     let object = entry.sha256.clone();
     host.store
         .publish_cluster_change(
@@ -300,6 +315,7 @@ async fn peer_projection_publishes_image_bytes_only_on_the_artwork_route() -> an
     host.store.project_cluster_metadata(object).await?;
     let catalog: Value = host.get("catalog").send().await?.json().await?;
     assert_eq!(catalog["organization"]["artwork"]["assets"][id], "");
+    assert!(catalog["entries"][0].get("artwork").is_none());
     let response = host.get(&format!("artwork/{id}")).send().await?;
     assert_eq!(response.status(), 200);
     assert_eq!(response.bytes().await?.as_ref(), image);
@@ -346,8 +362,19 @@ async fn two_track_ids_share_an_audio_route_that_survives_removal() -> anyhow::R
     let response = host.get(&path).send().await?;
     assert_eq!(response.status(), 200);
     assert_eq!(response.bytes().await?.as_ref(), b"abc");
+    std::fs::remove_file(host.store.path(&second))?;
+    let response = host.get(&path).send().await?.error_for_status()?;
+    assert_eq!(response.bytes().await?.as_ref(), b"abc");
+    std::fs::remove_file(host.store.path(&first))?;
+    assert_error(
+        host.get(&path).send().await?,
+        StatusCode::NOT_FOUND,
+        "not-found",
+    )
+    .await?;
     let db = rusqlite::Connection::open(host.root.path().join("node.sqlite"))?;
     db.execute("DELETE FROM tracks", [])?;
+    std::fs::write(host.store.path(&first), b"abc")?;
     let response = host
         .get(&path)
         .header(header::RANGE, "bytes=1-")
@@ -356,6 +383,95 @@ async fn two_track_ids_share_an_audio_route_that_survives_removal() -> anyhow::R
     assert_eq!(response.status(), 206);
     assert_eq!(response.headers()[header::CONTENT_RANGE], "bytes 1-2/3");
     assert_eq!(response.bytes().await?.as_ref(), b"bc");
+    let file = std::fs::File::create(host.store.path(&first))?;
+    (&file).write_all(b"bad")?;
+    file.set_modified(std::time::SystemTime::UNIX_EPOCH)?;
+    assert_error(
+        host.get(&path).send().await?,
+        StatusCode::INTERNAL_SERVER_ERROR,
+        "storage-failed",
+    )
+    .await?;
+    Ok(())
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn special_audio_objects_are_missing_with_and_without_an_index() -> anyhow::Result<()> {
+    let host = Host::start().await?;
+    let entry = host.upload().await?;
+    let object = host.store.path(&entry);
+    let target = host.root.path().join("fixture.wav");
+    std::fs::rename(&object, &target)?;
+    let db = rusqlite::Connection::open(host.root.path().join("node.sqlite"))?;
+    let route = format!("audio/{}", entry.sha256);
+    for indexed in [true, false] {
+        if !indexed {
+            db.execute("DELETE FROM tracks", [])?;
+        }
+        std::os::unix::fs::symlink(&target, &object)?;
+        assert_error(
+            host.get(&route).send().await?,
+            StatusCode::NOT_FOUND,
+            "not-found",
+        )
+        .await?;
+        std::fs::remove_file(&object)?;
+        anyhow::ensure!(
+            std::process::Command::new("mkfifo")
+                .arg(&object)
+                .status()?
+                .success()
+        );
+        let response = host
+            .get(&route)
+            .timeout(std::time::Duration::from_secs(5))
+            .send()
+            .await;
+        // Release a blocked reader even if a regression makes the request time out.
+        let _writer = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&object)?;
+        assert_error(response?, StatusCode::NOT_FOUND, "not-found").await?;
+        std::fs::remove_file(&object)?;
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn updated_embedded_image_preserves_the_existing_display_candidate() -> anyhow::Result<()> {
+    let host = Host::start().await?;
+    let mut entry: Entry = serde_json::from_slice(include_bytes!("../fixtures/local-entry.json"))?;
+    let mut original = None;
+    for image in [
+        include_bytes!("../fixtures/red.jpg").as_slice(),
+        include_bytes!("../fixtures/blue.jpg").as_slice(),
+    ] {
+        entry.artwork = Some(image.to_vec());
+        let mut file = host.store.stage().await?;
+        file.write_all(b"abc")?;
+        entry = host.store.commit(entry, file, true).await?;
+        let catalog: Value = host.get("catalog").send().await?.json().await?;
+        let candidates = &catalog["organization"]["artwork"]["candidates"];
+        assert_eq!(candidates.as_array().unwrap().len(), 1);
+        assert_eq!(
+            original.get_or_insert_with(|| candidates.clone()),
+            candidates
+        );
+        let id = hex::encode(Sha256::digest(image));
+        assert_eq!(catalog["organization"]["artwork"]["assets"][&id], "");
+        assert_eq!(
+            host.get(&format!("artwork/{id}"))
+                .send()
+                .await?
+                .error_for_status()?
+                .bytes()
+                .await?
+                .as_ref(),
+            image
+        );
+    }
     Ok(())
 }
 

@@ -320,26 +320,25 @@ pub(crate) fn read_organization(
     Ok(organization)
 }
 
-fn import_entry_artwork(
+pub(crate) fn import_entry_artwork(
     organization: &mut crate::organization::Organization,
     entry: &crate::model::Entry,
 ) {
     use sha2::Digest as _;
     let track = organization.canonical_track(&entry.track.id);
-    if !organization.tracks.iter().any(|t| t.id == track) {
-        return;
-    }
     if let Some(bytes) = entry
         .artwork
         .as_ref()
         .filter(|b| b.len() <= 512 * 1024 && crate::artwork::bounded_jpeg(b))
     {
         let artwork = organization.artwork.get_or_insert_with(Default::default);
-        if artwork.candidates.iter().any(|c| c.track == track) {
-            return;
-        }
         let asset = hex::encode(sha2::Sha256::digest(bytes));
         artwork.assets.insert(asset.clone(), bytes.clone());
+        if !organization.tracks.iter().any(|t| t.id == track)
+            || artwork.candidates.iter().any(|c| c.track == track)
+        {
+            return;
+        }
         artwork.candidates.push(crate::artwork::Candidate {
             id: uuid::Uuid::new_v4().to_string(),
             track,

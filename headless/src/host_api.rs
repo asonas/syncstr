@@ -10,7 +10,12 @@ use axum::{
 use rusqlite::OptionalExtension as _;
 use serde_json::json;
 pub use socket::listener;
-use std::sync::Arc;
+use std::{
+    collections::HashMap,
+    path::PathBuf,
+    sync::{Arc, Mutex},
+    time::SystemTime,
+};
 use tokio::sync::Semaphore;
 
 #[derive(Clone)]
@@ -19,6 +24,15 @@ struct Host {
     address: String,
     files: Arc<Semaphore>,
     cache: Arc<tokio::sync::Mutex<Option<Arc<Snapshot>>>>,
+    verified: Arc<Mutex<HashMap<PathBuf, Verification>>>,
+}
+
+type Verification = Arc<Mutex<Option<FileStamp>>>;
+
+#[derive(PartialEq, Eq)]
+struct FileStamp {
+    size: u64,
+    modified: SystemTime,
 }
 
 pub fn router(store: crate::store::Store, address: String) -> Router {
@@ -147,7 +161,11 @@ impl SnapshotRows {
             id: db.query_row("SELECT id FROM library WHERE singleton = 1", [], |row| {
                 row.get(0)
             })?,
-            entries: crate::store::payloads(db, "SELECT payload FROM tracks ORDER BY id")?,
+            // Strip Base64 artwork before copying rows out of SQLite under the store lock.
+            entries: crate::store::payloads(
+                db,
+                "SELECT CAST(json_remove(CAST(payload AS TEXT), '$.artwork') AS BLOB) FROM tracks ORDER BY id",
+            )?,
             organization: db.query_row(
                 "SELECT payload FROM organization WHERE singleton = 1",
                 [],
@@ -207,11 +225,11 @@ impl SnapshotRows {
             marker,
             body,
             generation,
+            gzip: Default::default(),
         })
     }
 }
 
-// Serde skips the legacy embedded artwork field without decoding the JPEG.
 #[derive(serde::Deserialize, serde::Serialize)]
 struct CatalogEntry {
     track: crate::model::Track,
@@ -242,6 +260,26 @@ struct Snapshot {
     id: String,
     marker: String,
     body: axum::body::Bytes,
+    gzip: tokio::sync::OnceCell<axum::body::Bytes>,
+}
+
+impl Snapshot {
+    async fn compressed(&self) -> anyhow::Result<axum::body::Bytes> {
+        let bytes = self
+            .gzip
+            .get_or_try_init(|| async {
+                let body = self.body.clone();
+                tokio::task::spawn_blocking(move || -> anyhow::Result<axum::body::Bytes> {
+                    let mut encoder =
+                        flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
+                    std::io::Write::write_all(&mut encoder, &body)?;
+                    Ok(encoder.finish()?.into())
+                })
+                .await?
+            })
+            .await?;
+        Ok(bytes.clone())
+    }
 }
 
 impl Host {
@@ -250,6 +288,7 @@ impl Host {
             store,
             address,
             cache: Default::default(),
+            verified: Default::default(),
             files: Arc::new(Semaphore::new(16)),
         }
     }
@@ -348,14 +387,7 @@ async fn catalog(State(host): State<Host>, headers: HeaderMap) -> Result<Respons
     let mut response = if matches {
         StatusCode::NOT_MODIFIED.into_response()
     } else if accepts_gzip(&headers) {
-        let bytes = tokio::task::spawn_blocking(move || -> anyhow::Result<Vec<u8>> {
-            let mut encoder =
-                flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
-            std::io::Write::write_all(&mut encoder, &snapshot.body)?;
-            Ok(encoder.finish()?)
-        })
-        .await
-        .map_err(anyhow::Error::from)??;
+        let bytes = snapshot.compressed().await?;
         (
             [
                 (header::CONTENT_ENCODING, "gzip"),
@@ -396,34 +428,22 @@ async fn audio(
         return Err(ApiError::Missing);
     }
     let lookup = id.clone();
-    let (payload, objects) = host
+    let (indexed, objects) = host
         .store
         .run(move |db, root| {
-            let payload: Option<Vec<u8>> = db
-                .query_row(
-                    "SELECT payload FROM tracks WHERE sha256 = ? ORDER BY suffix LIMIT 1",
-                    [lookup],
-                    |row| row.get(0),
-                )
-                .optional()?;
-            Ok((payload, root.join("objects")))
+            let mut query = db.prepare("SELECT suffix, json_extract(CAST(payload AS TEXT), '$.track.size') FROM tracks WHERE sha256 = ? ORDER BY suffix")?;
+            let indexed = query.query_map([lookup], |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)))?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            Ok((indexed, root.join("objects")))
         })
         .await?;
-    let (file, size) = if let Some(payload) = payload {
-        let entry: crate::model::Entry =
-            serde_json::from_slice(&payload).map_err(anyhow::Error::from)?;
-        if entry.sha256 != id {
-            return Err(ApiError::Storage(anyhow::anyhow!("audio hash mismatch")));
-        }
-        (
-            crate::api::open_audio(&host.store, &entry).await?,
-            entry.track.size,
-        )
-    } else {
-        stored_audio(&objects, &id).await?
-    };
+    let lookup = id.clone();
+    let (file, size) =
+        tokio::task::spawn_blocking(move || host.stored_audio(objects, &lookup, indexed))
+            .await
+            .map_err(anyhow::Error::from)??;
     Ok(crate::api::file_response(
-        file,
+        tokio::fs::File::from_std(file),
         size,
         &id,
         "application/octet-stream",
@@ -433,24 +453,74 @@ async fn audio(
     .await?)
 }
 
-async fn stored_audio(
-    objects: &std::path::Path,
-    id: &str,
-) -> Result<(tokio::fs::File, u64), ApiError> {
-    for suffix in crate::model::AUDIO_SUFFIXES {
-        match tokio::fs::File::open(objects.join(format!("{id}.{suffix}"))).await {
-            Ok(file) => {
-                let metadata = file.metadata().await.map_err(anyhow::Error::from)?;
-                if !metadata.is_file() || !(1..=crate::model::MAX_AUDIO).contains(&metadata.len()) {
-                    return Err(ApiError::Storage(anyhow::anyhow!("invalid stored audio")));
-                }
-                return Ok((file, metadata.len()));
+impl Host {
+    fn stored_audio(
+        &self,
+        objects: PathBuf,
+        id: &str,
+        indexed: Vec<(String, i64)>,
+    ) -> Result<(std::fs::File, u64), ApiError> {
+        let candidates = indexed
+            .iter()
+            .map(|(suffix, size)| (suffix.as_str(), Some(*size)))
+            .chain(
+                crate::model::AUDIO_SUFFIXES
+                    .iter()
+                    .copied()
+                    .filter(|suffix| !indexed.iter().any(|(s, _)| s == suffix))
+                    .map(|suffix| (suffix, None)),
+            );
+        for (suffix, expected) in candidates {
+            if !crate::model::AUDIO_SUFFIXES.contains(&suffix) {
+                return Err(ApiError::Storage(anyhow::anyhow!(
+                    "unsupported audio suffix"
+                )));
             }
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(error) => return Err(ApiError::Storage(error.into())),
+            let path = objects.join(format!("{id}.{suffix}"));
+            let (mut file, metadata) = match crate::api::open_audio(&path) {
+                Ok(opened) => opened,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(error) => return Err(ApiError::Storage(error.into())),
+            };
+            let size = metadata.len();
+            if !(1..=crate::model::MAX_AUDIO).contains(&size)
+                || expected.is_some_and(|n| u64::try_from(n) != Ok(size))
+            {
+                return Err(ApiError::Storage(anyhow::anyhow!(
+                    "invalid stored audio size"
+                )));
+            }
+            if expected.is_none() {
+                use sha2::Digest as _;
+                let stamp = FileStamp {
+                    size,
+                    modified: metadata.modified().map_err(anyhow::Error::from)?,
+                };
+                // A range request can reuse verification only for the same object path and file stamp.
+                let cached = self
+                    .verified
+                    .lock()
+                    .unwrap()
+                    .entry(path)
+                    .or_default()
+                    .clone();
+                let mut verified = cached.lock().unwrap();
+                if verified.as_ref() != Some(&stamp) {
+                    let mut digest = sha2::Sha256::new();
+                    let read =
+                        std::io::copy(&mut file, &mut digest).map_err(anyhow::Error::from)?;
+                    if read != size || hex::encode(digest.finalize()) != id {
+                        return Err(ApiError::Storage(anyhow::anyhow!(
+                            "stored audio hash mismatch"
+                        )));
+                    }
+                    *verified = Some(stamp);
+                }
+            }
+            return Ok((file, size));
         }
+        Err(ApiError::Missing)
     }
-    Err(ApiError::Missing)
 }
 
 async fn artwork(
@@ -522,7 +592,53 @@ mod tests {
             &first,
             host.cache.lock().await.as_ref().unwrap()
         ));
+        assert!(first.gzip.get().is_none());
+        let (gzip, again) = tokio::try_join!(first.compressed(), other.compressed())?;
+        assert_eq!(gzip.as_ptr(), again.as_ptr());
         Ok(())
+    }
+
+    #[tokio::test]
+    async fn catalog_rows_leave_embedded_artwork_in_sqlite() -> anyhow::Result<()> {
+        let root = tempfile::tempdir()?;
+        let store = crate::store::Store::open(root.path())?;
+        store
+            .run(|db, _| {
+                let mut entry: crate::model::Entry =
+                    serde_json::from_slice(include_bytes!("../fixtures/local-entry.json"))?;
+                entry.artwork = Some(vec![42; 512 * 1024]);
+                db.execute(
+                    "INSERT INTO tracks VALUES (?, ?, ?, ?)",
+                    rusqlite::params![
+                        entry.track.id,
+                        entry.sha256,
+                        entry.track.suffix,
+                        serde_json::to_vec(&entry)?
+                    ],
+                )?;
+                let rows = SnapshotRows::read(db)?;
+                entry.artwork = None;
+                let expected = serde_json::to_value(entry)?;
+                assert_eq!(rows.entries.len(), 1);
+                assert!(rows.entries[0].len() < 1024);
+                assert_eq!(
+                    serde_json::from_slice::<serde_json::Value>(&rows.entries[0])?,
+                    expected
+                );
+                let snapshot = rows.build(
+                    uuid::Uuid::nil(),
+                    Generation {
+                        local: 0,
+                        external: 0,
+                    },
+                )?;
+                assert_eq!(
+                    serde_json::from_slice::<serde_json::Value>(&snapshot.body)?["entries"][0],
+                    expected
+                );
+                Ok(())
+            })
+            .await
     }
 
     #[tokio::test]

@@ -254,11 +254,17 @@ async fn download(
             axum::http::StatusCode::NOT_FOUND,
             "track not found",
         ))?;
-    let file = open_audio(&state.store, &entry)
+    entry.validate().map_err(Error::internal)?;
+    let path = state.store.path(&entry);
+    let (file, metadata) = tokio::task::spawn_blocking(move || open_audio(&path))
         .await
+        .map_err(Error::internal)?
         .map_err(Error::internal)?;
+    if metadata.len() != entry.track.size {
+        return Err(Error::internal("audio size mismatch"));
+    }
     file_response(
-        file,
+        tokio::fs::File::from_std(file),
         entry.track.size,
         &entry.sha256,
         "application/octet-stream",
@@ -269,18 +275,39 @@ async fn download(
     .map_err(Error::internal)
 }
 
-pub(crate) async fn open_audio(
-    store: &crate::store::Store,
-    entry: &crate::model::Entry,
-) -> anyhow::Result<tokio::fs::File> {
-    entry.validate()?;
-    let file = tokio::fs::File::open(store.path(entry)).await?;
-    let metadata = file.metadata().await?;
-    anyhow::ensure!(
-        metadata.is_file() && metadata.len() == entry.track.size,
-        "audio size mismatch"
-    );
-    Ok(file)
+pub(crate) fn open_audio(
+    path: &std::path::Path,
+) -> std::io::Result<(std::fs::File, std::fs::Metadata)> {
+    use std::io::{Error, ErrorKind};
+    // Only regular objects are servable. Treat special files as absent so v1 returns 404.
+    if !std::fs::symlink_metadata(path)?.is_file() {
+        return Err(ErrorKind::NotFound.into());
+    }
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true);
+    // Protect the open itself if the directory entry changes after the type check.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt as _;
+        options.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt as _;
+        options.custom_flags(windows_sys::Win32::Storage::FileSystem::FILE_FLAG_OPEN_REPARSE_POINT);
+    }
+    let file = options.open(path).map_err(|error| {
+        #[cfg(unix)]
+        if error.raw_os_error() == Some(libc::ELOOP) {
+            return Error::from(ErrorKind::NotFound);
+        }
+        error
+    })?;
+    let metadata = file.metadata()?;
+    if !metadata.is_file() {
+        return Err(ErrorKind::NotFound.into());
+    }
+    Ok((file, metadata))
 }
 
 pub(crate) enum Download {
