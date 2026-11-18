@@ -130,6 +130,20 @@ protected, duplicate-location, video, or unavailable-file exclusions. Enter it
 only after observing the actual source item. The tool validates its structure,
 not the truth of a human observation. File Kind is not current cloud status.
 
+When the listener explicitly approves local files with purchase-date or CDDB
+tags, a selection may instead include `origin_approval` with `basis` set to
+`purchase_date` or `cddb`, an `approved_at` date, and the selected `audio_sha256`.
+Preparation rechecks the corresponding embedded tag against those exact audio
+bytes and preserves the approval separately from cloud observations. This only
+resolves missing ownership evidence; other exclusions still apply. These tags
+are provenance hints, not proof of the current cloud status or purchaser.
+
+An explicit listener decision to prepare verified local files while their origin
+remains unknown can use `user_reviewed_unknown_origin` as the approval basis,
+with the same date and exact audio hash. This records consent, not ownership or
+cloud-status evidence. Subscription, protection, duplicate-location and audio
+validation checks still apply. Preparation does not authorize production import.
+
 `artwork` is an optional exact-item source-library export. Paths resolve from
 the command's working directory; absolute private paths are also supported.
 Automated COM extraction, embedded/folder artwork fallback, and downloads remain

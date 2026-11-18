@@ -107,9 +107,8 @@ remained. Test profiles were retained; production profiles were untouched.
 
 ## Remaining verification and scope
 
-- Automatic LAN discovery remains unresolved as described above. The current
-  discovery result message is also replaced by the ordinary catalog status after
-  the operation; the absence of a host row was checked separately.
+- Separate-device automatic LAN discovery remains unverified. The earlier
+  discovery failure above is a historical result; see the local follow-up below.
 - Fresh invitation enrollment was not exercised. The existing enrollment flow
   is a pre-v5 enrollment service; the current v5-only server does not provide that
   service. The tested profiles were already enrolled. There is no legacy catalog
@@ -129,3 +128,18 @@ remained. Test profiles were retained; production profiles were untouched.
 Use the [desktop verification procedure](../../apps/desktop/README.md#disposable-native-audio-verification)
 to reproduce the synthetic checks. Generated credentials, device IDs, addresses,
 personal paths and raw session logs must stay out of published evidence.
+
+## Discovery follow-up, 2026-11-17
+
+Discovery and host selection now retain their result messages instead of having
+them overwritten by a catalog snapshot. Catalog-changing operations still
+publish their updated snapshots. The real worker regression test passed with a
+disposable enrolled profile, and desktop all-target Clippy passed with warnings
+denied on Rust 1.99.1 for Windows.
+
+The opt-in `cluster_discovery` test also resolved a disposable advertiser running
+in another process on the same Windows computer without an explicit address.
+Its subprocess entry point passed separately. This demonstrates local
+advertise/browse resolution; it does not establish separate-device discovery,
+the native Discover interaction or enrollment. No production profile or network
+configuration was changed.

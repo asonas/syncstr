@@ -36,6 +36,10 @@ pub fn run(
         if matches!(command, super::Command::Shutdown) {
             break;
         }
+        let updates_catalog = !matches!(
+            command,
+            super::Command::Discover | super::Command::SelectHost(_)
+        );
         let operation = syncstr_headless::catalog_client::Operation::default();
         *active.lock().expect("active operation") = Some(operation.clone());
         let _ = events.send(super::Event::Busy(true));
@@ -200,7 +204,8 @@ pub fn run(
             Ok(())
         });
         *active.lock().expect("active operation") = None;
-        if let Some(core) = &client
+        if updates_catalog
+            && let Some(core) = &client
             && let Err(error) = snapshot(core, &events)
         {
             let _ = events.send(super::Event::Message(error.to_string()));
