@@ -46,16 +46,18 @@ Do not use `tailscale funnel`. Funnel publishes a service to the internet.
 
 ## Publish a NAS host
 
-The planned NAS host joins the tailnet through Tailscale installed on the NAS, or through a Tailscale container in the same network namespace as the host. Today the owner's NAS uses a Tailscale sidecar with Caddy in front of the legacy `/v4` host. Caddy forwards only catalog and audio reads. In the planned container setup, the loopback-only host replaces Caddy in the sidecar's network namespace.
+Today the owner's NAS sidecar runs Caddy at `127.0.0.1:8441`. Caddy forwards catalog and audio reads to the legacy `/v4` host on the LAN.
+
+For the [migration](private-network-migration-plan.md#the-order), publish the trial host under a separate tailnet name. Give its sidecar its own tailnet identity, state directory, and network namespace. The trial host shares that namespace and listens only on loopback. It keeps its trial HTTPS address when it becomes the primary. Stop publishing from the old sidecar only after the rollback period ends.
 
 | Option | What you add | What you maintain | Host address |
 | --- | --- | --- | --- |
 | A Tailscale container next to the host | One `tailscale/tailscale` container in the host's Compose file | One more image, updated with the host. The Serve setting is a file. | `music.<tailnet>.ts.net`, for the host only |
 | Tailscale on the NAS | The Tailscale package for your NAS system | A package whose install and update route differs by system. Synology's Package Center build is no longer supported. | The NAS's own name. The whole NAS joins the tailnet. |
 
-Use the Tailscale container if you want the least to maintain. It works the same on every NAS that runs containers, starts and stops with the host, and puts only the host on your tailnet. The device spike (ASO-159) tests this choice.
+The recommended Compose setup uses a Tailscale container. It starts and stops with the host and puts only the host on your tailnet. Q7 of the [device spike](validation/tailscale-device-spike.md) measures the existing Caddy path. ASO-163 verifies in a disposable environment that Serve reaches the new host's loopback listener in the shared namespace. Use a separate Compose project for the trial so the relative state and configuration paths below belong to its sidecar.
 
-1. Choose the host's machine name, such as `music`, for the `hostname` setting in step 4. The warning about public certificate logs in step 3 of the Mac section applies here. Then turn on HTTPS as in step 4 of the Mac section.
+1. Choose an unused machine name for the `hostname` setting in step 4. Replace the example `music` if the old sidecar already uses it. The warning about public certificate logs in step 3 of the Mac section applies here. Then turn on HTTPS as in step 4 of the Mac section.
 2. In the admin console, open **Keys**, select **Generate auth key**, keep it one-off, and copy the key. This key enrolls the NAS container in Tailscale. The listener never enters it in Syncstr.
 3. Next to the host's `compose.yaml`, create `tailscale/config/serve.json`. Step 4 mounts the `config` directory, not the file, because Tailscale detects changes to the file only through a directory mount ([Docker configuration parameters](https://tailscale.com/docs/features/containers/docker/docker-params)). The container replaces `${TS_CERT_DOMAIN}` with the machine's full name.
 
@@ -96,7 +98,7 @@ Use the Tailscale container if you want the least to maintain. It works the same
 
    `TS_STATE_DIR` on a volume keeps the machine signed in across restarts. `TS_AUTH_ONCE=true` stops the container from signing in again at every start, which fails after the auth key expires.
 5. Start both containers with `docker compose up -d`.
-6. In the admin console, open **Machines**, open the menu of `music`, and select **Disable Key Expiry**. Otherwise the machine leaves the tailnet after 180 days until you sign it in again.
+6. In the admin console, open **Machines**. Open the menu for the machine name from step 1 and select **Disable Key Expiry**. Otherwise the machine leaves the tailnet after 180 days until you sign it in again.
 
 For Tailscale on the NAS, follow Tailscale's guide for your system, then run the Mac section's `tailscale serve` command on the NAS. The planned host listens on `127.0.0.1` inside its own network namespace, so a port mapping such as the one in [`headless/compose.yaml`](../headless/compose.yaml) does not reach it. Run the host container with `network_mode: host`, so that its loopback is the NAS's loopback where Serve forwards. Every process on the NAS can then read the library through that port. Today's image listens on `0.0.0.0:8443` by default, so with host networking it would also answer on the NAS's LAN address. Give it an explicit loopback listener and a port that no other service uses before trying this. Tailscale's NAS guides do not mention Serve, so this path is untested.
 
@@ -145,7 +147,7 @@ See [Tailscale Serve](https://tailscale.com/docs/reference/tailscale-cli/serve) 
 
 ## Open questions
 
-- Which NAS option becomes the one documented command? Q7 of the [device spike](validation/tailscale-device-spike.md) informs it. ASO-163.
+- Which NAS option becomes the one documented command? ASO-163 verifies the recommended Compose setup in a disposable environment before choosing the command.
 - Can the macOS app configure Serve with one confirmation, so that you copy no command? A prototype settles it, as open question 1 of [Onboarding and connection states](onboarding-and-connection-states.md#open-questions) describes. ASO-163.
 
 ASO-159 uses the direct-IP path as a measurement comparison. What the macOS app shows when Tailscale is missing or HTTPS is off is in [Onboarding and connection states](onboarding-and-connection-states.md#on-the-mac-as-a-host).

@@ -18,7 +18,7 @@ Q1 to Q7 come from ASO-159. Q8, Q9, the resume check in Q3, and the other cases 
 | Q4 | What does the app see when Tailscale is off, when the host machine is offline, when the host process is down, when the tailnet policy refuses this phone, and when another VPN takes over? How quickly does it see it? | Decides the "host unreachable" state and the probe timeout. | ASO-167 |
 | Q5 | How long does one album take over the tailnet, compared with the same host over the LAN? | Decides whether whole-file download before playback stays acceptable. | ASO-165 |
 | Q6 | Does a direct `100.x` address with the host's self-signed certificate work, with the certificate pinned? Is it worth supporting? | Provides a direct-IP comparison with the Serve hostname. | ASO-163, ASO-165 |
-| Q7 | How does the NAS sidecar publish the host? Does it rejoin after a NAS restart, and how long does each container take to update? | Decides the one documented command for a NAS host. | ASO-163 |
+| Q7 | How does the existing sidecar publish the legacy host through Caddy? Does it rejoin after a NAS restart, and how long does each container take to update? | Records recovery and update times for the existing NAS layout. | ASO-163 |
 | Q8 | Does `allowsCellularAccess = false` stop a download through the tunnel when the phone is on cellular? | Decides how a Wi-Fi-only download setting works. | ASO-166 |
 | Q9 | With VPN On Demand set to **Always**, does the tunnel come up without opening the Tailscale app, after a phone restart and after a network change? | Decides what the first launch and the unreachable state tell the listener. | ASO-167 |
 
@@ -37,7 +37,10 @@ Q1 to Q7 come from ASO-159. Q8, Q9, the resume check in Q3, and the other cases 
 
 Create a minimal SwiftUI app outside the product targets, for example under `experiments/tailscale-device-spike/`. It needs these parts:
 
-- Fields for the host address, the token, and a list of track IDs with their SHA-256 values and sizes. On the Mac, read this metadata from `GET /v4/catalog` with the token for the selected host. The phone needs only the selected entries.
+- A path selector with separate credentials and trust settings for N and the fixture paths. Bind the N token to the exact HTTPS origin `https://music.example.ts.net` (scheme, host, and port). In both sessions, attach it only to `GET /v4/catalog` and `GET /v4/tracks/{id}/audio` on that origin. Never fall back to the NAS's LAN address.
+- Assume neither route on N redirects. Refuse redirects in the foreground. A background session follows redirects on its own, as the [host API redirect rule](../host-api-design.md#connecting-by-host-address) explains.
+- Use the fixture's token on its three paths. Use system trust on N and A-name. Use the fixture pin for A-ip and A-lan when the step calls for it.
+- On the Mac, read each catalog with its own token. Give the phone the selected track IDs, SHA-256 values, and sizes for each host.
 - One foreground session from `URLSessionConfiguration.default`, and one background session from `URLSessionConfiguration.background(withIdentifier:)`. The app recreates the background session at launch and implements `application(_:handleEventsForBackgroundURLSession:completionHandler:)`.
 - Download tasks for `GET /v4/tracks/{id}/audio`. In `didFinishDownloadingTo`, the app moves the file, computes its SHA-256, and compares it with the catalog value.
 - A probe: `GET /v4/catalog` with no token. A `401` answer means that the host is reachable. The probe keeps the default `timeoutIntervalForRequest` of 60 seconds, so that the log shows when each failure arrives on its own.
@@ -48,7 +51,7 @@ Create a minimal SwiftUI app outside the product targets, for example under `exp
 
 `Info.plist` has no `NSAppTransportSecurity` key. It declares `NSLocalNetworkUsageDescription`, as the real app does in `apps/ios/project.yml`, because path A-lan uses a LAN address.
 
-The plans remove `NSLocalNetworkUsageDescription` from the real app, on the assumption that reaching a host over the Tailscale interface needs no local network permission. Test that assumption first: on a fresh install, run Q1 over N on Wi-Fi and then on cellular before the first A-lan request. Record whether iOS shows the local network prompt and whether any request fails. Only then make one A-lan request and accept the prompt for the timed A-lan runs.
+The plans remove `NSLocalNetworkUsageDescription` from the real app on the assumption that the Tailscale interface needs no local network permission. On a fresh install, complete Q1 on N alone, first on Wi-Fi and then on cellular. Record any local network prompt or failed request on each network before contacting the fixture. Then compare A-name and A-ip on Wi-Fi. Try A-lan last.
 
 ### The hosts
 
@@ -79,9 +82,9 @@ The `upload` command checks that the certificate names the address in `--url`, s
 | N | `https://music.example.ts.net` | Let's Encrypt, through Serve | Q1 to Q3, Q5, Q7 to Q9 |
 | A-name | `https://mac.example.ts.net` | Let's Encrypt, through Serve | Q1 range comparison, Q4 and Q5 |
 | A-ip | `https://100.x.y.z:8443` | The fixture's own, pinned | Q1 range comparison, Q4 address probe, Q5 and Q6 |
-| A-lan | `https://192.0.2.20:8443`, the Mac's LAN address, with Tailscale off on the phone | The fixture's own, pinned. The name does not match. | Q5 baseline |
+| A-lan | `https://192.0.2.20:8443`, the Mac's LAN address, with Tailscale off on the phone | The fixture's own, pinned | Q1 permission check and Q5 baseline |
 
-If A-lan fails on the certificate name, run `init` again with `--host 192.0.2.20` into a second identity directory. Then restart `serve` with that identity for the baseline runs.
+If A-lan fails on the certificate name, run `init` again with `--host 192.0.2.20` into a second identity directory. For A-lan, restart `serve` on the same fixture data with the second identity. Set the build to that identity's certificate and token. Before returning to A-name or A-ip, restore the original identity on `serve` and the original certificate and token in the build. Use that original identity for Q6.
 
 Before each session, record the environment below. Read the phone's line in `tailscale status` on the serving peer (the sidecar for N or the Mac for A-name and A-ip). Record `direct` or the DERP region. A-lan bypasses Tailscale.
 
@@ -91,10 +94,11 @@ When the spike ends, on the fixture Mac stop `serve` and delete `tmp/spike`. Tur
 
 ### Q1. Foreground download and playback over the tailnet name
 
-1. Connect the phone to Wi-Fi and connect Tailscale.
-2. Run the range check over N. Repeat on the fixture copy over A-name and A-ip. Pin the fixture certificate only on A-ip. Record all three statuses and `Content-Range` headers.
-3. Download one track over N with the foreground session. Verify the hash and play the file for 10 seconds.
-4. Turn Wi-Fi off in **Settings**, and repeat steps 2 and 3 on cellular.
+1. On the Mac, match each album track across the two catalogs by SHA-256 and byte size. Upload gives each fixture track a new ID. Fill in the track table in [Results](#results) in play order. Use the ID for the current host in every request.
+2. On a fresh install, connect the phone to Wi-Fi and Tailscale. Run the range check on the first row's track over N. Record the status and `Content-Range`. Download the same track in the foreground, verify its hash, and play it for 10 seconds.
+3. Turn Wi-Fi off in **Settings**. Repeat the N range check, download, verification, and playback on cellular. Record any local network prompt and any failure separately for each N run.
+4. Return to Wi-Fi. Repeat the range check with the first row's fixture ID over A-name and then A-ip. Pin the fixture certificate only on A-ip. Record each status and `Content-Range`.
+5. Turn Tailscale off and make one A-lan request. Record whether the local network prompt appears and accept it if shown. Reconnect Tailscale before Q2.
 
 Expected: status `200`, a matching hash, and playback. The range check returns `206` with `Content-Range`. No error `-1022` (App Transport Security) or `-1202` (untrusted certificate) appears.
 
@@ -152,7 +156,7 @@ Expected: unknown. A guess for step 1 is a fast `-1003` (cannot find host) by na
 ### Q5. Time for one album
 
 1. Delete the album's files from the build between runs.
-2. Start the album's first track, then the others, on the foreground session. Record the time until the first track is verified, which is the wait before playback, and until the last track is verified.
+2. Start the foreground downloads in the play order recorded in Q1. Use the N ID or fixture ID from each row for the current path. Measure the wait for playback until the first row's track is verified. Measure the album time until all rows are verified.
 3. Run three times on N over Wi-Fi and three times on N over cellular. On Wi-Fi, repeat the three runs with the fixture copy over each of A-name, A-ip, and A-lan.
 4. Run once over N on Wi-Fi with the background session. Record this time separately from the foreground medians.
 
@@ -179,7 +183,7 @@ The read-only inspection on 2026-11-18 found a userspace Tailscale sidecar with 
 
 A Mac on the same tailnet trusted Serve's Let's Encrypt certificate without an exception. An unauthenticated `GET /v4/catalog` returned `401`. Both `GET /v4/organization` and `GET /` returned `404`. Caddy also returned `404` for `POST /v4/tracks`. These observations cover the Mac path. Q1 checks the physical iPhone.
 
-The legacy host uses host networking. The planned host shares the sidecar's network namespace and listens only on loopback. The inspection does not verify that layout.
+Every Q7 measurement covers the existing path through Caddy to the legacy host on the LAN. ASO-163 verifies the recommended Compose layout in a disposable environment. There, Serve must reach the new host on its loopback-only listener in their shared network namespace.
 
 1. A NAS restart stops the everyday library. It needs the owner's separate go-ahead. At an approved restart, check that the sidecar rejoins without signing in again. Repeat the unauthenticated probe on N and expect `401`. Until then, record rejoin as unverified.
 2. At the next owner-scheduled update of each container, record the time from the start of its update until N answers the probe again. Record separate times for the sidecar and the legacy host. Leave each time unmeasured until that update.
@@ -215,7 +219,7 @@ The legacy host uses host networking. The planned host shares the sidecar's netw
 | Q4 gives only timeouts | The unreachable state cannot name its cause | ASO-167 |
 | Q5 first track too slow | ADR 0008's whole-file playback model | ASO-158, ASO-165 |
 | Q6 pinning works or fails | Record which direct-IP comparison paths worked | ASO-163, ASO-165 |
-| Q7 sidecar fails to rejoin | The NAS recommendation in the setup guide | ASO-163 |
+| Q7 sidecar fails to rejoin | Record the recovery failure for the existing layout. Check rejoin separately in the disposable Compose setup. | ASO-163 |
 | Q8 cellular is not blocked | The Wi-Fi-only setting checks the path itself | ASO-166 |
 | Q9 On Demand does not reconnect | First-launch and reconnect wording | ASO-167 |
 
@@ -233,7 +237,11 @@ PASS, FAIL, and BLOCKED have the meanings in the [validation README](README.md).
 
 | ID | Path | Network | Direct or DERP | Observation (status, error code, elapsed time) | Result |
 | --- | --- | --- | --- | --- | --- |
-| Q1 | N, A-name, A-ip | | | | |
+| Q1 | N | Wi-Fi | | | |
+| Q1 | N | Cellular | | | |
+| Q1 | A-name | Wi-Fi | | | |
+| Q1 | A-ip | Wi-Fi | | | |
+| Q1 | A-lan | Wi-Fi | LAN | | |
 | Q2 | N | | | | |
 | Q3 | N | | | | |
 | Q4 | A-name, A-ip | | | | |
@@ -242,6 +250,12 @@ PASS, FAIL, and BLOCKED have the meanings in the [validation README](README.md).
 | Q7 | N | Tailnet (Mac) | | Trusted certificate. Catalog probe `401`. Blocked routes `404`. | NAS rejoin and both update times pending |
 | Q8 | N | | | | |
 | Q9 | N | | | | |
+
+Use one row per album track for Q1 and Q5. Row 1 is the first track on every path.
+
+| Play order | N track ID | Fixture track ID | SHA-256 | Bytes |
+| --- | --- | --- | --- | --- |
+| 1 | | | | |
 
 | Path | Network | Direct or DERP | Tracks | Bytes | First track, median (s) | Album, median (s) | MB/s |
 | --- | --- | --- | --- | --- | --- | --- | --- |

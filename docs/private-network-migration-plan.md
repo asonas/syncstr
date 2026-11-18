@@ -151,10 +151,10 @@ Every device can go back until the first device gets removal step 4. While that 
 ### Steps that need the owner's go-ahead
 
 1. Take a snapshot of the live database and run the rehearsal on the NAS. This reads the live directory and writes only a new one. A short stop of the old `serve` for the snapshot is part of this go-ahead.
-2. Publish the trial host alongside the existing sidecar under a separate tailnet name with `tailscale serve`. The trial host serves the rehearsal directory. Its machine name then appears in public certificate transparency logs, as [Tailscale setup](tailscale-setup.md) explains.
+2. Publish the trial host under a separate tailnet name with `tailscale serve`. Give its sidecar its own tailnet identity, state directory, and network namespace. Serve reaches the trial host on loopback in that namespace. Caddy keeps `127.0.0.1:8441` in the old namespace. The trial host serves the rehearsal directory. Its machine name then appears in public certificate transparency logs, as [Tailscale setup](tailscale-setup.md) explains.
 3. The cutover. Stop the old `serve`, run the final migration, and start the new host as the primary.
 4. Retire the cluster test deployment and the relay on the NAS.
-5. After the soak, retire the old `serve` container, shut down the rendezvous Worker, and later delete the original data directory.
+5. After the soak and the end of the rollback period, stop publishing from the old sidecar and retire the old `serve` container. Shut down the rendezvous Worker and later delete the original data directory.
 
 ## Cut over the host first, then the Mac, then the iPhone
 
@@ -172,7 +172,7 @@ ASO-165 replaces the transport in four pull requests:
 1. **Trial host.** After the first two go-aheads, the trial host runs on the NAS. It accepts no change except the one test import of the cutover test, and it is rebuilt from a fresh snapshot, not updated. The old `serve` keeps running as the primary, and the devices paired with it keep using it. ASO-162 (a host in the macOS app) is not on this path, because the owner's primary is the NAS.
 2. **Mac.** The macOS app connects to the trial host by its host address, browses, downloads and plays. The Mac comes first because it needs no TestFlight and compiles the same `Library` code as the iPhone.
 3. **iPhone.** The iPhone app, installed through TestFlight, connects to the trial host over Tailscale. It saves albums (ASO-166), in the background or with Syncstr open as Q2 of the device spike decides, and plays offline saves made on the old path.
-4. **Cutover.** After the third go-ahead, the owner stops changing the library on the old path. The old `serve` stops, the final migration runs, and the new host starts as the primary at the trial host's host address. Devices connected to the trial host keep working, because the address stays.
+4. **Cutover.** After the third go-ahead, the owner stops changing the library on the old path. Stop the old `serve` and run the final migration. Start the new primary at the trial host's HTTPS address using the same sidecar and state directory. Keep the old sidecar's publication in place until the rollback period ends.
 5. **Soak.** The owner uses only the new path for 14 days.
 
 ### The test that says the library runs on the new path
