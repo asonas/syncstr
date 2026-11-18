@@ -253,29 +253,44 @@ async fn artwork_serves_stored_images_after_the_reference_is_removed() -> anyhow
     .await
 }
 
-#[tokio::test]
-async fn v4_upload_publishes_its_cover_with_the_track() -> anyhow::Result<()> {
-    let host = Host::start().await?;
+async fn v4_upload(host: &Host, entry: &Entry) -> anyhow::Result<Entry> {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
     let url = format!("http://{}/v4/tracks", listener.local_addr()?);
     let api = syncstr_headless::api::router(host.store.clone(), "fixture-token");
     let upload = tokio::spawn(async move { axum::serve(listener, api).await });
-    let mut entry: Entry = serde_json::from_slice(include_bytes!("../fixtures/local-entry.json"))?;
-    let image = include_bytes!("../fixtures/red.jpg").as_slice();
-    let id = hex::encode(Sha256::digest(image));
-    entry.artwork = Some(image.to_vec());
     let form = reqwest::multipart::Form::new()
-        .text("entry", serde_json::to_string(&entry)?)
+        .text("entry", serde_json::to_string(entry)?)
         .text("audio", "abc");
-    host.client
+    let saved = host
+        .client
         .post(url)
         .bearer_auth("fixture-token")
         .multipart(form)
         .send()
         .await?
-        .error_for_status()?;
+        .error_for_status()?
+        .json()
+        .await?;
     upload.abort();
+    Ok(saved)
+}
+
+#[tokio::test]
+async fn v4_upload_publishes_its_cover_with_the_track() -> anyhow::Result<()> {
+    let host = Host::start().await?;
+    let mut entry: Entry = serde_json::from_slice(include_bytes!("../fixtures/local-entry.json"))?;
+    let image = include_bytes!("../fixtures/red.jpg").as_slice();
+    let id = hex::encode(Sha256::digest(image));
+    entry.artwork = Some(image.to_vec());
+    let saved = v4_upload(&host, &entry).await?;
     let catalog: Value = host.get("catalog").send().await?.json().await?;
+    let candidates = catalog["organization"]["artwork"]["candidates"]
+        .as_array()
+        .unwrap();
+    assert_eq!(candidates.len(), 1);
+    assert_eq!(candidates[0]["track"], saved.track.id);
+    assert_eq!(candidates[0]["source"], "legacy");
+    assert_eq!(candidates[0]["asset"], id);
     assert_eq!(
         catalog["organization"]["artwork"]["assets"],
         json!({&id:""})
@@ -284,6 +299,11 @@ async fn v4_upload_publishes_its_cover_with_the_track() -> anyhow::Result<()> {
     let response = host.get(&format!("artwork/{id}")).send().await?;
     assert_eq!(response.status(), 200);
     assert_eq!(response.bytes().await?.as_ref(), image);
+    entry.track.title = "Another fixture title".into();
+    entry.artwork = Some(include_bytes!("../fixtures/blue.jpg").to_vec());
+    assert_eq!(v4_upload(&host, &entry).await?, saved);
+    let after: Value = host.get("catalog").send().await?.json().await?;
+    assert_eq!(after, catalog);
     Ok(())
 }
 
@@ -340,15 +360,15 @@ async fn peer_projection_publishes_image(embedded_only: bool) -> anyhow::Result<
     assert_eq!(response.status(), 200);
     assert_eq!(response.bytes().await?.as_ref(), image);
     if embedded_only {
-        // Use a consistent copy so the live HTTP listener can keep its store lock.
-        let copy = tempfile::tempdir()?;
-        let db = rusqlite::Connection::open(host.root.path().join("node.sqlite"))?;
-        db.execute(
-            "VACUUM INTO ?",
-            [copy.path().join("node.sqlite").to_str().unwrap()],
-        )?;
-        let reopened = Store::open(copy.path())?.catalog().await?;
-        assert!(reopened.organization.artwork.unwrap().candidates.is_empty());
+        let candidates = reopen_catalog(&host)
+            .await?
+            .organization
+            .artwork
+            .unwrap()
+            .candidates;
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].source, "legacy");
+        assert_eq!(candidates[0].asset, id);
     }
     Ok(())
 }
@@ -521,8 +541,7 @@ async fn reopening_a_schema_four_upload_backfills_its_legacy_candidate_once() ->
         );
         db.execute_batch(
             "UPDATE organization SET payload = CAST(json_remove(payload, '$.artwork') AS BLOB);
-                          DELETE FROM artwork_assets;
-                          DROP TABLE peer_artwork_tracks;",
+             DELETE FROM artwork_assets;",
         )?;
     }
     let store = Store::open(root.path())?;
@@ -546,36 +565,68 @@ async fn reopening_a_schema_four_upload_backfills_its_legacy_candidate_once() ->
     Ok(())
 }
 
+async fn reopen_catalog(host: &Host) -> anyhow::Result<syncstr_headless::model::Catalog> {
+    // Use a consistent copy so the live HTTP listener can keep its store lock.
+    let copy = tempfile::tempdir()?;
+    let db = rusqlite::Connection::open(host.root.path().join("node.sqlite"))?;
+    db.execute(
+        "VACUUM INTO ?",
+        [copy.path().join("node.sqlite").to_str().unwrap()],
+    )?;
+    Store::open(copy.path())?.catalog().await
+}
+
 #[tokio::test]
-async fn cluster_save_registers_embedded_image_without_creating_a_candidate() -> anyhow::Result<()>
+async fn cluster_save_serves_embedded_image_and_backfills_candidate_on_open() -> anyhow::Result<()>
 {
-    let root = tempfile::tempdir()?;
-    let store = Store::open(root.path())?;
+    save_and_reopen_with_embedded_image(true).await
+}
+
+#[tokio::test]
+async fn legacy_put_without_organization_backfills_candidate_on_open() -> anyhow::Result<()> {
+    save_and_reopen_with_embedded_image(false).await
+}
+
+async fn save_and_reopen_with_embedded_image(include_organization: bool) -> anyhow::Result<()> {
+    let host = Host::start().await?;
+    let store = &host.store;
     let image = include_bytes!("../fixtures/blue.jpg");
     let mut entry: Entry = serde_json::from_slice(include_bytes!("../fixtures/local-entry.json"))?;
     entry.artwork = Some(image.to_vec());
-    let mut incoming = syncstr_headless::organization::Organization::default();
-    incoming.import(&entry);
+    let incoming = include_organization.then(|| {
+        let mut organization = syncstr_headless::organization::Organization::default();
+        organization.import(&entry);
+        organization
+    });
+    let original_id = entry.track.id.clone();
     let mut file = store.stage().await?;
     file.write_all(b"abc")?;
-    store
-        .commit_organized(entry, file, true, Some(incoming))
-        .await?;
+    let saved = store.commit_organized(entry, file, true, incoming).await?;
+    let canonical = if include_organization {
+        original_id
+    } else {
+        saved.track.id
+    };
     let artwork = store.catalog().await?.organization.artwork.unwrap();
-    assert_eq!(
-        artwork.assets[&hex::encode(Sha256::digest(image))],
-        image.as_slice()
-    );
+    let id = hex::encode(Sha256::digest(image));
+    assert_eq!(artwork.assets[&id], image.as_slice());
     assert!(artwork.candidates.is_empty());
-    drop(store);
-    assert_eq!(
-        Store::open(root.path())?
-            .catalog()
-            .await?
-            .organization
-            .artwork,
-        Some(artwork)
-    );
+    let response = host
+        .get(&format!("artwork/{id}"))
+        .send()
+        .await?
+        .error_for_status()?;
+    assert_eq!(response.bytes().await?.as_ref(), image);
+    let candidates = reopen_catalog(&host)
+        .await?
+        .organization
+        .artwork
+        .unwrap()
+        .candidates;
+    assert_eq!(candidates.len(), 1);
+    assert_eq!(candidates[0].source, "legacy");
+    assert_eq!(candidates[0].track, canonical);
+    assert_eq!(candidates[0].asset, id);
     Ok(())
 }
 
@@ -589,9 +640,13 @@ async fn updated_embedded_image_preserves_the_existing_display_candidate() -> an
         include_bytes!("../fixtures/blue.jpg").as_slice(),
     ] {
         entry.artwork = Some(image.to_vec());
-        let mut file = host.store.stage().await?;
-        file.write_all(b"abc")?;
-        entry = host.store.commit(entry, file, true).await?;
+        entry = if original.is_none() {
+            v4_upload(&host, &entry).await?
+        } else {
+            let mut file = host.store.stage().await?;
+            file.write_all(b"abc")?;
+            host.store.commit(entry, file, true).await?
+        };
         let catalog: Value = host.get("catalog").send().await?.json().await?;
         let candidates = &catalog["organization"]["artwork"]["candidates"];
         assert_eq!(candidates.as_array().unwrap().len(), 1);

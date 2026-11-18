@@ -234,7 +234,7 @@ async fn upload(
     Ok(axum::Json(
         state
             .store
-            .commit(entry, temporary, false)
+            .commit_upload(entry, temporary)
             .await
             .map_err(crate::api::Error::internal)?,
     ))
