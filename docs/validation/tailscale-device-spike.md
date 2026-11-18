@@ -4,7 +4,7 @@ This is the protocol and the record of the ASO-159 spike. A throwaway iOS build 
 
 No production host or library is changed. This protocol authorizes no production operation.
 
-Status: not run. No question has a recorded answer. The fixture serves legacy /v4 with bearer authentication. Its token and 401 probe apply only to this experiment. The first-release read API uses tailnet policy and needs no Syncstr token.
+Status: the physical iPhone runs are pending. Q7 records the read-only NAS inspection on 2026-11-18. Both spike hosts use legacy `/v4` bearer authentication. The first-release read API uses tailnet policy and needs no Syncstr token.
 
 ## Questions
 
@@ -18,17 +18,17 @@ Q1 to Q7 come from ASO-159. Q8, Q9, the resume check in Q3, and the other cases 
 | Q4 | What does the app see when Tailscale is off, when the host machine is offline, when the host process is down, when the tailnet policy refuses this phone, and when another VPN takes over? How quickly does it see it? | Decides the "host unreachable" state and the probe timeout. | ASO-167 |
 | Q5 | How long does one album take over the tailnet, compared with the same host over the LAN? | Decides whether whole-file download before playback stays acceptable. | ASO-165 |
 | Q6 | Does a direct `100.x` address with the host's self-signed certificate work, with the certificate pinned? Is it worth supporting? | Provides a direct-IP comparison with the Serve hostname. | ASO-163, ASO-165 |
-| Q7 | Which way to put a container host on the tailnet is better: Tailscale on the NAS, or a Tailscale container next to the host? | Decides the one documented command for a NAS host. | ASO-163 |
+| Q7 | How does the NAS sidecar publish the host? Does it rejoin after a NAS restart, and how long does each container take to update? | Decides the one documented command for a NAS host. | ASO-163 |
 | Q8 | Does `allowsCellularAccess = false` stop a download through the tunnel when the phone is on cellular? | Decides how a Wi-Fi-only download setting works. | ASO-166 |
 | Q9 | With VPN On Demand set to **Always**, does the tunnel come up without opening the Tailscale app, after a phone restart and after a network change? | Decides what the first launch and the unreachable state tell the listener. | ASO-167 |
 
 ## Rules
 
-- Read only. The `/v4` token also authorizes `POST /v4/tracks` and `POST /v4/organization` ([`api.rs`](../../headless/src/api.rs)). Read-only access is therefore a rule that the build keeps. It sends `GET` requests only.
+- Read only. The `/v4` token also authorizes `POST /v4/tracks` and `POST /v4/organization` ([`api.rs`](../../headless/src/api.rs)). The token still grants those writes on the NAS's LAN listener. The build sends only `GET`, including through the sidecar.
 - Use a throwaway build with its own bundle identifier. It never opens the everyday app's container or profile.
-- Paste the token into the build at run time. Keep it out of the repository and out of this file.
-- Install nothing on the owner's NAS without the owner's go-ahead. Do not change the running host's Compose project.
-- Record no addresses, machine names, account names, or device identifiers. Write `mac.example.ts.net`, `100.x`, `192.0.2.20`, and "the owner's NAS".
+- Paste each token at run time and send it only to its host. Keep tokens and session logs out of the repository.
+- Leave the owner's library, sidecar configuration, and everyday app profile untouched. Use the Mac fixture for host and policy changes.
+- Record no addresses, machine names, account names, or device identifiers. Use the path labels below or placeholders such as `music.example.ts.net`, `mac.example.ts.net`, `100.x`, `192.0.2.20`, and "the owner's NAS".
 - Run on a physical iPhone.
 
 ## Prepare
@@ -37,22 +37,24 @@ Q1 to Q7 come from ASO-159. Q8, Q9, the resume check in Q3, and the other cases 
 
 Create a minimal SwiftUI app outside the product targets, for example under `experiments/tailscale-device-spike/`. It needs these parts:
 
-- Fields for the host address, the token, and a list of track IDs with their SHA-256 values and sizes. Read these on the Mac with the `catalog` command of `syncstr-headless`, which takes the same `--url`, `--cert`, and `--token-file` as `upload` below. The phone then never fetches a whole catalog.
+- Fields for the host address, the token, and a list of track IDs with their SHA-256 values and sizes. On the Mac, read this metadata from `GET /v4/catalog` with the token for the selected host. The phone needs only the selected entries.
 - One foreground session from `URLSessionConfiguration.default`, and one background session from `URLSessionConfiguration.background(withIdentifier:)`. The app recreates the background session at launch and implements `application(_:handleEventsForBackgroundURLSession:completionHandler:)`.
 - Download tasks for `GET /v4/tracks/{id}/audio`. In `didFinishDownloadingTo`, the app moves the file, computes its SHA-256, and compares it with the catalog value.
 - A probe: `GET /v4/catalog` with no token. A `401` answer means that the host is reachable. The probe keeps the default `timeoutIntervalForRequest` of 60 seconds, so that the log shows when each failure arrives on its own.
 - A range check: `GET` of one track with `Range: bytes=0-99`. Record the status and the `Content-Range` header.
 - Playback of a verified file with `AVPlayer`.
-- An optional server trust handler for Q6 and the LAN baseline. It accepts the challenge only when the server's public key equals the public key in the bundled `tls.crt`, and it ignores the name in the certificate. This handler exists only for the comparison paths. The first-release [host API](../host-api-design.md) has no pinning.
+- An optional server trust handler for A-ip and A-lan. It accepts the challenge only when the server's public key equals the public key in the bundled `tls.crt`, and it ignores the name in the certificate. This handler exists only for the comparison paths. The first-release [host API](../host-api-design.md) has no pinning.
 - A timestamped log file that the share sheet can export. Log every request start, `didWriteData` progress at 10% steps, `didResumeAtOffset`, completion, the HTTP status, the error domain and code, the elapsed time, and each `NWPathMonitor` update with `usesInterfaceType(.cellular)`, `isExpensive`, and `isConstrained`.
 
 `Info.plist` has no `NSAppTransportSecurity` key. It declares `NSLocalNetworkUsageDescription`, as the real app does in `apps/ios/project.yml`, because path A-lan uses a LAN address.
 
-The plans remove `NSLocalNetworkUsageDescription` from the real app, on the assumption that reaching a host over the Tailscale interface needs no local network permission. Test that assumption first: on a fresh install, run Q1 over A-name on Wi-Fi and then on cellular before the first A-lan request. Record whether iOS shows the local network prompt and whether any request fails. Only then make one A-lan request and accept the prompt for the timed A-lan runs.
+The plans remove `NSLocalNetworkUsageDescription` from the real app, on the assumption that reaching a host over the Tailscale interface needs no local network permission. Test that assumption first: on a fresh install, run Q1 over N on Wi-Fi and then on cellular before the first A-lan request. Record whether iOS shows the local network prompt and whether any request fails. Only then make one A-lan request and accept the prompt for the timed A-lan runs.
 
 ### The hosts
 
-Run Q1 to Q6, Q8, and Q9 against a disposable fixture host on a Mac that runs Tailscale. Its library is files that the owner copies in, not the real library. It needs one album of 10 to 15 tracks and one file of at least 200 MB for Q3. Run from the repository root:
+Path N reaches the owner's real library at `https://music.example.ts.net`. Serve forwards to Caddy inside the sidecar. Caddy passes only `GET` and `HEAD` on `/v4/catalog` and `/v4/tracks/{id}/audio`. Every other method or path gets `404` before it reaches the host.
+
+Select an existing album of 10 to 15 tracks and a file of at least 200 MB on N. If no suitable large file exists, record the affected run as unmeasured. For the comparisons, copy the same album into a disposable Mac fixture running Tailscale. Use the fixture's own identity and token. Run from the repository root:
 
 ```sh
 cargo build --locked --manifest-path headless/Cargo.toml
@@ -74,39 +76,37 @@ The `upload` command checks that the certificate names the address in `--url`, s
 
 | Path | Address the phone uses | Certificate | Used by |
 | --- | --- | --- | --- |
-| A-name | `https://mac.example.ts.net` | Let's Encrypt, through Serve | Q1 to Q5, Q8, and Q9 |
-| A-ip | `https://100.x.y.z:8443` | The fixture's own, pinned | Q1 range check, Q5 and Q6 |
+| N | `https://music.example.ts.net` | Let's Encrypt, through Serve | Q1 to Q3, Q5, Q7 to Q9 |
+| A-name | `https://mac.example.ts.net` | Let's Encrypt, through Serve | Q1 range comparison, Q4 and Q5 |
+| A-ip | `https://100.x.y.z:8443` | The fixture's own, pinned | Q1 range comparison, Q4 address probe, Q5 and Q6 |
 | A-lan | `https://192.0.2.20:8443`, the Mac's LAN address, with Tailscale off on the phone | The fixture's own, pinned. The name does not match. | Q5 baseline |
-| C | `https://spike.example.ts.net`, a disposable host on the NAS | Let's Encrypt, through Serve | Q5 and Q7 |
 
 If A-lan fails on the certificate name, run `init` again with `--host 192.0.2.20` into a second identity directory. Then restart `serve` with that identity for the baseline runs.
 
-No path publishes the owner's real host. Serve would publish the whole `/v4` router, and the `/v4` token also allows uploads and organization changes, so a read-only build does not make such a path read-only. NAS times come from path C.
+Before each session, record the environment below. Read the phone's line in `tailscale status` on the serving peer (the sidecar for N or the Mac for A-name and A-ip). Record `direct` or the DERP region. A-lan bypasses Tailscale.
 
-Before each session, record the environment table below. During each tailnet run, read the phone's line in `tailscale status` on the Mac. It shows `direct` and an address for a direct path. Otherwise it names the Tailscale DERP region that carries the traffic. Record which one the run used. On a NAS with a Tailscale container, run `docker compose exec tailscale tailscale status` instead.
-
-When the spike ends, stop `serve` and delete `tmp/spike`. Turn off each Serve setting that the spike added by running its command again with `off` at the end. `tailscale serve reset` also works, but it removes every Serve setting on the Mac.
+When the spike ends, on the fixture Mac stop `serve` and delete `tmp/spike`. Turn off each Serve setting that the spike added by running its command again with `off` at the end. `tailscale serve reset` also works, but it removes every Serve setting on the Mac.
 
 ## Steps
 
 ### Q1. Foreground download and playback over the tailnet name
 
 1. Connect the phone to Wi-Fi and connect Tailscale.
-2. Run the range check over A-name, and the same check on the same track over A-ip with the pinned certificate. Record both statuses and `Content-Range` headers.
-3. Download one track over A-name with the foreground session. Verify the hash and play the file for 10 seconds.
+2. Run the range check over N. Repeat on the fixture copy over A-name and A-ip. Pin the fixture certificate only on A-ip. Record all three statuses and `Content-Range` headers.
+3. Download one track over N with the foreground session. Verify the hash and play the file for 10 seconds.
 4. Turn Wi-Fi off in **Settings**, and repeat steps 2 and 3 on cellular.
 
 Expected: status `200`, a matching hash, and playback. The range check returns `206` with `Content-Range`. No error `-1022` (App Transport Security) or `-1202` (untrusted certificate) appears.
 
 - PASS: ADR 0008's premise holds. A device uses `URLSession` with default trust.
 - FAIL with `-1022` or `-1202`: the host address design needs an exception that App Review asks about. ADR 0008 and ASO-165 change.
-- A range check without `206` over A-name, while the same check over A-ip returns `206`: Serve does not pass `Range`. ASO-160 must not rely on ranges through Serve. If A-ip fails too, the result says nothing about Serve alone. Record it and check the fixture's range handling first.
+- A range check without `206` over A-name, while the same check over A-ip returns `206`: the fixture Serve path loses `Range`. A failure on N alone does not isolate Serve. ASO-160 must not rely on ranges through Serve. If A-ip fails too, the result says nothing about Serve alone. Record it and check the fixture's range handling first.
 
 ### Q2. Background download while suspended and locked
 
-1. Start all album tracks and the large file at once on the background session over A-name.
-2. Within 5 seconds, go to the Home Screen. On the Mac, run `tailscale status` every 30 seconds and watch the `tx` count on the phone's line. When it stops growing, open the app and export the log.
-3. Delete the files. Start again, lock the phone within 5 seconds, and leave it locked for 10 minutes.
+1. Start all album tracks and the large file at once on the background session over N.
+2. Within 5 seconds, go to the Home Screen. In the sidecar, read `tailscale status` every 30 seconds and watch the `tx` count on the phone's line. When it stops growing, open the app and export the log.
+3. Delete the downloads from the throwaway build. Start again, lock the phone within 5 seconds, and leave it locked for 10 minutes.
 4. Unlock, open the app, and export the log.
 
 Expected: bytes keep flowing while the app is suspended. iOS wakes the app when the tasks finish, and every hash matches. Record whether moving a file in `didFinishDownloadingTo` fails while the phone is locked.
@@ -117,7 +117,7 @@ Expected: bytes keep flowing while the app is suspended. iOS wakes the app when 
 
 ### Q3. Network change during a download
 
-1. On Wi-Fi, start the large file on the foreground session over A-name.
+1. On Wi-Fi, start the large file on the foreground session over N.
 2. At about 30%, turn Wi-Fi off in **Settings**. Record what follows. The bytes continue, the task resumes, or the task fails with an error code.
 3. Repeat with the background session. Record whether `didResumeAtOffset` arrives and at which offset.
 4. Repeat steps 1 to 3 from cellular to Wi-Fi.
@@ -130,7 +130,7 @@ Expected: unknown. A guess is that the connection inside the tunnel survives, be
 
 ### Q4. When the host cannot be reached
 
-First, with everything on, run the probe 10 times on Wi-Fi and 10 times on cellular. Record the slowest `401`. That time is the floor for any probe timeout.
+Use A-name for every case except the A-ip probe in step 1. Change policy only for access to the fixture Mac. First, with everything on, run the probe 10 times on Wi-Fi and 10 times on cellular. Record the slowest `401`. That time is the floor for any probe timeout.
 
 For each case below, run the probe and one foreground download. Record the error code or HTTP status, and the time from request to callback.
 
@@ -153,8 +153,8 @@ Expected: unknown. A guess for step 1 is a fast `-1003` (cannot find host) by na
 
 1. Delete the album's files from the build between runs.
 2. Start the album's first track, then the others, on the foreground session. Record the time until the first track is verified, which is the wait before playback, and until the last track is verified.
-3. Run three times each over A-name on Wi-Fi, A-ip on Wi-Fi, A-lan on Wi-Fi, and A-name on cellular. Once path C exists for Q7, add three runs over C with the same album copied to it.
-4. Run once over A-name on the background session.
+3. Run three times on N over Wi-Fi and three times on N over cellular. On Wi-Fi, repeat the three runs with the fixture copy over each of A-name, A-ip, and A-lan.
+4. Run once over N on Wi-Fi with the background session. Record this time separately from the foreground medians.
 
 Record the track count, total bytes, and formats once. Report the median of each path. Compute MB/s from the bytes and the time.
 
@@ -175,22 +175,18 @@ Record success or failure separately for foreground and background. Q6 compares 
 
 ### Q7. A container host on the tailnet
 
-This question needs the owner's go-ahead, because it installs something on the NAS. Without it, mark Q7 as BLOCKED, and the choice rests on the [setup guide](../tailscale-setup.md).
+The read-only inspection on 2026-11-18 found a userspace Tailscale sidecar with persistent state. Its Serve configuration publishes HTTPS on port 443 and proxies `/` to Caddy at `http://127.0.0.1:8441`. Caddy reaches the legacy host over the LAN at `https://192.0.2.30:8443`. It trusts only the host's read-only `tls.crt`. The image contains both the Serve configuration and the Caddyfile. Its source commit is outside this repository.
 
-1. On the NAS, create a second Compose project with an empty data directory and a new identity, not the real library. Create the identity with the `init` step of "Docker on a NAS" in [`headless/README.md`](../../headless/README.md). Add the Tailscale container from the setup guide with `hostname: spike`. Today's container listens with HTTPS on 8443, so the proxy in `serve.json` is `https+insecure://127.0.0.1:8443`, not the planned `http://127.0.0.1:8441`.
-2. Once, before any restart, copy one test file into a directory that the fixture container mounts, and upload it from inside the container with `docker compose exec` and `syncstr-headless upload --url https://127.0.0.1:8443`, using an identity created with `--host 127.0.0.1`. Record the track ID and SHA-256 that it reports.
-3. From the phone, open `https://spike.example.ts.net/v4/catalog` and expect `unauthorized`. Then, from inside the container, download the recorded track with the fixture token and check its SHA-256. Do not upload again, so that a lost file cannot be replaced unnoticed.
-4. Run `docker compose restart` and repeat step 3. Restarting the NAS itself stops the owner's everyday library, so it needs a separate go-ahead from the owner, at a time the owner chooses. With it, restart the NAS and repeat step 3. Without it, record the NAS restart as not tested.
-5. Record the number of steps, the time taken, and what an update of each container takes.
-6. If the owner accepts Tailscale on the NAS itself, record the same for it. The fixture container then uses `network_mode: host`, so start it with `--listen 127.0.0.1:<port>` on a port that no NAS service uses, and remove its `ports` entry, so that it does not answer on the NAS's LAN address.
-7. Remove the project, its data, and the `spike` machine from the tailnet.
+A Mac on the same tailnet trusted Serve's Let's Encrypt certificate without an exception. An unauthenticated `GET /v4/catalog` returned `401`. Both `GET /v4/organization` and `GET /` returned `404`. Caddy also returned `404` for `POST /v4/tracks`. These observations cover the Mac path. Q1 checks the physical iPhone.
 
-- The container passes steps 3 and 4: ASO-163 ships it as the one documented command.
-- The container fails, for example because Serve cannot reach the host in the shared network: the setup guide's recommendation changes to the option that passed.
+The legacy host uses host networking. The planned host shares the sidecar's network namespace and listens only on loopback. The inspection does not verify that layout.
+
+1. A NAS restart stops the everyday library. It needs the owner's separate go-ahead. At an approved restart, check that the sidecar rejoins without signing in again. Repeat the unauthenticated probe on N and expect `401`. Until then, record rejoin as unverified.
+2. At the next owner-scheduled update of each container, record the time from the start of its update until N answers the probe again. Record separate times for the sidecar and the legacy host. Leave each time unmeasured until that update.
 
 ### Q8. Cellular restriction through the tunnel
 
-1. On cellular with Wi-Fi off, download one track over A-name with `allowsCellularAccess = false`.
+1. On cellular with Wi-Fi off, download one track over N with `allowsCellularAccess = false`.
 2. Repeat with `allowsCellularAccess = true` and `allowsExpensiveNetworkAccess = false`.
 3. Start a large download on Wi-Fi with `allowsCellularAccess = false`, then turn Wi-Fi off. Record whether the task pauses or continues over cellular.
 4. Record what `NWPathMonitor` reports for the path in each case.
@@ -202,7 +198,7 @@ This question needs the owner's go-ahead, because it installs something on the N
 ### Q9. VPN On Demand
 
 1. In the Tailscale app, set VPN On Demand to **Always** for Wi-Fi and for cellular.
-2. Restart the phone. Without opening the Tailscale app, open the build and run the probe.
+2. Restart the phone. Without opening the Tailscale app, open the build and run the probe on N.
 3. Turn Wi-Fi off and run the probe again.
 4. Turn VPN On Demand off and repeat steps 2 and 3.
 
@@ -219,7 +215,7 @@ This question needs the owner's go-ahead, because it installs something on the N
 | Q4 gives only timeouts | The unreachable state cannot name its cause | ASO-167 |
 | Q5 first track too slow | ADR 0008's whole-file playback model | ASO-158, ASO-165 |
 | Q6 pinning works or fails | Record which direct-IP comparison paths worked | ASO-163, ASO-165 |
-| Q7 container fails | The NAS recommendation in the setup guide | ASO-163 |
+| Q7 sidecar fails to rejoin | The NAS recommendation in the setup guide | ASO-163 |
 | Q8 cellular is not blocked | The Wi-Fi-only setting checks the path itself | ASO-166 |
 | Q9 On Demand does not reconnect | First-launch and reconnect wording | ASO-167 |
 
@@ -227,7 +223,7 @@ ADR 0008 records the accepted decisions on tailnet-controlled library reads, fir
 
 ## Results
 
-Status: not run.
+Status: the Mac observations are recorded in Q7. Physical iPhone runs, NAS restart recovery, and update times are pending.
 
 PASS, FAIL, and BLOCKED have the meanings in the [validation README](README.md). Fill in one environment row per session.
 
@@ -237,30 +233,30 @@ PASS, FAIL, and BLOCKED have the meanings in the [validation README](README.md).
 
 | ID | Path | Network | Direct or DERP | Observation (status, error code, elapsed time) | Result |
 | --- | --- | --- | --- | --- | --- |
-| Q1 | | | | | |
-| Q2 | | | | | |
-| Q3 | | | | | |
-| Q4 | | | | | |
-| Q5 | | | | | |
-| Q6 | | | | | |
-| Q7 | | | | | |
-| Q8 | | | | | |
-| Q9 | | | | | |
+| Q1 | N, A-name, A-ip | | | | |
+| Q2 | N | | | | |
+| Q3 | N | | | | |
+| Q4 | A-name, A-ip | | | | |
+| Q5 | N, A-name, A-ip, A-lan | | | | |
+| Q6 | A-ip | | | | |
+| Q7 | N | Tailnet (Mac) | | Trusted certificate. Catalog probe `401`. Blocked routes `404`. | NAS rejoin and both update times pending |
+| Q8 | N | | | | |
+| Q9 | N | | | | |
 
 | Path | Network | Direct or DERP | Tracks | Bytes | First track, median (s) | Album, median (s) | MB/s |
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | A-name | Wi-Fi | | | | | | |
 | A-ip | Wi-Fi | | | | | | |
 | A-lan | Wi-Fi | | | | | | |
-| A-name | Cellular | | | | | | |
-| C | Wi-Fi | | | | | | |
+| N | Cellular | | | | | | |
+| N | Wi-Fi | | | | | | |
 
-Record C as not measured if the owner does not allow Q7.
+Use the foreground runs for the album table.
 
 ## Limits
 
 - One iPhone, one tailnet, and one cellular network give one sample of each path.
-- The fixture host runs on a Mac. It is not the NAS container. Q7 covers the container.
+- Only the Mac fixture provides matched Serve, direct-IP, and LAN comparisons.
 - The results hold for the recorded iOS and Tailscale versions.
 - The current apps are not measured, because they would write to the everyday app's profile. A-lan measures the same host without the tunnel.
 - The fixture is today's `/v4` host behind `https+insecure`. The planned host listens with plain HTTP on loopback ([Host API design](../host-api-design.md)). The phone sees the same Serve certificate in both cases.

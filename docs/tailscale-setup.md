@@ -39,14 +39,14 @@ Use the Standalone or the Mac App Store variant of Tailscale. Both can publish a
    tailscale serve --bg 8441
    ```
 
-   Do not publish today's `serve` for a real library. Its `/v4` token also allows uploads and organization changes. The [device spike](validation/tailscale-device-spike.md) publishes it only for a disposable fixture.
+   Do not publish the full legacy `serve` router for a real library. Its `/v4` token also allows uploads and organization changes. The [device spike](validation/tailscale-device-spike.md) publishes the full router only for a disposable fixture.
 6. Run `tailscale serve status` and note the host address that it shows.
 
 Do not use `tailscale funnel`. Funnel publishes a service to the internet.
 
 ## Publish a NAS host
 
-The NAS host joins the tailnet through Tailscale installed on the NAS, or through a Tailscale container in the same network namespace as the host. Q7 of the [device spike](validation/tailscale-device-spike.md) compares the two.
+The planned NAS host joins the tailnet through Tailscale installed on the NAS, or through a Tailscale container in the same network namespace as the host. Today the owner's NAS uses a Tailscale sidecar with Caddy in front of the legacy `/v4` host. Caddy forwards only catalog and audio reads. In the planned container setup, the loopback-only host replaces Caddy in the sidecar's network namespace.
 
 | Option | What you add | What you maintain | Host address |
 | --- | --- | --- | --- |
@@ -70,7 +70,7 @@ Use the Tailscale container if you want the least to maintain. It works the same
    }
    ```
 
-   Today's container listens on `0.0.0.0:8443` with HTTPS ([`Dockerfile`](../headless/Dockerfile)). Publish it only for a disposable fixture, as the device spike does, with `https+insecure://127.0.0.1:8443` as the proxy.
+   Today's container listens on `0.0.0.0:8443` with HTTPS ([`Dockerfile`](../headless/Dockerfile)). Publish its full router only for a disposable fixture, with `https+insecure://127.0.0.1:8443` as the proxy.
 
 4. Add a `tailscale` service, attach the host to its network, and delete the host's `ports` entry. After this change, the LAN does not reach the host directly.
 
@@ -105,7 +105,7 @@ For Tailscale on the NAS, follow Tailscale's guide for your system, then run the
 1. Install Tailscale from the App Store.
 2. Open it, tap **Get Started**, accept the prompt to add a VPN configuration, and log in with the account that owns the host machine.
 3. To check the path with today's `serve`, open `https://music.example.ts.net/v4/catalog` in Safari. It answers `unauthorized` to a request without a token ([`api.rs`](../headless/src/api.rs)). That answer shows that Tailscale, the certificate, Serve, and the host all work.
-4. For the planned read API, open the host’s tailnet HTTPS address in Syncstr. An allowed phone can browse and download immediately. The legacy fixture token in step 3 belongs only to the ASO-159 experiment.
+4. For the planned read API, open the host’s tailnet HTTPS address in Syncstr. An allowed phone can browse and download immediately. The legacy probe in step 3 needs no token.
 
 Tailscale must be connected whenever Syncstr downloads. To connect it automatically, tap your profile picture in the Tailscale app, select **VPN On Demand**, and set Wi-Fi and cellular to **Always**.
 

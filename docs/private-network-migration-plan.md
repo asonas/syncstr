@@ -12,7 +12,11 @@ The owner accepts the recommendations below by merging this document, except the
 
 ### The owner's host
 
-The owner's NAS runs the headless host in a container as the legacy `serve`. That process serves the `/v4` HTTPS API (`headless/src/api.rs`), the legacy peer transfer over iroh on a fixed UDP port (`headless/src/peer.rs`), and announcements to the rendezvous directory (`headless/src/rendezvous.rs`). The store is at schema generation 4, with several thousand tracks, tens of gigabytes of audio, artwork assets, and a `node.sqlite` of a few gigabytes. Devices are paired with it, and Tailscale is not installed. A test deployment of the cluster host and a relay has run on the same NAS since October. These facts come from a read-only inspection on 2026-11-17. Its exact figures stay out of this repository, in Linear issue ASO-161, and the migration compares against them.
+The owner's NAS runs the headless host in a container as the legacy `serve`. That process serves the `/v4` HTTPS API (`headless/src/api.rs`), the legacy peer transfer over iroh on a fixed UDP port (`headless/src/peer.rs`), and announcements to the rendezvous directory (`headless/src/rendezvous.rs`). The store is at schema generation 4, with several thousand tracks, tens of gigabytes of audio, artwork assets, and a `node.sqlite` of a few gigabytes. Devices are paired with it. A test deployment of the cluster host and a relay has run on the same NAS since October. These facts come from a read-only inspection on 2026-11-17. Its exact figures stay out of this repository, in Linear issue ASO-161, and the migration compares against them.
+
+A read-only inspection on 2026-11-18 found that the legacy container uses host networking and listens at `https://192.0.2.30:8443`. A Tailscale sidecar deployed that day joins the tailnet as `music`. It runs in userspace on its own container network and keeps its state on a volume. Serve publishes `https://music.example.ts.net` on port 443 and proxies `/` to Caddy at `http://127.0.0.1:8441`.
+
+Caddy forwards only `GET` and `HEAD` on `/v4/catalog` and `/v4/tracks/{id}/audio` to the legacy HTTPS listener. It trusts only the host identity's `tls.crt`, mounted read-only. Caddy returns `404` for every other method or path before the request reaches the host. The image contains the Serve configuration and the Caddyfile. Its source commit is outside this repository.
 
 Schema generation 4 describes the catalog tables, not every table in the file. `Store::open` creates the cluster tables on every open, because `headless/src/cluster.rs` is not behind the `p2p` feature, and a `p2p` build adds the enrollment, change, replica and playlist tables (`headless/src/store.rs`, lines 104 to 112). The owner's library was filled through `tools/music-migration/nas_import.py`, which runs `headless/examples/migration_batch.rs`. That example imports each file with `import_cluster_file`, which creates a cluster identity and signs changes.
 
@@ -147,7 +151,7 @@ Every device can go back until the first device gets removal step 4. While that 
 ### Steps that need the owner's go-ahead
 
 1. Take a snapshot of the live database and run the rehearsal on the NAS. This reads the live directory and writes only a new one. A short stop of the old `serve` for the snapshot is part of this go-ahead.
-2. Install Tailscale on the NAS and publish the trial host, the new host serving a rehearsal directory, with `tailscale serve`. The machine name then appears in public certificate transparency logs, as [Tailscale setup](tailscale-setup.md) explains.
+2. Publish the trial host alongside the existing sidecar under a separate tailnet name with `tailscale serve`. The trial host serves the rehearsal directory. Its machine name then appears in public certificate transparency logs, as [Tailscale setup](tailscale-setup.md) explains.
 3. The cutover. Stop the old `serve`, run the final migration, and start the new host as the primary.
 4. Retire the cluster test deployment and the relay on the NAS.
 5. After the soak, retire the old `serve` container, shut down the rendezvous Worker, and later delete the original data directory.
