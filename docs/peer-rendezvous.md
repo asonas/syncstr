@@ -1,6 +1,6 @@
 # Peer rendezvous
 
-> [ADR 0008](adr/0008-one-primary-host-over-a-private-network.md), proposed on 2026-11-17, replaces the design that this document describes. This document stays as the record of the code that still implements that design. See [Syncstr on a private network](private-network-architecture.md).
+> [ADR 0008](adr/0008-one-primary-host-over-a-private-network.md), accepted on 2026-11-18, replaces the design that this document describes. This document stays as the record of the code that still implements that design. See [Syncstr on a private network](private-network-architecture.md).
 
 Cloudflare exchanges short-lived endpoint candidates, not catalogs or audio. It does not relay QUIC. Nodes retain existing Ed25519 identities and allowed-device records. A directory entry is not pairing authorization.
 

@@ -63,8 +63,7 @@ Any other change is breaking and goes to `/api/v2`. The host then serves both ve
 	"startingMarker": null,
 	"marker": "1.2d7b9f41-c3a8-4e6d-b0f2-8a1c5e9d3b74.1842",
 	"hosts": [
-		{"id": "2d7b9f41-c3a8-4e6d-b0f2-8a1c5e9d3b74", "address": "https://music.example.ts.net", "role": "primary"},
-		{"id": "8e4c0a6f-1b9d-4f37-a5e2-6d0b3c8f1a95", "address": "https://backup.example.ts.net", "role": "mirror"}
+		{"id": "2d7b9f41-c3a8-4e6d-b0f2-8a1c5e9d3b74", "address": "https://music.example.ts.net", "role": "primary"}
 	]
 }
 ```
@@ -82,7 +81,7 @@ Any other change is breaking and goes to `/api/v2`. The host then serves both ve
 | `startingMarker` | The change marker that the primary's copy equaled when it became the primary at `switchNumber`. Null at switch number 1. |
 | `marker` | The change marker of the copy that this host serves. |
 | `mirror` | With role `mirror` only. `caughtUpAt` is the time of the latest read of the primary at which this host's marker equaled the primary's, and is null until the first copy is complete. `primaryMarker` and `readAt` are the primary's marker at the most recent successful read and the time of that read. |
-| `hosts` | Every known host of the library with its ID, address, and role. |
+| `hosts` | Every known host of the library with its ID, address, and role. In the first release it holds only the answering host, because nothing registers another host until ASO-172 decides how hosts identify each other. |
 
 `switchNumber`, `primary`, and `startingMarker` are the host's switch record. A change marker is written `<switchNumber>.<primary>.<revision>`. The primary commits each change to the catalog, the organization, an image, or a playlist under its switch record and raises the revision by one. A new primary continues from the revision of its starting marker. A mirror serves the marker of the copy it holds unchanged, so its `marker` can name an older switch than its switch record. Markers are ordered by switch number, then by revision. Two markers with one switch number and different primaries come from two primaries under one number, and neither is newer. Times are RFC 3339 and are only shown to people. The [mirrors design](mirrors-and-primary-switch.md) owns the rules that use these fields.
 
@@ -126,7 +125,7 @@ The first version has no route for the changes since a marker, because the store
 
 ### Audio by content hash, with ranges
 
-`GET /api/v1/audio/{sha256}` returns one audio file, 200 for the whole file and 206 for a range. The host serves every audio file it holds and has verified, whether or not the catalog it serves names it yet. A caller may know a newer catalog than the host it asks. An unknown hash gets 404.
+`GET /api/v1/audio/{sha256}` returns one audio file, 200 for the whole file and 206 for a range. The host serves every audio file it holds and has verified, whether or not the catalog it serves names it yet, because a caller may know a newer catalog than the host it asks. Files that exist only in a held copy are never served. An unknown hash gets 404.
 
 | Header | Rule |
 | --- | --- |
@@ -150,6 +149,8 @@ A device opens a library by its host address, such as `https://music.example.ts.
 - A host address is an `https` origin with an optional port and no path, query, fragment, or user info.
 - The iPhone app registers the `syncstr` URL scheme, which no app target registers today. The link uses a custom scheme because universal links need an association file on a public website, and Syncstr runs none.
 - A device ignores link parameters it does not know.
+- The confirmation shows the host name from the address, such as `studio.example.ts.net`, next to the library name, because only the address is not chosen by the host that answers.
+- A device does not follow a redirect from a host address. A redirect gets the same answer as an address without a Syncstr library.
 - The first version does not offer hosts found on the tailnet. iOS has no official way for an app to list tailnet machines.
 - A device that reads another library ID at an address it knew asks the person before it replaces the library it shows.
 
@@ -191,7 +192,7 @@ A mirror reads everything a device reads. The [mirrors design](mirrors-and-prima
 - A host whose role is `replaced` or `retired` serves only library information. It answers the catalog, audio, and artwork routes with 503 `not-serving`, whose body names the primary's address.
 - No route and no header changes a host's switch record. A host changes it only from what it reads in another host's library information, by the rules of the mirrors design.
 
-How one host identifies another, and how a retired host loses access, is not decided. The mirrors design still describes it with host tokens, and ASO-172 and ASO-173 redesign it on the tailnet.
+How one host identifies another, and how a retired host loses access, is not decided. The mirrors design still describes it with host tokens, and ASO-172 and ASO-173 redesign it on the tailnet. Until then a host knows no other host, reads no other host's library information at start, and never changes its role or switch record. The first release has one primary and no mirror.
 
 Until the changes route exists, a mirror reads the full catalog at the primary's marker and compares it with its copy.
 
@@ -218,14 +219,16 @@ Every error response except 304, 416, and an audio body has a JSON body. A devic
 | Status | `error` | When |
 | --- | --- | --- |
 | 404 | `not-found` | An audio hash or image ID that the host does not hold, or a route that it does not serve |
-| 409 | `not-primary` | A write at a host that does not accept changes: a mirror, a replaced or retired host, or a primary that is handing over or in conflict. The body gives `role`, `condition` when the host has one, and the primary's address. |
+| 405 | `method-not-allowed` | Any method other than `GET` on a first-release route. `Allow: GET`. |
 | 416 | none | An unsatisfiable range, or more than one range |
 | 429 | `rate-limited` | Too many concurrent downloads. `Retry-After` gives seconds. |
 | 500 | `storage-failed` | The host could not read its store or a file |
 | 503 | `mirror-incomplete` | A catalog request to a mirror without a complete copy |
 | 503 | `not-serving` | A catalog, audio, or artwork request to a replaced or retired host |
 
-Limits: 16 concurrent file responses in total, with 429 and `Retry-After: 5` beyond that. The host cannot tell callers apart, because every request through Serve arrives from loopback. 20 GiB for an audio file (`MAX_AUDIO` in `model.rs`).
+The 409 `not-primary` and 412 answers of [changes from devices](#changes-from-devices-come-later) join this table with the first write route.
+
+Limits: 16 concurrent file responses in total, with 429 and `Retry-After: 5` beyond that. The limit is global because the host cannot tell callers apart: every request through Serve arrives from loopback. 16 is provisional. ASO-160 sets it from measurements of a slow download, a whole-library save, and the start of playback running together. A device that gets 429 waits for `Retry-After` before its own backoff applies, and a device saving many files keeps at most 4 downloads open, so that playback still finds a free slot. 20 GiB for an audio file (`MAX_AUDIO` in `model.rs`).
 
 Today `api.rs` and `shared_audio_api.rs` end every request after two hours, and the cluster transport closes a download after 240 seconds (`ClusterTransport.swift`). A 20 GiB file on a slow cellular link needs more than either. The new rules limit idle time, not total time.
 
@@ -233,8 +236,8 @@ Today `api.rs` and `shared_audio_api.rs` end every request after two hours, and 
 | --- | --- |
 | Host, files | Close the response when the caller accepts no bytes for 120 seconds. No total limit. |
 | Host, other routes | 5 minutes in total, and 30 seconds to read the request headers. |
-| Host, at start | A primary reads the library information of every known host before it accepts changes, for at most 5 seconds in total. It then starts, whatever it heard. |
-| Device or host, library information of known hosts | 15 seconds without a response, the same as an interactive request. Reads of several hosts run in parallel. |
+| Host, at start | From ASO-172 on, a primary reads the library information of every known host before it accepts changes, for at most 5 seconds in total across all hosts. It then starts, whatever it heard. |
+| Device, library information of known hosts | 15 seconds without a response, the same as an interactive request. Reads of several hosts run in parallel. |
 | Device, interactive | 15 seconds without a response, then show the cause. |
 | Device, audio | `timeoutIntervalForRequest` of 60 seconds, which resets whenever data arrives. `timeoutIntervalForResource` no shorter than its 7-day default. After a failure, resume from the bytes held, waiting 2 seconds at first and doubling up to 5 minutes. |
 
@@ -253,7 +256,7 @@ No test needs multicast, a relay, a second machine, a certificate, or the Simula
 
 ## Security considerations
 
-The tailnet policy is the only control over who reads the library. Every device that the effective policy lets reach the host's Serve port reads the whole library, including audio. That covers every device of the owner that the policy allows, other users of the tailnet whom a broad rule allows, and anyone the owner shares the host machine with. Before publishing, the owner checks the effective policy, as [Tailscale setup](tailscale-setup.md) describes.
+The tailnet policy is the only control over who reads the library remotely. Every device that the effective policy lets reach the host's Serve port reads the whole library, including audio. That covers every device of the owner that the policy allows, other users of the tailnet whom a broad rule allows, and anyone the owner shares the host machine with. Before publishing, the owner checks the effective policy, as [Tailscale setup](tailscale-setup.md) describes.
 
 The tailnet keeps the host off the public internet and encrypts traffic between machines. Syncstr adds no check of its own.
 
@@ -261,6 +264,7 @@ Neither protects:
 
 - Files already on a device. Removing its access stops new requests and cannot erase saved music.
 - The loopback listener, from other local users and processes of the host machine, or from other containers in the NAS host's network namespace. They read the library without going through the tailnet.
+- Audio removed from the catalog. Until the host deletes the file, a device that kept its hash can still download it.
 - The host's data directory. Whoever reads it has the audio and the catalog.
 - The machine name, which Serve's certificate puts in public certificate transparency logs.
 

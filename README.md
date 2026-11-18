@@ -8,7 +8,7 @@ Syncstr is being redesigned to stop building its own connectivity. A library wil
 
 ## Current implementation
 
-For the current design backlog, see the [product-gap audit](docs/product-gap-audit-2026-11-06.md) and [v5 completion design](docs/v5-completion-design.md). The latter is a design draft, not implemented behavior. PR #15 merged the Apple v5 work into main on 2026-11-06. Physical-device audio output and the cross-platform acceptance in ASO-12 are not yet verified.
+The [product-gap audit](docs/product-gap-audit-2026-11-06.md) and the [v5 completion design](docs/v5-completion-design.md) record the design backlog before ADR 0008. ADR 0008 replaces the v5 design, so the latter is history, not a plan. PR #15 merged the Apple v5 work into main on 2026-11-06. Physical-device audio output and the cross-platform acceptance in ASO-12 are not yet verified.
 
 Both Apple apps can join an existing cluster library using an invitation, or import music for local playback without enrollment. macOS also supports a selected music folder. The retained catalog stays visible offline, and playback and explicit offline saves automatically select an authorized source. Track and album saves retain pending requests across restarts, report partial results, and resume under the communication policy while the app is active.
 

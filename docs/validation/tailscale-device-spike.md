@@ -18,7 +18,7 @@ Q1 to Q7 come from ASO-159. Q8, Q9, the resume check in Q3, and the other cases 
 | Q4 | What does the app see when Tailscale is off, when the host machine is offline, when the host process is down, and when another VPN takes over? How quickly does it see it? | Decides the "host unreachable" state and the probe timeout. | ASO-167 |
 | Q5 | How long does one album take over the tailnet, compared with the same host over the LAN? | Decides whether whole-file download before playback stays acceptable. | ASO-165 |
 | Q6 | Does a direct `100.x` address with the host's self-signed certificate work, with the certificate pinned? Is it worth supporting? | Provides a direct-IP comparison with the Serve hostname. | ASO-163, ASO-165 |
-| Q7 | Which way to put a container host on the tailnet is better: Tailscale on the NAS, a Tailscale container next to the host, or Serve on another machine? | Decides the one documented command for a NAS host. | ASO-163 |
+| Q7 | Which way to put a container host on the tailnet is better: Tailscale on the NAS, or a Tailscale container next to the host? | Decides the one documented command for a NAS host. | ASO-163 |
 | Q8 | Does `allowsCellularAccess = false` stop a download through the tunnel when the phone is on cellular? | Decides how a Wi-Fi-only download setting works. | ASO-166 |
 | Q9 | With VPN On Demand set to **Always**, does the tunnel come up without opening the Tailscale app, after a phone restart and after a network change? | Decides what the first launch and the unreachable state tell the listener. | ASO-167 |
 
@@ -43,10 +43,12 @@ Create a minimal SwiftUI app outside the product targets, for example under `exp
 - A probe: `GET /v4/catalog` with no token. A `401` answer means that the host is reachable. The probe keeps the default `timeoutIntervalForRequest` of 60 seconds, so that the log shows when each failure arrives on its own.
 - A range check: `GET` of one track with `Range: bytes=0-99`. Record the status and the `Content-Range` header.
 - Playback of a verified file with `AVPlayer`.
-- An optional server trust handler for Q6 and the LAN baseline. It accepts the challenge only when the server's public key equals the public key in the bundled `tls.crt`, as the `pin` of [Host API design](../host-api-design.md) proposes. It ignores the name in the certificate.
+- An optional server trust handler for Q6 and the LAN baseline. It accepts the challenge only when the server's public key equals the public key in the bundled `tls.crt`, and it ignores the name in the certificate. This handler exists only for the comparison paths. The first-release [host API](../host-api-design.md) has no pinning.
 - A timestamped log file that the share sheet can export. Log every request start, `didWriteData` progress at 10% steps, `didResumeAtOffset`, completion, the HTTP status, the error domain and code, the elapsed time, and each `NWPathMonitor` update with `usesInterfaceType(.cellular)`, `isExpensive`, and `isConstrained`.
 
-`Info.plist` has no `NSAppTransportSecurity` key. It declares `NSLocalNetworkUsageDescription`, as the real app does in `apps/ios/project.yml`, because path A-lan uses a LAN address. A device that reaches a host at a LAN address needs the iOS local network permission. A device that reaches a host over a VPN interface, such as Tailscale, does not. Before the timed A-lan runs, make one request and accept the local network prompt.
+`Info.plist` has no `NSAppTransportSecurity` key. It declares `NSLocalNetworkUsageDescription`, as the real app does in `apps/ios/project.yml`, because path A-lan uses a LAN address.
+
+The plans remove `NSLocalNetworkUsageDescription` from the real app, on the assumption that reaching a host over the Tailscale interface needs no local network permission. Test that assumption first: on a fresh install, run Q1 over A-name on Wi-Fi and then on cellular before the first A-lan request. Record whether iOS shows the local network prompt and whether any request fails. Only then make one A-lan request and accept the prompt for the timed A-lan runs.
 
 ### The hosts
 
@@ -75,12 +77,11 @@ The `upload` command checks that the certificate names the address in `--url`, s
 | A-name | `https://mac.example.ts.net` | Let's Encrypt, through Serve | Q1 to Q5, Q8, and Q9 |
 | A-ip | `https://100.x.y.z:8443` | The fixture's own, pinned | Q5 and Q6 |
 | A-lan | `https://192.0.2.20:8443`, the Mac's LAN address, with Tailscale off on the phone | The fixture's own, pinned. The name does not match. | Q5 baseline |
-| B | `https://mac.example.ts.net:9443`, Serve on the Mac forwarding to the owner's NAS | Let's Encrypt, through Serve | Q5, optional |
-| C | `https://spike.example.ts.net`, a disposable host on the NAS | Let's Encrypt, through Serve | Q7 |
+| C | `https://spike.example.ts.net`, a disposable host on the NAS | Let's Encrypt, through Serve | Q5 and Q7 |
 
 If A-lan fails on the certificate name, run `init` again with `--host 192.0.2.20` into a second identity directory. Then restart `serve` with that identity for the baseline runs.
 
-Path B reads the owner's real library without changing the NAS. Start it with `tailscale serve --bg --https=9443 https+insecure://192.0.2.30:8443`, where `192.0.2.30` is the NAS's LAN address. The page "tailscale serve command" says that only `http://127.0.0.1` is supported for proxies. The current source accepts another host when the target has a scheme. If the command fails, mark path B as BLOCKED. Path B adds a hop through the Mac, so its times are not NAS times.
+No path publishes the owner's real host. Serve would publish the whole `/v4` router, and the `/v4` token also allows uploads and organization changes, so a read-only build does not make such a path read-only. NAS times come from path C.
 
 Before each session, record the environment table below. During each tailnet run, read the phone's line in `tailscale status` on the Mac. It shows `direct` and an address for a direct path. Otherwise it names the Tailscale DERP region that carries the traffic. Record which one the run used. On a NAS with a Tailscale container, run `docker compose exec tailscale tailscale status` instead.
 
@@ -138,6 +139,7 @@ For each case below, run the probe and one foreground download. Record the error
 3. Tailscale on, with the fixture `serve` stopped and Serve still on.
 4. Tailscale off. Start one task on the background session, wait 2 minutes, and connect Tailscale. Record whether the task starts by itself and how long after.
 5. Tailscale off in the middle of a foreground download and of a background download.
+6. Everything on, with the tailnet policy changed so that this iPhone cannot reach the Mac. Probe and download from this iPhone, and from a second device that the policy still allows. This is the only remote access control of the first release, so record how the refusal looks and how long it takes.
 6. If the phone has another VPN app, connect it during a download. Record what Tailscale and the app do, and whether VPN On Demand comes back after the other VPN disconnects.
 
 Expected: unknown. A guess for step 1 is a fast `-1003` (cannot find host) by name, because the name resolves inside the tunnel, and a timeout by address. Step 3 should return an HTTP error status from Serve.
@@ -151,7 +153,7 @@ Expected: unknown. A guess for step 1 is a fast `-1003` (cannot find host) by na
 
 1. Delete the album's files from the build between runs.
 2. Start all of the album's tracks at once on the foreground session. Record the time to the first verified track and to the last verified track.
-3. Run three times each over A-name on Wi-Fi, A-ip on Wi-Fi, A-lan on Wi-Fi, and A-name on cellular. If path B works, add three runs over B.
+3. Run three times each over A-name on Wi-Fi, A-ip on Wi-Fi, A-lan on Wi-Fi, and A-name on cellular. Once path C exists for Q7, add three runs over C with the same album copied to it.
 4. Run once over A-name on the background session.
 
 Record the track count, total bytes, and formats once. Report the median of each path. Compute MB/s from the bytes and the time.
@@ -179,7 +181,7 @@ This question needs the owner's go-ahead, because it installs something on the N
 2. From the phone, open `https://spike.example.ts.net/v4/catalog` and expect `unauthorized`.
 3. Run `docker compose restart`, and then restart the NAS. Repeat step 2 after each.
 4. Record the number of steps, the time taken, and what an update of each container takes.
-5. If the owner accepts Tailscale on the NAS itself, record the same for it. Record path B as the result for "another machine".
+5. If the owner accepts Tailscale on the NAS itself, record the same for it.
 6. Remove the project, its data, and the `spike` machine from the tailnet.
 
 - The container passes steps 2 and 3: ASO-163 ships it as the one documented command.

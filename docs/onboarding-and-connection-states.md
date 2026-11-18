@@ -63,7 +63,7 @@ Serving starts from the wish to add a phone, not from import, which extends the 
 | Element | Japanese draft | Gloss |
 | --- | --- | --- |
 | Sheet | ライブラリのあるNASやMacのアドレスを入力してください。 | Enter the address of the NAS or Mac that has the library. |
-| Confirmation | 「nas」のライブラリに接続しますか？ | Connect to the library on nas? |
+| Confirmation | nas.example.ts.net のライブラリ「Music」に接続しますか？ | Connect to the library Music on nas.example.ts.net? |
 | After connecting | iPhoneでも聴くには、iPhoneで同じアドレスを開いてください。 | To listen on your iPhone too, open the same address on the iPhone. |
 
 The Mac is then a device, and its save controls work as on the iPhone. It shows the last line instead of the **iPhoneを追加…** offer, because the host, not this Mac, serves the library.
@@ -82,7 +82,7 @@ This flow runs on a Mac whose library is local. It starts from **iPhoneを追加
    - If Tailscale is not installed, the sheet shows [the recommendation](#recommend-tailscale).
 2. The app starts the host. After the listener runs the copied command, the app checks from this Mac that the host address answers. A failure shows its cause from the [host states](#on-the-mac-as-a-host).
 3. The connect sheet shows a QR code of the host address, the address as selectable text, **リンクをコピー** ("Copy link"), and **共有…** ("Share"). The code does not expire, and any number of devices can use it.
-4. The sheet reminds the listener that the iPhone must be on the same tailnet and allowed to reach this Mac, with **Tailscaleのアクセス設定を開く** ("Open Tailscale access settings"), which opens the admin console in the browser. **完了** ("Done") closes the sheet.
+4. The sheet reminds the listener that the iPhone must be on the same tailnet and allowed to reach this Mac, with **Tailscaleのアクセス設定を開く** ("Open Tailscale access settings"), which opens the admin console in the browser. Only the iPhone itself can show that it is allowed. **完了** ("Done") closes the sheet.
 
 | Element | Japanese draft | Gloss |
 | --- | --- | --- |
@@ -106,9 +106,10 @@ The distributed macOS app is sandboxed (`com.apple.security.app-sandbox` in [Syn
 | Address | iPhoneは studio.example.ts.net に接続します。 | The iPhone connects to studio.example.ts.net. |
 | HTTPS | tailnetでHTTPSをオンにする必要があります。Syncstrからは変更できません。 | HTTPS must be on for the tailnet. Syncstr cannot turn it on. A button opens the Tailscale admin console. |
 | Certificate log | 証明書を発行すると、このMacの名前 studio.example.ts.net が公開の記録に載り、誰でも見られます。載った名前は消せません。名前を変える場合は、先にTailscaleでこのMacの名前を変更してください。 | Issuing the certificate puts this Mac's name in a public log that anyone can read, and it cannot be removed. To use another name, rename this Mac in Tailscale first. |
-| Buttons | コマンドをコピー, キャンセル | Copy command, Cancel. |
+| Access | コマンドを実行する前に、Tailscaleのアクセス設定で、このMacに届く端末を確かめてください。 | Before running the command, check in your Tailscale access settings which devices can reach this Mac. |
+| Buttons | Tailscaleのアクセス設定を開く, コマンドをコピー, キャンセル | Open Tailscale access settings, Copy command, Cancel. |
 
-The scope line comes first because it is the one fact the listener must check: Syncstr adds no check of its own to the tailnet policy. The listener never sees or compares a certificate.
+The scope and access lines come before the command because a rule that already exists may let other devices in the moment Serve starts, and Syncstr adds no check of its own to the tailnet policy. The listener never sees or compares a certificate.
 
 ## First launch on the iPhone
 
@@ -116,7 +117,7 @@ Today the empty library offers 既存のライブラリに参加 and 音楽フ�
 
 1. The listener scans the QR code with the iPhone camera or with **QRコードを読み取る**, types the host address, or opens a link received by AirDrop or Messages. Each path opens Syncstr at step 2.
 2. The sheet shows 接続しています… ("Connecting") while the phone reads the library information.
-3. The sheet asks 「studio」のライブラリに接続しますか？ ("Connect to the library on studio?"), with **接続** and **キャンセル**. A link can come from someone else, so one tap on the phone confirms the host by the name it reports.
+3. The sheet asks studio.example.ts.net のライブラリ「Music」に接続しますか？ ("Connect to the library Music on studio.example.ts.net?"), with **接続** and **キャンセル**. A link can come from someone else, so one tap on the phone confirms the host. The sheet names the host by its address, which the answering host does not choose. After that the apps call the host by the first part of the address, such as 「studio」.
 4. The library appears, and artwork fills in as it downloads.
 5. Once, at the top of the library landing, a line reads 保存した音楽は、「studio」に接続できないときも聴けます。アルバムやプレイリストの保存ボタンで保存します。 ("Saved music plays even when studio is unreachable. Save an album or a playlist with its save button."). It offers **ライブラリ全体を保存…** ("Save the whole library") and **閉じる**.
 
@@ -178,7 +179,7 @@ The state changes by these rules:
 | State | When | In Settings, tab 端末 | In the library window |
 | --- | --- | --- | --- |
 | Not accepting | Accepting connections was never turned on. | このMacでだけ再生しています。 ("Playing on this Mac only.") and **iPhoneを追加…**. | The offer line, until dismissed. |
-| Reachable | The host runs and its address answers the host's own check. | ほかの端末から接続できます。 ("Other devices can connect.") and the address as selectable text. | Nothing. |
+| Reachable | The host runs and its address answers the host's own check. | ほかの端末からの接続を受け付けています。 ("Accepting connections from other devices.") and the address as selectable text. The check cannot tell whether a given device is allowed. | Nothing. |
 | Not reachable | The host runs and the check fails. | The cause, with **Tailscaleを開く** or **もう一度設定…** ("Set up again"). | ほかの端末から接続できません。 ("Other devices can't connect.") in the notice area at the bottom of the window. |
 | Stopped | The listener turned off accepting connections. | 接続の受け付けを停止しています。ほかの端末では、保存した音楽だけを聴けます。 ("Not accepting connections. Other devices play only their saved music.") and **再開** ("Resume"). | Nothing. |
 
@@ -275,7 +276,7 @@ Each item goes when ASO-169 removes the code behind it, after the owner's librar
 - In [LocalSetup.swift](../apps/macos/LocalSetup.swift), `MacPairingView` (lines 69-117) and `PhonePairingView` (lines 119-209). `PairingScanner` (lines 211-234) stays for the new QR scan, and `AddMusicButton` and `LocalFolderButton` stay.
 - In Syncstr.swift, 既存のライブラリに参加 with its sheet (lines 68 and 112-116), and the `ClusterImportResults` sheet (lines 117-123).
 - In PhoneRoot.swift, the sections ライブラリと接続 (line 545) and 従来の接続 (lines 547-554), and the link 既存のライブラリに参加 (lines 241-244).
-- In the iOS [Info.plist](../apps/ios/Info.plist), `NSBonjourServices` and `NSLocalNetworkUsageDescription`. A device reaches a host over the Tailscale interface, which needs no local network permission. `NSCameraUsageDescription` becomes ライブラリのあるMacやNASのQRコードを読み取るために使用します。 ("Used to scan the QR code of the Mac or NAS that has the library.").
+- In the iOS [Info.plist](../apps/ios/Info.plist) and the `apps/ios/project.yml` that generates it, `NSBonjourServices`, and `NSLocalNetworkUsageDescription` if the [device spike](validation/tailscale-device-spike.md) shows that a host reached over Tailscale needs no local network permission. `NSCameraUsageDescription` becomes ライブラリのあるMacやNASのQRコードを読み取るために使用します。 ("Used to scan the QR code of the Mac or NAS that has the library.").
 
 ### Kept
 
@@ -372,3 +373,4 @@ The download design is not final before the [device spike](validation/tailscale-
 4. How much free space does a device keep before a whole-library save, or before it resumes a save that waits for storage? ASO-166.
 5. Where does longer help text live, given that Syncstr runs no service? ASO-167.
 6. How does a NAS host show its connect QR code, given that it has no screen? A command that prints the address and the code as text is the default. ASO-164.
+7. What happens to the Serve setting when the listener stops accepting connections or quits the app? `tailscale serve --bg` survives restarts. If Syncstr frees its loopback port while the setting stays, another program that takes the port would be published at the host address. Syncstr either removes its own Serve handler on stop, or keeps the port and answers that it is not serving. ASO-162, ASO-163.

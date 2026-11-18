@@ -98,7 +98,7 @@ Use the Tailscale container if you want the least to maintain. It works the same
 5. Start both containers with `docker compose up -d`.
 6. In the admin console, open **Machines**, open the menu of `music`, and select **Disable Key Expiry**. Otherwise the machine leaves the tailnet after 180 days until you sign it in again.
 
-For Tailscale on the NAS, follow Tailscale's guide for your system, then run the Mac section's `tailscale serve` command on the NAS. [`headless/compose.yaml`](../headless/compose.yaml) already keeps the host's port on the NAS's loopback address. Tailscale's NAS guides do not mention Serve, so this path is untested.
+For Tailscale on the NAS, follow Tailscale's guide for your system, then run the Mac section's `tailscale serve` command on the NAS. The planned host listens on `127.0.0.1` inside its own network namespace, so a port mapping such as the one in [`headless/compose.yaml`](../headless/compose.yaml) does not reach it. Run the host container with `network_mode: host`, so that its loopback is the NAS's loopback where Serve forwards. Every process on the NAS can then read the library through that port. Tailscale's NAS guides do not mention Serve, so this path is untested.
 
 ## Connect the phone
 

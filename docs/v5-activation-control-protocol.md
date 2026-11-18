@@ -1,6 +1,6 @@
 # v5 activation control protocol
 
-> [ADR 0008](adr/0008-one-primary-host-over-a-private-network.md), proposed on 2026-11-17, replaces the design that this document describes. This document stays as the record of the code that still implements that design. See [Syncstr on a private network](private-network-architecture.md).
+> [ADR 0008](adr/0008-one-primary-host-over-a-private-network.md), accepted on 2026-11-18, replaces the design that this document describes. This document stays as the record of the code that still implements that design. See [Syncstr on a private network](private-network-architecture.md).
 
 Status: Proposed 2026-11-15 for ASO-145. The owner chose the options marked "Chosen" in C1 to C13. Parts 1 to 4 are implemented; part 5 is a design. This document authorizes no production operation.
 

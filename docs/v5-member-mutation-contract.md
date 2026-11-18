@@ -1,6 +1,6 @@
 # v5 member mutation contract
 
-> [ADR 0008](adr/0008-one-primary-host-over-a-private-network.md), proposed on 2026-11-17, replaces the design that this document describes. This document stays as the record of the code that still implements that design. See [Syncstr on a private network](private-network-architecture.md).
+> [ADR 0008](adr/0008-one-primary-host-over-a-private-network.md), accepted on 2026-11-18, replaces the design that this document describes. This document stays as the record of the code that still implements that design. See [Syncstr on a private network](private-network-architecture.md).
 
 Status: design draft (ASO-38). The owner accepted the recommended option of every decision on 2026-11-06. This document does not change code or the wire protocol, and it does not authorize implementation. Each slice below is delivered under its own issue. The [v5 completion design](https://linear.app/asonas/document/v5-completion-design-and-delivery-boundaries-7bf03b53cfba) gives the surrounding plan.
 

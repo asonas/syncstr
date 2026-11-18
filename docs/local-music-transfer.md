@@ -1,6 +1,6 @@
 # Local music onboarding
 
-> [ADR 0008](adr/0008-one-primary-host-over-a-private-network.md), proposed on 2026-11-17, replaces the design that this document describes. This document stays as the record of the code that still implements that design. See [Syncstr on a private network](private-network-architecture.md).
+> [ADR 0008](adr/0008-one-primary-host-over-a-private-network.md), accepted on 2026-11-18, replaces the design that this document describes. This document stays as the record of the code that still implements that design. See [Syncstr on a private network](private-network-architecture.md).
 
 This documents the legacy Mac-to-iPhone local-copy path in [issue #12](https://github.com/asonas/syncstr/issues/12). Daily cluster playback and saving instead follow the [cluster interaction specification](cluster-ui-review.md). Choose a music folder on the Mac, open Settings > **Legacy connections** > **Legacy device transfer**, and open the corresponding Settings entry on the phone on the same local network. Start pairing on the Mac, scan its QR code or enter its pairing code, then approve the phone. On the phone, select an album and save it. After saving, the phone can cold-launch, browse the stored catalog, and play received files without a Mac or a network connection.
 

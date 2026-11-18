@@ -41,6 +41,17 @@ In the first release, the iPhone can browse, download, save music for offline li
 
 Whole-file download with hash verification stays the playback model, and [ADR 0005](0005-distinguish-playback-cache-from-offline-saves.md) keeps its distinction between the playback cache and offline saves. Track identity in [ADR 0006](0006-preserve-source-track-identity-independently-of-audio.md) and [ADR 0007](0007-preserve-track-addresses-when-sharing-audio.md) stays a product boundary. How the single-writer store keeps it is decided in the migration plan.
 
+## What this replaces in the v5 and cluster designs
+
+| Part | Status | Documents |
+| --- | --- | --- |
+| Several writers: signed changes, membership grants, enrollment, epochs, profile floors, the activation journal, and retrying a change at another host | Replaced | [v5 completion design](../v5-completion-design.md), [v5 member mutation contract](../v5-member-mutation-contract.md), [v5 activation and recovery](../v5-activation-and-recovery.md), [v5 activation control protocol](../v5-activation-control-protocol.md), [cluster model](../cluster-model-design.md), [cluster implementation plan](../cluster-implementation-plan.md) and its milestone documents |
+| Connectivity built by Syncstr: mDNS discovery, peer-to-peer transfer, relays, and the rendezvous directory | Replaced | [peer rendezvous](../peer-rendezvous.md), [peer-to-peer transfer](../p2p-music-transfer.md), [local music transfer](../local-music-transfer.md), [cluster connectivity M0](../cluster-connectivity-m0.md) |
+| Track identity, playlist references, and the playback cache and offline saves | Kept | ADR 0005, ADR 0006, ADR 0007, and the playback rules of the [cluster UI review](../cluster-ui-review.md) |
+| The code behind the replaced parts | Runs until the owner's library works on the new path | [Migration plan](../private-network-migration-plan.md) |
+
+Each replaced document carries a note that points here and stays as the record of the code that still implements it.
+
 The design is described in [the architecture overview](../private-network-architecture.md). This ADR records a decision and authorizes no production operation.
 
 ## Status of the parts

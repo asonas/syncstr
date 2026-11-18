@@ -1,6 +1,6 @@
 # Cluster-aligned library interaction specification
 
-> [ADR 0008](adr/0008-one-primary-host-over-a-private-network.md), proposed on 2026-11-17, replaces clusters with one primary host. The rules here for playback, the playback cache and offline saves still apply. [Onboarding and connection states](onboarding-and-connection-states.md) says which rules carry over and replaces the rules for enrollment, hosts and conflicts.
+> [ADR 0008](adr/0008-one-primary-host-over-a-private-network.md), accepted on 2026-11-18, replaces clusters with one primary host. The rules here for playback, the playback cache and offline saves still apply. [Onboarding and connection states](onboarding-and-connection-states.md) says which rules carry over and replaces the rules for enrollment, hosts and conflicts.
 
 Status: accepted. Q1–Q24 and the consolidated specification are confirmed. Apple application changes are implemented; see [validation and remaining acceptance checks](validation/cluster-library-ui.md). Main integration and distribution are recorded separately from acceptance results.
 

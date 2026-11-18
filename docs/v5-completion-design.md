@@ -1,6 +1,6 @@
 # v5 completion design and delivery boundaries
 
-> [ADR 0008](adr/0008-one-primary-host-over-a-private-network.md), proposed on 2026-11-17, replaces the design that this document describes. This document stays as the record of the code that still implements that design. See [Syncstr on a private network](private-network-architecture.md).
+> [ADR 0008](adr/0008-one-primary-host-over-a-private-network.md), accepted on 2026-11-18, replaces the design that this document describes. This document stays as the record of the code that still implements that design. See [Syncstr on a private network](private-network-architecture.md).
 
 Status: design draft for review. The product-gap audit and its sequencing were approved as the basis for design and issue planning on 2026-11-06. Detailed choices below are proposals unless identified as existing requirements. No implementation, production activation or deployment is authorized by this document.
 
