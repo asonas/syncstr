@@ -38,7 +38,7 @@ Q1 to Q7 come from ASO-159. Q8, Q9, the resume check in Q3, and the other cases 
 Create a minimal SwiftUI app outside the product targets, for example under `experiments/tailscale-device-spike/`. It needs these parts:
 
 - A path selector with separate credentials and trust settings for N and the fixture paths. Bind the N token to the exact HTTPS origin `https://music.example.ts.net` (scheme, host, and port). In both sessions, attach it only to `GET /v4/catalog` and `GET /v4/tracks/{id}/audio` on that origin. Never fall back to the NAS's LAN address.
-- Assume neither route on N redirects. Refuse redirects in the foreground. A background session follows redirects on its own, as the [host API redirect rule](../host-api-design.md#connecting-by-host-address) explains.
+- Refuse redirects in the foreground. A background session follows redirects automatically, even to another path on the same origin. Before any background measurement with the N token, the owner confirms the exact origin registered in the build. For that origin, the owner confirms that Serve, Caddy, and the legacy host each return no redirect on either GET route. If either confirmation is missing, skip all background measurements on N and record them as BLOCKED.
 - Use the fixture's token on its three paths. Use system trust on N and A-name. Use the fixture pin for A-ip and A-lan when the step calls for it.
 - On the Mac, read each catalog with its own token. Give the phone the selected track IDs, SHA-256 values, and sizes for each host.
 - One foreground session from `URLSessionConfiguration.default`, and one background session from `URLSessionConfiguration.background(withIdentifier:)`. The app recreates the background session at launch and implements `application(_:handleEventsForBackgroundURLSession:completionHandler:)`.
@@ -94,16 +94,17 @@ When the spike ends, on the fixture Mac stop `serve` and delete `tmp/spike`. Tur
 
 ### Q1. Foreground download and playback over the tailnet name
 
-1. On the Mac, match each album track across the two catalogs by SHA-256 and byte size. Upload gives each fixture track a new ID. Fill in the track table in [Results](#results) in play order. Use the ID for the current host in every request.
-2. On a fresh install, connect the phone to Wi-Fi and Tailscale. Run the range check on the first row's track over N. Record the status and `Content-Range`. Download the same track in the foreground, verify its hash, and play it for 10 seconds.
+1. On the Mac, match each album track across the two catalogs by SHA-256 and byte size. Upload gives each fixture track a new ID. Keep the mapping for Q1 and Q5 in a local, untracked file outside the repository. For each play order position, record the N ID, fixture ID, SHA-256, and byte size there. Use the ID for the current host in every request. In [Results](#results), report only the position and whether the catalogs matched for that track.
+2. On a fresh install, connect the phone to Wi-Fi and Tailscale. Run the range check with the N ID at position 1 in the local mapping. Record the status and `Content-Range` in the local log. Download the same track in the foreground, verify its hash, and play it for 10 seconds.
 3. Turn Wi-Fi off in **Settings**. Repeat the N range check, download, verification, and playback on cellular. Record any local network prompt and any failure separately for each N run.
-4. Return to Wi-Fi. Repeat the range check with the first row's fixture ID over A-name and then A-ip. Pin the fixture certificate only on A-ip. Record each status and `Content-Range`.
+4. Return to Wi-Fi. Repeat the range check with the fixture ID at position 1 in the local mapping over A-name and then A-ip. Pin the fixture certificate only on A-ip. Record each status and `Content-Range` in the local log.
 5. Turn Tailscale off and make one A-lan request. Record whether the local network prompt appears and accept it if shown. Reconnect Tailscale before Q2.
 
 Expected: status `200`, a matching hash, and playback. The range check returns `206` with `Content-Range`. No error `-1022` (App Transport Security) or `-1202` (untrusted certificate) appears.
 
-- PASS: ADR 0008's premise holds. A device uses `URLSession` with default trust.
-- FAIL with `-1022` or `-1202`: the host address design needs an exception that App Review asks about. ADR 0008 and ASO-165 change.
+- PASS on N: the device downloads and plays the track with default trust on both networks.
+- FAIL on N with `-1022` or `-1202`: revisit the host address design in ADR 0008 and ASO-165.
+- Record certificate and App Transport Security errors on A-name, A-ip, and A-lan in their own comparison rows.
 - A range check without `206` over A-name, while the same check over A-ip returns `206`: the fixture Serve path loses `Range`. A failure on N alone does not isolate Serve. ASO-160 must not rely on ranges through Serve. If A-ip fails too, the result says nothing about Serve alone. Record it and check the fixture's range handling first.
 
 ### Q2. Background download while suspended and locked
@@ -156,9 +157,9 @@ Expected: unknown. A guess for step 1 is a fast `-1003` (cannot find host) by na
 ### Q5. Time for one album
 
 1. Delete the album's files from the build between runs.
-2. Start the foreground downloads in the play order recorded in Q1. Use the N ID or fixture ID from each row for the current path. Measure the wait for playback until the first row's track is verified. Measure the album time until all rows are verified.
+2. Start the foreground downloads in play order using the local mapping from Q1. Use the ID for the current host. Measure the wait for playback until the first track is verified. Measure the album time until all tracks are verified.
 3. Run three times on N over Wi-Fi and three times on N over cellular. On Wi-Fi, repeat the three runs with the fixture copy over each of A-name, A-ip, and A-lan.
-4. Run once over N on Wi-Fi with the background session. Record this time separately from the foreground medians.
+4. Reconnect Tailscale on Wi-Fi. Confirm that the unauthenticated catalog probe on N returns `401`. Run one background album download on N if the redirect precondition is met. Record its time separately from the foreground medians.
 
 Record the track count, total bytes, and formats once. Report the median of each path. Compute MB/s from the bytes and the time.
 
@@ -213,7 +214,7 @@ Every Q7 measurement covers the existing path through Caddy to the legacy host o
 
 | Outcome | What changes | Issue |
 | --- | --- | --- |
-| Q1 needs an App Transport Security exception | ADR 0008's preference for a public certificate with no app exception | ASO-158, ASO-165 |
+| Q1 returns `-1022` or `-1202` on N | Revisit ADR 0008's use of a public certificate with no app exception | ASO-158, ASO-165 |
 | Q2 stops while suspended | Background downloads become foreground downloads | ASO-166 |
 | Q3 restarts from zero | Retry and resume design for large files | ASO-165, ASO-166 |
 | Q4 gives only timeouts | The unreachable state cannot name its cause | ASO-167 |
@@ -251,11 +252,11 @@ PASS, FAIL, and BLOCKED have the meanings in the [validation README](README.md).
 | Q8 | N | | | | |
 | Q9 | N | | | | |
 
-Use one row per album track for Q1 and Q5. Row 1 is the first track on every path.
+Report the catalog match for each play order position. Keep track IDs, hashes, and individual byte sizes in the local mapping.
 
-| Play order | N track ID | Fixture track ID | SHA-256 | Bytes |
-| --- | --- | --- | --- | --- |
-| 1 | | | | |
+| Play order | Catalogs matched (yes/no) |
+| --- | --- |
+| 1 | |
 
 | Path | Network | Direct or DERP | Tracks | Bytes | First track, median (s) | Album, median (s) | MB/s |
 | --- | --- | --- | --- | --- | --- | --- | --- |
@@ -265,7 +266,7 @@ Use one row per album track for Q1 and Q5. Row 1 is the first track on every pat
 | N | Cellular | | | | | | |
 | N | Wi-Fi | | | | | | |
 
-Use the foreground runs for the album table.
+Use the foreground runs for the album table. Record the separate Q5 background time or BLOCKED in the Q5 observation row.
 
 ## Limits
 
