@@ -4,7 +4,7 @@ This is the protocol and the record of the ASO-159 spike. A throwaway iOS build 
 
 No production host or library is changed. This protocol authorizes no production operation.
 
-Status: not run. No question has a recorded answer.
+Status: not run. No question has a recorded answer. The fixture serves legacy /v4 with bearer authentication. Its token and 401 probe apply only to this experiment. The first-release read API uses tailnet policy and needs no Syncstr token.
 
 ## Questions
 
@@ -17,7 +17,7 @@ Q1 to Q7 come from ASO-159. Q8, Q9, the resume check in Q3, and the other cases 
 | Q3 | What happens when the phone moves between Wi-Fi and cellular during a download? Does the download continue, resume at its offset, or restart? | Decides whether the app needs its own retry logic. | ASO-165, ASO-166 |
 | Q4 | What does the app see when Tailscale is off, when the host machine is offline, when the host process is down, and when another VPN takes over? How quickly does it see it? | Decides the "host unreachable" state and the probe timeout. | ASO-167 |
 | Q5 | How long does one album take over the tailnet, compared with the same host over the LAN? | Decides whether whole-file download before playback stays acceptable. | ASO-165 |
-| Q6 | Does a direct `100.x` address with the host's self-signed certificate work, with the certificate pinned? Is it worth supporting? | Decides what "another private network" needs from the listener. | ASO-163, ASO-165 |
+| Q6 | Does a direct `100.x` address with the host's self-signed certificate work, with the certificate pinned? Is it worth supporting? | Provides a direct-IP comparison with the Serve hostname. | ASO-163, ASO-165 |
 | Q7 | Which way to put a container host on the tailnet is better: Tailscale on the NAS, a Tailscale container next to the host, or Serve on another machine? | Decides the one documented command for a NAS host. | ASO-163 |
 | Q8 | Does `allowsCellularAccess = false` stop a download through the tunnel when the phone is on cellular? | Decides how a Wi-Fi-only download setting works. | ASO-166 |
 | Q9 | With VPN On Demand set to **Always**, does the tunnel come up without opening the Tailscale app, after a phone restart and after a network change? | Decides what the first launch and the unreachable state tell the listener. | ASO-167 |
@@ -169,11 +169,7 @@ Record the track count, total bytes, and formats once. Report the median of each
 
 Expected: step 2 works. The background session can wake the app for the trust challenge, because `sessionSendsLaunchEvents` covers tasks that require authentication.
 
-- Works in the foreground and the background: pinning the host's public key at pairing is enough for other private networks and the LAN, and the `pin` of the host API ships. ADR 0008's proposal that Tailscale is not required needs no trusted certificate from the listener. The [setup guide](../tailscale-setup.md) drops that requirement.
-- Works only in the foreground: other networks get foreground downloads only, unless the listener supplies a trusted certificate.
-- Fails: other networks need a certificate from a public authority or an installed root. ADR 0008 and the setup guide say so.
-
-For Tailscale itself, the `.ts.net` name of Q1 is enough. Q6 decides only what other networks need.
+Record success or failure separately for foreground and background. Q6 compares the direct-IP path with Serve. Its result does not add a direct LAN listener to the first release.
 
 ### Q7. A container host on the tailnet
 
@@ -217,12 +213,12 @@ This question needs the owner's go-ahead, because it installs something on the N
 | Q3 restarts from zero | Retry and resume design for large files | ASO-165, ASO-166 |
 | Q4 gives only timeouts | The unreachable state cannot name its cause | ASO-167 |
 | Q5 first track too slow | ADR 0008's whole-file playback model | ASO-158, ASO-165 |
-| Q6 pinning works or fails | What ADR 0008's "Tailscale is not required" asks of the listener | ASO-163, ASO-165 |
+| Q6 pinning works or fails | Record which direct-IP comparison paths worked | ASO-163, ASO-165 |
 | Q7 container fails | The NAS recommendation in the setup guide | ASO-163 |
 | Q8 cellular is not blocked | The Wi-Fi-only setting checks the path itself | ASO-166 |
 | Q9 On Demand does not reconnect | First-launch and reconnect wording | ASO-167 |
 
-No outcome changes the proposals that each device creates its own device token at pairing, that devices only read in the first release, or that the owner's daily path is removed only after the owner's library runs on the new path.
+ADR 0008 records the accepted decisions on tailnet-controlled library reads, first-release device capabilities and the cutover order.
 
 ## Results
 

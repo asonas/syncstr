@@ -4,7 +4,7 @@ A native macOS and iPhone player for a music library you manage yourself.
 
 ## Planned direction
 
-Syncstr is being redesigned to stop building its own connectivity. A library will have one primary host that devices reach over HTTPS on a private network such as a tailnet, with optional mirrors for backup. [ADR 0008](docs/adr/0008-one-primary-host-over-a-private-network.md) records the decision, and [Syncstr on a private network](docs/private-network-architecture.md) explains the design and links to each part. None of it is implemented. The sections below describe what the code does today, including the cluster, peer-to-peer and v5 work that the redesign removes.
+Syncstr is being redesigned to stop building its own connectivity. A library will have one primary host that devices reach over Tailscale HTTPS from devices allowed by the tailnet policy, with optional mirrors for backup. Both the host and the phone join Tailscale. Opening the library requires no Syncstr pairing. [ADR 0008](docs/adr/0008-one-primary-host-over-a-private-network.md) records the decision, and [Syncstr on a private network](docs/private-network-architecture.md) explains the design and links to each part. None of it is implemented. The sections below describe what the code does today, including the cluster, peer-to-peer and v5 work that the redesign removes.
 
 ## Current implementation
 
@@ -40,7 +40,7 @@ continue to use the existing conflict-resolution flow.
 
 | Task | Start here |
 |---|---|
-| Planned redesign: one primary host over a private network | [Overview](docs/private-network-architecture.md), [ADR 0008](docs/adr/0008-one-primary-host-over-a-private-network.md), [host API and pairing](docs/host-api-design.md), [mirrors and the primary switch](docs/mirrors-and-primary-switch.md), [onboarding and connection states](docs/onboarding-and-connection-states.md), [migration plan](docs/private-network-migration-plan.md), [Tailscale setup](docs/tailscale-setup.md), [device spike](docs/validation/tailscale-device-spike.md). Design only |
+| Planned redesign: one primary host over a private network | [Overview](docs/private-network-architecture.md), [ADR 0008](docs/adr/0008-one-primary-host-over-a-private-network.md), [host read API](docs/host-api-design.md), [mirrors and the primary switch](docs/mirrors-and-primary-switch.md), [onboarding and connection states](docs/onboarding-and-connection-states.md), [migration plan](docs/private-network-migration-plan.md), [Tailscale setup](docs/tailscale-setup.md), [device spike](docs/validation/tailscale-device-spike.md). Design only |
 | macOS UI and launch | [Syncstr.swift](apps/macos/Syncstr.swift), [macOS guide](apps/macos/README.md) |
 | Local catalog, pairing, and transfer | [LocalCatalog.swift](apps/macos/LocalCatalog.swift), [CatalogDatabase.swift](apps/macos/CatalogDatabase.swift), [LocalTransfer.swift](apps/macos/LocalTransfer.swift), [LocalSetup.swift](apps/macos/LocalSetup.swift), [protocol and setup](docs/local-music-transfer.md) |
 | Compilation album organization | [Retention policy](docs/compilation-data-design.md), [revised membership and artwork policy](docs/compilation-policy-review.md), [revision implementation plan](docs/compilation-revision-implementation-plan.md), [earlier implementation](docs/compilation-implementation-spec.md), [verification](docs/validation/compilation-albums.md), [glossary](GLOSSARY.md), [metadata preservation decision](docs/adr/0001-preserve-imported-metadata-and-user-choices.md) |

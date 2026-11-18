@@ -2,6 +2,8 @@
 
 Status: proposed on 2026-11-17 with [ADR 0008](adr/0008-one-primary-host-over-a-private-network.md). Nothing in this plan is implemented, and it authorizes no production operation. Every step that touches the owner's NAS waits for the owner's explicit go-ahead, as listed in [Steps that need the owner's go-ahead](#steps-that-need-the-owners-go-ahead).
 
+For the first release, migrate the library and connect devices by the host’s Tailscale HTTPS address. References below to creating or migrating device tokens, pairing again, or testing revocation through Syncstr describe the superseded access design. Test read access with allowed and restricted devices in the tailnet policy. Keep the legacy /v4 credential until its own path is retired.
+
 This plan takes the repository and the owner's library from main at `d0b4db5` to the design in [Syncstr on a private network](private-network-architecture.md), which links to the other parts. It answers ASO-161 (the store and the migration), ASO-165 (the order of the Apple transport change), ASO-168 (what a device may change), ASO-169 (removal of the old stacks), ASO-170 (the Windows, Android and gpui apps) and ASO-171 (existing issues).
 
 The owner accepts the recommendations below by merging this document, except the removal of the Windows, Android and gpui apps. That removal is a recommendation that needs the owner's separate decision in ASO-170, and merging this document does not decide it.
@@ -184,9 +186,9 @@ Removal on the owner's daily path starts only after this test passes.
 
 ## Remove what the owner never ran first, and the daily path last
 
-ADR 0008 proposes that the old stacks go only after the owner's library runs on the new path, so that nothing the owner uses breaks before its replacement works. This plan applies that proposal in three parts:
+ADR 0008 keeps the daily path until the owner's library runs on its replacement. Earlier removal requires both an unused path in that library and no dependency from an active client. This plan applies the decision in three parts:
 
-- Code that the owner's library never ran and that no shipped Apple flow depends on may be removed before the cutover. That is the v5 host-to-host and activation journal code, and the connectivity probe.
+- The v5 host-to-host code, activation journal and connectivity probe are candidates for early removal. Each can go once confirmed unused by both the owner's library and all active clients.
 - Everything the owner uses daily is removed only after the owner's library runs on the new path.
 - Removing the Windows, Android and gpui apps is a recommendation that needs the owner's separate decision in ASO-170. Merging this plan does not decide it.
 

@@ -88,7 +88,7 @@ Competing changes within a cluster that cannot be reconciled without choosing wh
 
 ## Hosts and devices
 
-These terms belong to the design in [ADR 0008](docs/adr/0008-one-primary-host-over-a-private-network.md), which is proposed and not implemented. They replace the terms under [Device connectivity](#device-connectivity) as that design is built.
+These terms belong to the design in [ADR 0008](docs/adr/0008-one-primary-host-over-a-private-network.md), accepted on 2026-11-18 and pending implementation. They replace the terms under [Device connectivity](#device-connectivity) as that design is built.
 
 **Library**:
 The music a listener manages, with its catalog, artwork and playlists, as one unit that hosts hold and devices play.
@@ -109,20 +109,12 @@ _Avoid_: Replica, backup host, secondary
 An app that plays music from a host: the iPhone app, or the macOS app when it is not a host. A device holds a playback cache and offline saves, and is not a full copy of the library.
 _Avoid_: Client, member, peer, Playback Device
 
-**Pairing**:
-The one-time step in which a device creates its own device token for a library and registers it with the primary, using a one-time code that the primary shows. Reaching a host's address does not by itself allow access.
-_Avoid_: Enrollment, joining
-
-**Device Token**:
-The secret that a paired device sends with every request to a host. The device creates it during pairing, and the host keeps only its hash. Each device has its own for each library, and the listener can revoke it.
-_Avoid_: Password, key, invitation
-
 **Host Address**:
 The HTTPS address at which devices reach a host, such as a name on the listener's private network.
 _Avoid_: Endpoint, node address
 
 **Private Network**:
-A network that already connects the listener's machines, such as a tailnet, another VPN, or a home LAN. Syncstr assumes one and does not build one.
+A network that already connects the listener's machines, such as a tailnet, another VPN, or a home LAN. The first release uses the tailnet of the host and the playback device. Its access policy controls remote reads.
 _Avoid_: Remote access when referring to the network itself
 
 **Switch Number**:

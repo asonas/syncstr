@@ -1,8 +1,10 @@
-# Host API and pairing
+# Host API
 
 Status: proposed 2026-11-17 with [ADR 0008](adr/0008-one-primary-host-over-a-private-network.md). Nothing in this document is implemented, and it authorizes no production operation.
 
-This document defines the one HTTPS API that a host serves to devices and to mirrors, and the pairing in which each of them registers a device token that it creates. It is the only document that defines routes, fields, headers, status codes, the pairing link, ports, and timeouts. It answers ASO-160 and ASO-164, and it states what ASO-165, ASO-172, and ASO-173 may rely on. The [architecture overview](private-network-architecture.md) places it among the other designs. The owner is the person who runs the host and pairs devices with it.
+For the first release the Mac or NAS host joins Tailscale. The host exposes only library information, catalog, audio and artwork reads through Serve. These four GET routes accept requests without a Syncstr Authorization header. Tailnet policy controls access to the host and service port. The application listener binds to loopback. Owner commands remain local. Verify that a permitted phone can read and a restricted device cannot reach the service.
+
+The November 17 draft below remains a reference for the data formats and future work. ADR 0008 supersedes its pairing exchange, device registry, token checks, per-device authorization errors, off-loopback listeners and associated tests. These are outside the first-release contract.
 
 ## One API replaces every way a device reaches a host
 
@@ -35,12 +37,10 @@ On a device, `LocalTransfer.playbackFile` stays the one seam through which `Libr
 
 | Method and path | Caller | Returns |
 | --- | --- | --- |
-| `POST /api/v1/pairing` | Anyone who reaches the host | A pairing result |
-| `GET /api/v1/library` | Any paired caller | Library information and the change marker |
-| `GET /api/v1/catalog` | Any paired caller | Tracks, organization, and playlists |
-| `GET /api/v1/audio/{sha256}` | Any paired caller | One audio file, with ranges |
-| `GET /api/v1/artwork/{id}` | Any paired caller | One image, with ranges |
-| `GET /api/v1/devices` | A host | Every device token record |
+| `GET /api/v1/library` | Allowed tailnet device | Library information and the change marker |
+| `GET /api/v1/catalog` | Allowed tailnet device | Tracks, organization, and playlists |
+| `GET /api/v1/audio/{sha256}` | Allowed tailnet device | One audio file, with ranges |
+| `GET /api/v1/artwork/{id}` | Allowed tailnet device | One image, with ranges |
 
 ### Versioning rule
 
@@ -147,7 +147,7 @@ Before the device puts a file in the playback cache or an offline save, it check
 
 `GET /api/v1/artwork/{id}` returns one JPEG with `Content-Type: image/jpeg` and `ETag: "<id>"`, and it takes the same range headers as audio. The host serves every image it holds and has verified. The device checks that the SHA-256 of the bytes equals the ID. The catalog states no image sizes. Each image is at most 512 KiB, which bounds the space a full copy needs.
 
-## Every request carries a device token
+## Superseded device-token proposal
 
 Each paired device has its own device token for the library, and every host of the library accepts it. A mirror pairs the same way, and its record has kind `host`. A primary that creates a library also creates a token of kind `host` for itself and records its hash, so that the other hosts of the library accept its requests.
 
@@ -174,7 +174,7 @@ A device ends its pairing on 401 `device-revoked` from any host, or on 401 `unau
 
 A caller without a valid token can reach only `POST /api/v1/pairing`. The host checks the token before it matches a route, so every other path, existing or not, returns 401 `unauthorized`. A 401 names no library, host, or version.
 
-## Pairing exchanges a one-time code
+## Superseded pairing exchange
 
 Only a primary that accepts changes pairs. Any other host answers a pairing request with 409 `not-primary`.
 

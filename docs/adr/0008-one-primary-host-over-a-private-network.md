@@ -1,14 +1,14 @@
 ---
-status: proposed
+status: accepted
 ---
 
 # Serve a library from one primary host over a private network
 
-Syncstr stops building its own connectivity. It assumes that a private network, such as a tailnet, another VPN, or a home LAN, already connects the listener's machines. A host serves the library over HTTPS at a host address, and a device reaches that address like any other web service. Discovery by mDNS, peer-to-peer transport, relays, the rendezvous directory, and everything that existed to connect hosts across networks are removed once the new path carries the owner's library.
+Syncstr stops building its own connectivity. For the first release, the Mac or NAS hosting the library and each remote playback device join Tailscale. A host serves the library over HTTPS at a host address, and a device reaches that address like any other web service. Discovery by mDNS, peer-to-peer transport, relays, the rendezvous directory, and everything that existed to connect hosts across networks are removed once the new path carries the owner's library.
 
-A library has exactly one primary host. Only the primary accepts changes. A library can also have mirrors. A mirror pulls everything from the primary through the same API that a phone uses, keeps a full copy, and can serve that copy to devices. A mirror never accepts a change. Making a mirror the primary is an explicit step that the owner takes on both machines, recorded as a switch number that rises with each switch. Two hosts that accept changes at the same time are out of scope.
+A library has exactly one primary host. Only the primary accepts changes. A library can also have mirrors. A mirror pulls everything from the primary through the same API that a phone uses, keeps a full copy, and can serve that copy to devices. A mirror never accepts a change. The owner explicitly chooses when a mirror becomes the primary. In a planned switch the owner acts on both machines. The switch number rises with each switch. Two hosts that accept changes at the same time are out of scope.
 
-The owner decided the two paragraphs above on 2026-11-17. They replace the parts of [ADR 0002](0002-local-first-connectivity-with-user-operated-remote-access.md) that describe discovery, relays, a peer directory, LAN-only enrollment, and several library hosts that exchange music with each other. ADR 0002 still holds where it says that the operator of Syncstr provides no central service, that there are no username and password accounts, and that an administrator can revoke a device.
+On 2026-11-17 the owner chose one writer and an externally managed private network. On 2026-11-18 the owner chose Tailscale for first-release remote access. These decisions replace the parts of [ADR 0002](0002-local-first-connectivity-with-user-operated-remote-access.md) about discovery, relays, a peer directory, LAN enrollment and several writers. Syncstr provides no central service or Syncstr account. The owner withdraws a device's access through Tailscale.
 
 ## Why
 
@@ -16,19 +16,21 @@ Recent work did not change what a listener can do. At the commit before this dec
 
 The cost came from one requirement: several hosts that all accept changes must agree. That requirement needs signed changes, membership grants, ordering, and a protocol to move every host to a new format together. One writer removes the requirement. A second machine is still useful as a backup and as a second place to download from, and a mirror gives both without agreement between writers.
 
-The price is real. A listener cannot edit the library on two hosts and merge the results later. If the primary is lost, the changes it accepted after the mirror was last caught up are lost, unless the old primary comes back, and then they are kept aside for the owner rather than merged. A listener who has no private network gets a LAN-only product until they set one up, and Syncstr now depends on software it does not ship.
+The price is real. A listener cannot edit the library on two hosts and merge the results later. If the primary is lost, the changes it accepted after the mirror was last caught up are lost, unless the old primary comes back, and then they are kept aside for the owner rather than merged. Remote library access depends on Tailscale. Music already saved on a device remains playable offline.
 
 ## What follows
 
-A device is paired once. During pairing it creates its own device token and registers it with the primary. The token is the credential on every network. Tailscale identity can add to it and never replaces it, because other private networks have nothing like it.
+The host publishes its read-only library API through Tailscale Serve. The owner controls which devices can reach that host and port in the tailnet policy. An allowed iPhone opens the host’s HTTPS address and reads the library directly, without a Syncstr token or pairing code. Removing network access stops future remote reads. Local playback and existing offline saves remain available.
 
-In a planned switch the owner acts on both machines. If the primary is lost, the owner promotes a mirror on the mirror's machine. The old primary stops accepting changes when it next reads the new primary, and the owner's step on the old primary's machine is to make it a mirror or retire it.
+When the primary is unreachable, a device can browse, download and play from the most up-to-date reachable mirror. It keeps any newer catalog it has already seen and shows when the mirror was last caught up, along with the number of missing changes when known.
 
-Tailscale is the first private network that Syncstr helps with, and it is not required. A device needs a host address that it can reach over HTTPS. Syncstr prefers a certificate from a public authority, which `tailscale serve` provides, because iOS refuses plain HTTP to IP addresses.
+If the primary is lost, the owner can promote a mirror using its last complete copy. Later changes may be missing from that copy. An isolated old primary may continue accepting changes until it learns of the switch. It then stops writing and preserves any divergent copy for the owner. If two hosts claim to be primary at the same switch number, writes stop when the conflict is detected and the owner chooses the primary. See [mirrors and the primary switch](../mirrors-and-primary-switch.md).
+
+The library service listens on loopback on the Mac or inside the NAS host’s network namespace. Serve exposes it over tailnet HTTPS. Owner operations stay local. Direct LAN and other VPN listeners are outside the first-release design.
 
 Either a Mac or a NAS can be the primary. The macOS app runs the host on a Mac, and the same host runs headless elsewhere.
 
-In the first release, a device reads and downloads. The listener edits the library on the primary. Editing from a device returns later as a request to the primary, described in [the migration plan](../private-network-migration-plan.md).
+In the first release, the iPhone can browse, download, save music for offline listening, and play it. The listener adds music and edits metadata and playlists on the primary. ASO-168 covers later edits from devices.
 
 Whole-file download with hash verification stays the playback model, and [ADR 0005](0005-distinguish-playback-cache-from-offline-saves.md) keeps its distinction between the playback cache and offline saves. Track identity in [ADR 0006](0006-preserve-source-track-identity-independently-of-audio.md) and [ADR 0007](0007-preserve-track-addresses-when-sharing-audio.md) stays a product boundary. How the single-writer store keeps it is decided in the migration plan.
 
@@ -37,5 +39,8 @@ The design is described in [the architecture overview](../private-network-archit
 ## Status of the parts
 
 - Accepted on 2026-11-17: one primary, mirrors, the explicit switch, no simultaneous writers, and no connectivity built by Syncstr.
-- Proposed, and accepted when the owner merges this document: either machine can be the primary, Tailscale is helped and not required, the device token is the baseline credential, devices are read-only in the first release, and the old stacks are removed only after the owner's library runs on the new path.
-- Exception to that last part: code that the owner's library never ran and that no shipped Apple flow depends on, which is the v5 host-to-host and activation journal code and the connectivity probe, may be removed before the cutover. Removing the Windows, Android and gpui apps needs the owner's separate decision in ASO-170, which merging this document does not make.
+- On 2026-11-18 the owner accepted the Mac and NAS host roles, the first-release iPhone scope, playback from mirrors, recovery by manual promotion, and the cutover order. Keep the everyday path until the owner's library works on its replacement. Earlier removal is limited to code the library has never used and on which no active client depends. ASO-170 tracks the separate decision on the Windows, Android and gpui clients.
+
+- Later on 2026-11-18 the owner replaced optional Tailscale connectivity and per-device pairing with tailnet-controlled access for the first release. The host itself joins the tailnet. The legacy /v4 fixture still requires its own bearer token for ASO-159.
+
+[ASO-159's physical-device spike](../validation/tailscale-device-spike.md) will test certificate handling, background transfers, network changes, connection failures, and time to playback. Its measurements will guide the connection and download design.

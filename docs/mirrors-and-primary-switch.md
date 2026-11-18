@@ -4,6 +4,8 @@ Status: Proposed 2026-11-17 for ASO-172 (mirrors) and ASO-173 (switching the pri
 
 [ADR 0008](adr/0008-one-primary-host-over-a-private-network.md) decided that a library has one primary, that mirrors copy it and accept no change, and that only the owner switches the primary. This document gives the rules behind that decision, including how the switch number stops two hosts from both accepting changes once they have met. [The host API design](host-api-design.md) defines every route, field, header, error, and timeout that these rules use, chiefly [library information](host-api-design.md#library-information-and-the-change-marker), [what a mirror needs beyond a device](host-api-design.md#what-a-mirror-needs-beyond-a-device), and the refusals in [changes from devices](host-api-design.md#changes-from-devices-come-later). No route changes a role or a switch record.
 
+ADR 0008 now assigns playback-device access to Tailscale on each serving host. The device token registry, propagation of its revocations and rollback of device revocations on promotion described in the earlier design below no longer apply to playback devices. ASO-172 and ASO-173 still own the later host-to-host protocol and role changes.
+
 ## What this design leaves out
 
 The old design let several hosts accept changes. To make them agree it needed signed records, membership proofs, an order among writers, and an activation journal ([the activation control protocol](v5-activation-control-protocol.md), [the cluster model](cluster-model-design.md)). The owner gave up simultaneous writers to remove that machinery. Three rules follow:

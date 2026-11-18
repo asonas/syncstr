@@ -2,7 +2,9 @@
 
 Status: proposed 2026-11-17 with [ADR 0008](adr/0008-one-primary-host-over-a-private-network.md). Nothing in this document is implemented, and it authorizes no production operation.
 
-This document specifies what a listener sees and does in the macOS and iOS apps when a host serves the library over a private network. It covers first launch, pairing, connection states, downloads, and settings. It answers ASO-167 and the listener-facing half of ASO-166, and it gives the interface for ASO-162, ASO-163, and ASO-164. The exchanges behind the screens are in [Host API design](host-api-design.md), mirrors are in [Mirrors and the primary switch](mirrors-and-primary-switch.md), and the listener's guide to a tailnet is [Tailscale setup](tailscale-setup.md).
+First release: connect Tailscale on the Mac or NAS host, publish the read service through Serve, and permit the intended phone in the tailnet policy. On the phone, connect Tailscale and open the host address in Syncstr. Success opens the library. If it cannot be reached, check the host, Tailscale connection and access policy. Disconnecting from a host preserves offline saves.
+
+The earlier screen proposals below remain design references for playback, downloads and host state. The pairing, revocation and direct-LAN flows in them were superseded by [ADR 0008](adr/0008-one-primary-host-over-a-private-network.md). An address or QR link identifies the host and carries no authorization.
 
 On iPad the iOS app follows the iPhone design, so "iPhone" below includes the iPad. The apps' interface strings are Japanese literals in the SwiftUI sources, with no string catalog. Every string here is a Japanese draft with an English gloss. Final wording and presentation follow [DESIGN.md](../DESIGN.md) and are checked on the screen. The examples use `studio` for a Mac host, `nas` for a NAS host, and `studio.example.ts.net` for a host address.
 
