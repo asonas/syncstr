@@ -75,7 +75,7 @@ The `upload` command checks that the certificate names the address in `--url`, s
 | Path | Address the phone uses | Certificate | Used by |
 | --- | --- | --- | --- |
 | A-name | `https://mac.example.ts.net` | Let's Encrypt, through Serve | Q1 to Q5, Q8, and Q9 |
-| A-ip | `https://100.x.y.z:8443` | The fixture's own, pinned | Q5 and Q6 |
+| A-ip | `https://100.x.y.z:8443` | The fixture's own, pinned | Q1 range check, Q5 and Q6 |
 | A-lan | `https://192.0.2.20:8443`, the Mac's LAN address, with Tailscale off on the phone | The fixture's own, pinned. The name does not match. | Q5 baseline |
 | C | `https://spike.example.ts.net`, a disposable host on the NAS | Let's Encrypt, through Serve | Q5 and Q7 |
 
@@ -92,7 +92,7 @@ When the spike ends, stop `serve` and delete `tmp/spike`. Turn off each Serve se
 ### Q1. Foreground download and playback over the tailnet name
 
 1. Connect the phone to Wi-Fi and connect Tailscale.
-2. Run the range check over A-name.
+2. Run the range check over A-name, and the same check on the same track over A-ip with the pinned certificate. Record both statuses and `Content-Range` headers.
 3. Download one track over A-name with the foreground session. Verify the hash and play the file for 10 seconds.
 4. Turn Wi-Fi off in **Settings**, and repeat steps 2 and 3 on cellular.
 
@@ -100,7 +100,7 @@ Expected: status `200`, a matching hash, and playback. The range check returns `
 
 - PASS: ADR 0008's premise holds. A device uses `URLSession` with default trust.
 - FAIL with `-1022` or `-1202`: the host address design needs an exception that App Review asks about. ADR 0008 and ASO-165 change.
-- A range check without `206` over A-name, while the same check over A-ip returns `206`: Serve does not pass `Range`. ASO-160 must not rely on ranges through Serve. If A-ip fails too, the fixture is the cause, not Serve.
+- A range check without `206` over A-name, while the same check over A-ip returns `206`: Serve does not pass `Range`. ASO-160 must not rely on ranges through Serve. If A-ip fails too, the result says nothing about Serve alone. Record it and check the fixture's range handling first.
 
 ### Q2. Background download while suspended and locked
 
@@ -178,13 +178,14 @@ Record success or failure separately for foreground and background. Q6 compares 
 This question needs the owner's go-ahead, because it installs something on the NAS. Without it, mark Q7 as BLOCKED, and the choice rests on the [setup guide](../tailscale-setup.md).
 
 1. On the NAS, create a second Compose project with an empty data directory and a new identity, not the real library. Create the identity with the `init` step of "Docker on a NAS" in [`headless/README.md`](../../headless/README.md). Add the Tailscale container from the setup guide with `hostname: spike`. Today's container listens with HTTPS on 8443, so the proxy in `serve.json` is `https+insecure://127.0.0.1:8443`, not the planned `http://127.0.0.1:8441`.
-2. From the phone, open `https://spike.example.ts.net/v4/catalog` and expect `unauthorized`. Upload one test file to it with the `upload` command, as for the Mac fixture. After each restart in step 3, read the catalog from the Mac with the fixture token and check that the file is still listed, so that a restart is seen to keep the data.
-3. Run `docker compose restart` and repeat step 2. Restarting the NAS itself stops the owner's everyday library, so it needs a separate go-ahead from the owner, at a time the owner chooses. With it, restart the NAS and repeat step 2. Without it, record the NAS restart as not tested.
-4. Record the number of steps, the time taken, and what an update of each container takes.
-5. If the owner accepts Tailscale on the NAS itself, record the same for it. The fixture container then uses `network_mode: host`, so start it with `--listen 127.0.0.1:<port>` on a port that no NAS service uses, and remove its `ports` entry, so that it does not answer on the NAS's LAN address.
-6. Remove the project, its data, and the `spike` machine from the tailnet.
+2. Once, before any restart, copy one test file into a directory that the fixture container mounts, and upload it from inside the container with `docker compose exec` and `syncstr-headless upload --url https://127.0.0.1:8443`, using an identity created with `--host 127.0.0.1`. Record the track ID and SHA-256 that it reports.
+3. From the phone, open `https://spike.example.ts.net/v4/catalog` and expect `unauthorized`. Then, from inside the container, download the recorded track with the fixture token and check its SHA-256. Do not upload again, so that a lost file cannot be replaced unnoticed.
+4. Run `docker compose restart` and repeat step 3. Restarting the NAS itself stops the owner's everyday library, so it needs a separate go-ahead from the owner, at a time the owner chooses. With it, restart the NAS and repeat step 3. Without it, record the NAS restart as not tested.
+5. Record the number of steps, the time taken, and what an update of each container takes.
+6. If the owner accepts Tailscale on the NAS itself, record the same for it. The fixture container then uses `network_mode: host`, so start it with `--listen 127.0.0.1:<port>` on a port that no NAS service uses, and remove its `ports` entry, so that it does not answer on the NAS's LAN address.
+7. Remove the project, its data, and the `spike` machine from the tailnet.
 
-- The container passes steps 2 and 3: ASO-163 ships it as the one documented command.
+- The container passes steps 3 and 4: ASO-163 ships it as the one documented command.
 - The container fails, for example because Serve cannot reach the host in the shared network: the setup guide's recommendation changes to the option that passed.
 
 ### Q8. Cellular restriction through the tunnel
@@ -195,7 +196,8 @@ This question needs the owner's go-ahead, because it installs something on the N
 4. Record what `NWPathMonitor` reports for the path in each case.
 
 - The task waits or fails: a Wi-Fi-only setting can rely on `URLSession`.
-- The task downloads over cellular: the tunnel hides the interface. ASO-166 checks the path itself before it starts a download.
+- The task downloads over cellular in step 1 or 2: the tunnel hides the interface. ASO-166 checks the path itself before it starts a download.
+- The task in step 3 continues over cellular: a check before the start is not enough. ASO-166 tests a way to stop a running save when the path becomes cellular.
 
 ### Q9. VPN On Demand
 

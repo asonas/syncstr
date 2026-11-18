@@ -55,8 +55,8 @@ The switch number never decreases. A host writes a new switch record to disk bef
 | From | To | Cause |
 | --- | --- | --- |
 | Nothing | Primary | The owner creates a library or migrates a store (ASO-161). The switch number is 1. |
-| Nothing or retired | Mirror | The owner runs `follow` with a pairing link for a host. |
-| Replaced | Mirror | The owner runs `follow`. Its token is already in the new primary's device list, so it pairs again only if that token was revoked. |
+| Nothing or retired | Mirror | The owner runs `follow` with the primary's host address. How the hosts identify each other is decided in ASO-172. |
+| Replaced | Mirror | The owner runs `follow` with the new primary's host address. |
 | Primary | Handing over | The owner runs `hand-over` naming a mirror. |
 | Handing over | Primary | The owner runs `hand-over --cancel` before the mirror takes over. |
 | Mirror, or primary in conflict | Primary | The owner runs `take-over` (planned) or `promote` (after loss, or to end a conflict). |
