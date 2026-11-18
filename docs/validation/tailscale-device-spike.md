@@ -16,7 +16,7 @@ Q1 to Q7 come from ASO-159. Q8, Q9, the resume check in Q3, and the other cases 
 | Q2 | Does a background `URLSession` download continue over the tunnel while the app is suspended, and after the phone locks? | Today, transfers stop when the iPhone app goes to the background. Background downloads are planned. | ASO-166 |
 | Q3 | What happens when the phone moves between Wi-Fi and cellular during a download? Does the download continue, resume at its offset, or restart? | Decides whether the app needs its own retry logic. | ASO-165, ASO-166 |
 | Q4 | What does the app see when Tailscale is off, when the host machine is offline, when the host process is down, when the tailnet policy refuses this phone, and when another VPN takes over? How quickly does it see it? | Decides the "host unreachable" state and the probe timeout. | ASO-167 |
-| Q5 | How long does one album take over the tailnet, compared with the same host over the LAN? | Decides whether whole-file download before playback stays acceptable. | ASO-165 |
+| Q5 | How long are the waits for playback and the full album on N over Wi-Fi and cellular? How do A-name, A-ip, and A-lan compare on the same Wi-Fi with the Mac fixture? | Decides whether whole-file download before playback stays acceptable. | ASO-165 |
 | Q6 | Does a direct `100.x` address with the host's self-signed certificate work, with the certificate pinned? Is it worth supporting? | Provides a direct-IP comparison with the Serve hostname. | ASO-163, ASO-165 |
 | Q7 | How does the existing sidecar publish the legacy host through Caddy? Does it rejoin after a NAS restart, and how long does each container take to update? | Records recovery and update times for the existing NAS layout. | ASO-163 |
 | Q8 | Does `allowsCellularAccess = false` stop a download through the tunnel when the phone is on cellular? | Decides how a Wi-Fi-only download setting works. | ASO-166 |
@@ -37,10 +37,10 @@ Q1 to Q7 come from ASO-159. Q8, Q9, the resume check in Q3, and the other cases 
 
 Create a minimal SwiftUI app outside the product targets, for example under `experiments/tailscale-device-spike/`. It needs these parts:
 
-- A path selector with separate credentials and trust settings for N and the fixture paths. Bind the N token to the exact HTTPS origin `https://music.example.ts.net` (scheme, host, and port). In both sessions, attach it only to `GET /v4/catalog` and `GET /v4/tracks/{id}/audio` on that origin. Never fall back to the NAS's LAN address.
+- A path selector with separate credentials and trust settings for N and the fixture paths. Use the exact N origin confirmed by the owner (scheme, host, and port). When constructing a request in either session, attach the N token only to `GET /v4/catalog` and `GET /v4/tracks/{id}/audio` on that origin. Never fall back to the NAS's LAN address.
 - Refuse redirects in the foreground. A background session follows redirects automatically, even to another path on the same origin. Before any background measurement with the N token, the owner confirms the exact origin registered in the build. For that origin, the owner confirms that Serve, Caddy, and the legacy host each return no redirect on either GET route. If either confirmation is missing, skip all background measurements on N and record them as BLOCKED.
 - Use the fixture's token on its three paths. Use system trust on N and A-name. Use the fixture pin for A-ip and A-lan when the step calls for it.
-- On the Mac, read each catalog with its own token. Attach the real token only to `GET /v4/catalog` on N's confirmed HTTPS origin. Stop the read on any `3xx` response without following the redirect. Give the phone the selected track IDs, SHA-256 values, and sizes for each host.
+- On the Mac, read each catalog with its own token. Attach the real token only to `GET /v4/catalog` on N's confirmed HTTPS origin. Stop the read on any `3xx` response without following the redirect. Use the catalog commands below.
 - One foreground session from `URLSessionConfiguration.default`, and one background session from `URLSessionConfiguration.background(withIdentifier:)`. The app recreates the background session at launch and implements `application(_:handleEventsForBackgroundURLSession:completionHandler:)`.
 - Download tasks for `GET /v4/tracks/{id}/audio`. In `didFinishDownloadingTo`, the app moves the file, computes its SHA-256, and compares it with the catalog value.
 - A probe: `GET /v4/catalog` with no token. A `401` answer means that the host is reachable. The probe keeps the default `timeoutIntervalForRequest` of 60 seconds, so that the log shows when each failure arrives on its own.
@@ -55,7 +55,7 @@ The plans remove `NSLocalNetworkUsageDescription` from the real app on the assum
 
 ### The hosts
 
-Path N reaches the owner's real library at `https://music.example.ts.net`. Serve forwards to Caddy inside the sidecar. Caddy passes only `GET` and `HEAD` on `/v4/catalog` and `/v4/tracks/{id}/audio`. Every other method or path gets `404` before it reaches the host.
+Path N always means the existing sidecar for the owner's legacy library. `music` in `https://music.example.ts.net` is a placeholder for its machine name. Serve forwards to Caddy inside the sidecar. Caddy passes only `GET` and `HEAD` on `/v4/catalog` and `/v4/tracks/{id}/audio`. Every other method or path gets `404` before it reaches the host.
 
 Select an existing album of 10 to 15 tracks and a file of at least 200 MB on N. If no suitable large file exists, record the affected run as unmeasured. For the comparisons, copy the same album into a disposable Mac fixture running Tailscale. Use the fixture's own identity and token. Run from the repository root:
 
@@ -77,11 +77,21 @@ tailscale serve --bg https+insecure://127.0.0.1:8443
 
 The `upload` command checks that the certificate names the address in `--url`, so the URL uses the tailnet address. For the pinned paths, copy `tls.crt` directly into the build product from outside the repository or from the ignored `tmp/spike/` directory. Never copy the certificate into tracked sources.
 
+On the Mac, read both catalogs from a private directory outside the repository. Set `SPIKE_CLI` to the built headless executable. Set `N_ORIGIN` to the exact tailnet HTTPS origin confirmed by the owner. Set `FIXTURE_ORIGIN` to the fixture's HTTPS origin with the address used for `init` and port 8443. Store the real token in `n.token`. Copy the fixture's `tls.crt` and `token` here as `fixture.crt` and `fixture.token`. Export the trusted public root for N's Let's Encrypt chain from the Mac's trusted roots as a single PEM file named `n-root.pem`.
+
+```sh
+umask 077
+"$SPIKE_CLI" catalog --url "$N_ORIGIN" --cert n-root.pem --token-file n.token > n-catalog.json
+"$SPIKE_CLI" catalog --url "$FIXTURE_ORIGIN" --cert fixture.crt --token-file fixture.token > fixture-catalog.json
+```
+
+The [catalog client](../../headless/src/client.rs) uses only the PEM passed to `--cert` as its trust anchor. It checks the HTTPS server name and sends the bearer token with a single `GET /v4/catalog`. It rejects redirects and requires status `200`. Stop on any error. Never retry the real token at a redirect target or a LAN address.
+
 Supply N's real HTTPS origin and the local track mapping to the app at run time. Never write either value into tracked files.
 
 | Path | Address the phone uses | Certificate | Used by |
 | --- | --- | --- | --- |
-| N | `https://music.example.ts.net` | Let's Encrypt, through Serve | Q1 to Q3, Q5, Q7 to Q9 |
+| N | `https://music.example.ts.net` | Let's Encrypt, through Serve | Q1 to Q3, Q5 and Q8 downloads. Q7 Mac inspection and Q9 token-free probe. |
 | A-name | `https://mac.example.ts.net` | Let's Encrypt, through Serve | Q1 range comparison, Q4 and Q5 |
 | A-ip | `https://100.x.y.z:8443` | The fixture's own, pinned | Q1 range comparison, Q4 address probe, Q5 and Q6 |
 | A-lan | `https://192.0.2.20:8443`, the Mac's LAN address, with Tailscale off on the phone | The fixture's own, pinned | Q1 permission check and Q5 baseline |
@@ -96,7 +106,7 @@ When the spike ends, on the fixture Mac stop `serve` and delete `tmp/spike`. Tur
 
 ### Q1. Foreground download and playback over the tailnet name
 
-1. On the Mac, match each album track across the two catalogs by SHA-256 and byte size. Upload gives each fixture track a new ID. Keep the mapping for Q1 and Q5 in a local, untracked file outside the repository. For each play order position, record the N ID, fixture ID, SHA-256, and byte size there. Use the ID for the current host in every request. In [Results](#results), report only the position and whether the catalogs matched for that track.
+1. On the Mac, match each album track across the two catalogs by SHA-256 and byte size. Upload gives each fixture track a new ID. Keep the mapping for the device runs in a local, untracked file outside the repository. For each play order position, record the N ID, fixture ID, SHA-256, and byte size there. Add a separate row labeled `large file` for Q2 and Q3. Record its N ID, SHA-256, and byte size from N's catalog. Leave the fixture ID and play order empty for this row. Use the ID for the current host in every request. For each album track, publish only the play order and catalog match in [Results](#results).
 2. On a fresh install, connect the phone to Wi-Fi and Tailscale. Run the range check with the N ID at position 1 in the local mapping. Record the status and `Content-Range` in the local log. Download the same track in the foreground, verify its hash, and play it for 10 seconds.
 3. Turn Wi-Fi off in **Settings**. Repeat the N range check, download, verification, and playback on cellular. Record any local network prompt and any failure separately for each N run.
 4. Return to Wi-Fi. Repeat the range check with the fixture ID at position 1 in the local mapping over A-name and then A-ip. Pin the fixture certificate only on A-ip. Record each status and `Content-Range` in the local log.
@@ -111,22 +121,24 @@ Expected: status `200`, a matching hash, and playback. The range check returns `
 
 ### Q2. Background download while suspended and locked
 
-1. Start all album tracks and the large file at once on the background session over N.
-2. Within 5 seconds, go to the Home Screen. In the sidecar, read `tailscale status` every 30 seconds and watch the `tx` count on the phone's line. When it stops growing, open the app and export the log.
+1. Before either background run, have the owner confirm N's exact HTTPS origin. Confirm with the owner that Serve, Caddy, and the legacy host do not redirect either GET route on that origin. If either confirmation is missing, record Q2 as BLOCKED. Otherwise start all album tracks and the mapped large file on N's background session.
+2. Within 5 seconds, go to the Home Screen. Leave the app in the background for 10 minutes. Record when you leave and reopen it. Sample the sidecar's `tx` count for the phone every 30 seconds as supporting evidence. Open the app only after the observation window and export the log.
 3. Delete the downloads from the throwaway build. Start again, lock the phone within 5 seconds, and leave it locked for 10 minutes.
-4. Unlock, open the app, and export the log.
+4. Record the lock and reopen times. Unlock, open the app, and export the log.
+
+Compare each task's timestamped `didWriteData` and completion events with the reopen time. A successful completion before reopening and a matching hash confirm a background finish. If progress pauses and then resumes before reopening, record a temporary stall in reported progress. A logged terminal error before reopening confirms a stop for that task. Callbacks can arrive after suspension ends. If progress appears only after reopening, record the timing as inconclusive unless independent transfer evidence shows that bytes stopped while suspended and resumed in the foreground. A flat peer counter alone cannot establish a stop.
 
 Expected: bytes keep flowing while the app is suspended. iOS wakes the app when the tasks finish, and every hash matches. Record whether moving a file in `didFinishDownloadingTo` fails while the phone is locked.
 
 - PASS: ASO-166 uses one background session for offline saves and album downloads.
-- Transfers stop while suspended, or resume only in the foreground: background downloads do not work over the tunnel. ASO-166 falls back to foreground downloads, and the interface says so.
+- Confirmed suspension-related stop or foreground-only resumption: background downloads do not work over the tunnel. ASO-166 falls back to foreground downloads, and the interface says so.
 - Transfers work, but the move fails while locked: ASO-166 sets the file protection of downloaded audio.
 
 ### Q3. Network change during a download
 
-1. On Wi-Fi, start the large file on the foreground session over N.
+1. On Wi-Fi, start the mapped large file on the foreground session over N.
 2. At about 30%, turn Wi-Fi off in **Settings**. Record what follows. The bytes continue, the task resumes, or the task fails with an error code.
-3. Repeat with the background session. Record whether `didResumeAtOffset` arrives and at which offset.
+3. Before starting a background task on N, have the owner confirm its exact HTTPS origin and that Serve, Caddy, and the legacy host do not redirect either GET route there. If either confirmation is missing, record the background run as BLOCKED. Otherwise repeat with the background session. Record whether `didResumeAtOffset` arrives and at which offset.
 4. Repeat steps 1 to 3 from cellular to Wi-Fi.
 
 Expected: unknown. A guess is that the connection inside the tunnel survives, because the phone's tailnet address does not change. If it fails, the background session should resume with a range request, because the host sends `ETag` and `Accept-Ranges`.
@@ -160,10 +172,10 @@ Expected: unknown. A guess for step 1 is a fast `-1003` (cannot find host) by na
 
 1. Delete the album's files from the build between runs.
 2. Start the foreground downloads in play order using the local mapping from Q1. Use the ID for the current host. Measure the wait for playback until the first track is verified. Measure the album time until all tracks are verified.
-3. Run three times on N over Wi-Fi and three times on N over cellular. On Wi-Fi, repeat the three runs with the fixture copy over each of A-name, A-ip, and A-lan.
+3. Run three times on N over Wi-Fi and three times on N over cellular. On Wi-Fi, repeat the three runs with the fixture copy over each of A-name, A-ip, and A-lan. During each tailnet run, sample the phone's path on the serving peer. Record direct, the DERP region, or a path change for that run.
 4. Reconnect Tailscale on Wi-Fi. Confirm that the unauthenticated catalog probe on N returns `401`. Run one background album download on N if the redirect precondition is met. Record its time separately from the foreground medians.
 
-Record the track count, total bytes, and formats once. Report the median of each path. Compute MB/s from the bytes and the time.
+Record the track count, total bytes, and formats once. Report the median for each path and network. Keep the three route observations with each median. Attribute a timing difference to Serve or the tunnel only for comparable runs with stable direct routes. Compute MB/s from the bytes and the time.
 
 - The first track is verified before the listener would give up: whole-file download stays the playback model of ADR 0008. The owner records the wait that they accept.
 - The first track takes longer than that: ADR 0008's statement that whole-file download stays the playback model needs to be reopened, and ASO-165 considers playback that starts before the file completes.
@@ -188,7 +200,7 @@ A Mac on the same tailnet trusted Serve's Let's Encrypt certificate without an e
 
 Every Q7 measurement covers the existing path through Caddy to the legacy host on the LAN. ASO-163 verifies the recommended Compose layout in a disposable environment. There, Serve must reach the new host on its loopback-only listener in their shared network namespace.
 
-1. A NAS restart stops the everyday library. It needs the owner's separate go-ahead. At an approved restart, check that the sidecar rejoins without signing in again. Repeat the unauthenticated probe on N and expect `401`. Until then, record rejoin as unverified.
+1. A NAS restart stops the everyday library. It needs the owner's separate go-ahead. At an approved restart, check that the sidecar rejoins without signing in again. Repeat the unauthenticated probe on N and expect `401`. Until the owner approves a restart, record rejoin as BLOCKED.
 2. At the next owner-scheduled update of each container, record the time from the start of its update until N answers the probe again. Record separate times for the sidecar and the legacy host. Leave each time unmeasured until that update.
 
 ### Q8. Cellular restriction through the tunnel
@@ -230,7 +242,7 @@ ADR 0008 records the accepted decisions on tailnet-controlled library reads, fir
 
 ## Results
 
-Status: the Mac observations are recorded in Q7. Physical iPhone runs, NAS restart recovery, and update times are pending.
+Status: the Mac observations are recorded in Q7. Physical iPhone runs and scheduled update measurements are pending. NAS restart recovery is BLOCKED pending the owner's go-ahead.
 
 PASS, FAIL, and BLOCKED have the meanings in the [validation README](README.md). Fill in one environment row per session.
 
@@ -250,7 +262,10 @@ PASS, FAIL, and BLOCKED have the meanings in the [validation README](README.md).
 | Q4 | A-name, A-ip | | | | |
 | Q5 | N, A-name, A-ip, A-lan | | | | |
 | Q6 | A-ip | | | | |
-| Q7 | N | Tailnet (Mac) | | Trusted certificate. Catalog probe `401`. Blocked routes `404`. | NAS rejoin and both update times pending |
+| Q7 | N | Tailnet (Mac) | | Trusted certificate. Catalog probe `401`. Blocked routes `404`. | PASS |
+| Q7 | N | NAS restart | | Recovery requires an approved interruption of the everyday library. | BLOCKED |
+| Q7 | N | Sidecar update | | Awaiting the next scheduled update. | Pending |
+| Q7 | N | Legacy host update | | Awaiting the next scheduled update. | Pending |
 | Q8 | N | | | | |
 | Q9 | N | | | | |
 

@@ -46,35 +46,33 @@ Do not use `tailscale funnel`. Funnel publishes a service to the internet.
 
 ## Publish a NAS host
 
-Today the owner's NAS sidecar runs Caddy at `127.0.0.1:8441`. Caddy forwards catalog and audio reads to the legacy `/v4` host on the LAN.
-
-For the [migration](private-network-migration-plan.md#the-order), publish the trial host under a separate tailnet name. Give its sidecar its own tailnet identity, state directory, and network namespace. The trial host shares that namespace and listens only on loopback. It keeps its trial HTTPS address when it becomes the primary. Stop publishing from the old sidecar only after the rollback period ends.
+For an existing library, follow the [migration plan](private-network-migration-plan.md#steps-that-need-the-owners-go-ahead).
 
 | Option | What you add | What you maintain | Host address |
 | --- | --- | --- | --- |
 | A Tailscale container next to the host | One `tailscale/tailscale` container in the host's Compose file | One more image, updated with the host. The Serve setting is a file. | `music.<tailnet>.ts.net`, for the host only |
 | Tailscale on the NAS | The Tailscale package for your NAS system | A package whose install and update route differs by system. Synology's Package Center build is no longer supported. | The NAS's own name. The whole NAS joins the tailnet. |
 
-The recommended Compose setup uses a Tailscale container. It starts and stops with the host and puts only the host on your tailnet. Q7 of the [device spike](validation/tailscale-device-spike.md) measures the existing Caddy path. ASO-163 verifies in a disposable environment that Serve reaches the new host's loopback listener in the shared namespace. Use a separate Compose project for the trial. Put its `compose.yaml` in its own directory. Changing the project name alone does not change where relative bind mounts point.
+The recommended Compose setup uses a Tailscale container. It starts and stops with the host and puts only the host on your tailnet. The planned host uses plain HTTP on loopback port 8441. ASO-161 and ASO-163 will supply the trial host's Compose file after the store and the shared namespace have been verified.
 
-1. Choose an unused machine name for the `hostname` setting in step 4. Replace the example `music` if the old sidecar already uses it. The warning about public certificate logs in step 3 of the Mac section applies here. Then turn on HTTPS as in step 4 of the Mac section.
-2. In the admin console, open **Keys**, select **Generate auth key**, keep it one-off, and copy the key. This key enrolls the NAS container in Tailscale. The listener never enters it in Syncstr.
-3. Before writing any files, resolve `./tailscale/state` and `./tailscale/config` relative to the trial project's `compose.yaml`. Confirm that neither path points into the old sidecar's state or configuration directory. Confirm that the trial state directory is empty. Only then create `tailscale/config/serve.json` in the trial project. Step 4 mounts the `config` directory, not the file, because Tailscale detects changes to the file only through a directory mount ([Docker configuration parameters](https://tailscale.com/docs/features/containers/docker/docker-params)). The container replaces `${TS_CERT_DOMAIN}` with the machine's full name.
+The following steps publish the full legacy HTTPS router for a disposable fixture. Use a new project directory named `trial` beside the `headless` source directory. All relative mounts start at the directory containing `trial/compose.yaml`.
+
+1. Choose an unused machine name for the `hostname` setting in step 4. `music` is a placeholder for the machine name. The warning about public certificate logs in step 3 of the Mac section applies here. Then turn on HTTPS as in step 4 of the Mac section.
+2. In the admin console, open **Keys**, select **Generate auth key**, keep it one-off, and set `TS_AUTHKEY` in the project shell to that key. This key enrolls the NAS container in Tailscale. The listener never enters it in Syncstr.
+3. Check the paths for `tailscale/state` and `tailscale/config` under `trial`. Stop if either directory exists or any path component is a symlink. Create both directories empty. Check that `tailscale/config/serve.json` is absent, including as a dangling symlink. Create it as a new file without overwriting any entry. Step 4 mounts the `config` directory, not the file, because Tailscale detects changes to the file only through a directory mount ([Docker configuration parameters](https://tailscale.com/docs/features/containers/docker/docker-params)). The container replaces `${TS_CERT_DOMAIN}` with the machine's full name.
 
    ```json
    {
      "TCP": { "443": { "HTTPS": true } },
      "Web": {
        "${TS_CERT_DOMAIN}:443": {
-         "Handlers": { "/": { "Proxy": "http://127.0.0.1:8441" } }
+         "Handlers": { "/": { "Proxy": "https+insecure://127.0.0.1:8443" } }
        }
      }
    }
    ```
 
-   Today's container listens on `0.0.0.0:8443` with HTTPS ([`Dockerfile`](../headless/Dockerfile)). Publish its full router only for a disposable fixture, with `https+insecure://127.0.0.1:8443` as the proxy.
-
-4. Add a `tailscale` service, attach the host to its network, and delete the host's `ports` entry. After this change, the LAN does not reach the host directly.
+4. Save this as `trial/compose.yaml`. The sidecar forwards to the fixture's HTTPS listener in their shared namespace. The Compose file publishes no LAN port.
 
    ```yaml
    services:
@@ -82,7 +80,7 @@ The recommended Compose setup uses a Tailscale container. It starts and stops wi
        image: tailscale/tailscale:latest
        hostname: music
        environment:
-         - TS_AUTHKEY=tskey-auth-EXAMPLE
+         - TS_AUTHKEY
          - TS_AUTH_ONCE=true
          - TS_STATE_DIR=/var/lib/tailscale
          - TS_SERVE_CONFIG=/config/serve.json
@@ -91,18 +89,33 @@ The recommended Compose setup uses a Tailscale container. It starts and stops wi
          - ./tailscale/config:/config:ro
        restart: unless-stopped
      syncstr:
-       # Keep the existing build and user settings.
+       build: ../headless
+       user: "${SYNCSTR_UID:-1000}:${SYNCSTR_GID:-1000}"
+       restart: unless-stopped
+       read_only: true
+       cap_drop: [ALL]
+       security_opt: [no-new-privileges:true]
        volumes:
-         - ./rehearsal:/data
+         - ./data:/data
+         - ./identity:/identity:ro
        network_mode: service:tailscale
        depends_on: [tailscale]
    ```
 
    `TS_STATE_DIR` on a volume keeps the machine signed in across restarts. `TS_AUTH_ONCE=true` stops the container from signing in again at every start, which fails after the auth key expires.
 
-   Replace `./rehearsal` with the rehearsal directory from the [migration plan](private-network-migration-plan.md#steps-that-need-the-owners-go-ahead). Before the first start, confirm that the Syncstr container's `/data` mount resolves to that directory. Stop if it points to production data.
+5. From `trial`, prepare fresh `data` and `identity` directories owned by the configured UID and GID. Check that both mounts resolve inside the fixture. Build the fixture and start its sidecar before running the [headless initialization command](../headless/README.md#docker-on-a-nas). Give `init` a writable identity mount for this command only. Replace the example certificate name with the fixture name from step 1 and its tailnet DNS suffix.
 
-5. Start both trial containers with `docker compose up -d`.
+   ```sh
+   docker compose build syncstr
+   docker compose up -d tailscale
+   docker compose run --rm --no-deps --volume "$PWD/identity:/identity:rw" \
+     syncstr init --identity /identity --host music.example.ts.net
+   docker compose up -d syncstr
+   ```
+
+   At startup, `serve` reads the token and TLS identity from the read-only mount.
+
 6. In the admin console, open **Machines**. Open the menu for the machine name from step 1 and select **Disable Key Expiry**. Otherwise the machine leaves the tailnet after 180 days until you sign it in again.
 
 For Tailscale on the NAS, follow Tailscale's guide for your system, then run the Mac section's `tailscale serve` command on the NAS. The planned host listens on `127.0.0.1` inside its own network namespace, so a port mapping such as the one in [`headless/compose.yaml`](../headless/compose.yaml) does not reach it. Run the host container with `network_mode: host`, so that its loopback is the NAS's loopback where Serve forwards. Every process on the NAS can then read the library through that port. Today's image listens on `0.0.0.0:8443` by default, so with host networking it would also answer on the NAS's LAN address. Give it an explicit loopback listener and a port that no other service uses before trying this. Tailscale's NAS guides do not mention Serve, so this path is untested.
