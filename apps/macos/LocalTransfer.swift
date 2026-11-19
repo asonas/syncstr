@@ -333,7 +333,7 @@ final class LocalTransfer: ObservableObject {
     private var saveReconnectAttempts = 0
     private var saveReconnectNotBefore: ContinuousClock.Instant?
     private(set) var saveReconnecting = false
-    var saveNetwork: ClusterNetwork?
+    var saveSource: (any LibrarySource)?
     var saveGeneration = UUID()
     var savesBackgrounded = false
     var savePathIsCellular: Bool { clusterPath.currentPath.usesInterfaceType(.cellular) }
@@ -343,6 +343,14 @@ final class LocalTransfer: ObservableObject {
     private var clusterRetry: Task<Void, Never>?
     private let clusterAddresses: [PeerAddress]?
     private lazy var clusterNetwork = ClusterNetwork(store: store, secrets: peerSecrets, addresses: clusterAddresses)
+    private let librarySourceFactory: (@MainActor () -> any LibrarySource)?
+    private lazy var connectedLibrarySource = makeLibrarySource(using: clusterNetwork)
+
+    // An injected factory (tests) takes precedence and ignores `network`.
+    func makeLibrarySource(using network: ClusterNetwork? = nil) -> any LibrarySource {
+        librarySourceFactory?() ?? ClusterLibrarySource(network: network ?? ClusterNetwork(store: store, secrets: peerSecrets))
+    }
+
     var canSyncPlaylists: Bool { clusterRegistration != nil || peerName != nil }
 
     private func exchangePlaylists(_ request: PlaylistRequest? = nil, attempt: PlaylistUpdateAttempt? = nil) async throws -> PlaylistResponse? {
@@ -419,13 +427,15 @@ final class LocalTransfer: ObservableObject {
         service: "as.ason.syncstr.local-pair", label: "syncstr paired device"),
         peerSecrets: CredentialStore = CredentialStore(service: "as.ason.syncstr.p2p.identity"),
         peerPairing: CredentialStore = CredentialStore(service: "as.ason.syncstr.p2p.peer"), diagnostics: PlaybackDiagnostics? = nil,
-        clusterAddresses: [PeerAddress]? = nil) {
+        clusterAddresses: [PeerAddress]? = nil,
+        librarySourceFactory: (@MainActor () -> any LibrarySource)? = nil) {
         self.diagnostics = diagnostics
         self.store = store
         self.secrets = secrets
         self.peerSecrets = peerSecrets
         self.peerPairing = peerPairing
         self.clusterAddresses = clusterAddresses
+        self.librarySourceFactory = librarySourceFactory
         restoreSaves()
         clusterPath.pathUpdateHandler = { [weak self] path in
             Task { @MainActor in
@@ -691,7 +701,7 @@ final class LocalTransfer: ObservableObject {
                     let files = store
                     clusterRegistration = try await CatalogStorage.shared.perform { try files.database().clusterRegistration() }
                 }
-                let catalog = try await clusterNetwork.refresh()
+                let catalog = try await connectedLibrarySource.refreshCatalog()
                 try Task.checkCancellation()
                 guard generation == attempt else { return }
                 try await publishCatalog(catalog, attempt: attempt)
@@ -733,7 +743,7 @@ final class LocalTransfer: ObservableObject {
                         guard let self, self.generation == attempt else { return }
                         try? await self.updateClusterState(database)
                     }
-                    let updated = try await clusterNetwork.refresh()
+                    let updated = try await connectedLibrarySource.refreshCatalog()
                     try Task.checkCancellation()
                     guard generation == attempt else { return }
                     try await publishCatalog(updated, attempt: attempt)
@@ -925,7 +935,7 @@ final class LocalTransfer: ObservableObject {
                         guard let self, self.generation == attempt else { return }
                         try? await self.updateClusterState()
                     }
-                    let updated = try await clusterNetwork.refresh()
+                    let updated = try await connectedLibrarySource.refreshCatalog()
                     try await publishCatalog(updated, attempt: attempt)
                     catalog = updated
                     try await updateClusterState()
@@ -1643,17 +1653,17 @@ final class LocalTransfer: ObservableObject {
             "registration_present": String(clusterRegistration != nil)])
         progress(.connecting)
         if clusterRegistration == nil { return try await legacyPlaybackFile(entry, libraryID: libraryID, diagnostic: diagnostic, progress: progress) }
-        let network = ClusterNetwork(store: store, secrets: peerSecrets)
+        let source = makeLibrarySource()
         return try await withTaskCancellationHandler {
-            defer { network.stop() }
-            try await network.download(object: entry.sha256, track: entry.track.id, cache: playbackCache.store, diagnostic: diagnostic) { fraction in
+            defer { source.stop() }
+            try await source.download(entry, cache: playbackCache.store, diagnostic: diagnostic) { fraction in
                 progress(.receiving(UInt64(fraction * Double(entry.track.size ?? 0)), entry.track.size ?? 0))
             }
             try Task.checkCancellation()
             guard let result = try await playbackCache.fileInBackground(entry, diagnostic: diagnostic) else { throw LocalMusicError.invalidData }
             return result
         } onCancel: {
-            Task { @MainActor in network.stop() }
+            Task { @MainActor in source.stop() }
         }
     }
 
@@ -1841,7 +1851,7 @@ final class LocalTransfer: ObservableObject {
                     if try await Task.detached(operation: {
                         try files.hasFile(entry) && LocalMusicStore.digest(file: files.fileURL(entry)) == entry.sha256
                     }).value {
-                        try await clusterNetwork.recoverDownloadedFile(entry)
+                        try await connectedLibrarySource.recoverDownloadedFile(entry)
                         completed += 1
                         continue
                     }
