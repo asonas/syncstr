@@ -26,6 +26,7 @@ pub mod cluster_replica;
 pub mod cluster_sync;
 #[cfg(feature = "p2p")]
 pub mod enrollment;
+pub mod host_api;
 pub mod identity;
 pub mod membership;
 pub mod model;

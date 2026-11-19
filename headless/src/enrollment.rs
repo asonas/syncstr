@@ -276,31 +276,42 @@ impl crate::enrollment::Revocation {
     }
 }
 
-pub(crate) fn read_proof(
-    connection: &rusqlite::Connection,
-) -> anyhow::Result<crate::enrollment::Proof> {
-    let root = connection.query_row(
-        "SELECT root FROM cluster_trust WHERE singleton = 1",
-        [],
-        |row| row.get(0),
-    )?;
-    let mut statement =
-        connection.prepare("SELECT payload FROM cluster_enrollment_grants ORDER BY id")?;
-    let grants = statement
-        .query_map([], |row| row.get::<_, Vec<u8>>(0))?
-        .map(|row| Ok(serde_json::from_slice(&row?)?))
-        .collect::<anyhow::Result<Vec<_>>>()?;
-    let mut statement =
-        connection.prepare("SELECT payload FROM cluster_revocations ORDER BY id")?;
-    let revocations = statement
-        .query_map([], |row| row.get::<_, Vec<u8>>(0))?
-        .map(|row| Ok(serde_json::from_slice(&row?)?))
-        .collect::<anyhow::Result<Vec<_>>>()?;
-    Ok(crate::enrollment::Proof {
-        root,
-        grants,
-        revocations,
-    })
+pub(crate) struct ProofRows {
+    root: String,
+    grants: Vec<Vec<u8>>,
+    revocations: Vec<Vec<u8>>,
+}
+
+impl ProofRows {
+    pub(crate) fn read(connection: &rusqlite::Connection) -> anyhow::Result<Self> {
+        Ok(Self {
+            root: connection.query_row(
+                "SELECT root FROM cluster_trust WHERE singleton = 1",
+                [],
+                |row| row.get(0),
+            )?,
+            grants: crate::store::payloads(
+                connection,
+                "SELECT payload FROM cluster_enrollment_grants ORDER BY id",
+            )?,
+            revocations: crate::store::payloads(
+                connection,
+                "SELECT payload FROM cluster_revocations ORDER BY id",
+            )?,
+        })
+    }
+
+    pub(crate) fn decode(self) -> anyhow::Result<Proof> {
+        Ok(Proof {
+            root: self.root,
+            grants: crate::store::decode_rows(self.grants)?,
+            revocations: crate::store::decode_rows(self.revocations)?,
+        })
+    }
+}
+
+pub(crate) fn read_proof(connection: &rusqlite::Connection) -> anyhow::Result<Proof> {
+    ProofRows::read(connection)?.decode()
 }
 
 pub(crate) fn migrate(connection: &rusqlite::Connection) -> anyhow::Result<()> {

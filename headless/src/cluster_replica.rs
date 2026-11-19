@@ -528,6 +528,8 @@ impl crate::store::Store {
                 )?;
             }
             organization.validate()?;
+            crate::store::register_entry_artwork(&transaction, &entry)?;
+            crate::store::register_organization_assets(&transaction, &organization)?;
             transaction.execute(
                 "UPDATE organization SET payload = ? WHERE singleton = 1",
                 [serde_json::to_vec(&organization)?],

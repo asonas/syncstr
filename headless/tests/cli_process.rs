@@ -145,25 +145,30 @@ fn explicit_cluster_creation_preserves_transport_identity_and_pairings() {
     );
 }
 
-fn start(root: &std::path::Path) -> (crate::Server, String) {
+fn start(root: &std::path::Path) -> (crate::Server, String, String) {
     use std::io::BufRead as _;
     let mut child = crate::command()
         .args(["serve", "--data"])
         .arg(root.join("data"))
         .arg("--identity")
         .arg(root.join("identity"))
-        .args(["--listen", "127.0.0.1:0"])
+        .args([
+            "--listen",
+            "127.0.0.1:0",
+            "--api-listen",
+            "127.0.0.1:0",
+            "--api-address",
+            "https://music.example.test",
+        ])
         .stdout(std::process::Stdio::piped())
         .spawn()
         .unwrap();
     let stdout = child.stdout.take().unwrap();
     let (sender, receiver) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
-        let mut line = String::new();
-        std::io::BufReader::new(stdout)
-            .read_line(&mut line)
-            .unwrap();
-        let _ = sender.send(line);
+        for line in std::io::BufReader::new(stdout).lines().take(2) {
+            sender.send(line.unwrap()).unwrap();
+        }
     });
     let server = crate::Server(child);
     let line = receiver
@@ -174,7 +179,71 @@ fn start(root: &std::path::Path) -> (crate::Server, String) {
         .strip_prefix("Listening on ")
         .unwrap()
         .to_owned();
-    (server, endpoint)
+    let line = receiver
+        .recv_timeout(std::time::Duration::from_secs(10))
+        .unwrap();
+    let api = line
+        .strip_prefix("Host API listening on ")
+        .unwrap()
+        .to_owned();
+    (server, endpoint, api)
+}
+
+#[tokio::main(flavor = "current_thread")]
+async fn library_info(api: &str) -> serde_json::Value {
+    let _ = rustls::crypto::ring::default_provider().install_default();
+    reqwest::Client::builder()
+        .no_proxy()
+        .build()
+        .unwrap()
+        .get(format!("{api}/api/v1/library"))
+        .send()
+        .await
+        .unwrap()
+        .error_for_status()
+        .unwrap()
+        .json()
+        .await
+        .unwrap()
+}
+
+#[test]
+fn host_api_refuses_non_loopback_listeners_and_invalid_origins() {
+    for (flag, value, error) in [
+        ("--api-listen", "127.0.0.1:0", "--api-address"),
+        (
+            "--api-address",
+            "https://music.example.test",
+            "--api-listen",
+        ),
+        ("--api-listen", "0.0.0.0:0", "loopback"),
+        ("--api-listen", "[::]:8441", "loopback"),
+        ("--api-address", "http://music.example.test", "HTTPS origin"),
+        (
+            "--api-address",
+            "https://music.example.test/path",
+            "HTTPS origin",
+        ),
+        (
+            "--api-address",
+            "https://music.example.test?param",
+            "HTTPS origin",
+        ),
+        (
+            "--api-address",
+            "https://music.example.test#fragment",
+            "HTTPS origin",
+        ),
+        (
+            "--api-address",
+            "https://user@music.example.test",
+            "HTTPS origin",
+        ),
+    ] {
+        let output = command().args(["serve", flag, value]).output().unwrap();
+        assert!(!output.status.success());
+        assert!(String::from_utf8_lossy(&output.stderr).contains(error));
+    }
 }
 
 fn stop(server: &mut crate::Server) {
@@ -219,7 +288,9 @@ fn cli_processes_initialize_upload_restart_download_and_shutdown() {
         "{}",
         String::from_utf8_lossy(&initialized.stderr)
     );
-    let (mut server, endpoint) = crate::start(root.path());
+    let (mut server, endpoint, api) = crate::start(root.path());
+    let first = library_info(&api);
+    assert_eq!(first["host"]["address"], "https://music.example.test");
     let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../apps/macos/Tests/Fixtures/untagged.mp3");
     let upload = crate::client(root.path(), &endpoint, "upload")
@@ -235,7 +306,10 @@ fn cli_processes_initialize_upload_restart_download_and_shutdown() {
     );
     let saved: syncstr_headless::model::Entry = serde_json::from_slice(&upload.stdout).unwrap();
     crate::stop(&mut server);
-    let (mut server, endpoint) = crate::start(root.path());
+    let (mut server, endpoint, api) = crate::start(root.path());
+    let restarted = library_info(&api);
+    assert_eq!(first["host"], restarted["host"]);
+    assert_ne!(first["marker"], restarted["marker"]);
     let catalog = crate::client(root.path(), &endpoint, "catalog")
         .output()
         .unwrap();

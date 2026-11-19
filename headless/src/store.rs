@@ -1,6 +1,7 @@
 struct Inner {
     connection: std::sync::Mutex<rusqlite::Connection>,
     root: std::path::PathBuf,
+    host_id: uuid::Uuid,
     _lock: crate::node_lock::NodeLock,
 }
 
@@ -57,36 +58,15 @@ impl crate::store::Store {
             crate::organization::Organization::default()
         };
         {
-            use sha2::Digest as _;
             let mut statement = transaction.prepare("SELECT payload FROM tracks ORDER BY id")?;
             for row in statement.query_map([], |row| row.get::<_, Vec<u8>>(0))? {
                 let entry: crate::model::Entry = serde_json::from_slice(&row?)?;
                 if stored.is_none() {
                     organization.import(&entry);
                 }
-                let track = organization.canonical_track(&entry.track.id);
-                if !organization.tracks.iter().any(|t| t.id == track) {
-                    continue;
-                }
-                if let Some(bytes) = entry
-                    .artwork
-                    .filter(|b| b.len() <= 512 * 1024 && crate::artwork::bounded_jpeg(b))
-                {
-                    let artwork = organization.artwork.get_or_insert_with(Default::default);
-                    if artwork.candidates.iter().any(|c| c.track == track) {
-                        continue;
-                    }
-                    let asset = hex::encode(sha2::Sha256::digest(&bytes));
-                    artwork.assets.insert(asset.clone(), bytes);
-                    artwork.candidates.push(crate::artwork::Candidate {
-                        id: uuid::Uuid::new_v4().to_string(),
-                        track,
-                        source: "legacy".into(),
-                        context: entry.sha256,
-                        asset,
-                        parents: vec![],
-                    });
-                }
+                // The embedded image can differ from an existing display candidate.
+                register_entry_artwork(&transaction, &entry)?;
+                import_entry_artwork(&mut organization, &entry);
             }
         }
         organization.repair_membership()?;
@@ -101,6 +81,18 @@ impl crate::store::Store {
             "INSERT OR IGNORE INTO library VALUES (1, ?)",
             [uuid::Uuid::new_v4().to_string()],
         )?;
+        transaction.execute_batch("CREATE TABLE IF NOT EXISTS host_identity (singleton INTEGER PRIMARY KEY CHECK(singleton = 1), id TEXT NOT NULL)")?;
+        transaction.execute(
+            "INSERT OR IGNORE INTO host_identity VALUES (1, ?)",
+            [uuid::Uuid::new_v4().to_string()],
+        )?;
+        let host_id = transaction
+            .query_row(
+                "SELECT id FROM host_identity WHERE singleton = 1",
+                [],
+                |row| row.get::<_, String>(0),
+            )?
+            .parse()?;
         crate::cluster::migrate(&transaction)?;
         #[cfg(feature = "p2p")]
         crate::enrollment::migrate(&transaction)?;
@@ -123,6 +115,7 @@ impl crate::store::Store {
         Ok(Self(std::sync::Arc::new(crate::store::Inner {
             connection: std::sync::Mutex::new(connection),
             root,
+            host_id,
             _lock: lock,
         })))
     }
@@ -145,6 +138,10 @@ impl crate::store::Store {
         .await?
     }
 
+    pub(crate) fn host_id(&self) -> uuid::Uuid {
+        self.0.host_id
+    }
+
     pub async fn stage(&self) -> anyhow::Result<tempfile::NamedTempFile> {
         self.run(|_, root| {
             Ok(tempfile::Builder::new()
@@ -155,24 +152,7 @@ impl crate::store::Store {
     }
 
     pub async fn catalog(&self) -> anyhow::Result<crate::model::Catalog> {
-        self.run(|connection, _| {
-            let id =
-                connection.query_row("SELECT id FROM library WHERE singleton = 1", [], |row| {
-                    row.get(0)
-                })?;
-            let mut statement = connection.prepare("SELECT payload FROM tracks ORDER BY id")?;
-            let rows = statement.query_map([], |row| row.get::<_, Vec<u8>>(0))?;
-            let entries = rows
-                .map(|data| Ok(serde_json::from_slice(&data?)?))
-                .collect::<anyhow::Result<Vec<_>>>()?;
-            Ok(crate::model::Catalog {
-                id,
-                name: "Syncstr".to_owned(),
-                entries,
-                organization: crate::store::read_organization(connection)?,
-            })
-        })
-        .await
+        self.run(|connection, _| read_catalog(connection)).await
     }
 
     pub async fn get(&self, id: String) -> anyhow::Result<Option<crate::model::Entry>> {
@@ -223,17 +203,41 @@ impl crate::store::Store {
 
     pub async fn commit_organized(
         &self,
+        entry: crate::model::Entry,
+        temporary: tempfile::NamedTempFile,
+        update_metadata: bool,
+        incoming: Option<crate::organization::Organization>,
+    ) -> anyhow::Result<crate::model::Entry> {
+        self.commit_entry(entry, temporary, update_metadata, incoming, false)
+            .await
+    }
+
+    pub(crate) async fn commit_upload(
+        &self,
+        entry: crate::model::Entry,
+        temporary: tempfile::NamedTempFile,
+    ) -> anyhow::Result<crate::model::Entry> {
+        self.commit_entry(entry, temporary, false, None, true).await
+    }
+
+    async fn commit_entry(
+        &self,
         mut entry: crate::model::Entry,
         temporary: tempfile::NamedTempFile,
         update_metadata: bool,
         incoming: Option<crate::organization::Organization>,
+        create_legacy_candidate: bool,
     ) -> anyhow::Result<crate::model::Entry> {
         self.run(move |connection, root| {
             use rusqlite::OptionalExtension as _;
             let transaction = connection.transaction()?;
             let mut organization = crate::store::read_organization(&transaction)?;
             let original_id = entry.track.id.clone();
-            if let Some(incoming) = incoming { organization.merge(&incoming)?; }
+            if create_legacy_candidate {
+                // A repeated upload keeps the stored metadata but can supply a different image.
+                register_entry_artwork(&transaction, &entry)?;
+            }
+            if let Some(incoming) = &incoming { organization.merge(incoming)?; }
             let previous: Option<Vec<u8>> = transaction
                 .query_row(
                     "SELECT payload FROM tracks WHERE sha256 = ? AND suffix = ?",
@@ -258,7 +262,11 @@ impl crate::store::Store {
             if original_id != entry.track.id && organization.tracks.iter().any(|t| t.id == original_id) {
                 organization.track_aliases.get_or_insert_with(Default::default).insert(entry.track.id.clone(), original_id);
             } else { organization.import(&entry); }
-            organization.validate()?;
+            if create_legacy_candidate {
+                import_entry_artwork(&mut organization, &entry);
+            } else {
+                register_entry_artwork(&transaction, &entry)?;
+            }
             crate::store::write_organization(&transaction, &organization)?;
             let destination = root
                 .join("objects")
@@ -283,7 +291,36 @@ impl crate::store::Store {
     }
 }
 
-pub(crate) fn read_organization(
+pub(crate) fn payloads(db: &rusqlite::Connection, sql: &str) -> rusqlite::Result<Vec<Vec<u8>>> {
+    db.prepare(sql)?.query_map([], |row| row.get(0))?.collect()
+}
+
+pub(crate) fn decode_rows<T: serde::de::DeserializeOwned>(
+    rows: Vec<Vec<u8>>,
+) -> anyhow::Result<Vec<T>> {
+    rows.into_iter()
+        .map(|row| Ok(serde_json::from_slice(&row)?))
+        .collect()
+}
+
+fn read_catalog(connection: &rusqlite::Connection) -> anyhow::Result<crate::model::Catalog> {
+    let id = connection.query_row("SELECT id FROM library WHERE singleton = 1", [], |row| {
+        row.get(0)
+    })?;
+    let mut statement = connection.prepare("SELECT payload FROM tracks ORDER BY id")?;
+    let rows = statement.query_map([], |row| row.get::<_, Vec<u8>>(0))?;
+    let entries = rows
+        .map(|data| Ok(serde_json::from_slice(&data?)?))
+        .collect::<anyhow::Result<Vec<_>>>()?;
+    Ok(crate::model::Catalog {
+        id,
+        name: "Syncstr".to_owned(),
+        entries,
+        organization: read_organization(connection)?,
+    })
+}
+
+pub(crate) fn organization_metadata(
     connection: &rusqlite::Connection,
 ) -> anyhow::Result<crate::organization::Organization> {
     let payload: Vec<u8> = connection.query_row(
@@ -291,15 +328,20 @@ pub(crate) fn read_organization(
         [],
         |row| row.get(0),
     )?;
-    let mut organization: crate::organization::Organization = serde_json::from_slice(&payload)?;
+    Ok(serde_json::from_slice(&payload)?)
+}
+
+pub(crate) fn read_organization(
+    connection: &rusqlite::Connection,
+) -> anyhow::Result<crate::organization::Organization> {
+    let mut organization = organization_metadata(connection)?;
     if let Some(artwork) = &mut organization.artwork {
-        let mut statement = connection.prepare("SELECT id, payload FROM artwork_assets")?;
-        for row in statement.query_map([], |row| {
-            Ok((row.get::<_, String>(0)?, row.get::<_, Vec<u8>>(1)?))
-        })? {
-            let (id, bytes) = row?;
-            if artwork.assets.contains_key(&id) {
-                artwork.assets.insert(id, bytes);
+        use rusqlite::OptionalExtension as _;
+        let mut statement =
+            connection.prepare("SELECT payload FROM artwork_assets WHERE id = ?")?;
+        for (id, bytes) in &mut artwork.assets {
+            if let Some(payload) = statement.query_row([id], |row| row.get(0)).optional()? {
+                *bytes = payload;
             }
         }
     }
@@ -307,19 +349,84 @@ pub(crate) fn read_organization(
     Ok(organization)
 }
 
+fn embedded_jpeg(entry: &crate::model::Entry) -> Option<&[u8]> {
+    entry
+        .artwork
+        .as_deref()
+        .filter(|b| b.len() <= 512 * 1024 && crate::artwork::bounded_jpeg(b))
+}
+
+fn insert_artwork_asset(
+    connection: &rusqlite::Connection,
+    id: &str,
+    bytes: &[u8],
+) -> rusqlite::Result<()> {
+    connection.execute(
+        "INSERT OR IGNORE INTO artwork_assets VALUES (?, ?)",
+        (id, bytes),
+    )?;
+    Ok(())
+}
+
+pub(crate) fn register_entry_artwork(
+    connection: &rusqlite::Connection,
+    entry: &crate::model::Entry,
+) -> rusqlite::Result<()> {
+    use sha2::Digest as _;
+    if let Some(bytes) = embedded_jpeg(entry) {
+        insert_artwork_asset(connection, &hex::encode(sha2::Sha256::digest(bytes)), bytes)?;
+    }
+    Ok(())
+}
+
+fn import_entry_artwork(
+    organization: &mut crate::organization::Organization,
+    entry: &crate::model::Entry,
+) {
+    use sha2::Digest as _;
+    let track = organization.canonical_track(&entry.track.id);
+    if !organization.tracks.iter().any(|t| t.id == track) {
+        return;
+    }
+    let Some(bytes) = embedded_jpeg(entry) else {
+        return;
+    };
+    let artwork = organization.artwork.get_or_insert_with(Default::default);
+    if artwork.candidates.iter().any(|c| c.track == track) {
+        return;
+    }
+    let asset = hex::encode(sha2::Sha256::digest(bytes));
+    artwork.assets.insert(asset.clone(), bytes.to_vec());
+    artwork.candidates.push(crate::artwork::Candidate {
+        id: uuid::Uuid::new_v4().to_string(),
+        track,
+        source: "legacy".into(),
+        context: entry.sha256.clone(),
+        asset,
+        parents: vec![],
+    });
+}
+
+pub(crate) fn register_organization_assets(
+    connection: &rusqlite::Connection,
+    organization: &crate::organization::Organization,
+) -> rusqlite::Result<()> {
+    if let Some(artwork) = &organization.artwork {
+        for (id, bytes) in &artwork.assets {
+            insert_artwork_asset(connection, id, bytes)?;
+        }
+    }
+    Ok(())
+}
+
 fn write_organization(
     connection: &rusqlite::Connection,
     organization: &crate::organization::Organization,
 ) -> anyhow::Result<()> {
     organization.validate()?;
+    register_organization_assets(connection, organization)?;
     let mut metadata = organization.clone();
     if let Some(artwork) = &mut metadata.artwork {
-        for (id, bytes) in &artwork.assets {
-            connection.execute(
-                "INSERT OR IGNORE INTO artwork_assets VALUES (?, ?)",
-                rusqlite::params![id, bytes],
-            )?;
-        }
         for bytes in artwork.assets.values_mut() {
             bytes.clear();
         }
