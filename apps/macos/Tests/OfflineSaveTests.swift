@@ -28,17 +28,21 @@ final class OfflineSaveTests: XCTestCase {
             _ = try await transfer.playbackFile(entry.track)
             XCTFail("Playback accepted a file with the wrong hash")
         } catch LocalMusicError.invalidData {}
+        XCTAssertEqual(source.downloaded.map(\.track.id), [entry.track.id])
+        XCTAssertEqual(source.downloaded.map(\.sha256), [entry.sha256])
         XCTAssertTrue(source.stopped)
         XCTAssertFalse(FileManager.default.fileExists(atPath: transfer.playbackCache.store.fileURL(entry).path))
     }
 
     private final class CorruptPlaybackSource: LibrarySource {
         var stopped = false
+        var downloaded: [LocalEntry] = []
 
         func refreshCatalog() async throws -> LocalCatalog { throw LocalMusicError.clusterUnavailable }
 
         func download(_ entry: LocalEntry, cache: LocalMusicStore?, diagnostic: PlaybackDiagnosticContext?,
                       progress: @escaping @MainActor (Double) -> Void) async throws {
+            downloaded.append(entry)
             let cache = try XCTUnwrap(cache)
             try cache.prepare()
             try Data("bad".utf8).write(to: cache.fileURL(entry))
