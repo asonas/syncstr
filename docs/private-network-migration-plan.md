@@ -1,6 +1,6 @@
 # Moving the library and the code to one primary host
 
-Status: proposed on 2026-11-17 with [ADR 0008](adr/0008-one-primary-host-over-a-private-network.md), which the owner accepted on 2026-11-18. Nothing in this plan is implemented, and it authorizes no production operation. Every step that touches the owner's NAS waits for the owner's explicit go-ahead, as listed in [Steps that need the owner's go-ahead](#steps-that-need-the-owners-go-ahead).
+Status: [ADR 0008](adr/0008-one-primary-host-over-a-private-network.md) was accepted on 2026-11-18. The NAS has served the read API since 2026-11-19. The store migration is pending. Operations on the owner's NAS require the [owner's go-ahead](#steps-that-need-the-owners-go-ahead).
 
 Devices connect to the new host by its Tailscale HTTPS address, and the tailnet policy decides which of them can read. The new host keeps no device records and no tokens. The old `serve` keeps its own `/v4` token until it is retired.
 
@@ -8,15 +8,17 @@ This plan takes the repository and the owner's library from main at `d0b4db5` to
 
 The owner accepts the recommendations below by merging this document, except the removal of the Windows, Android and gpui apps. That removal is a recommendation that needs the owner's separate decision in ASO-170, and merging this document does not decide it.
 
-## Where things stand at d0b4db5
+## Where things stand on 2026-11-19
 
 ### The owner's host
 
-The owner's NAS runs the headless host in a container as the legacy `serve`. That process serves the `/v4` HTTPS API (`headless/src/api.rs`), the legacy peer transfer over iroh on a fixed UDP port (`headless/src/peer.rs`), and announcements to the rendezvous directory (`headless/src/rendezvous.rs`). The store is at schema generation 4, with several thousand tracks, tens of gigabytes of audio, artwork assets, and a `node.sqlite` of a few gigabytes. Devices are paired with it. A test deployment of the cluster host and a relay has run on the same NAS since October. These facts come from a read-only inspection on 2026-11-17. Its exact figures stay out of this repository, in Linear issue ASO-161, and the migration compares against them.
+ASO-160 merged in #83 (`b652fa4`). The NAS serves the existing schema-4 store through [the read API](host-api-design.md), including playlists. The deployment repository's PR #1 shipped on 2026-11-19. A push to its `main` deploys through a GitHub webhook.
 
-A read-only inspection on 2026-11-18 found the legacy container and its Tailscale sidecar running. Both containers had been created that day. The legacy container uses host networking and listens at `https://192.0.2.30:8443`. The example name `music` stands for the sidecar's tailnet machine name. The sidecar runs in userspace on its own container network and keeps its state on a volume. Serve publishes `https://music.example.ts.net` on port 443 and proxies `/` to Caddy at `http://127.0.0.1:8441`.
+The node shares the userspace Tailscale sidecar's network namespace (`network_mode: service:tailscale`). Both listeners bind to `127.0.0.2` because the sidecar forwards tailnet TCP ports outside Serve to the same port on `127.0.0.1`. Serve proxies every path to `http://127.0.0.2:8441`. The legacy listener stays on loopback port 8443. There is no Caddy proxy or LAN listener. P2P and rendezvous are disabled. See [Tailscale setup](tailscale-setup.md#publish-a-nas-host) for the policy and image update checks.
 
-Caddy forwards only `GET` and `HEAD` on `/v4/catalog` and `/v4/tracks/{id}/audio` to the legacy HTTPS listener. It trusts only the host identity's `tls.crt`, mounted read-only. Caddy returns `404` for every other method or path before the request reaches the host. The image contains the Serve configuration and the Caddyfile. Its source commit is outside this repository.
+A Mac read the library, catalog, audio and artwork over the tailnet. The [QA record](validation/tailscale-testflight-qa.md#results) lists the responses and the direct-port checks. Physical iPhone measurements and NAS reboot recovery are pending.
+
+The store inventory below comes from a read-only inspection on 2026-11-17. Exact counts stay in ASO-161 for comparison during the migration.
 
 Schema generation 4 describes the catalog tables, not every table in the file. `Store::open` creates the cluster tables on every open, because `headless/src/cluster.rs` is not behind the `p2p` feature, and a `p2p` build adds the enrollment, change, replica and playlist tables (`headless/src/store.rs`, lines 104 to 112). The owner's library was filled through `tools/music-migration/nas_import.py`, which runs `headless/examples/migration_batch.rs`. That example imports each file with `import_cluster_file`, which creates a cluster identity and signs changes.
 
@@ -31,7 +33,7 @@ A second read-only inspection on 2026-11-17 counted what the owner's database ho
 
 The signed cluster changes take about three quarters of the database, and the `tracks` table most of the rest. The volume that holds the library has room for a full copy of the audio many times over. Its filesystem supports hard links within one dataset. Whether the original and the new data directory would be in one dataset is not known.
 
-### The apps
+### The apps at d0b4db5
 
 The macOS app and the iPhone app share 30 Swift files from `apps/macos`, listed in `apps/ios/project.yml`. `Library` gets every remote file through `LocalTransfer.playbackFile` in `apps/macos/LocalTransfer.swift`, which returns a whole local file whose hash it has checked. A device with a cluster registration downloads through `ClusterNetwork`. Every other device uses the legacy connection to a Mac over Bonjour or to a host over iroh (lines 1638 to 1645).
 
@@ -39,7 +41,7 @@ Devices also change the library over the legacy connection. `headless/src/peer.r
 
 The transport code in the Apple apps is 5,366 lines. Twelve files (`Cluster*.swift`, `Peer*.swift`, `SharedAudio.swift`, `SharedTrackResolution.swift` and `LocalSetup.swift`) hold 3,499 lines, and `LocalTransfer.swift` holds 1,867. The apps bundle IrohLib and two copies of its licence text, 61,668 lines each.
 
-### The repository
+### The repository at d0b4db5
 
 | Part | Files | Lines |
 | --- | --- | --- |
@@ -112,7 +114,7 @@ Album organization stays as it is today. One `Organization` document in the `org
 
 The same `node.sqlite` keeps the host state that [mirrors and the primary switch](mirrors-and-primary-switch.md) lists: the host ID, the switch record, the role, the known hosts and any held copies. One database means that a change and the switch record it depends on commit together. How a host proves itself to another host is not decided, and ASO-172 adds what the store needs for it.
 
-The owner's store keeps its library ID and starts at switch number 1 with itself as the primary. The migration creates no host ID, because it is random and the migration stays repeatable. The new host creates it on its first start. Connections to the old `serve`, which are its iroh peer list and its single `/v4` token, are not carried. The owner's devices connect to the trial host by its host address.
+Under ASO-161 the migrated store keeps its library ID and starts at switch number 1 with itself as the primary. The migration must preserve the serving host's ID when moving the store. Connections to the old `serve`, which are its iroh peer list and its single `/v4` token, are not carried. The owner's devices use the host address.
 
 ## Migrate the owner's library into a new directory
 
@@ -133,47 +135,35 @@ The owner's store keeps its library ID and starts at switch number 1 with itself
 	- It copies the library ID, every track row, the organization row and every artwork asset byte for byte.
 	- It checks that each playlist record's ID is the SHA-256 of its payload and that its document passes `Document::validate`. A record is a head when no other record names it as a parent. Each head becomes a plain row. Signatures are not verified, because they proved authorship between hosts and this file is the owner's own. If a playlist has more than one head, the migration stops and names it.
 	- Each playlist item keeps its track ID and hash. If the ID does not resolve through the track aliases to a track with that hash, the report lists the item as unavailable and the item stays unchanged.
-	- The switch number is 1. The revision is 1 in a rehearsal. When the run replaces a store that devices have read, as a rebuild of the trial host or the real run does, the revision is one more than that store's, so a device never sees two catalogs under one change marker.
+	- The switch number is 1. The revision is 1 in a rehearsal. Once a store uses the ASO-161 counter, a rebuild starts above its last revision. Devices compare the current content digest for equality only.
 	- Cluster tables, signed history, grants, cursors and the `peer` identity directory are not carried, and the report counts them.
 
 	The checks are a hash per copied table that matches the source, every track ID and alias resolving to one track, and every track's audio file present.
 5. **Repeat.** The migration runs steps 1 to 4 again on a fresh snapshot, after the first snapshot is deleted. Both runs are rehearsals at revision 1, so the two outputs match, or the report explains every difference by a change made on the old path between the snapshots, such as an added track or an edited playlist. Two runs on the same snapshot must match exactly.
 6. **Report.** The migration writes a JSON file for tools and a one-page summary for the owner. The summary gives counts in and out, everything not carried and why, the time of each step, and the free disk space before and after. The report stays out of the repository, because it holds the owner's library metadata.
 
-Steps 1 to 6 are the rehearsal. They run on a snapshot in a disposable directory and repeat until two runs agree, or differ only by changes on the old path that the report explains. The real run at the cutover is the same command on a final snapshot. It hashes every audio file again, because a file can change on disk after the rehearsal read it. At 30 to 100 MB/s this takes minutes, and the go-ahead for the cutover allows for it. A rebuild of the trial host and the real run also copy the host ID from the trial host's directory, so the host's identity survives. Devices keep working because the host address does not change.
+Steps 1 to 6 are the rehearsal. They run on a snapshot in a disposable directory and repeat until two runs agree, or differ only by changes on the old path that the report explains. The real run at the cutover is the same command on a final snapshot. It hashes every audio file again, because a file can change on disk after the rehearsal read it. At 30 to 100 MB/s this takes minutes, and the go-ahead for the cutover allows for it. The final run must preserve the serving host's identity and HTTPS address.
 
 ### How to go back
 
-The original directory is never written. Going back means stopping the new host and starting the old `serve` on the original directory. The devices still speak the legacy connection until removal step 4 ships. On each device, the owner disconnects from the new host in Settings, and the device returns to the legacy connection it kept, with its offline saves. A change made on the new path after the cutover is not in the old store. Going back loses every such change: imports, and edits of metadata and playlists on the primary. `addedAt` lists the tracks imported after the cutover, so the owner can import them again on the old path, but they get new track IDs, and playlists that referred to them do not follow. Until ASO-161 defines how these changes are kept, going back is not lossless.
+For the current rollout, stop the node and reopen the same data directory with the previous image. Keep that image, the store and its originals. Rollback restores the host data. An updated app may already have removed its legacy transport.
 
-Every device can go back until the first device gets removal step 4. While that step rolls out, only devices that do not have it yet can go back, because the others no longer speak the legacy connection. Until removal step 5, the old `serve` keeps running the image it runs today. Nothing built from main is deployed to it, because main loses v5 in removal step 3 and gains the new store. That image and the original directory are kept until removal step 5.
+For ASO-161 the migration writes a separate directory and leaves the original intact. Stop the migrated host before reopening the original with the previous image. Changes made only in the new store will be missing. Before switching back, preserve that directory and account for any imports or edits since cutover.
 
 ### Steps that need the owner's go-ahead
 
-1. Take a snapshot of the live database and run the rehearsal on the NAS. This reads the live directory and writes only a new one. A short stop of the old `serve` for the snapshot is part of this go-ahead.
-2. Publish the trial host under a separate tailnet name with `tailscale serve`. Keep the old Serve configuration available for rollback. Use a separate Compose project directory with fresh sidecar state, configuration, tailnet identity, and network namespace. Check that no resolved mount points into the old project. Stop if a state or configuration path contains a symlink or the new configuration file already exists. Before startup, check that `/data` resolves to the rehearsal directory. ASO-161 and ASO-163 will define the trial Compose file and verify that Serve reaches its HTTP listener on loopback port 8441. Caddy keeps the same port in the old namespace. The trial sidecar's machine name then appears in public certificate transparency logs, as [Tailscale setup](tailscale-setup.md) explains.
-3. The cutover. Stop the old `serve`, run the final migration, and start the new host as the primary.
-4. Retire the cluster test deployment and the relay on the NAS.
-5. After the soak, confirm that all target devices have migrated and no longer need the legacy path for rollback. With the owner's go-ahead, stop publishing from the old sidecar and retire the old `serve` container. Shut down the rendezvous Worker and later delete the original data directory.
+1. Take a snapshot and rehearse the migration on the NAS. Agree on any short stop for the snapshot. Read the source and write only a new directory.
+2. Start a trial host on the rehearsal directory. Use separate mounts, sidecar state and configuration. Verify their resolved paths and the trial host's data directory before startup.
+3. Stop changes on the primary, take the final snapshot and migrate it. Start the new host at the existing HTTPS address. Keep the original directory and previous image.
+4. Obtain separate approval for a NAS reboot or retirement of a deployed service.
 
-## Cut over the host first, then the Mac, then the iPhone
+## Apple rollout and store cutover
 
-### The Apple apps change behind one seam
-
-ASO-165 replaces the transport in four pull requests:
-
-1. Split the seam. `Library` reaches the catalog, audio and artwork through one protocol, and `LocalTransfer` implements it. Behavior does not change, and the macOS tests pass unchanged.
-2. Add a host transport behind the seam, with its own tables in the device database, apart from the cluster tables. A device connected to a host by its address uses it, and any other device keeps the legacy connection. Its tests run against a host process on loopback and need neither mDNS nor a relay.
-3. Let offline saves and the playback cache find files by track ID and hash on both transports. A save made on the old path then plays on the new path without a new download, which keeps the promise of [ADR 0005](adr/0005-distinguish-playback-cache-from-offline-saves.md).
-4. Remove the legacy implementations, as removal step 4 below. Two transports exist side by side only while the new path is tried.
-
-### The order
-
-1. **Trial host.** After the first two go-aheads, the trial host runs on the NAS. It accepts no change except the one test import of the cutover test, and it is rebuilt from a fresh snapshot, not updated. The old `serve` keeps running as the primary, and the devices paired with it keep using it. ASO-162 (a host in the macOS app) is not on this path, because the owner's primary is the NAS.
-2. **Mac.** The macOS app connects to the trial host by its host address, browses, downloads and plays. The Mac comes first because it needs no TestFlight and compiles the same `Library` code as the iPhone.
-3. **iPhone.** The iPhone app, installed through TestFlight, connects to the trial host over Tailscale. It saves albums (ASO-166), in the background or with Syncstr open as Q2 of the device spike decides, and plays offline saves made on the old path.
-4. **Cutover.** After the third go-ahead, the owner stops changing the library on the old path. Stop the old `serve` and run the final migration. Start the new primary at the trial host's HTTPS address using the same sidecar and state directory. Keep the old sidecar's publication in place until all target devices have migrated and the owner approves retirement under [go-ahead 5](#steps-that-need-the-owners-go-ahead).
-5. **Soak.** The owner uses only the new path for 14 days.
+1. The NAS read API is deployed on the existing store. It does not require the new directory.
+2. ASO-165 moves catalog, playlists, artwork and audio reads in the Apple apps to `/api/v1`. ASO-164 connects by host address. Remove old discovery and transfer screens and code as these changes land. Keep local playback and find existing offline saves by track ID and hash.
+3. Push the app changes to `main`. Xcode Cloud distributes each iOS build to internal TestFlight. The owner checks the real app on the iPhone as each feature arrives. ASO-166 adds background downloads, followed by first launch and connection states in ASO-167.
+4. Later headless work covers gzip and contract tests (ASO-175) and removal of the old stack (ASO-169). Preserve the code needed to read the existing store and its playlists until its data has a replacement.
+5. ASO-161 rehearses and verifies the new directory before the owner approves the store cutover. Apple rollout and legacy transport removal do not depend on that cutover.
 
 ### The test that says the library runs on the new path
 
@@ -181,28 +171,23 @@ The owner's library runs on the new path when all of these hold:
 
 1. The old `serve` is stopped, and the NAS runs only the new host.
 2. The iPhone, with Wi-Fi off and Tailscale on, shows the track, album and playlist counts of the final migration report.
-3. The iPhone downloads an album it never had as an offline save, then plays it with networking off. If Q2 of the device spike showed that background downloads work over the tunnel, the save runs while the screen is locked. Otherwise it runs with Syncstr open and resumes after the listener returns, as [the fallback](onboarding-and-connection-states.md#continue-in-the-background) describes.
+3. The iPhone downloads an album it never had as an offline save, then plays it with networking off. If Q2 of the [TestFlight checklist](validation/tailscale-testflight-qa.md) showed that background downloads work over the tunnel, the save runs while the screen is locked. Otherwise it runs with Syncstr open and resumes after the listener returns, as [the fallback](onboarding-and-connection-states.md#continue-in-the-background) describes.
 4. An offline save made on the old path before the cutover plays with networking off, and the host log shows no download of its hash.
 5. The macOS app, as a device, plays a track that it had not downloaded.
 6. Before the cutover, one track imported on the trial host appears on the connected devices after a refresh and plays, because an import on the primary is the only way to add music. This is the one change the trial host accepts. The next rebuild or the final migration drops it, because both start from a snapshot of the old store.
 7. A tailnet device that the policy does not allow, such as a work computer, cannot connect to the host address, and the host's loopback listener does not answer on the NAS's LAN address.
-8. For 14 days the owner does not go back and sees no playback failure that the old path did not have. The playback diagnostics and the host log are the evidence.
 
-Removal on the owner's daily path starts only after this test passes.
+These checks verify the store migration. The owner is the only user and accepts interruptions to cluster, P2P, Bonjour/mDNS, LAN `/v4` and rendezvous during the rebuild. There is no soak period.
 
-## Remove what the owner never ran first, and the daily path last
+## Remove old transports during the rebuild
 
-ADR 0008 keeps the daily path until the owner's library runs on its replacement. Earlier removal requires both an unused path in that library and no dependency from an active client. This plan applies the decision in three parts:
+Remove Apple discovery and transfer code in the app PRs. Follow with headless cleanup in ASO-169. Keep store readers, playlist decoding, import and originals safe throughout.
 
-- The v5 host-to-host code, activation journal and connectivity probe are candidates for early removal. Each can go once confirmed unused by both the owner's library and all active clients.
-- Everything the owner uses daily is removed only after the owner's library runs on the new path.
-- Removing the Windows, Android and gpui apps is a recommendation that needs the owner's separate decision in ASO-170. Merging this plan does not decide it.
+Removing the Windows, Android and gpui apps is a recommendation that needs the owner's separate decision in ASO-170. Merging this plan does not decide it.
 
-The Apple apps reach v5 only through `ClusterSession.connect` in `apps/macos/ClusterTransport.swift`, and only on a device with a cluster registration. It opens `syncstr/cluster/5` first and falls back to `syncstr/cluster/3` when the device holds no v5 snapshot. A device without a cluster registration uses the legacy connection (`legacyPlaybackFile` in `apps/macos/LocalTransfer.swift`). No real library reached v5, and nothing built from main is deployed to the owner's NAS before the cutover. Removing the v5 host code first therefore breaks no shipped flow.
+The numbered groups below identify the files and their dependencies. Step 4 starts with the Apple changes. Update tests and links with each removal.
 
-Removing the early code shrinks what the store and API work must read, build and test. Each step is one pull request that leaves the build and the tests green. It deletes the documents that describe only the code it removes, and fixes the links to them.
-
-### Steps 1 to 3 may come before the cutover
+### Client and v5 dependencies
 
 Step 2 needs nothing first. Step 1 waits for the owner's decision in ASO-170. Step 3 needs step 1, because the gpui app calls `catalog_client`, so it also waits for that decision. If ASO-170 keeps the gpui app, the v5 code stays until that app no longer calls `catalog_client`.
 
@@ -216,19 +201,19 @@ Step 2 needs nothing first. Step 1 waits for the owner's decision in ASO-170. St
 
 	In `apps/macos/Tests/SharedAudioTests.swift` it removes only the tests that start a v5 host with `shared_audio_fixture`. The rest of that file stays until step 4, because `ClusterMetadataTests.swift` and `OfflineSaveTests.swift` use its `Fixture`.
 
-	Four files that stay need edits. The v5 subcommands leave `headless/src/main.rs`, and the v5 calls leave `headless/src/client.rs`. The v5 and activation protocols leave the iroh endpoint in `headless/src/peer.rs`. The `Origin` type moves from `shared_audio.rs` into `headless/src/playlists.rs`, because the signed playlist body that the old `serve` and the migration decode still names it. It removes the v5 fixture setup from `apps/ios/scripts/verify_simulator.py` and its test, and the `shared_audio_fixture` examples from `verification.yml` and `weekly-simulator.yml`. Eleven documents go: the five `v5-*.md`, `shared-audio-v5-handoff.md`, `shared-audio-server-implementation.md`, `shared-rust-catalog.md`, `shared-rust-audio.md`, `validation/v5-startup-guard.md` and `validation/shared-audio-apple.md`. This step needs step 1, as stated above. It also needs the activation issues cancelled under ASO-171. The check is a green `verification.yml` and a green manual run of `weekly-simulator.yml`. `PeerTransferTests` must still pass, because they run the legacy protocol against the `syncstr-headless` binary. The Swift code that receives v5 catalogs stays until step 4, with no host left to serve it except the test deployment.
+	Four files that stay need edits. The v5 subcommands leave `headless/src/main.rs`, and the v5 calls leave `headless/src/client.rs`. The v5 and activation protocols leave the iroh endpoint in `headless/src/peer.rs`. The `Origin` type moves from `shared_audio.rs` into `headless/src/playlists.rs`, because the signed playlist body that the old `serve` and the migration decode still names it. It removes the v5 fixture setup from `apps/ios/scripts/verify_simulator.py` and its test, and the `shared_audio_fixture` examples from `verification.yml` and `weekly-simulator.yml`. Eleven documents go: the five `v5-*.md`, `shared-audio-v5-handoff.md`, `shared-audio-server-implementation.md`, `shared-rust-catalog.md`, `shared-rust-audio.md`, `validation/v5-startup-guard.md` and `validation/shared-audio-apple.md`. This step needs step 1, as stated above. It also needs the activation issues cancelled under ASO-171. The check is a green `verification.yml` and a green manual run of `weekly-simulator.yml`. Update any remaining Apple fixture references with the code that uses them.
 
-The pull request for step 3 also adds a CI job that runs `cargo test --locked --tests` without features. The new host builds without `p2p`, and CI never builds that configuration today. After step 3 merges, the duration of each `verification.yml` job on main is recorded against the five-minute budget.
+The pull request for step 3 also adds a CI job that runs `cargo test --locked --tests` without features. Until playlist decoding is independent of `p2p`, keep coverage for reads from the signed playlist records in the existing store. After step 3 merges, the duration of each `verification.yml` job on main is recorded against the five-minute budget.
 
-### Steps 4 to 7 come after the soak
+### Apple transports and headless cleanup
 
-4. **The old Apple transports and IrohLib.** This step removes the twelve transport files (3,499 lines). It also removes the legacy and cluster parts of `LocalTransfer.swift`, the cluster tables in `CatalogDatabase.swift`, and the cluster and legacy screens in `SettingsView.swift` and `apps/ios/Sources/PhoneRoot.swift`. Nine test files with 3,454 lines go: the `Cluster*Tests.swift` files, `PeerTransferTests.swift`, `SharedTrackResolutionTests.swift` and the rest of `SharedAudioTests.swift`. The v5 test in `OfflineSaveTests.swift` goes with them. IrohLib leaves the three targets in `apps/ios/project.yml` and `Package.resolved`, with both licence copies, `apps/macos/scripts/collect_iroh_notices.py`, and the IrohLib cache step in `verification.yml`. `NSBonjourServices` goes from both apps. `NSLocalNetworkUsageDescription` goes from the iOS app if the [device spike](validation/tailscale-device-spike.md) shows that a host reached over Tailscale needs no local network permission. The macOS app keeps it until the same check passes on a Mac. `cluster-signed.json` and `cluster-state.json` leave the Apple test resources, and `local-music-transfer.md` and `cluster-apple-m3.md` go. This step is the fourth pull request of ASO-165, and it needs the soak passed and the first three merged. The check is a green macOS job and weekly Simulator run, a launch with `sh apps/macos/run.sh` that plays from the host, a TestFlight build that plays an offline save in airplane mode, and an empty `git grep IrohLib apps`.
+4. **The old Apple transports and IrohLib.** This step removes the twelve transport files (3,499 lines). It also removes the legacy and cluster parts of `LocalTransfer.swift`, the cluster tables in `CatalogDatabase.swift`, and the cluster and legacy screens in `SettingsView.swift` and `apps/ios/Sources/PhoneRoot.swift`. Nine test files with 3,454 lines go: the `Cluster*Tests.swift` files, `PeerTransferTests.swift`, `SharedTrackResolutionTests.swift` and the rest of `SharedAudioTests.swift`. The v5 test in `OfflineSaveTests.swift` goes with them. IrohLib leaves the three targets in `apps/ios/project.yml` and `Package.resolved`, with both licence copies, `apps/macos/scripts/collect_iroh_notices.py`, and the IrohLib cache step in `verification.yml`. `NSBonjourServices` goes from both apps. `NSLocalNetworkUsageDescription` goes from the iOS app if the [TestFlight checklist](validation/tailscale-testflight-qa.md) shows that a host reached over Tailscale needs no local network permission. The macOS app keeps it until the same check passes on a Mac. `cluster-signed.json` and `cluster-state.json` leave the Apple test resources, and `local-music-transfer.md` and `cluster-apple-m3.md` go. ASO-165 and ASO-164 remove these pieces as their replacements land. The check is a green macOS job and weekly Simulator run, a launch with `sh apps/macos/run.sh` that plays from the host, a TestFlight build that plays an offline save in airplane mode, and an empty `git grep IrohLib apps`.
 5. **The legacy host, the cluster code and the `p2p` feature.** This step removes 13 source files with 4,667 lines: `headless/src/cluster*.rs`, `peer.rs`, `playlist_sync.rs`, `rendezvous.rs`, `relay.rs` and `enrollment.rs`. It removes 10 test files with 2,711 lines, including the two ignored `lan_process` tests. It removes 11 other files with 535 lines: the `migration_batch` example, `headless/Dockerfile.migration-batch`, `headless/Dockerfile.catalog-fix`, `headless/remote-access`, `.github/workflows/lan-verification.yml` and the two cluster fixtures. It also removes the schema-4 open path of `store.rs`, the signed parts of `playlists.rs`, and the matching subcommands of `main.rs`. The `p2p` feature leaves `headless/Cargo.toml` with `iroh`, `iroh-relay`, `qrcode`, `mdns-sd` and `if-addrs`. `lofty` becomes an ordinary dependency if the import on the primary reads tags, and goes otherwise. `--features p2p` leaves both workflows and `headless/scripts/collect_licenses.py`. The documents `p2p-music-transfer.md`, `cluster-lan-sync-m2.md`, `cluster-persistence-m1.md`, `cluster-remote-m4.md`, `validation/lan-discovery.md` and `validation/signed-addition-time.md` go.
 
 	`headless/src/membership.rs` stays. It holds album membership evidence (`ImportContext`) for the organization, not cluster membership.
 
-	This step needs step 4 on every device the owner uses, the old `serve` container retired with the owner's go-ahead, and the real migration done. It also needs an import on the primary that replaces the `migration_batch` path of `nas_import.py`, so that the owner can still add music. The check is a green `cargo test --locked --tests` and clippy without features, a Docker image that builds, and `cargo tree -i iroh` failing because no package depends on it.
-6. **The rendezvous Worker.** This step removes `rendezvous` (8 files, 261 lines) and `docs/peer-rendezvous.md`, and the owner shuts the Worker down. It needs step 5 deployed and 7 days with no announcement reaching the Worker. The check is that no code, workflow or README entry names `rendezvous`.
+	The transport code may go early. Removing schema-4 or signed playlist readers requires a working replacement for the deployed store or a completed store migration. Removing `migration_batch` also needs an import on the primary that replaces the `migration_batch` path of `nas_import.py`, so that the owner can still add music. The check is a green `cargo test --locked --tests` and clippy without features, a Docker image that builds, and `cargo tree -i iroh` failing because no package depends on it.
+6. **The rendezvous Worker.** This step removes `rendezvous` (8 files, 261 lines) and `docs/peer-rendezvous.md`, and the owner shuts the Worker down. Retiring the deployed Worker requires the owner's go-ahead. The check is that no code, workflow or README entry names `rendezvous`.
 7. **The map and the CI budget.** This step rewrites the code and documentation map in `README.md` to list only what exists, and records each workflow's duration against the five-minute budget in the pull request. It needs steps 1 to 6. The check is that every relative link in `README.md` and `docs/` resolves.
 
 ### Documents that stay
@@ -239,7 +224,7 @@ A document that an ADR links to stays, marked as superseded. These are `cluster-
 
 This plan recommends the proposal in ADR 0008. In the first release a device reads and downloads, and the library changes only on the primary. Music still enters the library through an import on the primary, ported from `tools/music-migration/nas_import.py`.
 
-The cutover takes away three edits that the owner's devices have today on the legacy connection. They return in this order:
+The old transport supported three edits absent from the read API. They return in this order:
 
 1. **Album organization, including hiding albums (`organize`).** The organization document and its validation exist on both sides, in `organization.rs` and `apps/macos/AlbumOrganization.swift`. With one primary, a request carries the change marker the device saw, and the primary refuses a stale one. The README describes hidden albums for every app, so their loss is the most visible.
 2. **Adding music from the macOS app (`put`).** The owner's primary is a NAS without a screen, and the import on it needs a terminal. The upload calls the same import code as the primary.
@@ -258,7 +243,7 @@ This replaces ASO-98, ASO-103 and ASO-105, which retry an edit at another host, 
 
 This plan recommends pausing all three until the Mac and iPhone path passes the cutover test, and removing them from main in removal step 1. The owner decides this in ASO-170, apart from merging this plan.
 
-- **Win32 (`apps/windows`).** It speaks cluster v3 and finds hosts by LAN discovery. It cannot reach the owner's library today, because the owner's NAS runs the legacy `serve`, not the cluster host. An app of the host API shares little with it. It returns as a new app of the host API if the owner wants to listen on Windows.
+- **Win32 (`apps/windows`).** It speaks cluster v3 and finds hosts by LAN discovery. It cannot reach the owner's library today, because the NAS publishes only the read API. An app of the host API shares little with it. It returns as a new app of the host API if the owner wants to listen on Windows.
 - **Android (`apps/android`).** The same reasons apply. It returns as a new app of the host API, on Android's own HTTP and media stack, if the owner asks for it.
 - **gpui (`apps/desktop`).** Its backend speaks v5 through `catalog_client`, which removal step 3 deletes. This plan does not reverse the choice of gpui for a Windows app. It pauses the app. When Windows playback is wanted, `ui.rs`, `text_input.rs`, `windows_player.rs` and the vendored `gpui_windows` come back from the history at `d0b4db5` with a new backend that calls the host API. If the owner wants Windows before Android, this app returns first.
 - **The shared Rust core (ASO-48, ASO-68).** It is no longer wanted. An app of the host API sends HTTPS requests, decodes JSON, downloads files and checks SHA-256 hashes, which every platform does natively, while a shared core adds an FFI binding and a native build per platform. The apps share the API contract instead, which ASO-86, ASO-87 and ASO-89 check in CI. A shared core returns only if two or more apps outside Apple duplicate hard offline logic, such as save accounting, and then only for that logic.
@@ -274,11 +259,12 @@ ASO-171 lists the issues. They are handled in batches, when each decision is mad
 
 ## Risks and how each is checked
 
+- **Direct access around Serve.** On each Tailscale image update, check that the host address still serves the API on 443, direct connections on 8441 and 8443 fail, and no Syncstr port listens on the NAS LAN.
 - **Disk space.** A rehearsal needs the size of the database for the snapshot and at most that again for the new database, which holds a subset of the old rows. Two rehearsals hold two outputs and, if the first snapshot is kept, two snapshots, which is up to four times the database. Hard-linked audio adds nothing. Without hard links, each directory adds the size of the audio. The volume has several terabytes free, so either fits. The report records the free space before and after.
 - **The size of the database.** The signed cluster changes take about three quarters of it. The migration does not carry them, so the new database is estimated at about a quarter of the old one. Inventory step 2 measures every table again on the snapshot. The catalog of the [host API](host-api-design.md) leaves artwork out, so the size matters for the copies on disk and for the time of a snapshot, not for devices.
 - **Time of a full verification.** Hashing at 30 to 100 MB/s takes roughly 10 to 35 seconds per gigabyte of audio. This is an estimate. Rehearsal step 3 measures it, and the cutover hashes every file again, so the owner allows that measured time for the cutover.
 - **A torn snapshot.** A plain file copy of a database in use can be inconsistent. The online backup and `PRAGMA integrity_check` catch that, and a short stop of the old `serve` avoids it.
-- **A device enrolled in the cluster test deployment.** `LocalTransfer.playbackFile` prefers a cluster registration over the legacy connection, so such a device plays from the test deployment. The owner checks each device's settings for a cluster registration before the fourth go-ahead.
+- **A device still using discovery.** It may lose remote playback during the Apple rollout. Check local playback and existing offline saves in the TestFlight build.
 - **Playlist records with more than one head.** The migration stops and names them, and the owner resolves them on the old path before the cutover.
 - **The owner cannot add music.** Removal step 5 deletes `cluster_replica.rs`, which `nas_import.py` uses through `migration_batch`. Step 5 therefore requires a working import on the primary.
 
@@ -286,24 +272,22 @@ ASO-171 lists the issues. They are handled in batches, when each decision is mad
 
 | Phase | Issues | Done when |
 | --- | --- | --- |
-| Decide and measure | ASO-158, ASO-159 | ADR 0008 is merged, and the device spike has recorded its results |
-| Remove what the owner never ran | ASO-169 step 2, then steps 1 and 3 after the owner decides ASO-170, and ASO-171 batches 1 to 3 | The steps that may go are merged, CI is green, and the job durations are recorded |
-| Store and migration | ASO-161 | The store and the migration command are merged with tests on fixtures, and two rehearsals on a snapshot of the owner's library agree |
-| Host API, connecting by address and Tailscale | ASO-160, ASO-164, ASO-163 | The trial host serves the rehearsal directory at a host address |
-| Apple apps | ASO-165, ASO-166, ASO-167 | The Mac and then the iPhone play from the trial host, and an old offline save plays without a download |
-| A Mac as the host | ASO-162, ASO-163 | Apart from the owner's NAS, a Mac with a folder library serves it over Tailscale, and an iPhone allowed by the tailnet policy connects, saves an album and plays it with networking off |
-| Cutover and soak | ASO-161, ASO-169 | Every point of the cutover test holds |
-| Remove the daily path | ASO-169 steps 4 to 7 | Step 7's link check passes and the CI durations are recorded |
+| NAS read API | ASO-160 | Merged and deployed on the existing store. Mac reads verified on 2026-11-19. |
+| Apple reads and connection by address | ASO-165, ASO-164 | Both apps read the library by address. Existing offline saves still play. |
+| Downloads and connection states | ASO-166, ASO-167, ASO-159 | The owner records the relevant iPhone results as each internal TestFlight build arrives. |
+| Headless follow-ups | ASO-175, ASO-169 | Gzip and contract checks land. Old transports are removed subject to the data dependencies above. |
+| Store migration | ASO-161 | Rehearsals agree, the owner approves the final run, and the migrated library passes the cutover checks. |
+| A Mac as the host | ASO-162, ASO-163 | A Mac serves a folder library over Tailscale, and an allowed iPhone saves and plays an album offline. |
 | Mirrors and the primary switch | ASO-172, ASO-173 | As [mirrors and the primary switch](mirrors-and-primary-switch.md) defines |
 | Edits from devices | ASO-168 and one issue per edit | Each edit's issue is done, in the order above |
 | The Windows, Android and gpui apps | ASO-170 | The owner asks for one, and it plays from the host |
 
 ## Open questions
 
-- Which of the three lost edits the owner uses every week, and whether the cutover waits for them. Inventory step 2 shows how often music arrived. Owned by ASO-168.
+- Which of the three lost edits the owner uses every week, and which to bring back first. Inventory step 2 shows how often music arrived. Owned by ASO-168.
 - Whether the original and the new data directory are in one dataset, so that hard links work. If they are not, the migration copies the audio in full. Owned by ASO-161.
 - Whether any of the owner's devices is enrolled in the cluster test deployment. Owned by ASO-169.
-- How long the soak lasts. This plan proposes 14 days. Owned by ASO-169.
+- How quickly a TestFlight build sees a lost host, whether saves continue while locked, and whether the NAS rejoins after an approved restart. Owned by ASO-159.
 - Whether the Windows, Android and gpui apps are removed, which also decides when removal step 3 can run. Owned by ASO-170.
 - Whether the import on the primary keeps the Windows-to-NAS flow of `tools/music-migration`, and whether it reads tags itself. Owned by ASO-161.
 

@@ -4,7 +4,7 @@ status: accepted
 
 # Serve a library from one primary host over a private network
 
-Syncstr stops building its own connectivity. For the first release, the Mac or NAS hosting the library and each remote playback device join Tailscale. A host serves the library over HTTPS at a host address, and a device reaches that address like any other web service. Discovery by mDNS, peer-to-peer transport, relays, the rendezvous directory, and everything that existed to connect hosts across networks are removed once the new path carries the owner's library.
+Syncstr stops building its own connectivity. For the first release, the Mac or NAS hosting the library and each remote playback device join Tailscale. A host serves the library over HTTPS at a host address, and a device reaches that address like any other web service. Discovery by mDNS, peer-to-peer transport, relays, the rendezvous directory, and everything that existed to connect hosts across networks are removed during the rebuild.
 
 A library has exactly one primary host. Only the primary accepts changes. A library can also have mirrors. A mirror pulls everything from the primary through the same API that a phone uses, keeps a full copy, and can serve that copy to devices. A mirror never accepts a change. The owner explicitly chooses when a mirror becomes the primary. In a planned switch the owner acts on both machines. The switch number rises with each switch. Two hosts that accept changes at the same time are out of scope.
 
@@ -33,7 +33,7 @@ When the primary is unreachable, a device can browse, download and play from the
 
 If the primary is lost, the owner can promote a mirror using its last complete copy. Later changes may be missing from that copy. An isolated old primary may continue accepting changes until it learns of the switch. It then stops writing and preserves any divergent copy for the owner. If two hosts claim to be primary at the same switch number, writes stop when the conflict is detected and the owner chooses the primary. See [mirrors and the primary switch](../mirrors-and-primary-switch.md).
 
-The library service listens on loopback on the Mac or inside the NAS host’s network namespace. Serve exposes it over tailnet HTTPS. Owner operations stay local. Direct LAN and other VPN listeners are outside the first-release design.
+The library service listens on loopback. In the NAS userspace sidecar's network namespace, both node listeners bind to `127.0.0.2`. Tailscale forwards tailnet TCP ports outside Serve to the same port on `127.0.0.1`. Serve publishes only the read API over HTTPS. Owner operations stay local.
 
 Either a Mac or a NAS can be the primary. The macOS app runs the host on a Mac, and the same host runs headless elsewhere.
 
@@ -48,7 +48,7 @@ Whole-file download with hash verification stays the playback model, and [ADR 00
 | Several writers: signed changes, membership grants, enrollment, epochs, profile floors, the activation journal, and retrying a change at another host | Replaced | [v5 completion design](../v5-completion-design.md), [v5 member mutation contract](../v5-member-mutation-contract.md), [v5 activation and recovery](../v5-activation-and-recovery.md), [v5 activation control protocol](../v5-activation-control-protocol.md), [cluster model](../cluster-model-design.md), [cluster implementation plan](../cluster-implementation-plan.md) and its milestone documents |
 | Connectivity built by Syncstr: mDNS discovery, peer-to-peer transfer, relays, and the rendezvous directory | Replaced | [peer rendezvous](../peer-rendezvous.md), [peer-to-peer transfer](../p2p-music-transfer.md), [local music transfer](../local-music-transfer.md), [cluster connectivity M0](../cluster-connectivity-m0.md) |
 | Track identity, playlist references, and the playback cache and offline saves | Kept | ADR 0005, ADR 0006, ADR 0007, and the playback rules of the [cluster UI review](../cluster-ui-review.md) |
-| The code behind the replaced parts | Runs until the owner's library works on the new path | [Migration plan](../private-network-migration-plan.md) |
+| The code behind the replaced parts | May break or be removed during the rebuild | [Migration plan](../private-network-migration-plan.md) |
 
 Each replaced document carries a note that points here and stays as the record of the code that still implements it.
 
@@ -57,9 +57,8 @@ The design is described in [the architecture overview](../private-network-archit
 ## Status of the parts
 
 - Accepted on 2026-11-17: one primary, mirrors, the explicit switch, no simultaneous writers, and no connectivity built by Syncstr.
-- On 2026-11-18 the owner accepted the Mac and NAS host roles, the first-release iPhone scope, playback from mirrors, recovery by manual promotion, and the cutover order. Keep the everyday path until the owner's library works on its replacement. Earlier removal is limited to code the library has never used and on which no active client depends. ASO-170 tracks the separate decision on the Windows, Android and gpui clients.
-- Later on 2026-11-18 the owner replaced optional Tailscale connectivity and per-device pairing with tailnet-controlled access for the first release. The host itself joins the tailnet. ASO-159 uses a bearer token for legacy `/v4` reads.
-- A read-only inspection on 2026-11-18 found a Tailscale sidecar on the owner's NAS. It proxies catalog and audio reads to the legacy LAN listener.
-- ASO-163 will verify whether Serve can reach the trial host's loopback listener in a dedicated sidecar's network namespace. The migration plan keeps that sidecar's HTTPS address after promotion to primary.
+- On 2026-11-18 the owner accepted the Mac and NAS host roles, the iPhone scope, mirror playback and manual promotion. The first release uses Tailscale and tailnet policy for read access.
+- ASO-160 merged in #83 (`b652fa4`). On 2026-11-19 the NAS began serving the read-only `/api/v1`, including playlists, from the existing store. The node shares the sidecar's network namespace. Serve proxies every path to `http://127.0.0.2:8441`. The legacy listener is loopback-only. See [Tailscale setup](../tailscale-setup.md) for the assumptions to recheck on updates.
+- The owner is the only user. The old paths may break or be removed as the Apple apps switch to API reads and connection by address. Keep the data directory and originals safe so the previous image can reopen them. ASO-170 still tracks the separate decision on the Windows, Android and gpui apps.
 
-[ASO-159's physical-device spike](../validation/tailscale-device-spike.md) will test certificate handling, background transfers, network changes, connection failures, and time to playback. Its measurements will guide the connection and download design.
+[ASO-159's TestFlight checklist](../validation/tailscale-testflight-qa.md) follows each app change onto the owner's physical iPhone. A push to `main` triggers Xcode Cloud and internal TestFlight distribution. Mac reads have been verified. The phone measurements and NAS reboot check are pending.

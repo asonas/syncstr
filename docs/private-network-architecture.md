@@ -45,11 +45,11 @@ The terms are defined in the [glossary](../GLOSSARY.md#hosts-and-devices).
 | First launch, connection states, downloads, and settings | [Onboarding and connection states](onboarding-and-connection-states.md) | ASO-162, ASO-163, ASO-166, ASO-167 |
 | The store, the migration of an existing library, the Apple transport change, changes from devices, removal of the old stacks, the Windows, Android and gpui apps, and existing issues | [Migration plan](private-network-migration-plan.md) | ASO-161, ASO-165, ASO-168, ASO-169, ASO-170, ASO-171 |
 | Putting a host on a tailnet | [Tailscale setup](tailscale-setup.md) | ASO-163 |
-| What must be measured on a real iPhone first | [Device spike](validation/tailscale-device-spike.md) | ASO-159 |
+| What to check on the owner's iPhone | [TestFlight QA](validation/tailscale-testflight-qa.md) | ASO-159 |
 
 ## What Syncstr no longer does
 
-Syncstr does not find hosts, cross networks, or relay traffic. The following exist today and are removed after the owner's library runs on the new path:
+Syncstr does not find hosts, cross networks, or relay traffic. The following can be removed during the rebuild:
 
 - Discovery by mDNS and the address filters that go with it.
 - The peer-to-peer transports built on iroh, in the host and in the Apple apps.
@@ -58,7 +58,7 @@ Syncstr does not find hosts, cross networks, or relay traffic. The following exi
 - The v5 activation journal and its inventory tooling.
 - The transfer between a Mac and an iPhone over Bonjour.
 
-Code may go before the cutover if the owner's library has never used it and no active client depends on it. ASO-170 tracks the owner's separate decision about the Windows, Android and gpui apps. The [migration plan](private-network-migration-plan.md) gives the order.
+The owner accepts interruptions to the old paths. ASO-170 tracks the owner's separate decision about the Windows, Android and gpui apps. The [migration plan](private-network-migration-plan.md) gives the order.
 
 ## What stays
 
@@ -70,18 +70,16 @@ Code may go before the cutover if the owner's library has never used it and no a
 
 ## What Syncstr asks of the private network
 
-The Mac or NAS host joins Tailscale and publishes its loopback read service with Serve. The phone joins Tailscale and opens that HTTPS address. The owner grants or withdraws access to the service in Tailscale. The host provides library reads through this listener and keeps administration local. See the [setup guide](tailscale-setup.md).
+The Mac or NAS host joins Tailscale and publishes its loopback read service with Serve. In the NAS userspace sidecar, ports outside Serve forward to `127.0.0.1`, so both node listeners use `127.0.0.2`. The phone joins Tailscale and opens that HTTPS address. The owner grants or withdraws access to the service in Tailscale. The host provides library reads through this listener and keeps administration local. See the [setup guide](tailscale-setup.md).
 
 ## Order of work
 
-1. Record the decision and run the device spike. The spike can change the download design, so it comes before any build.
-2. Remove the code that the owner never ran, within the exception above.
-3. Build the store, the migration, the read API, and connection by host address.
-4. Move the Apple apps to the API, then build background downloads and the new first launch.
-5. Move the owner's library to the new path, and then remove the code the owner uses daily.
-6. Add mirrors and the primary switch, then changes from devices, then the Windows, Android and gpui apps if the owner wants them.
+1. The NAS already serves the existing library and playlists through `/api/v1` (ASO-160).
+2. Move the Apple apps to API reads (ASO-165) and connection by host address (ASO-164). Remove old discovery and transfer code as each flow changes.
+3. Add background downloads (ASO-166), then first launch and connection states (ASO-167). Check each change on the owner's iPhone through internal TestFlight builds from `main`.
+4. Follow with headless API work (ASO-175) and removal of the old stack (ASO-169). The store migration (ASO-161), mirrors and changes from devices are still planned.
 
-Each step leaves a product that works. The old path stays usable until step 5 is proven. The [migration plan](private-network-migration-plan.md#phases) gives the phases in detail.
+The [migration plan](private-network-migration-plan.md#phases) covers the remaining work and the safeguards for the original library.
 
 ## Risks the owner accepted or must still weigh
 
@@ -89,4 +87,4 @@ Each step leaves a product that works. The old path stays usable until step 5 is
 - iOS allows one VPN at a time, so a listener who needs another VPN on the phone cannot use Tailscale at the same moment.
 - Publishing a host with `tailscale serve` puts the machine's full name in public certificate transparency logs.
 - With one writer, if the primary is lost, the changes it accepted after a mirror was last caught up are lost, unless the old primary comes back and keeps them aside for the owner.
-- Whether background downloads continue over the Tailscale tunnel is not documented. The [device spike](validation/tailscale-device-spike.md) measures it.
+- Whether background downloads continue over the Tailscale tunnel is not documented. The [TestFlight checklist](validation/tailscale-testflight-qa.md) measures it.
