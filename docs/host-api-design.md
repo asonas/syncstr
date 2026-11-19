@@ -71,7 +71,7 @@ Any other change is breaking and goes to `/api/v2`. The host then serves both ve
 | Field | Meaning |
 | --- | --- |
 | `library` | The library ID, the UUID in the `library` table of `node.sqlite` (`store.rs`). It never changes. |
-| `name` | The library name that the owner sets. |
+| `name` | The library name that the owner sets. Until a setting exists, the host returns the fixed name `Syncstr`. |
 | `host` | The answering host's ID, created once by the host, and its host address. |
 | `role` | `primary`, `mirror`, `replaced`, or `retired`. A replaced host was a primary and learned that the owner made another host the primary. A retired host was retired by the owner. |
 | `condition` | Present only in two states. `handing-over` is a primary from `hand-over` until the named mirror takes over. `in-conflict` is a primary or a mirror that learned of another primary under its own switch number. In both states the host accepts no change, and a mirror in conflict stops pulling. Absent otherwise. |

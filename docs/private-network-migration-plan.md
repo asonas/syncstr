@@ -114,7 +114,7 @@ Album organization stays as it is today. One `Organization` document in the `org
 
 The same `node.sqlite` keeps the host state that [mirrors and the primary switch](mirrors-and-primary-switch.md) lists: the host ID, the switch record, the role, the known hosts and any held copies. One database means that a change and the switch record it depends on commit together. How a host proves itself to another host is not decided, and ASO-172 adds what the store needs for it.
 
-Under ASO-161 the migrated store keeps its library ID and starts at switch number 1 with itself as the primary. The migration must preserve the serving host's ID when moving the store. Connections to the old `serve`, which are its iroh peer list and its single `/v4` token, are not carried. The owner's devices use the host address.
+Under ASO-161 the migrated store keeps its library ID and starts at switch number 1 with itself as the primary. The migration must preserve the serving host's ID when moving the store: it copies the `host_identity` row of the original `node.sqlite`, because `Store::open` creates a new ID when the row is missing, and the check compares the host ID in `/api/v1/library` before and after. Connections to the old `serve`, which are its iroh peer list and its single `/v4` token, are not carried. The owner's devices use the host address.
 
 ## Migrate the owner's library into a new directory
 
@@ -146,7 +146,7 @@ Steps 1 to 6 are the rehearsal. They run on a snapshot in a disposable directory
 
 ### How to go back
 
-For the current rollout, stop the node and reopen the same data directory with the previous image. Keep that image, the store and its originals. The previous image then serves the same data, including any changes made since the rollout. An updated app may already have removed its legacy transport.
+For the current rollout, stop the node and reopen the same data directory with the previous image and its own Compose definition. Keep that image, its Compose definition, the store and its originals. An image built before #83 does not accept `--api-listen`, so it does not start with the current command. The previous image then serves the same data, including any changes made since the rollout. An updated app may already have removed its legacy transport.
 
 For ASO-161 the migration writes a separate directory and leaves the original intact. Stop the migrated host before reopening the original with the previous image. Changes made only in the new store will be missing. Before switching back, preserve that directory and account for any imports or edits since cutover.
 
@@ -169,10 +169,10 @@ For ASO-161 the migration writes a separate directory and leaves the original in
 
 The owner's library runs on the new path when all of these hold:
 
-1. The old `serve` is stopped, and the NAS runs only the new host.
+1. The NAS runs only the host on the migrated directory. No process serves the original directory.
 2. The iPhone, with Wi-Fi off and Tailscale on, shows the track, album and playlist counts of the final migration report.
 3. The iPhone downloads an album it never had as an offline save, then plays it with networking off. If Q2 of the [TestFlight checklist](validation/tailscale-testflight-qa.md) showed that background downloads work over the tunnel, the save runs while the screen is locked. Otherwise it runs with Syncstr open and resumes after the listener returns, as [the fallback](onboarding-and-connection-states.md#continue-in-the-background) describes.
-4. An offline save made on the old path before the cutover plays with networking off, and the host log shows no download of its hash.
+4. An offline save made before the cutover plays with networking off.
 5. The macOS app, as a device, plays a track that it had not downloaded.
 6. Before the cutover, one track imported on the trial host appears on the connected devices after a refresh and plays, because an import on the primary is the only way to add music. This is the one change the trial host accepts. The next rebuild or the final migration drops it, because both start from a snapshot of the old store.
 7. A tailnet device that the policy does not allow, such as a work computer, cannot connect to the host address, and the host's loopback listener does not answer on the NAS's LAN address.
@@ -212,7 +212,7 @@ The pull request for step 3 also adds a CI job that runs `cargo test --locked --
 
 	`headless/src/membership.rs` stays. It holds album membership evidence (`ImportContext`) for the organization, not cluster membership.
 
-	The transport code may go early. Removing schema-4 or signed playlist readers requires a working replacement for the deployed store or a completed store migration. Removing `migration_batch` also needs an import on the primary that replaces the `migration_batch` path of `nas_import.py`, so that the owner can still add music. The check is a green `cargo test --locked --tests` and clippy without features, a Docker image that builds, and `cargo tree -i iroh` failing because no package depends on it.
+	The transport code may go early. Removing schema-4 or signed playlist readers requires a working replacement for the deployed store or a completed store migration. Removing the cluster commands also needs an import on the primary that replaces the `cluster-init` and `cluster-import` calls of `tools/music-migration/nas_import.py`, so that the owner can still add music. The check is a green `cargo test --locked --tests` and clippy without features, a Docker image that builds, and `cargo tree -i iroh` failing because no package depends on it.
 6. **The rendezvous Worker.** This step removes `rendezvous` (8 files, 261 lines) and `docs/peer-rendezvous.md`, and the owner shuts the Worker down. Retiring the deployed Worker requires the owner's go-ahead. The check is that no code, workflow or README entry names `rendezvous`.
 7. **The map and the CI budget.** This step rewrites the code and documentation map in `README.md` to list only what exists, and records each workflow's duration against the five-minute budget in the pull request. It needs steps 1 to 6. The check is that every relative link in `README.md` and `docs/` resolves.
 
@@ -266,7 +266,7 @@ ASO-171 lists the issues. They are handled in batches, when each decision is mad
 - **A torn snapshot.** A plain file copy of a database in use can be inconsistent. The online backup and `PRAGMA integrity_check` catch that, and a short stop of the old `serve` avoids it.
 - **A device still using discovery.** It may lose remote playback during the Apple rollout. Check local playback and existing offline saves in the TestFlight build.
 - **Playlist records with more than one head.** The migration stops and names them, and the owner resolves them on the old path before the cutover. Do not remove the old path's way of resolving them until the migration inventory finds no playlist with more than one head, or a replacement exists. The read API's `conflictedPlaylists` is not enough for this check: it lists only playlists whose heads differ in content, and the migration also stops on heads with the same content.
-- **The owner cannot add music.** Removal step 5 deletes `cluster_replica.rs`, which `nas_import.py` uses through `migration_batch`. Step 5 therefore requires a working import on the primary.
+- **The owner cannot add music.** Removal step 5 deletes `cluster_replica.rs` and the `cluster-init` and `cluster-import` commands, which `nas_import.py` calls. Step 5 therefore requires a working import on the primary.
 
 ## Phases
 
