@@ -20,7 +20,7 @@ A Mac read the library, catalog, audio and artwork over the tailnet. The [QA rec
 
 The store inventory below comes from a read-only inspection on 2026-11-17. Exact counts stay in ASO-161 for comparison during the migration.
 
-Schema generation 4 describes the catalog tables, not every table in the file. `Store::open` creates the cluster tables on every open, because `headless/src/cluster.rs` is not behind the `p2p` feature, and a `p2p` build adds the enrollment, change, replica and playlist tables (`headless/src/store.rs`, lines 104 to 112). The owner's library was filled through `tools/music-migration/nas_import.py`, which runs `headless/examples/migration_batch.rs`. That example imports each file with `import_cluster_file`, which creates a cluster identity and signs changes.
+Schema generation 4 describes the catalog tables, not every table in the file. `Store::open` creates the cluster tables on every open, because `headless/src/cluster.rs` is not behind the `p2p` feature, and a `p2p` build adds the enrollment, change, replica and playlist tables (`headless/src/store.rs`, lines 104 to 112). The owner's library was filled through `tools/music-migration/nas_import.py`, which runs the headless `cluster-init` and `cluster-import` commands. `cluster-import` imports each file with `import_cluster_file`, which creates a cluster identity and signs changes.
 
 A second read-only inspection on 2026-11-17 counted what the owner's database holds besides the four catalog tables:
 
@@ -132,13 +132,13 @@ Under ASO-161 the migrated store keeps its library ID and starts at switch numbe
 2. **Inventory.** On the snapshot, the migration reports the row count and size of every table, cluster tables included. It also reports the distinct audio hashes, the tracks added per month by `addedAt`, the albums, choices and track aliases, the artwork assets, and the playlist records and their heads. The first inventory is checked against the inspection figures recorded in ASO-161. Each later inventory is checked against the previous one, and every difference must be explained by changes on the old path in between. A surprise stops the plan for review.
 3. **Audio.** For every track row, the file `objects/<sha256>.<suffix>` must exist with the recorded size. Then every file is hashed once and the time is recorded. The report lists missing files, wrong sizes, wrong hashes, and files that no track names. Unnamed files stay in place.
 4. **Transform.** The migration writes the new store into a new directory on the same volume:
-	- It copies the library ID, every track row, the organization row and every artwork asset byte for byte.
+	- It copies the library ID, the `host_identity` row, every track row, the organization row and every artwork asset byte for byte.
 	- It checks that each playlist record's ID is the SHA-256 of its payload and that its document passes `Document::validate`. A record is a head when no other record names it as a parent. Each head becomes a plain row. Signatures are not verified, because they proved authorship between hosts and this file is the owner's own. If a playlist has more than one head, the migration stops and names it.
 	- Each playlist item keeps its track ID and hash. If the ID does not resolve through the track aliases to a track with that hash, the report lists the item as unavailable and the item stays unchanged.
 	- The switch number is 1. The revision is 1 in a rehearsal. Once a store uses the ASO-161 counter, a rebuild starts above its last revision. Devices compare the current content digest for equality only.
 	- Cluster tables, signed history, grants, cursors and the `peer` identity directory are not carried, and the report counts them.
 
-	The checks are a hash per copied table that matches the source, every track ID and alias resolving to one track, and every track's audio file present.
+	The checks are a hash per copied table that matches the source, the same host ID in `/api/v1/library` before and after, every track ID and alias resolving to one track, and every track's audio file present.
 5. **Repeat.** The migration runs steps 1 to 4 again on a fresh snapshot, after the first snapshot is deleted. Both runs are rehearsals at revision 1, so the two outputs match, or the report explains every difference by a change made on the old path between the snapshots, such as an added track or an edited playlist. Two runs on the same snapshot must match exactly.
 6. **Report.** The migration writes a JSON file for tools and a one-page summary for the owner. The summary gives counts in and out, everything not carried and why, the time of each step, and the free disk space before and after. The report stays out of the repository, because it holds the owner's library metadata.
 
