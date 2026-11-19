@@ -1,6 +1,6 @@
 # Host API
 
-Status: designed for [ADR 0008](adr/0008-one-primary-host-over-a-private-network.md), accepted on 2026-11-18. Nothing in this document is implemented, and it authorizes no production operation.
+Status: designed for [ADR 0008](adr/0008-one-primary-host-over-a-private-network.md), accepted on 2026-11-18. ASO-160 merged in #83 (`b652fa4`). The four read routes below serve the existing NAS library. Device connections, mirrors and the store migration remain planned.
 
 This document defines the one HTTPS API that a host serves to devices and to mirrors. It is the only document that defines routes, fields, headers, status codes, ports, and timeouts. It answers ASO-160 and ASO-164, and it states what ASO-165, ASO-172, and ASO-173 may rely on. The [architecture overview](private-network-architecture.md) places it among the other designs. The owner is the person who runs the host.
 
@@ -14,7 +14,7 @@ Devices and mirrors use the same routes under `/api/v1`. For devices, the API re
 - The cluster transport in `apps/macos/ClusterTransport.swift` and the Bonjour channel in `apps/macos/LocalTransfer.swift`.
 - Invitations and enrollment. The tailnet policy takes their place.
 
-The [migration plan](private-network-migration-plan.md) decides when each is removed. Until then each keeps its own listener.
+The [migration plan](private-network-migration-plan.md) decides when each is removed. On the NAS, P2P and rendezvous are off and `/v4` listens only on loopback.
 
 ## What the API reuses
 
@@ -55,13 +55,13 @@ Any other change is breaking and goes to `/api/v2`. The host then serves both ve
 ```json
 {
 	"library": "5b0c8f2e-6a1d-4c3b-9e7f-0d2a4b6c8e10",
-	"name": "Music",
+	"name": "Syncstr",
 	"host": {"id": "2d7b9f41-c3a8-4e6d-b0f2-8a1c5e9d3b74", "address": "https://music.example.ts.net"},
 	"role": "primary",
 	"switchNumber": 1,
 	"primary": "2d7b9f41-c3a8-4e6d-b0f2-8a1c5e9d3b74",
 	"startingMarker": null,
-	"marker": "1.2d7b9f41-c3a8-4e6d-b0f2-8a1c5e9d3b74.1842",
+	"marker": "1.2d7b9f41-c3a8-4e6d-b0f2-8a1c5e9d3b74.2ea9b61cb0683245fdc2f68aedfd00159df809d853e11552faeb83df91957014",
 	"hosts": [
 		{"id": "2d7b9f41-c3a8-4e6d-b0f2-8a1c5e9d3b74", "address": "https://music.example.ts.net", "role": "primary"}
 	]
@@ -71,7 +71,7 @@ Any other change is breaking and goes to `/api/v2`. The host then serves both ve
 | Field | Meaning |
 | --- | --- |
 | `library` | The library ID, the UUID in the `library` table of `node.sqlite` (`store.rs`). It never changes. |
-| `name` | The library name that the owner sets. |
+| `name` | The library name that the owner sets. Until a setting exists, the host returns the fixed name `Syncstr`. |
 | `host` | The answering host's ID, created once by the host, and its host address. |
 | `role` | `primary`, `mirror`, `replaced`, or `retired`. A replaced host was a primary and learned that the owner made another host the primary. A retired host was retired by the owner. |
 | `condition` | Present only in two states. `handing-over` is a primary from `hand-over` until the named mirror takes over. `in-conflict` is a primary or a mirror that learned of another primary under its own switch number. In both states the host accepts no change, and a mirror in conflict stops pulling. Absent otherwise. |
@@ -83,7 +83,7 @@ Any other change is breaking and goes to `/api/v2`. The host then serves both ve
 | `mirror` | With role `mirror` only. `caughtUpAt` is the time of the latest read of the primary at which this host's marker equaled the primary's, and is null until the first copy is complete. `primaryMarker` and `readAt` are the primary's marker at the most recent successful read and the time of that read. |
 | `hosts` | Every known host of the library with its ID, address, and role. In the first release it holds only the answering host, because nothing registers another host until ASO-172 decides how hosts identify each other. |
 
-`switchNumber`, `primary`, and `startingMarker` are the host's switch record. A change marker is written `<switchNumber>.<primary>.<revision>`. The primary commits each change to the catalog, the organization, an image, or a playlist under its switch record and raises the revision by one. A new primary continues from the revision of its starting marker. A mirror serves the marker of the copy it holds unchanged, so its `marker` can name an older switch than its switch record. Markers are ordered by switch number, then by revision. Two markers with one switch number and different primaries come from two primaries under one number, and neither is newer. Times are RFC 3339 and are only shown to people. The [mirrors design](mirrors-and-primary-switch.md) owns the rules that use these fields.
+`switchNumber`, `primary`, and `startingMarker` are the host's switch record. Under the planned ASO-161 counter, a change marker is written `<switchNumber>.<primary>.<revision>`. The primary commits each change to the catalog, the organization, an image, or a playlist under its switch record and raises the revision by one. A new primary continues from the revision of its starting marker. A mirror serves the marker of the copy it holds unchanged, so its `marker` can name an older switch than its switch record. Markers are ordered by switch number, then by revision. Two markers with one switch number and different primaries come from two primaries under one number, and neither is newer. Times are RFC 3339 and are only shown to people. The [mirrors design](mirrors-and-primary-switch.md) owns the rules that use these fields.
 
 Until ASO-161 adds a counter, the first release uses a content digest as the revision, which devices compare only for equality.
 
@@ -96,8 +96,8 @@ Every response carries `Syncstr-Switch: <switchNumber>.<primary>` with the host'
 ```json
 {
 	"id": "5b0c8f2e-6a1d-4c3b-9e7f-0d2a4b6c8e10",
-	"name": "Music",
-	"marker": "1.2d7b9f41-c3a8-4e6d-b0f2-8a1c5e9d3b74.1842",
+	"name": "Syncstr",
+	"marker": "1.2d7b9f41-c3a8-4e6d-b0f2-8a1c5e9d3b74.2ea9b61cb0683245fdc2f68aedfd00159df809d853e11552faeb83df91957014",
 	"entries": [
 		{
 			"track": {"id": "a3c1e5f7-2b4d-4f6a-8c0e-1d3b5a7c9e2f", "title": "Example track", "artist": "Example artist",
@@ -108,7 +108,8 @@ Every response carries `Syncstr-Switch: <switchNumber>.<primary>` with the host'
 	],
 	"organization": {"albums": [], "tracks": [], "aliases": {}, "choices": [], "preferred": {},
 		"artwork": {"assets": {"6f2a9c1e4b7d0a3f5c8e2b1d4a7f0c3e6b9d2a5f8c1e4b7d0a3f6c9e2b5d8a1f": ""}, "candidates": [], "preferred": {}}},
-	"playlists": []
+	"playlists": [],
+	"conflictedPlaylists": []
 }
 ```
 
@@ -119,11 +120,11 @@ Every response carries `Syncstr-Switch: <switchNumber>.<primary>` with the host'
 - A device asks for the catalog at launch, on return to the foreground, when `Syncstr-Switch` changes, and when the person refreshes, always with `If-None-Match`. There is no push in the first version.
 - A device shows the catalog before it has every image and fetches each image when it needs to show it.
 
-The first version has no route for the changes since a marker, because the store at schema generation 4 keeps no change list. The catalog of a library of several thousand tracks, without image bytes, is estimated at a few megabytes before compression. That is an estimate, not a measurement, and ASO-160 measures a copy of the owner's library. `GET /api/v1/changes?after=<marker>` is reserved. It is added, as an additive change, once the store keeps a change list (ASO-161), or earlier if the compressed catalog exceeds 5 MB.
+The first version has no route for the changes since a marker, because the store at schema generation 4 keeps no change list. The catalog of a library of several thousand tracks, without image bytes, was estimated at a few megabytes before compression, and the measurement exceeded that. On 2026-11-19 the owner's catalog, with several thousand tracks and their playlists, measured about 12.7 MB uncompressed and 4.5 MB with gzip, and a Mac on the tailnet received it in about 0.25 seconds. The compressed size is close to the 5 MB threshold below. `GET /api/v1/changes?after=<marker>` is reserved. It is added, as an additive change, once the store keeps a change list (ASO-161), or earlier if the compressed catalog exceeds 5 MB.
 
 ### Playlists travel in the catalog
 
-`playlists` lists `Document` objects as `headless/src/playlists.rs` defines them, without the signed envelope. An item refers to a track by `trackId` and `sha256`. One marker covers tracks and playlists together, so a device or a mirror never holds them from two different states.
+`playlists` lists `Document` objects as `headless/src/playlists.rs` defines them, without the signed envelope. `conflictedPlaylists` lists the IDs with competing heads. An item refers to a track by `trackId` and `sha256`. One marker covers tracks and playlists together, so a device or a mirror never holds them from two different states.
 
 ### Audio by content hash, with ranges
 
@@ -160,7 +161,7 @@ A device opens a library by its host address, such as `https://music.example.ts.
 
 ### When the device cannot reach the host address
 
-iOS gives an app no way to detect Tailscale. The device infers the cause from the failure and from the address. A `.ts.net` name or an address in 100.64.0.0/10 is a tailnet address. An interactive request, such as opening a host address or a refresh the person started, gives up after 15 seconds without a response, until the [device spike](validation/tailscale-device-spike.md) measures a better value.
+iOS gives an app no way to detect Tailscale. The device infers the cause from the failure and from the address. A `.ts.net` name or an address in 100.64.0.0/10 is a tailnet address. An interactive request, such as opening a host address or a refresh the person started, gives up after 15 seconds without a response, until the [TestFlight checklist](validation/tailscale-testflight-qa.md) measures a better value.
 
 | What the device sees | Likely cause | What the person can do |
 | --- | --- | --- |
@@ -174,11 +175,11 @@ A connection that the tailnet policy refuses looks the same as an unreachable ma
 
 ## Loopback only, published by Serve
 
-- The host listens on `127.0.0.1:8441` with plain HTTP. Port 8441 avoids the legacy `serve`, which listens on 8443. The owner may choose another loopback port.
-- The host refuses to start with a listener outside 127.0.0.0/8 and `::1`. A direct LAN or VPN listener is outside the first release.
-- On a NAS the host shares its network namespace with a Tailscale container, or runs where Tailscale is installed on the NAS. In both cases its loopback is reachable only from that namespace.
+- The read listener serves plain HTTP/1 only. Port 8441 avoids the legacy listener on 8443.
+- The host refuses a read API listener outside 127.0.0.0/8 and `::1`. A direct LAN or VPN listener is outside the first release.
+- On the deployed NAS, `network_mode: service:tailscale` shares the sidecar's network namespace. Userspace Tailscale forwards tailnet TCP ports outside Serve to the same port on `127.0.0.1`. Bind both listeners to `127.0.0.2` and proxy `/` to `http://127.0.0.2:8441`. See the [setup assumptions and update checks](tailscale-setup.md#publish-a-nas-host).
 - `tailscale serve` publishes the listener to the tailnet over HTTPS with a certificate from Let's Encrypt, which iOS trusts without an exception. [Tailscale setup](tailscale-setup.md) configures it. Do not use `tailscale funnel`, which publishes to the internet.
-- The owner enables the read API with `syncstr-headless serve --api-listen 127.0.0.1:8441 --api-address https://music.example.ts.net`. Library information reports the HTTPS origin supplied by the Tailscale setup.
+- The owner enables the read API with `syncstr-headless serve --listen 127.0.0.2:8443 --api-listen 127.0.0.2:8441 --api-address https://syncstr.example.ts.net`. Library information reports the HTTPS origin supplied by the Tailscale setup.
 
 Serve adds `Tailscale-User-Login`, `Tailscale-User-Name`, and `Tailscale-User-Profile-Pic` for devices that belong to a user. The first version never allows or refuses a request by them. A tagged device sends none, and on loopback any local process can set them.
 
@@ -230,7 +231,7 @@ Every error response except 304, 416, and an answer to `HEAD` has a JSON body. A
 
 The 503 `mirror-incomplete` and `not-serving` answers of [what a mirror needs](#what-a-mirror-needs-beyond-a-device) join this table with mirrors (ASO-172), and the 409 `not-primary` and 412 answers of [changes from devices](#changes-from-devices-come-later) join this table with the first write route.
 
-Limits: 16 concurrent file responses in total, with 429 and `Retry-After: 5` beyond that. The limit is global because the host cannot tell callers apart: every request through Serve arrives from loopback. 16 is provisional. ASO-160 sets it from measurements of a slow download, a whole-library save, and the start of playback running together. A device that gets 429 waits for `Retry-After` before its own backoff applies, and a device saving many files keeps at most 4 downloads open, so that one device cannot take every slot. Whether playback still starts while several devices save is part of the ASO-160 measurement. 20 GiB for an audio file (`MAX_AUDIO` in `model.rs`).
+Limits: 16 concurrent file responses in total, with 429 and `Retry-After: 5` beyond that. The limit is global because the host cannot tell callers apart: every request through Serve arrives from loopback. 16 is provisional. The load measurement is pending. A device that gets 429 waits for `Retry-After` before its own backoff applies, and a device saving many files keeps at most 4 downloads open, so that one device cannot take every slot. Whether playback still starts while several devices save remains to be measured. 20 GiB for an audio file (`MAX_AUDIO` in `model.rs`).
 
 Today `api.rs` and `shared_audio_api.rs` end every request after two hours, and the cluster transport closes a download after 240 seconds (`ClusterTransport.swift`). A 20 GiB file on a slow cellular link needs more than either. The new rules limit idle time, not total time.
 
@@ -245,7 +246,7 @@ Today `api.rs` and `shared_audio_api.rs` end every request after two hours, and 
 
 ## The contract is a file that tests enforce
 
-The contract follows the accepted [API contract gate](api-contract-gate-design.md). The `contracts/` directory that the gate plans does not exist yet.
+ASO-175 tracks the planned contract checks below. The contract follows the accepted [API contract gate](api-contract-gate-design.md). The `contracts/` directory that the gate plans does not exist yet.
 
 - `contracts/host-api-v1.yaml` is a hand-written OpenAPI 3.1 file (gate decision D2) that covers every first-release route, header, field, status, and error code above. The mirror fields and answers join it with ASO-172, and the write routes with ASO-168.
 - `oasdiff breaking --fail-on ERR` compares it with the base branch (gate decision D4). It takes the place of the `/v5` contract that gate slice S5 planned.
@@ -278,4 +279,4 @@ Neither protects:
 | Who may change the library from a device, given that the read API has no per-device identity? | ASO-168 |
 | Where does the store keep a change list, and what is the format of the reserved changes route? | ASO-161 |
 
-Other documents answer these earlier questions. Whether background downloads continue over the Tailscale tunnel is Q2 of the [device spike](validation/tailscale-device-spike.md#questions). Music enters a headless primary through an import on the primary, as the [migration plan](private-network-migration-plan.md#devices-read-and-download-in-the-first-release) describes. The store keeps the host state in `node.sqlite`, as the [migration plan](private-network-migration-plan.md#what-the-store-keeps-besides-the-library) describes. A device that loses access keeps its offline saves ([onboarding](onboarding-and-connection-states.md#on-a-device)).
+Other documents answer these earlier questions. Whether background downloads continue over the Tailscale tunnel is Q2 of the [TestFlight checklist](validation/tailscale-testflight-qa.md#questions). Music enters a headless primary through an import on the primary, as the [migration plan](private-network-migration-plan.md#devices-read-and-download-in-the-first-release) describes. The store keeps the host state in `node.sqlite`, as the [migration plan](private-network-migration-plan.md#what-the-store-keeps-besides-the-library) describes. A device that loses access keeps its offline saves ([onboarding](onboarding-and-connection-states.md#on-a-device)).

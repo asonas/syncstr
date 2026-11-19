@@ -127,7 +127,7 @@ The phone does not look for hosts on the tailnet, for the reasons in [Host API d
 
 ### When connecting fails
 
-[Host API design](host-api-design.md#when-the-device-cannot-reach-the-host-address) maps each `URLError` to its cause and says when an address is a tailnet address. Only then may a message name Tailscale. This table gives the words. The mapping is a hypothesis that the [device spike](validation/tailscale-device-spike.md) (ASO-159) confirms or corrects. The same messages explain the "host unreachable" state after the first connection.
+[Host API design](host-api-design.md#when-the-device-cannot-reach-the-host-address) maps each `URLError` to its cause and says when an address is a tailnet address. Only then may a message name Tailscale. This table gives the words. The mapping is a hypothesis that the [TestFlight checklist](validation/tailscale-testflight-qa.md) (ASO-159) confirms or corrects. The same messages explain the "host unreachable" state after the first connection.
 
 | Signal and likely cause | Japanese draft | Gloss | Action |
 | --- | --- | --- | --- |
@@ -169,7 +169,7 @@ From ASO-172 on, the line for two hosts that accept changes appears on the libra
 The state changes by these rules:
 
 - The device enters "host unreachable" only after a probe or a request fails. A network change alone does not change the state.
-- The device probes when the app becomes active, when the network path changes, when the listener taps **再試行**, and at intervals while a save waits for the host. A probe gives up after the 15 seconds that [Host API design](host-api-design.md) sets for an interactive request, unless the spike shows a better value.
+- The device probes when the app becomes active, when the network path changes, when the listener taps **再試行**, and at intervals while a save waits for the host. A probe gives up after the 15 seconds that [Host API design](host-api-design.md) sets for an interactive request, unless iPhone measurements show a better value.
 - The first success returns the device to "connected" and removes the line, with no action from the listener.
 - A local-only device shows no state.
 
@@ -220,7 +220,7 @@ A Mac whose library is local, as a host or for local playback only, shows no sav
 | --- | --- | --- | --- |
 | No host is reachable. | 接続待ち | Waiting for the connection. | On the first successful request. |
 | On cellular, with saves over cellular off. | Wi-Fi接続待ち | Waiting for Wi-Fi. | On Wi-Fi, or at once after **今回はモバイル通信で保存** ("Save over cellular this time"). |
-| The host answers 429 because it is busy. | 接続待ち | Waiting for the connection. The host's `Retry-After` sets when the save retries. ASO-160 measures how often this happens. | When the host accepts the download. |
+| The host answers 429 because it is busy. | 接続待ち | Waiting for the connection. The host's `Retry-After` sets when the save retries. The frequency has not been measured. | When the host accepts the download. |
 | Storage is full. | 空き容量が足りません。あと1.2 GB必要です。 | Not enough space. 1.2 GB more is needed. | When the app becomes active or a save is removed and the space is enough, or on **再試行**. |
 
 Before a save waits for storage, the device evicts the playback cache that ADR 0005 lets it evict. It never evicts an offline save. Today a full disk ends the save as a failure (OfflineSaves.swift lines 240-241). It becomes a waiting reason because the listener's fix, removing something, should let the save continue without a new request.
@@ -240,7 +240,7 @@ This rule replaces today's behavior, where an explicit save starts over cellular
 
 The listener can leave the app or lock the phone, and saves continue. A save that a network change or iOS interrupts resumes the partial file instead of starting over. Today the app cancels transfers when it goes to the background ([SyncstrApp.swift](../apps/ios/Sources/SyncstrApp.swift) lines 44-47, and PhoneRoot.swift lines 90-92).
 
-ASO-166 asks to record the fallback before building. If the spike shows that background downloads stop over the Tailscale tunnel, saves run while Syncstr is open, finish the current file in the time iOS allows, and continue on return without starting that file again. The waiting reasons then gain one row, Syncstrを開くと再開します ("Resumes when you open Syncstr"). The rest of this section stays as written.
+ASO-166 asks to record the fallback before building. If TestFlight QA shows that background downloads stop over the Tailscale tunnel, saves run while Syncstr is open, finish the current file in the time iOS allows, and continue on return without starting that file again. The waiting reasons then gain one row, Syncstrを開くと再開します ("Resumes when you open Syncstr"). The rest of this section stays as written.
 
 ### Show storage and remove saves
 
@@ -269,14 +269,14 @@ While a device downloads, the host keeps the Mac from idle sleep. A long album s
 
 ### Removed
 
-Each item goes when ASO-169 removes the code behind it, after the owner's library runs on the new path.
+Remove the old screens and their discovery and transfer code as ASO-165 and ASO-164 replace each flow.
 
 - In [SettingsView.swift](../apps/macos/SettingsView.swift), the `PeerSetupView` block (line 24), the 従来の接続 disclosure with its sheet and `MacPairingView` (lines 26-47), and the caption under the folder button (line 15).
 - [PeerSetup.swift](../apps/macos/PeerSetup.swift), the whole file. `PeerSetupView` holds 既存のライブラリに参加, the invitation and JSON field, 接続先のQRコードを読み取る, 従来のP2P接続と端末ID, 保存先と接続診断 with the relay, the connection path and host IDs, この端末のID, 接続設定を更新, and the P2P buttons. The file also holds `ClusterImportResults` (音源の追加結果) and `ClusterConflictsView` (変更の競合と端末の権限). The cellular toggle at lines 287-289 moves to the section 保存 with the new rule.
 - In [LocalSetup.swift](../apps/macos/LocalSetup.swift), `MacPairingView` (lines 69-117) and `PhonePairingView` (lines 119-209). `PairingScanner` (lines 211-234) stays for the new QR scan, and `AddMusicButton` and `LocalFolderButton` stay.
 - In Syncstr.swift, 既存のライブラリに参加 with its sheet (lines 68 and 112-116), and the `ClusterImportResults` sheet (lines 117-123).
 - In PhoneRoot.swift, the sections ライブラリと接続 (line 545) and 従来の接続 (lines 547-554), and the link 既存のライブラリに参加 (lines 241-244).
-- In the iOS [Info.plist](../apps/ios/Info.plist) and the `apps/ios/project.yml` that generates it, `NSBonjourServices`, and `NSLocalNetworkUsageDescription` if the [device spike](validation/tailscale-device-spike.md) shows that a host reached over Tailscale needs no local network permission. `NSCameraUsageDescription` becomes ライブラリのあるMacやNASのQRコードを読み取るために使用します。 ("Used to scan the QR code of the Mac or NAS that has the library.").
+- In the iOS [Info.plist](../apps/ios/Info.plist) and the `apps/ios/project.yml` that generates it, `NSBonjourServices`, and `NSLocalNetworkUsageDescription` if the [TestFlight checklist](validation/tailscale-testflight-qa.md) shows that a host reached over Tailscale needs no local network permission. `NSCameraUsageDescription` becomes ライブラリのあるMacやNASのQRコードを読み取るために使用します。 ("Used to scan the QR code of the Mac or NAS that has the library.").
 
 ### Kept
 
@@ -340,15 +340,15 @@ Three lines of DESIGN.md change under ASO-167. "Put legacy device transfer in Se
 | --- | --- | --- |
 | Mac first launch, all three cases | ASO-167 | ASO-162 |
 | Accepting connections, sleep, and login | ASO-162 | ASO-160 |
-| Tailscale checks, the publish confirmation, and the copied command | ASO-163 | ASO-159, ASO-160 |
+| Tailscale checks, the publish confirmation, and the copied command | ASO-163 | ASO-160 |
 | The connect sheet, connecting by host address on the device, and connection failures | ASO-164 | ASO-160 |
 | iPhone first launch and the offer to save | ASO-167 | ASO-164, ASO-165 |
-| Device connection states and when Tailscale is named | ASO-167 | ASO-159, ASO-165 |
+| Device connection states and when Tailscale is named | ASO-167 | ASO-164, ASO-165 |
 | The mirror line and the line for two hosts that accept changes | ASO-172 | ASO-167 for wording |
-| Saves, progress, waiting, cellular, storage, the whole library, and the background | ASO-166 | ASO-159, ASO-165 |
+| Saves, progress, waiting, cellular, storage, the whole library, and the background | ASO-166 | ASO-164, ASO-165 |
 | Hiding edits on a connected device | ASO-165 | ASO-168 to bring edits back |
 | The "upgraded" reason and connecting once more | ASO-165 | ASO-161 |
-| Removal of the old screens | ASO-169 | The owner's library on the new path |
+| Removal of the old screens | ASO-165, ASO-164 | As each flow changes |
 | The recommendation without Tailscale | ASO-167 | ASO-163 for the guide |
 
 ## Prototype before building
@@ -361,9 +361,9 @@ ASO-167 requires a prototype before these flows are built. Each is a throwaway S
 4. The Saved music category and its progress during a long whole-library save.
 5. A sandboxed Mac app that tries to configure `tailscale serve` through the command and the LocalAPI, with both macOS variants of Tailscale. It answers open question 1.
 
-## What the device spike must answer
+## What to check in TestFlight
 
-The download design is not final before the [device spike](validation/tailscale-device-spike.md#questions) (ASO-159) answers Q2 (background downloads over the tunnel, where a "no" selects the foreground fallback), Q3 (resume after a network change), Q4 (the signal and time of each unreachable cause, which set the connection failure table and the probe timeout), and Q8 (whether `URLSession` keeps a download off cellular through the tunnel, where a "no" means the cellular rule cannot be enforced as written).
+Use the [TestFlight checklist](validation/tailscale-testflight-qa.md#questions) as the app changes land. Q2 checks whether saves need the foreground fallback. Q3 checks resume after a network change. Q4 measures connection failure signals and timeouts. Q8 checks whether Wi-Fi-only saves stay off cellular through the tunnel.
 
 ## Open questions
 
