@@ -153,7 +153,7 @@ enum Command {
         #[arg(long, requires = "api_address", value_parser = loopback_address)]
         api_listen: Option<std::net::SocketAddr>,
         /// HTTPS origin reported to devices in library information.
-        #[arg(long, value_parser = host_origin)]
+        #[arg(long, requires = "api_listen", value_parser = host_origin)]
         api_address: Option<String>,
         #[cfg(feature = "p2p")]
         #[arg(long, requires = "peer_address_out")]
@@ -413,10 +413,7 @@ async fn run(cli: crate::Cli) -> anyhow::Result<()> {
         } => {
             let store = syncstr_headless::shared_audio::Store::activate(&data, &expected_baseline)?;
             let catalog = store.catalog()?;
-            println!(
-                "{}",
-                serde_json::json!({"schema": store.generation()?, "baseline": catalog.baseline, "tracks": catalog.tracks.len()})
-            );
+            println!("{}", serde_json::json!({"schema": store.generation()?, "baseline": catalog.baseline, "tracks": catalog.tracks.len()}));
         }
         #[cfg(feature = "p2p")]
         crate::Command::SharedAudioControl {
@@ -468,10 +465,7 @@ async fn run(cli: crate::Cli) -> anyhow::Result<()> {
                 Ok(state) => state,
                 // Freezing succeeds on a journal that cannot be inspected.
                 Err(error) if matches!(action, crate::ControlAction::Freeze) => {
-                    println!(
-                        "{}",
-                        serde_json::json!({"frozen": true, "review_required": error.to_string()})
-                    );
+                    println!("{}", serde_json::json!({"frozen": true, "review_required": error.to_string()}));
                     return Ok(());
                 }
                 Err(error) => return Err(error),
@@ -528,10 +522,7 @@ async fn run(cli: crate::Cli) -> anyhow::Result<()> {
                     let (id, path) = value
                         .split_once('=')
                         .ok_or_else(|| anyhow::anyhow!("expected ID=ADDRESS_FILE"))?;
-                    syncstr_headless::shared_audio_net::address(
-                        std::path::Path::new(path),
-                        id.parse()?,
-                    )
+                    syncstr_headless::shared_audio_net::address(std::path::Path::new(path), id.parse()?)
                 })
                 .collect::<anyhow::Result<Vec<_>>>()?;
             let store = syncstr_headless::shared_audio::Store::open(&data)?;
@@ -561,11 +552,7 @@ async fn run(cli: crate::Cli) -> anyhow::Result<()> {
                 anyhow::Ok(())
             });
             cluster_tasks.spawn(syncstr_headless::shared_audio_net::synchronize(
-                endpoint.clone(),
-                store.clone(),
-                signer.clone(),
-                discoveries,
-                given,
+                endpoint.clone(), store.clone(), signer.clone(), discoveries, given,
             ));
             let token = syncstr_headless::identity::token(&identity.join("token"))?;
             let tls = syncstr_headless::identity::tls(&identity).await?;
@@ -579,10 +566,7 @@ async fn run(cli: crate::Cli) -> anyhow::Result<()> {
             });
             let server = axum_server::from_tcp_rustls(listener, tls)?
                 .handle(handle)
-                .serve(
-                    syncstr_headless::shared_audio_api::router(store, signer, &token)
-                        .into_make_service(),
-                );
+                .serve(syncstr_headless::shared_audio_api::router(store, signer, &token).into_make_service());
             tokio::select! {
                 result = server => result?,
                 result = cluster_tasks.join_next() => {

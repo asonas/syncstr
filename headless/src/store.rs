@@ -233,6 +233,10 @@ impl crate::store::Store {
             let transaction = connection.transaction()?;
             let mut organization = crate::store::read_organization(&transaction)?;
             let original_id = entry.track.id.clone();
+            if create_legacy_candidate {
+                // A repeated upload keeps the stored metadata but can supply a different image.
+                register_entry_artwork(&transaction, &entry)?;
+            }
             if let Some(incoming) = &incoming { organization.merge(incoming)?; }
             let previous: Option<Vec<u8>> = transaction
                 .query_row(

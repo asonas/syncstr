@@ -211,6 +211,11 @@ async fn library_info(api: &str) -> serde_json::Value {
 fn host_api_refuses_non_loopback_listeners_and_invalid_origins() {
     for (flag, value, error) in [
         ("--api-listen", "127.0.0.1:0", "--api-address"),
+        (
+            "--api-address",
+            "https://music.example.test",
+            "--api-listen",
+        ),
         ("--api-listen", "0.0.0.0:0", "loopback"),
         ("--api-listen", "[::]:8441", "loopback"),
         ("--api-address", "http://music.example.test", "HTTPS origin"),

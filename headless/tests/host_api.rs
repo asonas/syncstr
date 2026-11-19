@@ -307,6 +307,50 @@ async fn v4_upload_publishes_its_cover_with_the_track() -> anyhow::Result<()> {
     assert_eq!(v4_upload(&host, &entry).await?, saved);
     let after: Value = host.get("catalog").send().await?.json().await?;
     assert_eq!(after, catalog);
+    let blue = include_bytes!("../fixtures/blue.jpg");
+    let response = host
+        .get(&format!("artwork/{}", hex::encode(Sha256::digest(blue))))
+        .send()
+        .await?
+        .error_for_status()?;
+    assert_eq!(response.bytes().await?.as_ref(), blue);
+    Ok(())
+}
+
+#[tokio::test]
+async fn v4_upload_publishes_embedded_artwork_alongside_an_existing_folder_candidate()
+-> anyhow::Result<()> {
+    let host = Host::start().await?;
+    let fixture: Value = serde_json::from_slice(include_bytes!("../fixtures/album-artwork.json"))?;
+    let mut organization: syncstr_headless::organization::Organization =
+        serde_json::from_value(fixture["organization"].clone())?;
+    let red = include_bytes!("../fixtures/red.jpg");
+    let id = hex::encode(Sha256::digest(red));
+    let artwork = organization.artwork.as_mut().unwrap();
+    artwork.assets.remove(&id).unwrap();
+    let candidates = artwork.candidates.clone();
+    let mut entry: Entry = serde_json::from_slice(include_bytes!("../fixtures/local-entry.json"))?;
+    entry.track.id = candidates[0].track.clone();
+    organization.tracks[0].sha256 = entry.sha256.clone();
+    host.store.merge_organization(organization).await?;
+    entry.artwork = Some(red.to_vec());
+    v4_upload(&host, &entry).await?;
+    let response = host
+        .get(&format!("artwork/{id}"))
+        .send()
+        .await?
+        .error_for_status()?;
+    assert_eq!(response.bytes().await?.as_ref(), red);
+    assert_eq!(
+        host.store
+            .catalog()
+            .await?
+            .organization
+            .artwork
+            .unwrap()
+            .candidates,
+        candidates
+    );
     Ok(())
 }
 

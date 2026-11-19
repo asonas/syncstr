@@ -129,6 +129,7 @@ struct SnapshotRows {
     id: String,
     entries: Vec<Vec<u8>>,
     organization: Vec<u8>,
+    asset_ids: String,
     #[cfg(feature = "p2p")]
     playlist_records: Vec<Vec<u8>>,
     #[cfg(feature = "p2p")]
@@ -147,6 +148,16 @@ impl SnapshotRows {
                 })?;
             anyhow::ensure!(!present, "playlist verification requires p2p");
         }
+        // Peer projections can store full images here. Only their IDs belong in the catalog.
+        let (organization, asset_ids) = db.query_row(
+            "SELECT CASE WHEN json_valid(doc) THEN
+                        CAST(json_replace(doc, '$.artwork.assets', json('{}')) AS BLOB) END,
+                    CASE WHEN json_valid(doc) THEN
+                        (SELECT json_group_array(key) FROM json_each(doc, '$.artwork.assets')) END
+             FROM (SELECT CAST(payload AS TEXT) AS doc FROM organization WHERE singleton = 1)",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?;
         Ok(Self {
             id: db.query_row("SELECT id FROM library WHERE singleton = 1", [], |row| {
                 row.get(0)
@@ -158,11 +169,8 @@ impl SnapshotRows {
                         THEN CAST(json_remove(CAST(payload AS TEXT), '$.artwork') AS BLOB)
                  END FROM tracks ORDER BY id",
             )?,
-            organization: db.query_row(
-                "SELECT payload FROM organization WHERE singleton = 1",
-                [],
-                |row| row.get(0),
-            )?,
+            organization,
+            asset_ids,
             #[cfg(feature = "p2p")]
             proof: if playlist_records.is_empty() {
                 None
@@ -180,9 +188,10 @@ impl SnapshotRows {
         let mut organization: crate::organization::Organization =
             serde_json::from_slice(&self.organization)?;
         if let Some(artwork) = &mut organization.artwork {
-            for bytes in artwork.assets.values_mut() {
-                bytes.clear();
-            }
+            artwork.assets = serde_json::from_str::<Vec<String>>(&self.asset_ids)?
+                .into_iter()
+                .map(|id| (id, Vec::new()))
+                .collect();
         }
         let playlists = Playlists::default();
         #[cfg(feature = "p2p")]
@@ -672,6 +681,62 @@ mod tests {
                 Ok(())
             })
             .await
+    }
+
+    #[tokio::test]
+    async fn projected_organization_images_stay_in_sqlite_during_catalog_reads()
+    -> anyhow::Result<()> {
+        use sha2::Digest as _;
+        let root = tempfile::tempdir()?;
+        let store = crate::store::Store::open(root.path())?;
+        let fixture: serde_json::Value =
+            serde_json::from_slice(include_bytes!("../fixtures/album-artwork.json"))?;
+        let mut organization: crate::organization::Organization =
+            serde_json::from_value(fixture["organization"].clone())?;
+        let payload = serde_json::to_vec(&organization)?;
+        let rows = store
+            .run(move |db, _| {
+                db.execute("UPDATE organization SET payload = ?", [payload])?;
+                SnapshotRows::read(db)
+            })
+            .await?;
+        let assets = &mut organization.artwork.as_mut().unwrap().assets;
+        assert_eq!(
+            serde_json::from_str::<std::collections::BTreeSet<String>>(&rows.asset_ids)?,
+            assets.keys().cloned().collect()
+        );
+        assert_eq!(
+            serde_json::from_slice::<serde_json::Value>(&rows.organization)?["artwork"]["assets"],
+            serde_json::json!({})
+        );
+        for bytes in assets.values_mut() {
+            assert!(!bytes.is_empty());
+            bytes.clear();
+        }
+        let host_id = uuid::Uuid::nil();
+        let entries = Vec::<CatalogEntry>::new();
+        let playlists = Playlists::default();
+        let digest =
+            sha2::Sha256::digest(serde_json::to_vec(&(&entries, &organization, &playlists))?);
+        let marker = format!("1.{host_id}.{digest:x}");
+        let expected = serde_json::to_vec(&Catalog {
+            id: &rows.id,
+            name: "Syncstr",
+            entries,
+            organization,
+            playlists,
+            marker: &marker,
+        })?;
+        let snapshot = rows.build(
+            host_id,
+            Generation {
+                local: 0,
+                external: 0,
+            },
+        )?;
+        assert_eq!(snapshot.marker, marker);
+        assert_eq!(snapshot.body.as_ref(), expected);
+        Ok(())
     }
 
     #[tokio::test]
