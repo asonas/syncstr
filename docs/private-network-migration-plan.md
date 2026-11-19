@@ -265,7 +265,7 @@ ASO-171 lists the issues. They are handled in batches, when each decision is mad
 - **Time of a full verification.** Hashing at 30 to 100 MB/s takes roughly 10 to 35 seconds per gigabyte of audio. This is an estimate. Rehearsal step 3 measures it, and the cutover hashes every file again, so the owner allows that measured time for the cutover.
 - **A torn snapshot.** A plain file copy of a database in use can be inconsistent. The online backup and `PRAGMA integrity_check` catch that, and a short stop of the old `serve` avoids it.
 - **A device still using discovery.** It may lose remote playback during the Apple rollout. Check local playback and existing offline saves in the TestFlight build.
-- **Playlist records with more than one head.** The migration stops and names them, and the owner resolves them on the old path before the cutover. The read API lists them in `conflictedPlaylists`. Do not remove the old path's way of resolving them until that list is empty or a replacement exists.
+- **Playlist records with more than one head.** The migration stops and names them, and the owner resolves them on the old path before the cutover. Do not remove the old path's way of resolving them until the migration inventory finds no playlist with more than one head, or a replacement exists. The read API's `conflictedPlaylists` is not enough for this check: it lists only playlists whose heads differ in content, and the migration also stops on heads with the same content.
 - **The owner cannot add music.** Removal step 5 deletes `cluster_replica.rs`, which `nas_import.py` uses through `migration_batch`. Step 5 therefore requires a working import on the primary.
 
 ## Phases

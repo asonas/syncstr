@@ -27,11 +27,11 @@ All phone checks use ASO-165 (catalog and file reads) and ASO-164 (connection by
 - If the first track takes too long, revisit whole-file playback with the measured file size and network (ASO-165).
 - If the NAS needs manual sign-in after reboot, revise the sidecar setup (ASO-163).
 - If bytes move on cellular with cellular downloads disabled, revisit how ASO-166 enforces Wi-Fi-only saves. If On Demand needs manual reconnection, update the first-launch and recovery instructions (ASO-167).
-- Remove `NSLocalNetworkUsageDescription` only if Q1 shows no prompt on a run that started without the permission.
+- Remove `NSLocalNetworkUsageDescription` only if a Q1 run that started without the permission showed no prompt and still loaded the catalog, artwork and audio by the Serve name and played.
 
 ## Results
 
-**Mac over the tailnet, 2026-11-19.** Library information returned 200 with the host address. The catalog returned 200 with several thousand entries and their playlists: about 12.7 MB uncompressed, 4.5 MB with gzip, in about 0.25 seconds. An audio range request returned 206 with the SHA-256 ETag. Artwork returned 200 with `image/jpeg`. A POST returned 405. Through Serve, `/v4/catalog` returned 404. No TCP connection opened to the tailnet name on ports 8441 and 8443, or to the NAS's LAN address on the old Syncstr ports. After each deployment, Serve returned 502 for a few tens of seconds while the node opened its store.
+**Mac over the tailnet, 2026-11-19.** Library information returned 200 with the host address. The catalog returned 200 with several thousand entries and their playlists: about 12.7 MB uncompressed, 4.5 MB with gzip, in about 0.25 seconds. An audio range request returned 206 with the SHA-256 ETag. Artwork returned 200 with `image/jpeg`. A POST returned 405. Through Serve, `/v4/catalog` returned 404. No TCP connection opened to the tailnet name on ports 8441 and 8443, or to the NAS's LAN address on the old Syncstr ports. After deployment, Serve returned 502 for a few tens of seconds while the node opened its store.
 
 **Physical iPhone.** All checks, including NAS reboot recovery, are pending. Append one row per run here. Use the device model, never its personal name. Omit actual host addresses, account details, library metadata and raw logs.
 
