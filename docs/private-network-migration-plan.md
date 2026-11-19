@@ -146,7 +146,7 @@ Steps 1 to 6 are the rehearsal. They run on a snapshot in a disposable directory
 
 ### How to go back
 
-For the current rollout, stop the node and reopen the same data directory with the previous image. Keep that image, the store and its originals. Rollback restores the host data. An updated app may already have removed its legacy transport.
+For the current rollout, stop the node and reopen the same data directory with the previous image. Keep that image, the store and its originals. The previous image then serves the same data, including any changes made since the rollout. An updated app may already have removed its legacy transport.
 
 For ASO-161 the migration writes a separate directory and leaves the original intact. Stop the migrated host before reopening the original with the previous image. Changes made only in the new store will be missing. Before switching back, preserve that directory and account for any imports or edits since cutover.
 
@@ -162,7 +162,7 @@ For ASO-161 the migration writes a separate directory and leaves the original in
 1. The NAS read API is deployed on the existing store. It does not require the new directory.
 2. ASO-165 moves catalog, playlists, artwork and audio reads in the Apple apps to `/api/v1`. ASO-164 connects by host address. Remove old discovery and transfer screens and code as these changes land. Keep local playback and find existing offline saves by track ID and hash.
 3. Push the app changes to `main`. Xcode Cloud distributes each iOS build to internal TestFlight. The owner checks the real app on the iPhone as each feature arrives. ASO-166 adds background downloads, followed by first launch and connection states in ASO-167.
-4. Later headless work covers gzip and contract tests (ASO-175) and removal of the old stack (ASO-169). Preserve the code needed to read the existing store and its playlists until its data has a replacement.
+4. Later headless work covers the contract tests and the other follow-ups of the read API (ASO-175) and removal of the old stack (ASO-169). Preserve the code needed to read the existing store and its playlists until its data has a replacement.
 5. ASO-161 rehearses and verifies the new directory before the owner approves the store cutover. Apple rollout and legacy transport removal do not depend on that cutover.
 
 ### The test that says the library runs on the new path
@@ -265,7 +265,7 @@ ASO-171 lists the issues. They are handled in batches, when each decision is mad
 - **Time of a full verification.** Hashing at 30 to 100 MB/s takes roughly 10 to 35 seconds per gigabyte of audio. This is an estimate. Rehearsal step 3 measures it, and the cutover hashes every file again, so the owner allows that measured time for the cutover.
 - **A torn snapshot.** A plain file copy of a database in use can be inconsistent. The online backup and `PRAGMA integrity_check` catch that, and a short stop of the old `serve` avoids it.
 - **A device still using discovery.** It may lose remote playback during the Apple rollout. Check local playback and existing offline saves in the TestFlight build.
-- **Playlist records with more than one head.** The migration stops and names them, and the owner resolves them on the old path before the cutover.
+- **Playlist records with more than one head.** The migration stops and names them, and the owner resolves them on the old path before the cutover. The read API lists them in `conflictedPlaylists`. Do not remove the old path's way of resolving them until that list is empty or a replacement exists.
 - **The owner cannot add music.** Removal step 5 deletes `cluster_replica.rs`, which `nas_import.py` uses through `migration_batch`. Step 5 therefore requires a working import on the primary.
 
 ## Phases
@@ -275,7 +275,7 @@ ASO-171 lists the issues. They are handled in batches, when each decision is mad
 | NAS read API | ASO-160 | Merged and deployed on the existing store. Mac reads verified on 2026-11-19. |
 | Apple reads and connection by address | ASO-165, ASO-164 | Both apps read the library by address. Existing offline saves still play. |
 | Downloads and connection states | ASO-166, ASO-167, ASO-159 | The owner records the relevant iPhone results as each internal TestFlight build arrives. |
-| Headless follow-ups | ASO-175, ASO-169 | Gzip and contract checks land. Old transports are removed subject to the data dependencies above. |
+| Headless follow-ups | ASO-175, ASO-169 | Contract checks land. Old transports are removed subject to the data dependencies above. |
 | Store migration | ASO-161 | Rehearsals agree, the owner approves the final run, and the migrated library passes the cutover checks. |
 | A Mac as the host | ASO-162, ASO-163 | A Mac serves a folder library over Tailscale, and an allowed iPhone saves and plays an album offline. |
 | Mirrors and the primary switch | ASO-172, ASO-173 | As [mirrors and the primary switch](mirrors-and-primary-switch.md) defines |

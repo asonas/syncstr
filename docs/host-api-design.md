@@ -55,7 +55,7 @@ Any other change is breaking and goes to `/api/v2`. The host then serves both ve
 ```json
 {
 	"library": "5b0c8f2e-6a1d-4c3b-9e7f-0d2a4b6c8e10",
-	"name": "Music",
+	"name": "Syncstr",
 	"host": {"id": "2d7b9f41-c3a8-4e6d-b0f2-8a1c5e9d3b74", "address": "https://music.example.ts.net"},
 	"role": "primary",
 	"switchNumber": 1,
@@ -96,7 +96,7 @@ Every response carries `Syncstr-Switch: <switchNumber>.<primary>` with the host'
 ```json
 {
 	"id": "5b0c8f2e-6a1d-4c3b-9e7f-0d2a4b6c8e10",
-	"name": "Music",
+	"name": "Syncstr",
 	"marker": "1.2d7b9f41-c3a8-4e6d-b0f2-8a1c5e9d3b74.2ea9b61cb0683245fdc2f68aedfd00159df809d853e11552faeb83df91957014",
 	"entries": [
 		{
@@ -116,11 +116,11 @@ Every response carries `Syncstr-Switch: <switchNumber>.<primary>` with the host'
 - `id`, `name`, `entries`, and `organization` keep the JSON of `Catalog` in `model.rs`, with two differences. An entry has no `artwork` field. `organization.artwork.assets` maps each image ID to an empty string, and the image comes from the artwork route.
 - The catalog holds everything in the library except audio and image bytes, including import evidence (`importedAlbum`), aliases, and choices. A mirror must be able to become the primary from it.
 - `track.id` names the Library Track and `sha256` names its audio. Two entries may share a `sha256`, as [ADR 0006](adr/0006-preserve-source-track-identity-independently-of-audio.md) and [ADR 0007](adr/0007-preserve-track-addresses-when-sharing-audio.md) allow, and a device downloads that file once. If the store chosen in ASO-161 keeps several audio copies per track, the entry gains an optional list of them, an additive change.
-- ASO-175 will add gzip for clients that accept it.
+- The host compresses the catalog with gzip when the request allows it.
 - A device asks for the catalog at launch, on return to the foreground, when `Syncstr-Switch` changes, and when the person refreshes, always with `If-None-Match`. There is no push in the first version.
 - A device shows the catalog before it has every image and fetches each image when it needs to show it.
 
-The first version has no route for the changes since a marker, because the store at schema generation 4 keeps no change list. The catalog of a library of several thousand tracks, without image bytes, is estimated at a few megabytes before compression. On 2026-11-19 the NAS returned the owner's catalog and playlists to a Mac over the tailnet in well under a second. `GET /api/v1/changes?after=<marker>` is reserved. It is added, as an additive change, once the store keeps a change list (ASO-161), or earlier if the compressed catalog exceeds 5 MB.
+The first version has no route for the changes since a marker, because the store at schema generation 4 keeps no change list. The catalog of a library of several thousand tracks, without image bytes, was estimated at a few megabytes before compression. On 2026-11-19 the owner's catalog, with several thousand tracks and their playlists, measured about 12.7 MB uncompressed and 4.5 MB with gzip, and a Mac on the tailnet received it in about 0.25 seconds. The compressed size is close to the 5 MB threshold below. `GET /api/v1/changes?after=<marker>` is reserved. It is added, as an additive change, once the store keeps a change list (ASO-161), or earlier if the compressed catalog exceeds 5 MB.
 
 ### Playlists travel in the catalog
 
