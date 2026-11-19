@@ -134,8 +134,8 @@ extension LocalTransfer {
         saveWorker = nil
         saveRetry?.cancel()
         saveRetry = nil
-        saveNetwork?.stop()
-        saveNetwork = nil
+        saveSource?.stop()
+        saveSource = nil
     }
 
     func setSavesBackgrounded(_ backgrounded: Bool) {
@@ -191,7 +191,7 @@ extension LocalTransfer {
                             }
                             if store.hasFile(entry), try LocalMusicStore.digest(file: store.fileURL(entry)) == entry.sha256 {
                                 if clusterRegistration != nil {
-                                    try await ClusterNetwork(store: store, secrets: peerSecrets).recoverDownloadedFile(entry)
+                                    try await makeLibrarySource().recoverDownloadedFile(entry)
                                 }
                                 if entry.track.audioHash != nil { try store.database().saveAudioPin(entry) }
                                 saveRequests[index].completed.insert(entry.saveIdentity)
@@ -211,10 +211,10 @@ extension LocalTransfer {
                                 saveRequests[index].error = nil
                                 try persistSaves(saveRequests)
                                 if clusterRegistration != nil {
-                                    let network = ClusterNetwork(store: store, secrets: peerSecrets)
-                                    saveNetwork = network
-                                    defer { network.stop(); if saveGeneration == token { saveNetwork = nil } }
-                                    try await network.download(object: entry.sha256, track: entry.track.id) { _ in }
+                                    let source = makeLibrarySource()
+                                    saveSource = source
+                                    defer { source.stop(); if saveGeneration == token { saveSource = nil } }
+                                    try await source.download(entry, cache: nil, diagnostic: nil) { _ in }
                                 } else if legacyChannelUsable && !busy {
                                     let cached = try await playbackFile(entry.track)
                                     try Task.checkCancellation()
@@ -264,7 +264,7 @@ extension LocalTransfer {
         else { try FileManager.default.copyItem(at: url, to: temporary) }
         try store.importFile(temporary, entry: entry, recordReceipt: entry.track.audioHash == nil)
         if clusterRegistration != nil {
-            try await ClusterNetwork(store: store, secrets: peerSecrets).recoverDownloadedFile(entry)
+            try await makeLibrarySource().recoverDownloadedFile(entry)
         }
     }
 }

@@ -15,6 +15,42 @@ final class OfflineSaveTests: XCTestCase {
 
     override func tearDown() { try? FileManager.default.removeItem(at: root) }
 
+    func testPlaybackRejectsDownloadedCacheFileWithWrongHashAndStopsSource() async throws {
+        let f = try SharedAudioTests.Fixture()
+        defer { try? FileManager.default.removeItem(at: f.store.root) }
+        try f.database.receiveSharedAudio(f.snapshot(), peer: f.host)
+        let entry = try XCTUnwrap(f.database.playbackEntry("A")?.entry)
+        let source = CorruptPlaybackSource()
+        let transfer = LocalTransfer(store: f.store, librarySourceFactory: { source })
+        await transfer.restorePeer(readIdentity: { throw LocalMusicError.unauthorized })
+
+        do {
+            _ = try await transfer.playbackFile(entry.track)
+            XCTFail("Playback accepted a file with the wrong hash")
+        } catch LocalMusicError.invalidData {}
+        XCTAssertEqual(source.downloaded.map(\.track.id), [entry.track.id])
+        XCTAssertEqual(source.downloaded.map(\.sha256), [entry.sha256])
+        XCTAssertTrue(source.stopped)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: transfer.playbackCache.store.fileURL(entry).path))
+    }
+
+    private final class CorruptPlaybackSource: LibrarySource {
+        var stopped = false
+        var downloaded: [LocalEntry] = []
+
+        func refreshCatalog() async throws -> LocalCatalog { throw LocalMusicError.clusterUnavailable }
+
+        func download(_ entry: LocalEntry, cache: LocalMusicStore?, diagnostic: PlaybackDiagnosticContext?,
+                      progress: @escaping @MainActor (Double) -> Void) async throws {
+            downloaded.append(entry)
+            let cache = try XCTUnwrap(cache)
+            try cache.prepare()
+            try Data("bad".utf8).write(to: cache.fileURL(entry))
+        }
+
+        func stop() { stopped = true }
+    }
+
     func testBusyTransferReportsRemovalBusyInsteadOfInvalidData() throws {
         let (store, entries) = try fixture()
         let transfer = LocalTransfer(store: store)
