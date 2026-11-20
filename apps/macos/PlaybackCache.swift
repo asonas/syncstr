@@ -57,7 +57,7 @@ class PlaybackCache {
     var protectedURL: URL?
     private let settings: URL
     private(set) var limitGB: Int
-    private var maintenance: Task<Void, Never>?
+    private(set) var maintenance: Task<Void, Never>?
     private var maintenanceID = UUID()
 
     func requestTrim(after acquisition: Task<Void, Never>?, onError: @escaping (Error) -> Void) {
@@ -100,6 +100,8 @@ class PlaybackCache {
     }
 
     func fileInBackground(_ entry: LocalEntry, diagnostic: PlaybackDiagnosticContext? = nil) async throws -> URL? {
+        // A trim scheduled by stop() may be waiting for this acquisition.
+        try Task.checkCancellation()
         await maintenance?.value
         try Task.checkCancellation()
         return try await Self.verifyInBackground(entry, store: store, diagnostic: diagnostic)
@@ -140,6 +142,7 @@ class PlaybackCache {
     }
 
     func makeRoomInBackground(for entry: LocalEntry) async throws {
+        try Task.checkCancellation()
         await maintenance?.value
         try Task.checkCancellation()
         try await Self.makeRoom(store: store, incoming: entry.track.size ?? 0, limitGB: limitGB, protectedURL: protectedURL)
