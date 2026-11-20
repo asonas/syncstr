@@ -727,10 +727,11 @@ final class CatalogDatabase {
                                   hosts: JSONDecoder().decode([HostLibraryInfo.Host].self, from: Data(hosts.utf8)), etag: row[4], marker: row[5], hostSwitch: row[6])
     }
 
-    func forgetHost() throws {
+    func forgetHost() throws -> String? {
         try transaction {
             try execute("INSERT OR REPLACE INTO retained_host_catalog(library,header,address) SELECT library,header,address FROM host_connection WHERE header IS NOT NULL")
             try execute("DELETE FROM host_connection")
+            return try retainedHostLibrary()
         }
     }
 

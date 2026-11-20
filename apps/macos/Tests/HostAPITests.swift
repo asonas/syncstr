@@ -863,6 +863,94 @@ final class HostAPITests: XCTestCase {
         await fulfillment(of: [refreshed], timeout: 3)
     }
 
+    func testActivationDuringCommittedConfirmationDrainsOneRefresh() async throws {
+        let (reply, _, _) = try fixture()
+        let refreshed = expectation(description: "one conditional request after confirmation")
+        let transfer = LocalTransfer(store: store(), hostConfiguration: configuration { request in
+            if request.value(forHTTPHeaderField: "If-None-Match") != nil {
+                refreshed.fulfill()
+                return HostReply(status: 304)
+            }
+            return reply
+        })
+        let first = try HostAddress("https://first.example.test")
+        let second = try HostAddress("https://second.example.test")
+        _ = try await transfer.confirmHost(first, information: hostInformation(first))
+        let committed = expectation(description: "second host committed")
+        let gate = HostResponseGate(started: committed)
+        let confirmation = Task {
+            try await transfer.confirmHost(second, information: hostInformation(second)) {
+                await withCheckedContinuation { continuation in gate.hold { continuation.resume() } }
+            }
+        }
+        await fulfillment(of: [committed], timeout: 3)
+        let messages = transfer.$status.compactMap { $0 }.sink { XCTFail("Unexpected refresh error: \($0)") }
+        transfer.cancel()
+        transfer.refreshConnection()
+        transfer.refreshConnection()
+        gate.release()
+        _ = try await confirmation.value
+        await fulfillment(of: [refreshed], timeout: 3)
+        messages.cancel()
+        XCTAssertNil(transfer.status)
+        XCTAssertEqual(transfer.hostConnection?.address, second)
+    }
+
+    func testBackgroundAfterDisconnectCommitPublishesRetainedLibrary() async throws {
+        let (reply, _, _) = try fixture()
+        let files = store()
+        let library = Library(localStore: files, hostConfiguration: configuration { _ in reply })
+        let transfer = library.transfer
+        let address = try HostAddress("https://confirmed.example.test")
+        _ = try await transfer.confirmHost(address, information: hostInformation(address))
+        let committed = expectation(description: "host deleted")
+        let gate = HostResponseGate(started: committed)
+        let disconnect = Task {
+            try await transfer.disconnectHost {
+                await withCheckedContinuation { continuation in gate.hold { continuation.resume() } }
+            }
+        }
+        await fulfillment(of: [committed], timeout: 3)
+        XCTAssertNil(try files.database().hostConnection())
+        transfer.cancel()
+        disconnect.cancel()
+        gate.release()
+        do { try await disconnect.value } catch { XCTFail("Committed disconnect failed: \(error)") }
+        XCTAssertNil(transfer.hostConnection)
+        XCTAssertEqual(transfer.retainedHostLibrary, libraryID)
+        XCTAssertEqual(library.localCatalog?.id, libraryID)
+    }
+
+    func testCancelledAutomaticRefreshKeepsConnectedStatus() async throws {
+        let (reply, _, _) = try fixture()
+        let address = try HostAddress("https://confirmed.example.test")
+        let transfer = LocalTransfer(store: store(), hostConfiguration: configuration { request in
+            if request.value(forHTTPHeaderField: "If-None-Match") != nil { throw URLError(.cancelled) }
+            return reply
+        })
+        _ = try await transfer.confirmHost(address, information: hostInformation(address))
+        let finished = expectation(description: "automatic refresh ended")
+        let idle = transfer.$busy.dropFirst().filter { !$0 }.first().sink { _ in finished.fulfill() }
+        let messages = transfer.$status.compactMap { $0 }.sink { XCTFail("Reported cancellation: \($0)") }
+        transfer.refreshConnection()
+        await fulfillment(of: [finished], timeout: 3)
+        XCTAssertTrue(transfer.connected)
+        XCTAssertNil(transfer.status)
+        withExtendedLifetime((idle, messages)) {}
+    }
+
+    func testURLCancellationDuringConfirmationRestoresPrompt() async throws {
+        let info = try informationReply(library: libraryID)
+        let transfer = LocalTransfer(store: store(), hostConfiguration: configuration { request in
+            if request.url?.lastPathComponent == "library" { return info }
+            throw URLError(.cancelled)
+        })
+        let flow = HostConnectionFlow()
+        await flow.read(.text("confirmed.example.test"), using: transfer)
+        await flow.confirm(using: transfer)
+        guard case .confirmation = flow.phase else { return XCTFail("Cancelled confirmation lost its prompt") }
+    }
+
     func testScheduledRefreshSurvivesCopyStartingBeforeTaskRuns() async throws {
         let (reply, _, _) = try fixture()
         let refreshed = expectation(description: "queued refresh completed after copy")

@@ -65,7 +65,8 @@ final class HostConnectionFlow: ObservableObject {
             try Task.checkCancellation()
             phase = .confirmation(address, info)
         } catch {
-            if !Task.isCancelled { phase = .failure(Self.message(for: error)) }
+            guard !Task.isCancelled else { return }
+            phase = isHostCancellation(error) ? .entry : .failure(Self.message(for: error))
         }
     }
 
@@ -102,7 +103,12 @@ final class HostConnectionFlow: ObservableObject {
                 phase = .connected
             }
         } catch {
-            if !Task.isCancelled { phase = .failure(Self.message(for: error)) }
+            guard !Task.isCancelled else { return }
+            if isHostCancellation(error) {
+                phase = replacing ? .replacement(address, info) : .confirmation(address, info)
+            } else {
+                phase = .failure(Self.message(for: error))
+            }
         }
     }
 }

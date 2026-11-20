@@ -58,6 +58,10 @@ struct HostConnection: Equatable {
     var hostSwitch: String?
 }
 
+func isHostCancellation(_ error: Error) -> Bool {
+    error is CancellationError || (error as? URLError)?.code == .cancelled
+}
+
 enum HostAPIError: LocalizedError, Equatable {
     case address, notHost, notRunning, notFound, method, rateLimited(Int?), storage, status(Int)
     var errorDescription: String? {

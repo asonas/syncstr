@@ -34,6 +34,12 @@ actor CatalogStorage {
         return result
     }
 
+    // A committed write must reach its caller even if cancellation arrives while it is running.
+    func commit<T: Sendable>(_ write: @Sendable () throws -> T) throws -> T {
+        try Task.checkCancellation()
+        return try write()
+    }
+
     func commitHostCatalog(_ update: CatalogUpdate, host: HostConnection, replacing previous: HostConnection?,
                            store: LocalMusicStore, didCommit: (@Sendable () async -> Void)?) async throws -> PreparedLocalCatalog {
         try Task.checkCancellation()

@@ -210,13 +210,7 @@ final class LocalTransfer: ObservableObject {
                 idleWaiters.removeAll()
                 for waiter in waiters.values { waiter.resume() }
             }
-            if !busy && pendingHostRefresh {
-                pendingHostRefresh = false
-                Task { [weak self] in
-                    guard let self, hostConnection != nil else { return }
-                    refreshConnection()
-                }
-            }
+            if !busy { drainHostRefresh() }
             if !busy && pendingOrganization {
                 pendingOrganization = false
                 Task { syncOrganization() }
@@ -370,11 +364,9 @@ final class LocalTransfer: ObservableObject {
     private var hostAudio = HostAudioFiles()
     private let hostConfiguration: URLSessionConfiguration
     private var observedSwitch: String?
-    private var hostOperation: Task<HostRefreshResult, Error>?
-    private var disconnectingHost = false
+    private var hostOperation: (id: UUID, task: Task<HostRefreshResult, Error>, automatic: Bool)?
+    var hasHostActivity: Bool { hostConnection != nil || hostOperation != nil }
     private var pendingHostRefresh = false
-    private var scheduledHostRefresh = false
-    private var refreshingHostSource: HostLibrarySource?
     var hasLibrarySource: Bool { hostConnection != nil || clusterRegistration != nil }
     var connectionMode: String { hostConnection != nil ? "host" : retainsHostCatalog ? "offline" : clusterRegistration != nil ? "cluster" : "legacy" }
     var onHostPlaylists: (([PlaylistDocument], Set<String>) -> Void)?
@@ -392,24 +384,39 @@ final class LocalTransfer: ObservableObject {
 
     func confirmHost(_ address: HostAddress, information: HostLibraryInfo, replacingLibrary: Bool = false,
                      didCommit: (@Sendable () async -> Void)? = nil) async throws -> HostRefreshResult {
-        try await runHostOperation(superseding: true) {
+        try await runHostOperation {
             try await self.applyHostConfirmation(address, information: information, replacingLibrary: replacingLibrary, didCommit: didCommit)
         }
     }
 
-    private func runHostOperation(superseding: Bool, _ action: @escaping @MainActor () async throws -> HostRefreshResult) async throws -> HostRefreshResult {
+    private func runHostOperation(_ action: @escaping @MainActor () async throws -> HostRefreshResult) async throws -> HostRefreshResult {
         try Task.checkCancellation()
-        let previous = hostOperation
-        guard !disconnectingHost, previous == nil || superseding else { throw LocalMusicError.transferBusy }
-        previous?.cancel()
-        let task = Task {
-            _ = await previous?.result
-            try Task.checkCancellation()
-            return try await action()
-        }
-        hostOperation = task
-        defer { if hostOperation == task { hostOperation = nil } }
+        let task = startHostOperation(action: action)
         return try await withTaskCancellationHandler { try await task.value } onCancel: { task.cancel() }
+    }
+
+    private func startHostOperation(automatic: Bool = false, action: @escaping @MainActor () async throws -> HostRefreshResult) -> Task<HostRefreshResult, Error> {
+        let previous = hostOperation
+        if previous?.automatic == true { pendingHostRefresh = true }
+        previous?.task.cancel()
+        let id = UUID()
+        let task = Task {
+            defer {
+                if hostOperation?.id == id {
+                    hostOperation = nil
+                    drainHostRefresh()
+                }
+            }
+            _ = await previous?.task.result
+            try Task.checkCancellation()
+            do { return try await action() }
+            catch {
+                try Task.checkCancellation()
+                throw error
+            }
+        }
+        hostOperation = (id, task, automatic)
+        return task
     }
 
     private func applyHostConfirmation(_ address: HostAddress, information: HostLibraryInfo, replacingLibrary: Bool,
@@ -427,11 +434,11 @@ final class LocalTransfer: ObservableObject {
             return .differentLibrary(information.library)
         }
         if let saved, saved.address == address, saved.library == information.library {
+            try await adoptStoredHost(saved, attempt: startingGeneration)
             if saved.hosts != information.hosts {
-                try await CatalogStorage.shared.perform { try files.database().updateHosts(information.hosts, for: saved) }
+                try await CatalogStorage.shared.commit { try files.database().updateHosts(information.hosts, for: saved) }
+                hostConnection?.hosts = information.hosts
             }
-            guard generation == startingGeneration else { throw CancellationError() }
-            try await waitForIdle()
             guard generation == startingGeneration else { throw CancellationError() }
             return try await refreshStoredHost(confirming: true, didCommit: didCommit)
         } else {
@@ -483,30 +490,32 @@ final class LocalTransfer: ObservableObject {
         clusterResultsPending = false
     }
 
-    func disconnectHost() async throws {
-        guard !disconnectingHost else { throw LocalMusicError.transferBusy }
-        disconnectingHost = true
-        defer { disconnectingHost = false }
-        let previous = hostOperation
-        previous?.cancel()
-        _ = await previous?.result
-        guard hostConnection != nil else { return }
+    func disconnectHost(didCommit: (@Sendable () async -> Void)? = nil) async throws {
+        _ = try await runHostOperation {
+            guard self.hostConnection != nil else { return .unchanged }
+            let files = self.store
+            let retained = try await CatalogStorage.shared.commit { try files.database().forgetHost() }
+            await didCommit?()
+            // The caller can cancel during the delete. Restore the screen in an uncancelled task.
+            await Task { await self.finishHostDisconnect(retained: retained) }.value
+            return .updated
+        }
+    }
+
+    private func finishHostDisconnect(retained: String?) async {
         cancelActiveConnection(reason: "disconnect_host")
-        let attempt = generation
         stopSaveWorker()
-        let files = store
-        try await CatalogStorage.shared.perform { try files.database().forgetHost() }
-        guard generation == attempt else { throw CancellationError() }
         stopHostPlayback()
         hostConnection = nil
         hostAudio = HostAudioFiles()
         observedSwitch = nil
         catalog = nil
         changedHostLibrary = nil
-        clusterMutationsUnavailable = false
+        retainedHostLibrary = retained
+        status = nil
+        clusterMutationsUnavailable = retained != nil
         onHostPlaylists?([], [])
-        await restorePeer()
-        guard generation == attempt, hostConnection == nil else { return }
+        if retained == nil { await restorePeer() }
         await onHostDisconnected?()
         resumeSaves()
     }
@@ -524,8 +533,7 @@ final class LocalTransfer: ObservableObject {
                 let previous = self.observedSwitch
                 self.observedSwitch = value
                 if let previous, previous != value {
-                    if self.busy { self.pendingHostRefresh = true }
-                    else { self.refreshConnection() }
+                    self.refreshConnection()
                 }
             }
         }
@@ -538,53 +546,60 @@ final class LocalTransfer: ObservableObject {
     }
 
     func refreshConnection() {
-        guard hostConnection != nil else { connectCluster(); return }
-        guard !scheduledHostRefresh else { return }
-        if busy {
-            if refreshingHostSource == nil { pendingHostRefresh = true }
-            return
-        }
-        scheduledHostRefresh = true
-        let attempt = generation
-        operation = Task {
-            guard !Task.isCancelled, generation == attempt else { return }
-            scheduledHostRefresh = false
-            if busy { pendingHostRefresh = true; return }
-            do { _ = try await refreshHost() }
-            catch is CancellationError {}
-            catch { if !Task.isCancelled { status = error.localizedDescription } }
+        guard hasHostActivity else { connectCluster(); return }
+        pendingHostRefresh = true
+        drainHostRefresh()
+    }
+
+    private func drainHostRefresh() {
+        guard pendingHostRefresh, hostOperation == nil else { return }
+        guard hostConnection != nil else { pendingHostRefresh = false; return }
+        guard !busy, !savesBackgrounded else { return }
+        _ = startHostOperation(automatic: true) {
+            guard !self.busy else { return .unchanged }
+            self.pendingHostRefresh = false
+            do { return try await self.refreshStoredHost(confirming: false) }
+            catch {
+                if !Task.isCancelled && !isHostCancellation(error) { self.status = error.localizedDescription }
+                throw error
+            }
         }
     }
 
     func refreshHost() async throws -> HostRefreshResult {
-        guard hostConnection != nil else { throw HostAPIError.address }
-        return try await runHostOperation(superseding: false) {
+        let attempt = generation
+        while let previous = hostOperation {
+            _ = await previous.task.result
+            try Task.checkCancellation()
+            guard generation == attempt else { throw CancellationError() }
+        }
+        guard hostConnection != nil else { throw CancellationError() }
+        return try await runHostOperation {
             try await self.refreshStoredHost(confirming: false)
         }
     }
 
     private func refreshStoredHost(confirming: Bool, didCommit: (@Sendable () async -> Void)? = nil) async throws -> HostRefreshResult {
-        guard !busy else { throw LocalMusicError.transferBusy }
+        try await waitForIdle(until: .now.advanced(by: .seconds(15)))
+        try Task.checkCancellation()
         busy = true
         let attempt = generation
         let files = store
         defer { if generation == attempt { busy = false; resumeSaves() } }
-        let stored = try await CatalogStorage.shared.perform { try files.database().hostConnection() }
+        let (stored, retained) = try await CatalogStorage.shared.perform {
+            let database = try files.database()
+            let host = try database.hostConnection()
+            return (host, host == nil ? try database.retainedHostLibrary() : nil)
+        }
         guard generation == attempt else { throw CancellationError() }
         guard let host = stored else {
-            await restorePeer()
-            guard generation == attempt else { throw CancellationError() }
-            await onHostDisconnected?()
+            await Task { await self.finishHostDisconnect(retained: retained) }.value
             return .updated
         }
         try await adoptStoredHost(host, attempt: attempt)
         let source = hostSource(host)
-        refreshingHostSource = source
         artworkSource?.retryArtwork()
-        defer {
-            source.stop()
-            if generation == attempt { refreshingHostSource = nil }
-        }
+        defer { source.stop() }
         connectionEvent("refresh_host", outcome: "started", fields: ["connection_mode": "host"])
         do {
             let result = try await source.refreshCatalog()
@@ -613,7 +628,7 @@ final class LocalTransfer: ObservableObject {
                 return .updated
             }
         } catch {
-            if generation == attempt && !Task.isCancelled {
+            if generation == attempt && !Task.isCancelled && !isHostCancellation(error) {
                 connected = false
                 connectionEvent("refresh_host", outcome: "failed", fields: ["connection_mode": "host"], error: error)
             }
@@ -631,7 +646,6 @@ final class LocalTransfer: ObservableObject {
         if changingHost {
             activateHost(host)
         } else { hostConnection = host }
-        if let value = update.hostSwitch { observedSwitch = value }
         changedHostLibrary = nil
         status = nil
         catalog = update.catalog
@@ -1761,7 +1775,8 @@ final class LocalTransfer: ObservableObject {
     func cancel() { cancel(reason: "cancel_requested") }
 
     func cancel(reason: String) {
-        hostOperation?.cancel()
+        pendingHostRefresh = false
+        hostOperation?.task.cancel()
         cancelActiveConnection(reason: reason)
     }
 
@@ -1770,10 +1785,6 @@ final class LocalTransfer: ObservableObject {
         clusterRetry?.cancel(); clusterRetry = nil
         automaticAudioOperation = false
         generation = UUID()
-        pendingHostRefresh = false
-        scheduledHostRefresh = false
-        refreshingHostSource?.stop()
-        refreshingHostSource = nil
         operation?.cancel()
         operation = nil
         client?.close()
@@ -2147,11 +2158,18 @@ final class LocalTransfer: ObservableObject {
         }
     }
 
-    private func waitForIdle() async throws {
+    private func waitForIdle(until deadline: ContinuousClock.Instant? = nil) async throws {
         let attempt = generation
         while busy {
             try Task.checkCancellation()
             let id = UUID()
+            let timeout = deadline.map { deadline in
+                Task {
+                    try await Task.sleep(until: deadline, clock: .continuous)
+                    idleWaiters.removeValue(forKey: id)?.resume(throwing: URLError(.timedOut))
+                }
+            }
+            defer { timeout?.cancel() }
             try await withTaskCancellationHandler {
                 try await withCheckedThrowingContinuation { (waiter: CheckedContinuation<Void, Error>) in
                     if Task.isCancelled { waiter.resume(throwing: CancellationError()) }

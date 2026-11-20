@@ -558,7 +558,7 @@ final class Library: ObservableObject {
             return
         }
 #endif
-        if transfer.hasLibrarySource && !transfer.busy { transfer.refreshConnection() }
+        if transfer.hasHostActivity || (transfer.hasLibrarySource && !transfer.busy) { transfer.refreshConnection() }
         else { transfer.connectionEvent("startup_connect_skipped", fields: ["reason": transfer.busy ? "busy" : "no_in_memory_cluster_registration", "legacy_auto_connect": "not_requested"]) }
         transfer.resumeSaves()
     }

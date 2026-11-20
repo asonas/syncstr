@@ -110,7 +110,7 @@ struct LibraryView: View {
         }
         .task { await library.restoreLibrary() }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
-            if library.transfer.hostConnection != nil { library.transfer.refreshConnection() }
+            if library.transfer.hasHostActivity { library.transfer.refreshConnection() }
         }
         .modifier(OfflineSaveRemoval(library: library))
         .modifier(TrackMetadataEditing(library: library))

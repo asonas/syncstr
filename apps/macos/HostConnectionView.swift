@@ -145,7 +145,9 @@ struct HostConnectionSettings: View {
                         let result = try await transfer.refreshHost()
                         if case .differentLibrary = result { return }
                         message = "ライブラリを更新しました。"
-                    } catch { message = HostConnectionFlow.message(for: error) }
+                    } catch {
+                        if !isHostCancellation(error) { message = HostConnectionFlow.message(for: error) }
+                    }
                 }
             }.disabled(transfer.busy)
             if transfer.changedHostLibrary != nil {
@@ -160,7 +162,9 @@ struct HostConnectionSettings: View {
                     Button("接続を解除", role: .destructive) {
                         Task {
                             do { try await transfer.disconnectHost(); message = nil }
-                            catch { message = "接続を解除できませんでした。" }
+                            catch {
+                                if !isHostCancellation(error) { message = "接続を解除できませんでした。" }
+                            }
                         }
                     }
                 } message: { Text("この端末に保存した音楽は、接続を解除した後も再生できます。") }
