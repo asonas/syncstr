@@ -29,6 +29,8 @@ For a host library, enter its address (for example, `music.example.ts.net`) or o
 
 For local playback, choose a folder. The app indexes it and plays the original files on this Mac. Folder selection is disabled while a host is connected. Disconnect in Settings to choose a local folder again.
 
+On a Mac previously registered with a cluster, if the bookmark to the original Music folder cannot be resolved after upgrade, the local library stays empty until the listener chooses that folder again.
+
 ## Connect another device
 
 Open the same host address on the other device and confirm the library there. The headless host serves both devices. Importing a folder into the Mac app makes its music available for local playback only.
@@ -62,7 +64,7 @@ A device is in exactly one of three states. "Through a mirror" qualifies the con
 | Connected | The last request to a host of this library succeeded. | Nothing. | The host's name and 接続中 ("Connected"). | Play anything, save, and remove saves. |
 | Connected through a mirror | The primary does not answer, and a mirror is the newest host that does. | One line on the library landing that names both hosts and the date of the mirror's copy. | The same, with the date. | Do everything a connected device can. |
 | Host unreachable | Requests to every host the device knows fail. | One line at the top of the library landing, with **詳細** ("Details"). Tracks that are neither saved nor cached use the secondary text color. | The cause from the connection failure table and the last connection. | Browse the catalog, play saved and cached music, request saves that wait, and retry. |
-| Not connected | The device knows no host address, or the listener disconnected it. | The first-launch screen, or the last catalog with a reason line. | **ライブラリに接続** ("Connect to a library") and the reason. | Connect. Saved music still plays. |
+| Not connected | The device knows no host address, or the listener disconnected it. | The first-launch screen, or the last catalog with a reason line. | **ライブラリに接続** ("Connect to a library") and the reason. | Connect, or play saved tracks from a retained catalog. |
 
 | Element | Japanese draft | Gloss |
 | --- | --- | --- |
@@ -70,11 +72,13 @@ A device is in exactly one of three states. "Through a mirror" qualifies the con
 | Two hosts accept changes | 「studio」と「nas」の両方が変更を受け付ける設定になっています。どちらかで設定を直してください。再生と保存はそのまま使えます。 | Both studio and nas are set to accept changes. Fix the setting on one of them. Playback and saves keep working. |
 | Unreachable | 「studio」に接続できません。保存した音楽は聴けます。 | Can't connect to studio. Saved music still plays. |
 | Last connection | 最後の接続: 2時間前 | Last connected 2 hours ago. |
-| Not connected, upgraded from the old design | 接続の方法が新しくなりました。ライブラリのあるMacやNASのQRコードを読み取るか、アドレスを入力してください。保存した音楽はそのまま聴けます。 | The way Syncstr connects has changed. Scan the QR code of the Mac or NAS that has the library, or enter its address. Saved music still plays. |
+| First launch after upgrading a v5 shared-audio library | ライブラリのあるホストのQRコードを読み取るか、アドレスを入力してください。保存した曲は端末に残っています。ホストに同じ音声ファイルがあれば、接続後にまた聴けます。 | Scan the library host's QR code or enter its address. Saved tracks remain on this device. After connecting, you can play those for which the host has the same audio file. |
 
 Through a mirror, the device keeps its own catalog when that is newer than the mirror's, as the mirrors design requires. A track whose file no reachable host has uses the secondary text color, as in the unreachable state, and tapping it gives the reason.
 
-After a disconnect, the device keeps the last host catalog until the listener connects to a host again. The catalog still indexes saved tracks, even on a device with an older cluster registration. The device remembers the catalog's address and library ID so it can ask before replacing the library at that address.
+After a disconnect, the device keeps the last host catalog until the listener connects to a host again. That catalog still indexes saved tracks. The device remembers the catalog's address and library ID so it can ask before replacing the library at that address.
+
+The upgrade drops the v5 shared-audio catalog (`shared_audio_snapshot`). A device whose only library was that catalog returns to the first-launch screen. Its save pins and `<hash>.audio` files remain on the device. Once it connects to a host serving the same audio hashes, those tracks can play from the saved files again.
 
 A device that was never connected shows no reason line. When the owner withdraws a device's access in Tailscale, the device sees the "host unreachable" state, because a refused connection looks like an unreachable host. It keeps its offline saves and its playback cache, because withdrawing access stops requests to the host and cannot reach files already on the device.
 
@@ -167,7 +171,7 @@ These rules of [cluster-ui-review.md](cluster-ui-review.md) still apply:
 The design revises these earlier rules:
 
 - Settings that organize enrollment, hosts, connection diagnostics, membership, conflicts, and legacy transfer.
-- "Without forced re-enrollment" and the Upgrade scenario. Each existing device connects once more by the host address, and its saved audio stays.
+- "Without forced re-enrollment" and the Upgrade scenario. A device that relied on the v5 shared-audio catalog connects to a host serving the same audio hashes to play its saved tracks again.
 - Explicit saves over cellular, and a full disk as a failure.
 
 Every rule of [player-interaction-spec.md](player-interaction-spec.md) applies unchanged. Two matter most here. A host that is offline is not evidence that a track was deleted, and a queue that cannot fetch its next track in the background stops and explains why.

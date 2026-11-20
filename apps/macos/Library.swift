@@ -62,6 +62,7 @@ final class Library: ObservableObject {
             guard generation == catalogGeneration else { return }
             playlists = saved.documents
             playlistConflicts = saved.conflicts
+            playlistMessage = nil
         } catch { if generation == catalogGeneration { playlistMessage = error.localizedDescription } }
     }
 

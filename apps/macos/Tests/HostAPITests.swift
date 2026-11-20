@@ -501,6 +501,33 @@ final class HostAPITests: XCTestCase {
     }
     #endif
 
+    func testRestoreKeepsHostSaveAlongsideSuffixlessV5Request() throws {
+        let files = store()
+        try files.prepare()
+        let entry = LocalEntry(track: Track(id: "track", title: "Fixture", artist: "Fixture", suffix: "wav", size: 3), sha256: audioSHA256)
+        var legacy = entry
+        legacy.track.suffix = nil
+        let requests = [
+            OfflineSaveRequest(id: "old", library: "v5", entries: [legacy]),
+            OfflineSaveRequest(id: "host", library: libraryID, entries: [entry])
+        ]
+        let url = files.root.appendingPathComponent("offline-saves.json")
+        try JSONEncoder().encode(requests).write(to: url)
+
+        let transfer = makeTransfer(store: files)
+        XCTAssertEqual(transfer.saveRequests.map(\.id), ["host"])
+        let persisted = try JSONDecoder().decode([OfflineSaveRequest].self, from: Data(contentsOf: url))
+        XCTAssertEqual(persisted.map(\.id), ["host"])
+        XCTAssertEqual(persisted.first?.entries, [entry])
+    }
+
+    func testSuccessfulPlaylistReloadClearsPreviousMessage() async {
+        let library = makeLibrary(localStore: store())
+        library.playlistMessage = "Previous load failed"
+        await library.refreshPlaylists()
+        XCTAssertNil(library.playlistMessage)
+    }
+
     func testHostFindsLegacySaveAndResolvesQueuedEntryByTrackAndHash() async throws {
         var (reply, _, _) = try fixture()
         reply.data = Data(String(decoding: reply.data, as: UTF8.self)
