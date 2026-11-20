@@ -521,6 +521,34 @@ final class HostAPITests: XCTestCase {
         XCTAssertEqual(persisted.first?.entries, [entry])
     }
 
+    func testRestoreKeepsValidEntryInMixedV5Request() async throws {
+        let files = store()
+        try files.prepare()
+        let valid = LocalEntry(track: Track(id: "track-a", title: "Fixture", artist: nil, suffix: "wav", size: 3), sha256: audioSHA256)
+        let invalid = LocalEntry(track: Track(id: "track-b", title: "Fixture", artist: nil, size: 3), sha256: String(repeating: "b", count: 64))
+        let request = OfflineSaveRequest(id: "album", library: libraryID, entries: [invalid, valid],
+                                         completed: [invalid.saveIdentity, valid.saveIdentity], state: .saving)
+        let url = files.root.appendingPathComponent("offline-saves.json")
+        try JSONEncoder().encode([request]).write(to: url)
+
+        let (reply, _, _) = try fixture(secondHash: invalid.sha256)
+        let library = makeLibrary(localStore: files, hostConfiguration: configuration { _ in reply })
+        library.transfer.setSavesBackgrounded(true)
+        let persisted = try JSONDecoder().decode([OfflineSaveRequest].self, from: Data(contentsOf: url))
+        for queue in [library.transfer.saveRequests, persisted] {
+            XCTAssertEqual(queue.map(\.id), ["album"])
+            let restored = try XCTUnwrap(queue.first)
+            XCTAssertEqual(restored.library, libraryID)
+            XCTAssertEqual(restored.entries, [valid])
+            XCTAssertEqual(restored.completed, [valid.saveIdentity])
+            XCTAssertEqual(restored.state, .waiting)
+        }
+        let address = try HostAddress("https://confirmed.example.test")
+        _ = try await library.transfer.confirmHost(address, information: hostInformation(address))
+        XCTAssertEqual(library.localCatalog?.id, libraryID)
+        XCTAssertTrue(library.localCatalog?.entries.contains { $0.trackSaveIdentity == valid.trackSaveIdentity } == true)
+    }
+
     func testSuccessfulPlaylistReloadClearsPreviousMessage() async {
         let library = makeLibrary(localStore: store())
         library.playlistMessage = "Previous load failed"

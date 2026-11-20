@@ -106,8 +106,15 @@ extension LocalTransfer {
             let url = store.root.appendingPathComponent("offline-saves.json")
             guard FileManager.default.fileExists(atPath: url.path) else { return }
             var restored = try JSONDecoder().decode([OfflineSaveRequest].self, from: Data(contentsOf: url))
-            restored.removeAll { $0.entries.isEmpty || !$0.entries.allSatisfy(LocalMusicStore.valid) }
-            for index in restored.indices where restored[index].state == .saving { restored[index].state = .waiting }
+            for index in restored.indices {
+                let entries = restored[index].entries.filter(LocalMusicStore.valid)
+                if entries.count != restored[index].entries.count {
+                    restored[index].entries = entries
+                    restored[index].completed.formIntersection(entries.flatMap { [$0.saveIdentity, $0.trackSaveIdentity] })
+                }
+                if restored[index].state == .saving { restored[index].state = .waiting }
+            }
+            restored.removeAll { $0.entries.isEmpty }
             try persistSaves(restored)
         } catch { status = "保存待ちを読み込めませんでした。\(error.localizedDescription)" }
     }
