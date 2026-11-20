@@ -240,7 +240,7 @@ struct PhoneRoot: View {
                 NavigationLink { PlaylistBrowser(library: library) } label: { categoryLabel("すべてのプレイリスト", icon: "music") }.buttonStyle(.plain)
                 VStack(alignment: .leading, spacing: 8) {
                     Text("最近追加した項目").font(.title3.bold())
-                    if !library.connected {
+                    if !library.connected && library.transfer.showsLibraryEditControls {
                         Text("ホストのライブラリに接続するか、この端末に音楽を追加して聴き始められます。")
                         Button("ホストに接続") { hostSetup = HostSetupRequest() }
                         AddMusicButton(library: library)
@@ -248,7 +248,7 @@ struct PhoneRoot: View {
                             Button("保存した音楽を開く") { Task { await library.openSavedLocalLibrary() } }
                         }
                     } else if library.tracks.isEmpty {
-                        Text("音楽はまだありません。音楽ファイルを追加できます。")
+                        Text(library.transfer.showsLibraryEditControls ? "音楽はまだありません。音楽ファイルを追加できます。" : "音楽はまだありません。")
                         AddMusicButton(library: library)
                     }
                     recentAlbumGrid
@@ -325,11 +325,13 @@ struct PhoneRoot: View {
             .buttonStyle(.plain)
             .accessibilityIdentifier("album-\(album.id)")
             .contextMenu {
-                Button(library.albumVisibilityLabel(album.id)) {
-                    library.setAlbumHidden(album.id, hidden: !library.isAlbumHidden(album.id))
-                }.disabled(library.albumVisibilityNotice(album.id) != nil || library.isSavingAlbumVisibility(album.id))
-                if let notice = library.albumVisibilityNotice(album.id) { Text(notice) }
-                if let status = library.albumVisibilityStatus(album.id) { Text(status) }
+                if library.transfer.showsLibraryEditControls {
+                    Button(library.albumVisibilityLabel(album.id)) {
+                        library.setAlbumHidden(album.id, hidden: !library.isAlbumHidden(album.id))
+                    }.disabled(library.albumVisibilityNotice(album.id) != nil || library.isSavingAlbumVisibility(album.id))
+                    if let notice = library.albumVisibilityNotice(album.id) { Text(notice) }
+                    if let status = library.albumVisibilityStatus(album.id) { Text(status) }
+                }
             }
         }
     }
@@ -546,7 +548,7 @@ struct PhoneRoot: View {
             Section("ライブラリと接続") {
                 HostConnectionSettings(transfer: library.transfer) { hostSetup = $0 }
             }
-            Section { AddMusicButton(library: library) }
+            if library.transfer.showsLibraryEditControls { Section { AddMusicButton(library: library) } }
             if !library.transfer.hasLibrarySource, library.transfer.pairedName != nil {
                 Section("従来の接続") {
                     NavigationLink("従来の端末間転送") {

@@ -4,20 +4,27 @@ import AVFoundation
 import VisionKit
 #endif
 
-struct HostSetupRequest: Identifiable {
-    let id = UUID()
-    var input: HostInput?
-    var showsSettings = false
+final class HostSetupRequest: ObservableObject, Identifiable {
+    @Published var input: HostInput?
+    let showsSettings: Bool
+
+    init(input: HostInput? = nil, showsSettings: Bool = false) {
+        self.input = input
+        self.showsSettings = showsSettings
+    }
 }
 
 struct HostConnectionView: View {
     @ObservedObject var transfer: LocalTransfer
-    let request: HostSetupRequest
+    @ObservedObject var request: HostSetupRequest
     @Environment(\.dismiss) private var dismiss
     @StateObject private var flow = HostConnectionFlow()
     @State private var address = ""
     @State private var reading: Task<Void, Never>?
-    @State private var submitting = false
+    private var submitting: Bool {
+        if case .connecting = flow.phase { return true }
+        return false
+    }
 #if os(iOS)
     @State private var scanning = false
     @State private var cameraDenied = false
@@ -35,9 +42,11 @@ struct HostConnectionView: View {
                 case .confirmation(let address, let info):
                     Text("\(address.displayName) のライブラリ「\(info.name)」に接続しますか？")
                     Button("接続") { confirm() }
+                    Button("アドレスを編集") { flow.editAddress() }
                 case .replacement(let address, let info):
                     Text("この端末に表示するライブラリを、\(address.displayName) の「\(info.name)」に置き換えますか？")
                     Button("置き換える", role: .destructive) { confirm(replacing: true) }
+                    Button("アドレスを編集") { flow.editAddress() }
                 case .connecting, .connected: ProgressView("ライブラリに接続中…")
                 }
             }
@@ -55,7 +64,7 @@ struct HostConnectionView: View {
 #else
         .sheet(isPresented: $scanning) {
             NavigationStack {
-                PairingScanner { value in
+                PairingScanner(onFailure: { scanning = false; flow.scannerFailed() }) { value in
                     scanning = false
                     read(.text(value))
                 }
@@ -64,7 +73,13 @@ struct HostConnectionView: View {
             }
         }
 #endif
-        .onAppear { if let input = request.input { read(input) } }
+        .onReceive(request.$input) { input in
+            guard let input else { return }
+#if os(iOS)
+            scanning = false
+#endif
+            read(input)
+        }
         .onDisappear { reading?.cancel() }
     }
 
@@ -88,23 +103,27 @@ struct HostConnectionView: View {
                     else { cameraDenied = true }
                 }
             }
-            if cameraDenied { Text("アドレスを入力するか、設定でカメラへのアクセスを許可してください。") }
+        }
+        if cameraDenied || AVCaptureDevice.authorizationStatus(for: .video) == .denied {
+            Text("アドレスを入力するか、設定でカメラへのアクセスを許可してください。")
         }
 #endif
     }
 
     private func read(_ input: HostInput) {
+        switch input {
+        case .link(let url): address = (try? input.address().displayName) ?? url.absoluteString
+        case .text(let value): address = value
+        }
         reading?.cancel()
         reading = Task { await flow.read(input, using: transfer) }
     }
 
     private func confirm(replacing: Bool = false) {
         guard !submitting else { return }
-        submitting = true
-        Task {
+        reading = Task {
             await flow.confirm(using: transfer, replacing: replacing)
-            submitting = false
-            if case .connected = flow.phase { dismiss() }
+            if !Task.isCancelled, case .connected = flow.phase { dismiss() }
         }
     }
 }

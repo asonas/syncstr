@@ -362,6 +362,7 @@ final class LocalTransfer: ObservableObject {
     @Published private(set) var hostConnection: HostConnection?
     @Published private(set) var changedHostLibrary: String?
     @Published private(set) var retainedHostLibrary: String?
+    var showsLibraryEditControls: Bool { !usesHostCatalog }
     var retainsHostCatalog: Bool { retainedHostLibrary != nil }
     var usesHostCatalog: Bool { hostConnection != nil || retainsHostCatalog }
     private var hostPlaybackSources: [UUID: any LibrarySource] = [:]
@@ -369,6 +370,7 @@ final class LocalTransfer: ObservableObject {
     private var hostAudio = HostAudioFiles()
     private let hostConfiguration: URLSessionConfiguration
     private var observedSwitch: String?
+    private var hostConfirmation: Task<HostRefreshResult, Error>?
     private var pendingHostRefresh = false
     private var scheduledHostRefresh = false
     private var refreshingHostSource: HostLibrarySource?
@@ -388,13 +390,29 @@ final class LocalTransfer: ObservableObject {
     }
 
     func confirmHost(_ address: HostAddress, information: HostLibraryInfo, replacingLibrary: Bool = false) async throws -> HostRefreshResult {
+        try Task.checkCancellation()
+        let previous = hostConfirmation
+        previous?.cancel()
+        let task = Task {
+            _ = await previous?.result
+            try Task.checkCancellation()
+            return try await applyHostConfirmation(address, information: information, replacingLibrary: replacingLibrary)
+        }
+        hostConfirmation = task
+        return try await withTaskCancellationHandler { try await task.value } onCancel: { task.cancel() }
+    }
+
+    private func applyHostConfirmation(_ address: HostAddress, information: HostLibraryInfo, replacingLibrary: Bool) async throws -> HostRefreshResult {
         let files = store
         let startingGeneration = generation
-        let saved = try await CatalogStorage.shared.perform { try files.database().hostConnection() }
+        let (saved, retained) = try await CatalogStorage.shared.perform {
+            let database = try files.database()
+            return try (database.hostConnection(), database.retainedLibrary(at: address))
+        }
+        try Task.checkCancellation()
         guard generation == startingGeneration else { throw CancellationError() }
-        if let saved, saved.address == address, saved.library != information.library, !replacingLibrary {
-            connected = false
-            changedHostLibrary = information.library
+        let knownLibrary = saved?.address == address ? saved?.library : retained
+        if let knownLibrary, knownLibrary != information.library, !replacingLibrary {
             return .differentLibrary(information.library)
         }
         if let saved, saved.address == address, saved.library == information.library {
@@ -402,20 +420,36 @@ final class LocalTransfer: ObservableObject {
                 try await CatalogStorage.shared.perform { try files.database().updateHosts(information.hosts, for: saved) }
             }
             guard generation == startingGeneration else { throw CancellationError() }
-            return try await refreshHost(saved, replacing: saved)
+            try await waitForIdle()
+            guard generation == startingGeneration else { throw CancellationError() }
+            return try await refreshStoredHost(confirming: true)
         } else {
-            stopHostPlayback()
-            cancel(reason: "changing_library_host")
-            stopSaveWorker()
             let host = HostConnection(address: address, library: information.library, name: information.name, hosts: information.hosts)
             let attempt = generation
             if saved == nil, try await CatalogStorage.shared.perform({ try files.database().rememberHostIfLibraryEmpty(host) }) {
                 guard attempt == generation else { throw CancellationError() }
+                cancel(reason: "changing_library_host")
                 activateHost(host)
-                return try await refreshHost()
+                return try await refreshStoredHost(confirming: true)
             }
             guard attempt == generation else { throw CancellationError() }
-            return try await refreshHost(host, replacing: saved)
+            let source = hostSource(host)
+            defer { source.stop() }
+            guard case .updated(let update) = try await source.refreshCatalog() else { throw HostAPIError.notHost }
+            try Task.checkCancellation()
+            guard attempt == generation else { throw CancellationError() }
+            guard update.catalog.id == information.library else { return .differentLibrary(update.catalog.id) }
+            let prepared = try await CatalogStorage.shared.perform {
+                let prepared = try PreparedLocalCatalog(update.catalog, store: files)
+                try Task.checkCancellation()
+                try files.database().saveHostCatalog(update, connection: host, replacing: saved)
+                return prepared
+            }
+            guard attempt == generation else { throw CancellationError() }
+            cancel(reason: "changing_library_host")
+            try publishHost(update, prepared: prepared, host: host, changingHost: true)
+            resumeSaves()
+            return .updated
         }
     }
 
@@ -519,12 +553,11 @@ final class LocalTransfer: ObservableObject {
     }
 
     func refreshHost() async throws -> HostRefreshResult {
-        guard let host = hostConnection else { throw HostAPIError.address }
-        return try await refreshHost(host, replacing: host)
+        guard hostConnection != nil else { throw HostAPIError.address }
+        return try await refreshStoredHost(confirming: false)
     }
 
-    private func refreshHost(_ confirmed: HostConnection, replacing previous: HostConnection?) async throws -> HostRefreshResult {
-        var host = confirmed
+    private func refreshStoredHost(confirming: Bool) async throws -> HostRefreshResult {
         guard !busy else { throw LocalMusicError.transferBusy }
         busy = true
         let attempt = generation
@@ -532,17 +565,13 @@ final class LocalTransfer: ObservableObject {
         defer { if generation == attempt { busy = false; resumeSaves() } }
         let stored = try await CatalogStorage.shared.perform { try files.database().hostConnection() }
         guard generation == attempt else { throw CancellationError() }
-        if stored == nil, previous != nil {
+        guard let host = stored else {
             await restorePeer()
             guard generation == attempt else { throw CancellationError() }
             await onHostDisconnected?()
             return .updated
         }
-        if let stored {
-            try await adoptStoredHost(stored, attempt: attempt)
-            if confirmed == previous { host = stored }
-        }
-        let changingHost = stored?.address != host.address || stored?.library != host.library
+        try await adoptStoredHost(host, attempt: attempt)
         let source = hostSource(host)
         refreshingHostSource = source
         artworkSource?.retryArtwork()
@@ -564,42 +593,48 @@ final class LocalTransfer: ObservableObject {
                 return .unchanged
             case .updated(let update):
                 guard update.catalog.id == host.library else {
-                    connected = false
-                    changedHostLibrary = update.catalog.id
+                    if !confirming {
+                        connected = false
+                        changedHostLibrary = update.catalog.id
+                    }
                     connectionEvent("refresh_host", outcome: "different_library", fields: ["connection_mode": "host", "remote_catalog_id": update.catalog.id])
                     return .differentLibrary(update.catalog.id)
                 }
-                let confirmedHost = host
                 let prepared = try await CatalogStorage.shared.perform {
                     let prepared = try PreparedLocalCatalog(update.catalog, store: files)
-                    try files.database().saveHostCatalog(update, connection: confirmedHost, replacing: stored)
+                    try files.database().saveHostCatalog(update, connection: host, replacing: host)
                     return prepared
                 }
                 guard generation == attempt else { throw CancellationError() }
-                host.etag = update.etag
-                host.hostSwitch = update.hostSwitch
-                host.marker = update.marker
-                host.name = update.catalog.name
-                try onCatalog?(prepared)
-                if changingHost {
-                    activateHost(host)
-                } else { hostConnection = host }
-                if let value = update.hostSwitch { observedSwitch = value }
-                changedHostLibrary = nil
-                status = nil
-                catalog = update.catalog
-                onHostPlaylists?(update.playlists, update.conflicts)
-                connected = true
+                try publishHost(update, prepared: prepared, host: host, changingHost: false)
                 connectionEvent("refresh_host", outcome: "succeeded", fields: ["result": "updated", "remote_catalog_id": host.library])
                 return .updated
             }
         } catch {
-            if generation == attempt {
+            if generation == attempt && !Task.isCancelled {
                 connected = false
                 connectionEvent("refresh_host", outcome: "failed", fields: ["connection_mode": "host"], error: error)
             }
             throw error
         }
+    }
+
+    private func publishHost(_ update: CatalogUpdate, prepared: PreparedLocalCatalog, host: HostConnection, changingHost: Bool) throws {
+        var host = host
+        host.etag = update.etag
+        host.hostSwitch = update.hostSwitch
+        host.marker = update.marker
+        host.name = update.catalog.name
+        try onCatalog?(prepared)
+        if changingHost {
+            activateHost(host)
+        } else { hostConnection = host }
+        if let value = update.hostSwitch { observedSwitch = value }
+        changedHostLibrary = nil
+        status = nil
+        catalog = update.catalog
+        onHostPlaylists?(update.playlists, update.conflicts)
+        connected = true
     }
 
     private func adoptStoredHost(_ host: HostConnection, attempt: UUID) async throws {
@@ -1369,16 +1404,17 @@ final class LocalTransfer: ObservableObject {
             let pendingImport = try database.clusterBatches().flatMap(\.items).contains {
                 $0.entry?.sha256 == entry.sha256 && $0.state != .stored
             }
+            let referenced = try database.otherCatalogFiles(for: entry.sha256)
             let retained = try database.removeAudioPin(entry)
             let otherSave = saveRequests.contains { request in
                 request.state != .cancelled && request.entries.contains { $0.track.id != entry.track.id && $0.sha256 == entry.sha256 }
             }
             if !retained && !pendingImport && !otherSave {
                 for url in Set(store.hostFileURLs(entry) + playbackCache.store.hostFileURLs(entry))
-                    where url != playbackCache.protectedURL && FileManager.default.fileExists(atPath: url.path) {
+                    where !referenced.contains(url) && url != playbackCache.protectedURL && FileManager.default.fileExists(atPath: url.path) {
                     try FileManager.default.removeItem(at: url)
                 }
-                try database.forgetReceived(entry)
+                if !referenced.contains(store.fileURL(entry)) { try database.forgetReceived(entry) }
             }
             onSaved?()
             return

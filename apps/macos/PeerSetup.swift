@@ -397,7 +397,10 @@ struct PeerSetupView: View {
         }
         .sheet(isPresented: $scanning) {
             NavigationStack {
-                PairingScanner { value in
+                PairingScanner(onFailure: {
+                    scanning = false
+                    transfer.status = "カメラを起動できませんでした。"
+                }) { value in
                     scanning = false
                     if (try? PeerAddress.parse(value)) != nil || (try? ClusterInvitation.parse(value)) != nil { address = value; transfer.status = nil }
                     else { transfer.status = "Syncstrの接続情報を含むQRコードを読み取ってください。" }

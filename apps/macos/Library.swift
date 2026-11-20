@@ -635,6 +635,10 @@ final class Library: ObservableObject {
     func artworkURL(for id: String) -> URL? {
         guard localCatalog?.remoteArtwork?.contains(id) == true else { return artworkURLs[id] }
         if let url = artworkURLs[id], url == localStore.artworkURL(asset: id) { return url }
+        if transfer.retainsHostCatalog {
+            let url = localStore.artworkURL(asset: id)
+            return FileManager.default.fileExists(atPath: url.path) ? url : nil
+        }
         transfer.requestHostArtwork(id) { [weak self] asset, url in
             guard let self, localCatalog?.remoteArtwork?.contains(asset) == true else { return }
             artworkURLs[asset] = url
@@ -799,8 +803,9 @@ final class Library: ObservableObject {
 #if os(macOS)
     func chooseFolder(_ url: URL) async {
         guard !transfer.usesHostCatalog, !refreshing || restoringSession else { return }
+        var generation = catalogGeneration
         refreshing = true
-        defer { refreshing = false }
+        defer { if catalogGeneration == generation { refreshing = false } }
         let scoped = url.startAccessingSecurityScopedResource()
         var releaseScopeOnFailure = scoped
         do {
@@ -815,6 +820,10 @@ final class Library: ObservableObject {
             let sameFolder = previousFolder?.standardizedFileURL.resolvingSymlinksInPath().path == url.standardizedFileURL.resolvingSymlinksInPath().path
             let id = sameFolder ? previous?.catalog.id ?? UUID().uuidString : UUID().uuidString
             var folder = try await Task.detached { try await LocalFolder.scan(url, id: id, previous: previous) }.value
+            guard generation == catalogGeneration, !transfer.usesHostCatalog else {
+                if scoped { url.stopAccessingSecurityScopedResource() }
+                return
+            }
             if sameFolder, let previous {
                 let scanned = Set(folder.catalog.entries.map { $0.track.id })
                 folder.catalog.entries += previous.catalog.entries.filter { !scanned.contains($0.track.id) && localStore.hasFile($0) }
@@ -824,6 +833,7 @@ final class Library: ObservableObject {
             try localStore.save(folder)
             try bookmark.write(to: localStore.root.appendingPathComponent("folder.bookmark"), options: .atomic)
             try openLocal(folder.catalog)
+            generation = catalogGeneration
             if let scopedFolder { scopedFolder.stopAccessingSecurityScopedResource() }
             scopedFolder = scoped ? url : nil
             releaseScopeOnFailure = false
@@ -833,6 +843,7 @@ final class Library: ObservableObject {
             if transfer.pairedName != nil { try await transfer.host(folder) }
         } catch {
             if releaseScopeOnFailure { url.stopAccessingSecurityScopedResource() }
+            guard generation == catalogGeneration, !transfer.usesHostCatalog else { return }
             if localCatalog == nil, let saved = try? localStore.load() {
                 try? openLocal(saved)
             }

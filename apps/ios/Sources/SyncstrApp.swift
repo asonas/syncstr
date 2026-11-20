@@ -57,15 +57,43 @@ struct SyncstrApp: App {
     }
 }
 
+private struct PhonePresentationAnchor: UIViewRepresentable {
+    let view: UIView
+    func makeUIView(context: Context) -> UIView { view }
+    func updateUIView(_ uiView: UIView, context: Context) {}
+}
+
 private struct PhoneWindow: View {
     @ObservedObject var library: Library
     @State private var hostSetup: HostSetupRequest?
 
+    @State private var pendingLink: HostSetupRequest?
+    @State private var presentationAnchor = UIView()
+
     var body: some View {
         PhoneRoot(library: library, hostSetup: $hostSetup)
             .onOpenURL { url in
-                library.showingNowPlaying = false
-                hostSetup = HostSetupRequest(input: .link(url))
+                if let hostSetup { hostSetup.input = .link(url) }
+                else { pendingLink = HostSetupRequest(input: .link(url)) }
+            }
+            .background { PhonePresentationAnchor(view: presentationAnchor).allowsHitTesting(false) }
+            .task(id: pendingLink?.id) {
+                guard let request = pendingLink else { return }
+                while !Task.isCancelled {
+                    if let root = presentationAnchor.window?.rootViewController {
+                        if library.trackMetadataPresentation == nil, library.showingNowPlaying,
+                           root.presentedViewController?.presentedViewController == nil {
+                            library.showingNowPlaying = false
+                        }
+                        if root.presentedViewController == nil, library.trackMetadataPresentation == nil,
+                           !library.showingNowPlaying {
+                            hostSetup = request
+                            pendingLink = nil
+                            return
+                        }
+                    }
+                    do { try await Task.sleep(for: .milliseconds(100)) } catch { return }
+                }
             }
     }
 }

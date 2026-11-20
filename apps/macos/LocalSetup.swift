@@ -13,18 +13,20 @@ struct AddMusicButton: View {
     private var unavailable: Bool { library.audioAdditionNotice != nil }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Button("音楽ファイルを追加") { importing = true }
-                .disabled(library.refreshing || library.transfer.busy || unavailable)
-                .fileImporter(isPresented: $importing, allowedContentTypes: [.audio], allowsMultipleSelection: true) { result in
-                    switch result {
-                    case .success(let files): Task { await library.addMusic(files) }
-                    case .failure(let error): library.message = error.localizedDescription
+        if library.transfer.showsLibraryEditControls {
+            VStack(alignment: .leading, spacing: 4) {
+                Button("音楽ファイルを追加") { importing = true }
+                    .disabled(library.refreshing || library.transfer.busy || unavailable)
+                    .fileImporter(isPresented: $importing, allowedContentTypes: [.audio], allowsMultipleSelection: true) { result in
+                        switch result {
+                        case .success(let files): Task { await library.addMusic(files) }
+                        case .failure(let error): library.message = error.localizedDescription
+                        }
                     }
+                if let notice = library.audioAdditionNotice {
+                    Text(notice)
+                        .font(.caption).foregroundStyle(.secondary)
                 }
-            if let notice = library.audioAdditionNotice {
-                Text(notice)
-                    .font(.caption).foregroundStyle(.secondary)
             }
         }
     }
@@ -191,7 +193,10 @@ struct PhonePairingView: View {
         }
         .sheet(isPresented: $scanning) {
             NavigationStack {
-                PairingScanner { value in
+                PairingScanner(onFailure: {
+                    scanning = false
+                    transfer.status = "カメラを起動できませんでした。"
+                }) { value in
                     let parts = value.split(separator: ":", omittingEmptySubsequences: false)
                     guard parts.count == 3, parts[0] == "syncstr-pair", "Syncstr-" + parts[1] == selected else {
                         transfer.status = "選択したMacのQRコードを読み取ってください。"
@@ -209,13 +214,14 @@ struct PhonePairingView: View {
 }
 
 struct PairingScanner: UIViewControllerRepresentable {
+    var onFailure: () -> Void
     var onCode: (String) -> Void
     func makeCoordinator() -> Coordinator { Coordinator(onCode: onCode) }
     func makeUIViewController(context: Context) -> DataScannerViewController {
         let scanner = DataScannerViewController(recognizedDataTypes: [.barcode(symbologies: [.qr])],
             qualityLevel: .balanced, recognizesMultipleItems: false, isHighlightingEnabled: true)
         scanner.delegate = context.coordinator
-        do { try scanner.startScanning() } catch { context.coordinator.onCode("") }
+        do { try scanner.startScanning() } catch { Task { @MainActor in onFailure() } }
         return scanner
     }
     func updateUIViewController(_ controller: DataScannerViewController, context: Context) {}

@@ -121,7 +121,13 @@ final class HostLibrarySource: LibrarySource {
                     fillArtworkRequests()
                 }
                 do {
-                    let url = try await storedArtwork(id)
+                    let url: URL
+                    do { url = try await storedArtwork(id) }
+                    catch LocalMusicError.invalidData { throw LocalMusicError.invalidData }
+                    catch {
+                        try await Task.sleep(for: .seconds(2))
+                        url = try await storedArtwork(id)
+                    }
                     try Task.checkCancellation()
                     if !stopped { received(id, url) }
                 } catch LocalMusicError.invalidData {

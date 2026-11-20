@@ -50,7 +50,7 @@ struct PlaylistBrowser: View {
     }
 
     @ViewBuilder private var actions: some View {
-        if library.transfer.hostConnection == nil {
+        if library.transfer.showsLibraryEditControls {
             Button("XMLから移行") { importing = true }.disabled(!library.transfer.canSyncPlaylists)
         }
         Button("更新") {

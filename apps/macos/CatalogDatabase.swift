@@ -569,8 +569,8 @@ final class CatalogDatabase {
         sqlite3_busy_timeout(connection, 5000)
         do {
             let version = try rows("PRAGMA user_version").first?.first ?? nil
-            guard ["0", "1", "2", "3", "4", "5", "6"].contains(version) else { throw LocalMusicError.invalidData }
-            if version == "6" {
+            guard ["0", "1", "2", "3", "4", "5", "6", "7"].contains(version) else { throw LocalMusicError.invalidData }
+            if version == "7" {
                 let required: Set<String> = ["retained_host_catalog", "host_connection", "host_entries", "host_playlists", "shared_audio_snapshot", "shared_audio_saves", "catalog", "entries", "received_files", "organization", "artwork_assets",
                     "cluster_schema", "cluster_identity", "cluster_peers", "cluster_objects", "cluster_locations",
                     "cluster_pending_changes", "cluster_jobs", "cluster_registration", "cluster_signed_changes",
@@ -587,7 +587,7 @@ final class CatalogDatabase {
                 try execute("CREATE TABLE IF NOT EXISTS artwork_assets (id TEXT PRIMARY KEY, payload TEXT NOT NULL)")
                 try execute("CREATE TABLE IF NOT EXISTS shared_audio_snapshot (singleton INTEGER PRIMARY KEY CHECK(singleton = 1), payload TEXT NOT NULL)")
                 try execute("CREATE TABLE IF NOT EXISTS shared_audio_saves (track TEXT NOT NULL, hash TEXT NOT NULL, PRIMARY KEY(track, hash))")
-                if !["4", "5", "6"].contains(version) { _ = try readSnapshot() }
+                if !["4", "5", "6", "7"].contains(version) { _ = try readSnapshot() }
                 try migrateCluster()
                 try migrateClusterMembership()
                 try execute("CREATE TABLE IF NOT EXISTS playlist_records (id TEXT PRIMARY KEY, playlist_id TEXT NOT NULL, payload TEXT NOT NULL)")
@@ -605,7 +605,10 @@ final class CatalogDatabase {
                         if store.hasFile(entry) { try saveAudioPin(entry) }
                     }
                 }
-                try execute("PRAGMA user_version = 6")
+                if try !rows("PRAGMA table_info(retained_host_catalog)").contains(where: { $0[1] == "address" }) {
+                    try execute("ALTER TABLE retained_host_catalog ADD COLUMN address TEXT")
+                }
+                try execute("PRAGMA user_version = 7")
             }
         } catch {
             sqlite3_close(connection)
@@ -690,6 +693,22 @@ final class CatalogDatabase {
         try rows("SELECT library FROM retained_host_catalog").first?.first ?? nil
     }
 
+    func retainedLibrary(at address: HostAddress) throws -> String? {
+        try rows("SELECT library FROM retained_host_catalog WHERE address = ?", [address.origin.absoluteString]).first?.first ?? nil
+    }
+
+    func otherCatalogFiles(for hash: String) throws -> Set<URL> {
+        let store = LocalMusicStore(root: root)
+        var urls = Set(try rows("SELECT payload FROM entries WHERE sha256 = ?", [hash]).map { row in
+            let entry = try JSONDecoder().decode(LocalEntry.self, from: Data((row[0] ?? "").utf8))
+            return store.fileURL(entry)
+        })
+        if try sharedAudioSnapshot()?.catalog.objects[hash] != nil {
+            urls.insert(root.appendingPathComponent(hash + ".audio"))
+        }
+        return urls
+    }
+
     private func hostCatalogLibrary() throws -> String? {
         try rows("SELECT library FROM host_connection UNION ALL SELECT library FROM retained_host_catalog").first?.first ?? nil
     }
@@ -720,12 +739,7 @@ final class CatalogDatabase {
 
     func forgetHost() throws {
         try transaction {
-            if try clusterRegistration() == nil {
-                try execute("INSERT OR REPLACE INTO retained_host_catalog SELECT library, header FROM host_connection WHERE header IS NOT NULL")
-            } else {
-                try execute("DELETE FROM host_playlists")
-                try execute("DELETE FROM host_entries")
-            }
+            try execute("INSERT OR REPLACE INTO retained_host_catalog(library,header,address) SELECT library,header,address FROM host_connection WHERE header IS NOT NULL")
             try execute("DELETE FROM host_connection")
         }
     }

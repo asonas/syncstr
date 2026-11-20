@@ -32,6 +32,11 @@ final class HostConnectionFlow: ObservableObject {
 
     @Published private(set) var phase = Phase.entry
 
+    private var operation: Task<Void, Never>?
+
+    func editAddress() { phase = .entry }
+    func scannerFailed() { phase = .failure("カメラを起動できませんでした。アドレスを入力してください。") }
+
     static func message(for error: Error) -> String {
         switch error as? HostAPIError {
         case .notHost, .notRunning, .address: error.localizedDescription
@@ -40,7 +45,20 @@ final class HostConnectionFlow: ObservableObject {
     }
 
     func read(_ input: HostInput, using transfer: LocalTransfer) async {
+        guard !Task.isCancelled else { return }
+        let previous = operation
+        previous?.cancel()
         phase = .reading
+        let task = Task {
+            await previous?.value
+            guard !Task.isCancelled else { return }
+            await readInformation(input, using: transfer)
+        }
+        operation = task
+        await withTaskCancellationHandler { await task.value } onCancel: { task.cancel() }
+    }
+
+    private func readInformation(_ input: HostInput, using transfer: LocalTransfer) async {
         do {
             let address = try input.address()
             let info = try await transfer.libraryInformation(at: address)
@@ -52,6 +70,7 @@ final class HostConnectionFlow: ObservableObject {
     }
 
     func confirm(using transfer: LocalTransfer, replacing: Bool = false) async {
+        guard !Task.isCancelled else { return }
         let address: HostAddress
         let info: HostLibraryInfo
         switch (phase, replacing) {
@@ -62,18 +81,28 @@ final class HostConnectionFlow: ObservableObject {
         default: return
         }
         phase = .connecting
+        let task = Task {
+            await connect(address, info: info, transfer: transfer, replacing: replacing)
+        }
+        operation = task
+        await withTaskCancellationHandler { await task.value } onCancel: { task.cancel() }
+    }
+
+    private func connect(_ address: HostAddress, info: HostLibraryInfo, transfer: LocalTransfer, replacing: Bool) async {
         do {
             switch try await transfer.confirmHost(address, information: info, replacingLibrary: replacing) {
             case .differentLibrary(let id):
                 // The catalog may have changed since the person read the library name.
                 let current = id == info.library ? info : try await transfer.libraryInformation(at: address)
                 guard current.library == id else { throw HostAPIError.notHost }
+                try Task.checkCancellation()
                 phase = .replacement(address, current)
             case .updated, .unchanged:
+                try Task.checkCancellation()
                 phase = .connected
             }
         } catch {
-            phase = .failure(Self.message(for: error))
+            if !Task.isCancelled { phase = .failure(Self.message(for: error)) }
         }
     }
 }

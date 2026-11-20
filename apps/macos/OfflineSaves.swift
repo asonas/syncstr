@@ -150,16 +150,17 @@ extension LocalTransfer {
 
     func resumeSaves(explicit: String? = nil) {
         guard !retainsHostCatalog, !savesBackgrounded, saveWorker == nil,
-              saveRequests.contains(where: { [.waiting, .wifi, .saving].contains($0.state) }) else { return }
+              saveRequests.contains(where: { (hostConnection == nil || $0.library == hostConnection?.library) && [.waiting, .wifi, .saving].contains($0.state) }) else { return }
         saveRetry?.cancel()
         let token = saveGeneration
         saveWorker = Task { [weak self] in
             guard let self else { return }
+            var processableLibrary: String?
             var needsPeer = false
             defer {
                 if saveGeneration == token {
                     saveWorker = nil
-                    if saveRequests.contains(where: { [.waiting, .wifi, .saving].contains($0.state) }) {
+                    if saveRequests.contains(where: { $0.library == processableLibrary && [.waiting, .wifi, .saving].contains($0.state) }) {
                         saveRetry = Task { [weak self, needsPeer] in
                             // A successful connection resumes saves itself and cancels this retry.
                             if needsPeer { await self?.reconnectPeerForWaitingSaves() }
@@ -176,6 +177,7 @@ extension LocalTransfer {
                       catalog.remoteArtwork == nil || hostConnection?.library == catalog.id else { return }
                 try Task.checkCancellation()
                 guard saveGeneration == token else { return }
+                processableLibrary = catalog.id
                 func identity(_ entry: LocalEntry) -> String { catalog.remoteArtwork != nil ? entry.trackSaveIdentity : entry.saveIdentity }
                 for index in saveRequests.indices {
                     guard saveRequests[index].library == catalog.id,

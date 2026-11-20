@@ -27,7 +27,7 @@ struct TrackMetadataMenu: View {
     let track: Track
 
     var body: some View {
-        if library.localCatalog?.logicalAudio == true || library.transfer.clusterMutationsUnavailable {
+        if library.transfer.showsLibraryEditControls, library.localCatalog?.logicalAudio == true || library.transfer.clusterMutationsUnavailable {
             Button("曲の情報を編集…") { library.presentTrackMetadata(track) }
                 .disabled(library.transfer.trackMetadataNotice != nil)
             if let notice = library.transfer.trackMetadataNotice { Text(notice) }
@@ -94,14 +94,16 @@ private struct TrackMetadataEditor: View {
                     Button("キャンセル") { library.trackMetadataPresentation = nil }
                 }
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("変更を送信") {
-                        do {
-                            try library.transfer.queueTrackMetadata(draft, title: title, artist: artist)
-                            library.trackMetadataPresentation = .changes
-                        } catch { self.error = error.localizedDescription }
+                    if library.transfer.showsLibraryEditControls {
+                        Button("変更を送信") {
+                            do {
+                                try library.transfer.queueTrackMetadata(draft, title: title, artist: artist)
+                                library.trackMetadataPresentation = .changes
+                            } catch { self.error = error.localizedDescription }
+                        }
+                        .disabled(title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ||
+                            library.transfer.trackMetadataNotice != nil)
                     }
-                    .disabled(title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ||
-                        library.transfer.trackMetadataNotice != nil)
                 }
             }
         }
@@ -125,7 +127,7 @@ struct TrackMetadataChanges: View {
                         if let artist = edit.metadataValues["artist"] { Text(artist).foregroundStyle(.secondary) }
                         Text(edit.mutationLabel).foregroundStyle(.secondary)
                         if let detail = edit.mutationDetail { Text(detail).font(.caption).foregroundStyle(.secondary) }
-                        if edit.canRetryMutation && library.transfer.hostConnection == nil {
+                        if edit.canRetryMutation && library.transfer.showsLibraryEditControls {
                             Button(edit.mutationHost == nil ? "変更を送信" : "同じ保存先に再送") { library.transfer.connectCluster() }
                                 .disabled(library.transfer.busy)
                         }

@@ -1,5 +1,7 @@
+import AVFoundation
 import Combine
 import Foundation
+import SQLite3
 import XCTest
 #if os(iOS)
 @testable import Syncstr
@@ -189,7 +191,11 @@ final class HostAPITests: XCTestCase {
         let files = store()
         let address = try HostAddress("https://music.example.test:443")
         let first = LocalTransfer(store: files, hostConfiguration: configuration { _ in catalog })
+        XCTAssertTrue(first.showsLibraryEditControls)
         _ = try await first.confirmHost(address, information: hostInformation(address))
+        XCTAssertFalse(first.showsLibraryEditControls)
+        try await first.disconnectHost()
+        XCTAssertFalse(first.showsLibraryEditControls)
         let nextID = UUID().uuidString.lowercased()
         let info = try informationReply(library: nextID)
         let data = try XCTUnwrap(String(data: catalog.data, encoding: .utf8)).replacingOccurrences(of: libraryID, with: nextID)
@@ -206,7 +212,8 @@ final class HostAPITests: XCTestCase {
         XCTAssertEqual(candidate.displayName, "music.example.test")
         XCTAssertEqual(information.library, nextID)
         await flow.confirm(using: transfer)
-        XCTAssertEqual(try files.database().hostConnection()?.library, libraryID)
+        XCTAssertNil(try files.database().hostConnection())
+        XCTAssertEqual(try files.database().retainedHostLibrary(), libraryID)
         await flow.confirm(using: transfer, replacing: true)
         guard case .connected = flow.phase else { return XCTFail("Replacement failed") }
         XCTAssertEqual(try files.database().hostConnection()?.library, nextID)
@@ -266,7 +273,8 @@ final class HostAPITests: XCTestCase {
         let duplicate = expectation(description: "duplicate audio GET while first response is held")
         duplicate.isInverted = true
         let gate = HostResponseGate(started: audio, duplicate: duplicate)
-        let image = expectation(description: "one image GET")
+        var firstArtworkRequest = true
+        let image = expectation(description: "image retry without redraw")
         audio.assertForOverFulfill = true
         image.assertForOverFulfill = true
         let address = try HostAddress("https://confirmed.example.test")
@@ -281,7 +289,10 @@ final class HostAPITests: XCTestCase {
             case "/api/v1/catalog": return reply
             case "/api/v1/audio/" + hash:
                 return HostReply(data: Data("abc".utf8), gate: gate)
-            case "/api/v1/artwork/" + imageID: image.fulfill(); return HostReply(data: jpeg)
+            case "/api/v1/artwork/" + imageID:
+                if firstArtworkRequest { firstArtworkRequest = false; throw URLError(.networkConnectionLost) }
+                image.fulfill()
+                return HostReply(data: jpeg)
             default: throw URLError(.unsupportedURL)
             }
         }
@@ -316,7 +327,7 @@ final class HostAPITests: XCTestCase {
         }
         XCTAssertEqual(library.albums.first?.coverArt, imageID)
         XCTAssertNil(library.artworkURL(for: imageID))
-        await fulfillment(of: [image, ready], timeout: 3)
+        await fulfillment(of: [image, ready], timeout: 6)
         observation.cancel()
         let stored = expectation(description: "already stored artwork")
         transfer.requestHostArtwork(imageID) { _, _ in stored.fulfill() }
@@ -338,8 +349,20 @@ final class HostAPITests: XCTestCase {
         XCTAssertEqual(try Data(contentsOf: files.fileURL(entries[1])), Data("abc".utf8))
         try await transfer.disconnectHost()
         XCTAssertNil(try files.database().hostConnection())
-        XCTAssertEqual(transfer.connectionMode, "cluster")
-        XCTAssertEqual(library.localCatalog?.id, "fixture")
+        XCTAssertEqual(transfer.connectionMode, "offline")
+        XCTAssertNotNil(try files.database().clusterRegistration())
+        let playerReady = expectation(description: "host-only save reached the player after relaunch")
+        let reopened = Library(makePlayer: { url in
+            XCTAssertEqual(url, files.fileURL(entries[1]))
+            XCTAssertEqual(try? Data(contentsOf: url), Data("abc".utf8))
+            playerReady.fulfill()
+            return AVPlayer()
+        }, localStore: files, hostConfiguration: config)
+        await reopened.openSavedLocalLibrary()
+        XCTAssertEqual(reopened.localCatalog?.id, libraryID)
+        reopened.play(entries[1].track)
+        await fulfillment(of: [playerReady], timeout: 3)
+        XCTAssertEqual(reopened.artworkURL(for: imageID), files.artworkURL(asset: imageID))
         XCTAssertEqual(try Data(contentsOf: files.fileURL(entries[1])), Data("abc".utf8))
     }
 
@@ -462,7 +485,7 @@ final class HostAPITests: XCTestCase {
         XCTAssertTrue(library.hasManagedCopy(entries[1].track))
         XCTAssertTrue(FileManager.default.fileExists(atPath: legacy.path))
         library.removeLocalCopies([entries[1].track])
-        XCTAssertFalse(FileManager.default.fileExists(atPath: legacy.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: legacy.path))
     }
 
     func testDisconnectRetainsOnlySavedPlaybackAcrossRelaunch() async throws {
@@ -499,6 +522,68 @@ final class HostAPITests: XCTestCase {
         }
     }
 
+    func testInvalidCandidatePreservesActivePlaybackAndConnection() async throws {
+        let (catalog, _, _) = try fixture()
+        let started = expectation(description: "A is downloading")
+        let gate = HostResponseGate(started: started)
+        let a = try HostAddress("https://first.example.test")
+        let b = try HostAddress("https://second.example.test")
+        let c = try HostAddress("https://third.example.test")
+        let other = UUID().uuidString.lowercased()
+        var mismatch = catalog
+        mismatch.data = Data(String(decoding: catalog.data, as: UTF8.self).replacingOccurrences(of: libraryID, with: other).utf8)
+        mismatch.headers["ETag"] = catalog.headers["ETag"]?.replacingOccurrences(of: libraryID, with: other)
+        let files = store()
+        let transfer = LocalTransfer(store: files, hostConfiguration: configuration { request in
+            if request.url?.host == b.host { throw URLError(.notConnectedToInternet) }
+            if request.url?.host == c.host { return mismatch }
+            return request.url?.lastPathComponent == "catalog" ? catalog : HostReply(data: Data("abc".utf8), gate: gate)
+        })
+        _ = try await transfer.confirmHost(a, information: hostInformation(a))
+        let track = try XCTUnwrap(files.load()?.entries.first?.track)
+        let playback = Task { try await transfer.playbackFile(track) }
+        await fulfillment(of: [started], timeout: 3)
+        defer { gate.release() }
+        do { _ = try await transfer.confirmHost(b, information: hostInformation(b)); XCTFail("Accepted offline host") }
+        catch let error as URLError { XCTAssertEqual(error.code, .notConnectedToInternet) }
+        let result = try await transfer.confirmHost(c, information: hostInformation(c))
+        XCTAssertEqual(result, .differentLibrary(other))
+        XCTAssertNil(transfer.changedHostLibrary)
+        XCTAssertTrue(transfer.connected)
+        XCTAssertEqual(transfer.hostConnection?.address, a)
+        gate.release()
+        let file = try await playback.value
+        XCTAssertEqual(try Data(contentsOf: file), Data("abc".utf8))
+    }
+
+    func testNewLinkCancelsHeldConfirmationBeforeConfirmingLatestLink() async throws {
+        let (catalog, _, _) = try fixture()
+        let info = try informationReply(library: libraryID)
+        let started = expectation(description: "first confirmation")
+        let cancelled = expectation(description: "superseded catalog GET")
+        let gate = HostResponseGate(started: started, cancelled: cancelled)
+        let a = try HostAddress("https://first.example.test")
+        let b = try HostAddress("https://second.example.test")
+        let transfer = LocalTransfer(store: store(), hostConfiguration: configuration { request in
+            if request.url?.lastPathComponent == "library" { return info }
+            return request.url?.host == a.host ? HostReply(gate: gate) : catalog
+        })
+        let flow = HostConnectionFlow()
+        await flow.read(.text(a.displayName), using: transfer)
+        let confirming = Task { await flow.confirm(using: transfer) }
+        await fulfillment(of: [started], timeout: 3)
+        let link = try XCTUnwrap(URL(string: "syncstr://open?host=https%3A%2F%2Fsecond.example.test"))
+        await flow.read(.link(link), using: transfer)
+        await fulfillment(of: [cancelled], timeout: 3)
+        gate.release()
+        await confirming.value
+        guard case .confirmation(let address, _) = flow.phase else { return XCTFail("Latest link lost") }
+        XCTAssertEqual(address, b)
+        await flow.confirm(using: transfer)
+        guard case .connected = flow.phase else { return XCTFail("Latest confirmation failed") }
+        XCTAssertEqual(transfer.hostConnection?.address, b)
+    }
+
     func testChangingAddressForSameLibraryCancelsPlaybackGET() async throws {
         let (reply, _, _) = try fixture()
         let started = expectation(description: "playback GET at old address")
@@ -517,6 +602,39 @@ final class HostAPITests: XCTestCase {
         await fulfillment(of: [cancelled], timeout: 3)
         task.cancel()
         do { _ = try await task.value; XCTFail("Played old host's response") } catch {}
+    }
+
+    func testUnsaveKeepsUnpinnedLegacyFileAndReceipt() async throws {
+        let (reply, _, _) = try fixture()
+        let files = store()
+        let legacy = LocalEntry(track: Track(id: "legacy-track", title: "Legacy", artist: "Fixture", suffix: "wav", size: 3),
+                                sha256: audioSHA256)
+        try files.save(LocalCatalog(id: "legacy", name: "Legacy", entries: [legacy]))
+        let database = try files.database()
+        try Data("abc".utf8).write(to: files.fileURL(legacy))
+        try database.recordReceived(legacy)
+        XCTAssertFalse(try database.hasAudioPin(legacy))
+        let address = try HostAddress("https://music.example.test")
+        let library = Library(localStore: files, hostConfiguration: configuration { request in
+            XCTAssertEqual(request.url?.lastPathComponent, "catalog")
+            return reply
+        })
+        _ = try await library.transfer.confirmHost(address, information: hostInformation(address))
+        let track = try XCTUnwrap(library.localCatalog?.entries.first?.track)
+        await library.transfer.requestSave([track], scope: "test")
+        await library.transfer.saveWorker?.value
+        XCTAssertTrue(library.hasManagedCopy(track))
+        library.removeLocalCopies([track])
+        XCTAssertFalse(library.hasManagedCopy(track))
+        XCTAssertEqual(try Data(contentsOf: files.fileURL(legacy)), Data("abc".utf8))
+        var connection: OpaquePointer?
+        XCTAssertEqual(sqlite3_open_v2(files.root.appendingPathComponent("catalog.sqlite").path, &connection, SQLITE_OPEN_READONLY, nil), SQLITE_OK)
+        defer { sqlite3_close(connection) }
+        var statement: OpaquePointer?
+        XCTAssertEqual(sqlite3_prepare_v2(connection, "SELECT relative_path FROM received_files", -1, &statement, nil), SQLITE_OK)
+        defer { sqlite3_finalize(statement) }
+        guard sqlite3_step(statement) == SQLITE_ROW else { return XCTFail("Lost legacy file receipt") }
+        XCTAssertEqual(String(cString: sqlite3_column_text(statement, 0)), files.fileURL(legacy).lastPathComponent)
     }
 
     func testUnsavingKeepsAudioReferencedByPendingClusterImport() async throws {
