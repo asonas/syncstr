@@ -9,6 +9,8 @@ struct OfflineSaveRequest: Codable, Identifiable {
     var completed: Set<String> = []
     var state: State = .waiting
     var error: String?
+
+    var isPending: Bool { [.waiting, .wifi, .saving].contains(state) }
 }
 
 extension LocalCatalog {
@@ -156,8 +158,9 @@ extension LocalTransfer {
 
     func resumeSaves(explicit: String? = nil) {
         guard !retainsHostCatalog, !savesBackgrounded, saveWorker == nil,
-              saveRequests.contains(where: { (hostConnection == nil || $0.library == hostConnection?.library) && [.waiting, .wifi, .saving].contains($0.state) }) else { return }
+              saveRequests.contains(where: { (hostConnection == nil || $0.library == hostConnection?.library) && $0.isPending }) else { return }
         saveRetry?.cancel()
+        saveRetry = nil
         let token = saveGeneration
         saveWorker = Task { [weak self] in
             guard let self else { return }
@@ -166,7 +169,7 @@ extension LocalTransfer {
             defer {
                 if saveGeneration == token {
                     saveWorker = nil
-                    if saveRequests.contains(where: { (snapshotReadFailed || $0.library == processableLibrary) && [.waiting, .wifi, .saving].contains($0.state) }) {
+                    if saveRequests.contains(where: { (snapshotReadFailed || $0.library == processableLibrary) && $0.isPending }) {
                         let deadline = hostConnection.flatMap { self.hostAudioGate.deadline(for: $0.address.origin) }
                         let interval = saveRetryInterval
                         let gate = hostAudioGate
@@ -187,10 +190,13 @@ extension LocalTransfer {
                 try Task.checkCancellation()
                 guard saveGeneration == token else { return }
                 processableLibrary = catalog.id
-                func identity(_ entry: LocalEntry) -> String { catalog.source == .host ? entry.trackSaveIdentity : entry.saveIdentity }
+                guard catalog.supportsOfflineSaves else {
+                    let kept = saveRequests.filter { $0.library != catalog.id || !$0.isPending }
+                    if kept.count != saveRequests.count { try persistSaves(kept) }
+                    return
+                }
                 for index in saveRequests.indices {
-                    guard saveRequests[index].library == catalog.id,
-                          [.waiting, .wifi, .saving].contains(saveRequests[index].state) else { continue }
+                    guard saveRequests[index].library == catalog.id, saveRequests[index].isPending else { continue }
                     try Task.checkCancellation()
                     let request = saveRequests[index]
                     let automatic = request.id != explicit
@@ -200,7 +206,7 @@ extension LocalTransfer {
                         var entry = requested
                         try Task.checkCancellation()
                         guard saveGeneration == token else { return }
-                        saveRequests[index].completed.remove(identity(entry))
+                        saveRequests[index].completed.remove(entry.trackSaveIdentity)
                         do {
                             guard let current = catalog.entries.first(where: { $0.track.id == requested.track.id && $0.sha256 == requested.sha256 }) else {
                                 throw LocalMusicError.invalidData
@@ -215,7 +221,7 @@ extension LocalTransfer {
                             guard saveGeneration == token else { return }
                             if saved {
                                 if hostConnection != nil { try store.database().saveAudioPin(entry) }
-                                saveRequests[index].completed.insert(identity(entry))
+                                saveRequests[index].completed.insert(entry.trackSaveIdentity)
                                 try persistSaves(saveRequests)
                                 if hostConnection != nil { onSaved?() }
                                 continue
@@ -254,7 +260,7 @@ extension LocalTransfer {
                             try Task.checkCancellation()
                             guard saveGeneration == token else { return }
                             if hostConnection != nil { try store.database().saveAudioPin(entry) }
-                            saveRequests[index].completed.insert(identity(entry))
+                            saveRequests[index].completed.insert(entry.trackSaveIdentity)
                             try persistSaves(saveRequests)
                             onSaved?()
                         } catch {
@@ -270,7 +276,7 @@ extension LocalTransfer {
                         }
                     }
                     guard saveGeneration == token else { return }
-                    let finished = saveRequests[index].entries.allSatisfy { self.saveRequests[index].completed.contains(identity($0)) }
+                    let finished = saveRequests[index].entries.allSatisfy { self.saveRequests[index].completed.contains($0.trackSaveIdentity) }
                     saveRequests[index].state = finished ? .complete : failure != nil ? .failed : waiting ? (saveRequests[index].state == .wifi ? .wifi : .waiting) : .failed
                     if let failure { saveRequests[index].error = failure }
                     try persistSaves(saveRequests)

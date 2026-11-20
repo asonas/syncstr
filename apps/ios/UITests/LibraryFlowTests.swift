@@ -138,8 +138,12 @@ final class LibraryFlowTests: XCTestCase {
         first.tap()
         XCTAssertTrue(app.staticTexts["V.A."].waitForExistence(timeout: 5))
         XCTAssertFalse(app.buttons["非表示にする"].exists)
-        XCTAssertTrue(app.buttons["album-save"].firstMatch.exists)
-        app.buttons["album-play"].firstMatch.tap()
+        XCTAssertFalse(app.buttons["album-save"].firstMatch.exists)
+        let play = app.buttons["album-play"].firstMatch
+        if app.tabBars.firstMatch.exists {
+            XCTAssertEqual(play.frame.midX, app.windows.firstMatch.frame.midX, accuracy: 3)
+        }
+        play.tap()
         app.buttons["mini-player-open"].firstMatch.tap()
         let copy = app.buttons["診断ログをコピー"]
         if !copy.isHittable { app.swipeUp() }

@@ -371,6 +371,8 @@ struct PhoneRoot: View {
                                 OfflineSaveControls(library: library, tracks: album.tracks, scope: "album:" + album.id, iconOnly: true)
                                     .foregroundStyle(PhoneStyle.signal)
                                     .accessibilityIdentifier("album-save")
+                            } else if !wide {
+                                Spacer().frame(width: 44)
                             }
                         }
                         .overlay(alignment: .bottom) {

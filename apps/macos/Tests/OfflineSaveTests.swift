@@ -190,6 +190,11 @@ final class OfflineSaveTests: XCTestCase {
         XCTAssertTrue(library.canRemoveLocalCopy(entries[0].track))
         await library.transfer.requestSave([entries[1].track], scope: "track:track-2")
         XCTAssertEqual(library.saveRequest(for: [entries[1].track], scope: "track:track-2")?.state, .waiting)
+        library.removeLocalCopies([entries[0].track])
+        await library.inventoryTask?.value
+        XCTAssertFalse(library.canRemoveLocalCopy(entries[0].track))
+        XCTAssertFalse(try store.database().hasAudioPin(entries[0]))
+        XCTAssertTrue(store.hasFile(entries[0]), "The local catalog still references this file")
     }
 
     func testRequestSaveRefusesLocalCatalog() async throws {
@@ -199,6 +204,36 @@ final class OfflineSaveTests: XCTestCase {
         await transfer.requestSave([entries[0].track], scope: "track:track-1")
         XCTAssertTrue(transfer.saveRequests.isEmpty)
         XCTAssertTrue(makeTransfer(store: store).saveRequests.isEmpty)
+    }
+
+    func testRestoredLocalSavesAreDroppedWithoutSchedulingRetry() async throws {
+        let (store, entries) = try fixture(host: false)
+        let states: [OfflineSaveRequest.State] = [.waiting, .wifi, .saving, .complete]
+        let requests = states.map {
+            OfflineSaveRequest(id: $0.rawValue, library: "fixture", entries: entries, state: $0)
+        } + [OfflineSaveRequest(id: "waiting", library: "other-host", entries: entries)]
+        let url = store.root.appendingPathComponent("offline-saves.json")
+        try JSONEncoder().encode(requests).write(to: url)
+        let transfer = makeTransfer(store: store)
+        transfer.resumeSaves()
+        try await settled(transfer)
+
+        XCTAssertNil(transfer.saveRetry)
+        XCTAssertEqual(transfer.saveRequests.map(\.library), ["fixture", "other-host"])
+        let persisted = try JSONDecoder().decode([OfflineSaveRequest].self, from: Data(contentsOf: url))
+        XCTAssertEqual(persisted.map(\.library), ["fixture", "other-host"])
+        XCTAssertEqual(persisted.map(\.state), [.complete, .waiting])
+    }
+
+    func testRestoredHostSaveKeepsWaitingForRetry() async throws {
+        let (store, entries) = try fixture()
+        let request = OfflineSaveRequest(id: "album:fixture", library: "fixture", entries: entries)
+        try JSONEncoder().encode([request]).write(to: store.root.appendingPathComponent("offline-saves.json"))
+        let transfer = try await hostTransfer(store)
+        transfer.resumeSaves()
+        try await settled(transfer)
+        XCTAssertEqual(transfer.saveRequests.map(\.state), [.waiting])
+        XCTAssertNotNil(transfer.saveRetry)
     }
 
     private func cache(_ entry: LocalEntry, transfer: LocalTransfer, number: UInt8) throws {
@@ -238,20 +273,19 @@ final class OfflineSaveTests: XCTestCase {
     }
 
     func testPendingSaveRetriesAfterUnreadableSnapshotRecovers() async throws {
-        let (source, entries) = try fixture(host: false)
-        let catalog = try XCTUnwrap(source.load())
-        let store = LocalMusicStore(root: root.appendingPathComponent("recovering"))
-        try store.prepare()
-        let legacy = store.root.appendingPathComponent("catalog.json")
-        try Data("unreadable".utf8).write(to: legacy)
+        let (store, entries) = try fixture()
         let transfer = makeTransfer(store: store)
+        await transfer.restoreHost()
+        let writer = try lockCatalog(store)
+        defer { sqlite3_close(writer) }
+        XCTAssertEqual(sqlite3_exec(writer, "UPDATE host_entries SET payload = 'unreadable'; COMMIT", nil, nil, nil), SQLITE_OK)
         try cache(entries[0], transfer: transfer, number: 1)
-        transfer.saveRequests = [OfflineSaveRequest(id: "waiting", library: catalog.id, entries: [entries[0]])]
+        transfer.saveRequests = [OfflineSaveRequest(id: "waiting", library: "fixture", entries: [entries[0]])]
         transfer.saveRetryInterval = .milliseconds(250)
         transfer.resumeSaves()
         try await settled(transfer)
         let retry = try XCTUnwrap(transfer.saveRetry)
-        try JSONEncoder().encode(catalog).write(to: legacy, options: .atomic)
+        try saveHostFixture(entries, in: store)
         await retry.value
         try await settled(transfer)
         XCTAssertEqual(transfer.saveRequests.first?.state, .complete)
@@ -391,12 +425,11 @@ final class OfflineSaveTests: XCTestCase {
         other.track.id = "other-registration"
         let registrations = [entries[0], other, entries[1]]
         try store.save(LocalCatalog(id: "fixture", name: "Library", entries: registrations))
-        let legacyQueue = [OfflineSaveRequest(id: "album:fixture", library: "fixture", entries: registrations)]
+        try Data(repeating: 1, count: 1024).write(to: store.fileURL(other))
+        let legacyQueue = [OfflineSaveRequest(id: "album:fixture", library: "fixture", entries: registrations,
+                                              completed: [other.sha256])]
         try JSONEncoder().encode(legacyQueue).write(to: store.root.appendingPathComponent("offline-saves.json"))
         let transfer = makeTransfer(store: store)
-        try cache(entries[0], transfer: transfer, number: 1)
-        transfer.resumeSaves()
-        try await settled(transfer)
         try transfer.cancelSaves(containing: [entries[0].track])
         let restored = makeTransfer(store: store)
         let request = try XCTUnwrap(restored.saveRequests.first)
