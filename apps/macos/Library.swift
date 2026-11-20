@@ -1,5 +1,6 @@
 import AVFoundation
 import Combine
+import Network
 import SwiftUI
 
 struct Album: Identifiable {
@@ -218,11 +219,12 @@ final class Library: ObservableObject {
          localStore: LocalMusicStore = LocalMusicStore(), hostConfiguration: URLSessionConfiguration = .ephemeral,
          pairingSecrets: CredentialStore = CredentialStore(service: "as.ason.syncstr.local-pair"),
          peerSecrets: CredentialStore = CredentialStore(service: "as.ason.syncstr.p2p.identity"),
-         peerPairing: CredentialStore = CredentialStore(service: "as.ason.syncstr.p2p.peer")) {
+         peerPairing: CredentialStore = CredentialStore(service: "as.ason.syncstr.p2p.peer"),
+         pathMonitor: NWPathMonitor? = NWPathMonitor()) {
         self.makePlayer = makePlayer
         self.diagnostics = diagnostics ?? PlaybackDiagnostics(root: localStore.root.appendingPathComponent("PlaybackDiagnostics"))
         self.localStore = localStore
-        self.transfer = LocalTransfer(store: localStore, secrets: pairingSecrets, peerSecrets: peerSecrets, peerPairing: peerPairing, diagnostics: self.diagnostics, hostConfiguration: hostConfiguration)
+        self.transfer = LocalTransfer(store: localStore, secrets: pairingSecrets, peerSecrets: peerSecrets, peerPairing: peerPairing, diagnostics: self.diagnostics, hostConfiguration: hostConfiguration, pathMonitor: pathMonitor)
         transfer.onCatalog = { [weak self] prepared in try self?.applyLocal(prepared) }
         transfer.onHostChange = { [weak self] host in
             guard let self else { return }
@@ -733,7 +735,8 @@ final class Library: ObservableObject {
     }
 
     func refreshLocalFiles() {
-        inventoryTask?.cancel()
+        let previous = inventoryTask
+        previous?.cancel()
         guard let localCatalog else { return }
         func publish(_ files: [String: URL]) {
             objectWillChange.send()
@@ -746,6 +749,7 @@ final class Library: ObservableObject {
         let generation = catalogGeneration
         let host = transfer.hostConnection?.address
         inventoryTask = Task { [localStore] in
+            await previous?.value
             let files = try? await CatalogStorage.shared.savedHostFiles(in: localCatalog, store: localStore)
             guard let files, !Task.isCancelled, catalogGeneration == generation, host == transfer.hostConnection?.address else { return }
             publish(files)

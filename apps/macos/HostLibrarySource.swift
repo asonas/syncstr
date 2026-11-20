@@ -164,5 +164,9 @@ final class HostLibrarySource: LibrarySource {
         for task in fetching.values { task.cancel() }
         client.stop()
     }
+
+    func waitForArtwork() async {
+        for task in fetching.values { await task.value }
+    }
 }
 

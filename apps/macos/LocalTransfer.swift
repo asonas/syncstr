@@ -339,9 +339,9 @@ final class LocalTransfer: ObservableObject {
     var saveSource: (any LibrarySource)?
     var saveGeneration = UUID()
     var savesBackgrounded = false
-    var savePathIsCellular: Bool { clusterPath.currentPath.usesInterfaceType(.cellular) }
+    var savePathIsCellular: Bool { clusterPath?.currentPath.usesInterfaceType(.cellular) == true }
     var permitsAutomaticSaveAudio: Bool { permitsAutomaticAudio }
-    private let clusterPath = NWPathMonitor()
+    private let clusterPath: NWPathMonitor?
     private var automaticAudioOperation = false
     private var clusterRetry: Task<Void, Never>?
     private let clusterAddresses: [PeerAddress]?
@@ -769,7 +769,7 @@ final class LocalTransfer: ObservableObject {
         peerSecrets: CredentialStore = CredentialStore(service: "as.ason.syncstr.p2p.identity"),
         peerPairing: CredentialStore = CredentialStore(service: "as.ason.syncstr.p2p.peer"), diagnostics: PlaybackDiagnostics? = nil,
         clusterAddresses: [PeerAddress]? = nil, hostConfiguration: URLSessionConfiguration = .ephemeral,
-        librarySourceFactory: (@MainActor () -> any LibrarySource)? = nil) {
+        librarySourceFactory: (@MainActor () -> any LibrarySource)? = nil, pathMonitor: NWPathMonitor? = NWPathMonitor()) {
         self.diagnostics = diagnostics
         self.store = store
         self.secrets = secrets
@@ -778,7 +778,9 @@ final class LocalTransfer: ObservableObject {
         self.clusterAddresses = clusterAddresses
         self.librarySourceFactory = librarySourceFactory
         self.hostConfiguration = hostConfiguration
+        clusterPath = pathMonitor
         restoreSaves()
+        guard let clusterPath else { return }
         clusterPath.pathUpdateHandler = { [weak self] path in
             Task { @MainActor in
                 guard let self else { return }
@@ -801,7 +803,7 @@ final class LocalTransfer: ObservableObject {
         clusterPath.start(queue: .global(qos: .utility))
     }
 
-    deinit { clusterPath.cancel() }
+    deinit { clusterPath?.cancel() }
 
     func setAutomaticCellular(_ enabled: Bool) {
         do {
@@ -814,7 +816,7 @@ final class LocalTransfer: ObservableObject {
     }
 
     private var permitsAutomaticAudio: Bool {
-        let path = clusterPath.currentPath
+        guard let path = clusterPath?.currentPath else { return true }
         return ClusterTransferPolicy.permitsAutomaticAudio(online: path.status == .satisfied,
             cellular: path.usesInterfaceType(.cellular), optedIn: automaticCellular)
     }
@@ -1782,6 +1784,23 @@ final class LocalTransfer: ObservableObject {
     }
 
     func cancel() { cancel(reason: "cancel_requested") }
+
+    func stopAndWait() async {
+        let worker = saveWorker
+        let retry = saveRetry
+        let refresh = hostOperation?.task
+        let active = operation
+        let artwork = artworkSource
+        setSavesBackgrounded(true)
+        cancelSavePreparations()
+        stopHostPlayback()
+        cancel()
+        await worker?.value
+        await retry?.value
+        _ = await refresh?.result
+        await active?.value
+        await artwork?.waitForArtwork()
+    }
 
     func cancel(reason: String) {
         pendingHostRefresh = false

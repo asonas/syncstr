@@ -58,6 +58,10 @@ actor CatalogStorage {
         return database
     }
 
+    func closeDatabase(at root: URL) {
+        databases.removeValue(forKey: root.standardizedFileURL)
+    }
+
     func entry(store: LocalMusicStore, track: String, hash: String? = nil) throws -> (library: String, entry: LocalEntry)? {
         try Task.checkCancellation()
         let result = try database(store).playbackEntry(track, hash: hash)
