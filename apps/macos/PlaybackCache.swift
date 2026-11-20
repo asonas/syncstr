@@ -77,7 +77,7 @@ class PlaybackCache {
 
     var usedBytes: Int64 {
         let files = (try? FileManager.default.contentsOfDirectory(at: store.root, includingPropertiesForKeys: [.fileSizeKey])) ?? []
-        return files.filter { ClusterIdentity.isLowercaseHex256($0.deletingPathExtension().lastPathComponent) }
+        return files.filter { SHA256Hex.isValid($0.deletingPathExtension().lastPathComponent) }
             .reduce(0) { $0 + Int64((try? $1.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0) }
     }
 
@@ -166,7 +166,7 @@ class PlaybackCache {
         let files = try FileManager.default.contentsOfDirectory(at: directory,
             includingPropertiesForKeys: [.fileSizeKey, .contentModificationDateKey, .isRegularFileKey])
         let entries = try files.compactMap { url -> (URL, UInt64, Date)? in
-            guard ClusterIdentity.isLowercaseHex256(url.deletingPathExtension().lastPathComponent),
+            guard SHA256Hex.isValid(url.deletingPathExtension().lastPathComponent),
                   ["mp3", "m4a", "aac", "flac", "wav", "aiff", "aif", "alac", "audio"].contains(url.pathExtension) else { return nil }
             let info = try url.resourceValues(forKeys: [.fileSizeKey, .contentModificationDateKey, .isRegularFileKey])
             guard info.isRegularFile == true else { return nil }

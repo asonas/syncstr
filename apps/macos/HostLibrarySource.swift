@@ -106,7 +106,7 @@ final class HostLibrarySource: LibrarySource {
     func retryArtwork() { failed.removeAll(); retryAfter.removeAll() }
 
     func requestArtwork(_ id: String, received: @escaping @MainActor (String, URL) -> Void) {
-        guard !stopped, fetching[id] == nil, !failed.contains(id), ClusterIdentity.isLowercaseHex256(id) else { return }
+        guard !stopped, fetching[id] == nil, !failed.contains(id), SHA256Hex.isValid(id) else { return }
         guard retryAfter[id].map({ $0 <= .now }) ?? true, queued.insert(id).inserted else { return }
         pending.append((id, received))
         fillArtworkRequests()
@@ -147,7 +147,7 @@ final class HostLibrarySource: LibrarySource {
     }
 
     func storedArtwork(_ id: String) async throws -> URL {
-        guard ClusterIdentity.isLowercaseHex256(id) else { throw LocalMusicError.invalidData }
+        guard SHA256Hex.isValid(id) else { throw LocalMusicError.invalidData }
         let url = store.artworkURL(asset: id)
         let existing = try await CatalogStorage.shared.perform { (try? LocalMusicStore.digest(file: url)) == id }
         if !existing {

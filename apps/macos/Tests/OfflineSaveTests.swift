@@ -121,14 +121,14 @@ final class OfflineSaveTests: XCTestCase {
         let (store, entries) = try fixture()
         let transfer = makeTransfer(store: store)
         transfer.busy = true
-        XCTAssertThrowsError(try transfer.removeClusterCopy(entries[0])) { error in
+        XCTAssertThrowsError(try transfer.removeSavedCopy(entries[0])) { error in
             guard case LocalMusicError.transferBusy = error else {
                 return XCTFail("Expected transferBusy, received \(error)")
             }
         }
         transfer.busy = false
         let invalid = LocalEntry(track: entries[0].track, sha256: "invalid", artwork: nil)
-        XCTAssertThrowsError(try transfer.removeClusterCopy(invalid)) { error in
+        XCTAssertThrowsError(try transfer.removeSavedCopy(invalid)) { error in
             guard case LocalMusicError.invalidData = error else {
                 return XCTFail("Expected invalidData, received \(error)")
             }
@@ -623,7 +623,7 @@ final class OfflineSaveTests: XCTestCase {
             membership: fixture.membership, ownID: fixture.host, name: "Library")
         try Data(repeating: 1, count: 1024).write(to: store.fileURL(entries[0]))
         let transfer = makeTransfer(store: store)
-        XCTAssertThrowsError(try transfer.removeClusterCopy(entries[0]))
+        XCTAssertThrowsError(try transfer.removeSavedCopy(entries[0]))
         XCTAssertTrue(store.hasFile(entries[0]))
     }
 

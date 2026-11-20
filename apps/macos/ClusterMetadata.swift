@@ -74,7 +74,7 @@ struct ClusterAudioAddition: Codable {
 extension CatalogDatabase {
     func enqueueAudioAddition(_ entry: LocalEntry, requestID: String, sourceLibrary: String) throws -> ClusterMetadataEdit {
         guard let shared = try sharedAudioSnapshot(), let bytes = entry.track.size,
-              ClusterIdentity.isLowercaseHex256(entry.sha256), UUID(uuidString: requestID) != nil,
+              SHA256Hex.isValid(entry.sha256), UUID(uuidString: requestID) != nil,
               !sourceLibrary.isEmpty else {
             throw LocalMusicError.invalidData
         }

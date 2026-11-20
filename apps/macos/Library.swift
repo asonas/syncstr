@@ -229,7 +229,7 @@ final class Library: ObservableObject {
         transfer.onHostChange = { [weak self] host in
             guard let self else { return }
             inventoryTask?.cancel()
-            if let host, localCatalog?.remoteArtwork != nil, localCatalog?.id == host.library { refreshLocalFiles() }
+            if let host, localCatalog?.source == .host, localCatalog?.id == host.library { refreshLocalFiles() }
         }
         transfer.onHostPlaylists = { [weak self] documents, conflicts in
             self?.playlists = documents
@@ -558,7 +558,7 @@ final class Library: ObservableObject {
 #endif
         await transfer.restorePeer()
         if transfer.usesHostCatalog {
-            if localCatalog?.remoteArtwork == nil { await openSavedLocalLibrary() }
+            if localCatalog?.source != .host { await openSavedLocalLibrary() }
             await loadPlaylists()
         }
 #if DEBUG
@@ -593,7 +593,7 @@ final class Library: ObservableObject {
 
     private func applyLocal(_ prepared: PreparedLocalCatalog) throws {
         // Host catalogs are restored from the database, including after disconnecting.
-        if prepared.catalog.remoteArtwork == nil {
+        if prepared.catalog.source != .host {
             try Data().write(to: localStore.root.appendingPathComponent("active"), options: .atomic)
         }
         inventoryTask?.cancel()
@@ -613,8 +613,8 @@ final class Library: ObservableObject {
             orderedQueue = []
         }
         localCatalog = catalog
-        sharedAudioCatalog = catalog.remoteArtwork != nil ? nil : try localStore.database().sharedAudioSnapshot()?.catalog
-        catalogNotice = catalog.remoteArtwork != nil ? nil : try localStore.database().sharedAudioRefreshNotice()
+        sharedAudioCatalog = catalog.source == .host ? nil : try localStore.database().sharedAudioSnapshot()?.catalog
+        catalogNotice = catalog.source == .host ? nil : try localStore.database().sharedAudioRefreshNotice()
         if catalogNotice == nil, sharedAudioCatalog?.conflicts.isEmpty == false {
             catalogNotice = "ライブラリに競合があります。影響のない曲は引き続き再生できます。"
         }
@@ -639,7 +639,7 @@ final class Library: ObservableObject {
         message = nil
         if !sameLibrary { navigate(.albums) }
         else if let selectedAlbum { self.selectedAlbum = catalog.organization?.canonical(selectedAlbum) }
-        if catalog.remoteArtwork != nil {
+        if catalog.source == .host {
             var retained: [String: URL] = [:]
             if sameLibrary {
                 for entry in catalog.entries {
@@ -742,7 +742,7 @@ final class Library: ObservableObject {
             objectWillChange.send()
             applyLocalFiles(files)
         }
-        guard localCatalog.remoteArtwork != nil else {
+        guard localCatalog.source == .host else {
             if let files = try? localStore.savedLocalFiles(in: localCatalog) { publish(files) }
             return
         }
@@ -761,7 +761,7 @@ final class Library: ObservableObject {
         managedTracks = Set(files.keys)
         localFiles = files
 #if os(macOS)
-        if localCatalog?.remoteArtwork == nil, let folder = localFolder, folder.catalog.id == localCatalog?.id {
+        if localCatalog?.source != .host, let folder = localFolder, folder.catalog.id == localCatalog?.id {
             localFiles.merge(folder.files) { _, original in original }
         }
 #endif
@@ -786,12 +786,12 @@ final class Library: ObservableObject {
             try Task.checkCancellation()
             guard catalogGeneration == generation else { return }
             if snapshot == nil, transfer.hostConnection != nil { return }
-            if snapshot?.catalog.remoteArtwork != nil, transfer.hostConnection == nil {
-                await transfer.restorePeer()
+            if snapshot?.catalog.source == .host, transfer.hostConnection == nil {
+                await transfer.restoreHost()
                 guard transfer.usesHostCatalog, catalogGeneration == generation else { return }
             }
 #if os(macOS)
-            let registered = snapshot?.catalog.remoteArtwork != nil ? true : try await CatalogStorage.shared.perform { try files.database().clusterRegistration() != nil }
+            let registered = snapshot?.catalog.source == .host ? true : try await CatalogStorage.shared.perform { try files.database().clusterRegistration() != nil }
             guard catalogGeneration == generation else { return }
             if let snapshot, registered {
                 let prepared = try await CatalogStorage.shared.perform { try PreparedLocalCatalog(snapshot.catalog, store: files) }
@@ -1006,7 +1006,7 @@ final class Library: ObservableObject {
             player.play()
             return
         }
-        if localCatalog?.remoteArtwork == nil, let url = localFiles[current.id], current.audioHash == nil || localCatalog?.entries.first(where: { $0.track.id == current.id })?.sha256 == current.audioHash {
+        if localCatalog?.source != .host, let url = localFiles[current.id], current.audioHash == nil || localCatalog?.entries.first(where: { $0.track.id == current.id })?.sha256 == current.audioHash {
             var role = "saved_copy"
             #if os(macOS)
             if localFolder?.files[current.id] != nil { role = "original_folder" }
@@ -1405,7 +1405,7 @@ final class Library: ObservableObject {
             if let current, tracks.contains(where: { $0.id == current.id }) { stop() }
             for track in tracks {
                 guard let entry = try localStore.database().playbackEntry(track.id, hash: track.audioHash)?.entry else { throw LocalMusicError.invalidData }
-                try transfer.removeClusterCopy(entry)
+                try transfer.removeSavedCopy(entry)
             }
             refreshLocalFiles()
         } catch LocalMusicError.transferBusy {

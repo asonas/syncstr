@@ -199,7 +199,7 @@ struct SharedAudioTests {
                 organization: catalog.organization, parents: [], state: .queued, createdCopy: true, localCopy: .pending)
         ])
         try f.database.saveClusterBatch(batch)
-        try f.database.setClusterAutomaticCellular(true)
+        try f.database.setAutomaticCellular(true)
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys]
         let edits = try encoder.encode(f.database.clusterMetadataEdits())
@@ -405,7 +405,7 @@ struct SharedAudioTests {
         #expect(try f.database.hasAudioPin(alias))
         let transfer = LocalTransfer(store: f.store)
         defer { transfer.stopSaveWorker() }
-        try transfer.removeClusterCopy(a)
+        try transfer.removeSavedCopy(a)
         #expect(!f.store.hasSavedFile(a))
         #expect(f.store.hasSavedFile(b))
         #expect(try await transfer.playbackFile(b.track) == f.store.fileURL(b))
@@ -413,7 +413,7 @@ struct SharedAudioTests {
         #expect(!restarted.hasSavedFile(a))
         #expect(restarted.hasSavedFile(b))
         transfer.playbackCache.protectedURL = f.store.fileURL(b)
-        try transfer.removeClusterCopy(b)
+        try transfer.removeSavedCopy(b)
         #expect(!restarted.hasSavedFile(b))
         #expect(restarted.hasFile(b))
     }
@@ -441,7 +441,7 @@ struct SharedAudioTests {
         #expect(restarted.saveRequests.first?.completed == ["A:" + f.hash, "B:" + f.hash])
         #expect(f.store.hasSavedFile(a) && f.store.hasSavedFile(b))
         try restarted.cancelSaves(containing: [a.track])
-        try restarted.removeClusterCopy(a)
+        try restarted.removeSavedCopy(a)
         #expect(!f.store.hasSavedFile(a) && f.store.hasSavedFile(b))
     }
 

@@ -3,6 +3,12 @@ import Network
 import Security
 import SwiftUI
 
+enum TransferPolicy {
+    static func permitsAutomaticAudio(online: Bool, cellular: Bool, optedIn: Bool) -> Bool {
+        online && (!cellular || optedIn)
+    }
+}
+
 struct MusicMessage: Codable {
     var version = 4
     var kind: String
@@ -185,7 +191,7 @@ private struct ClusterUIState {
         metadataEdits = try database.clusterMetadataEdits()
         pendingMetadata = metadataEdits.contains { $0.mutation == nil }
         disputed = try registration?.membership.revocationState().disputed.sorted() ?? []
-        cellular = try database.clusterAutomaticCellular()
+        cellular = try database.automaticCellular()
         sharedAudio = try database.sharedAudioSnapshot() != nil
         sharedTrackConflicts = try database.sharedAudioSnapshot().map { try SharedTrackConflict.project($0.catalog) } ?? []
     }
@@ -787,7 +793,7 @@ final class LocalTransfer: ObservableObject {
                 self.stopSaveWorker()
                 self.resumeSaves()
                 guard self.clusterRegistration != nil else { return }
-                let permitted = ClusterTransferPolicy.permitsAutomaticAudio(online: path.status == .satisfied,
+                let permitted = TransferPolicy.permitsAutomaticAudio(online: path.status == .satisfied,
                     cellular: path.usesInterfaceType(.cellular), optedIn: self.automaticCellular)
                 if !permitted && self.automaticAudioOperation {
                     self.cancel()
@@ -807,7 +813,7 @@ final class LocalTransfer: ObservableObject {
 
     func setAutomaticCellular(_ enabled: Bool) {
         do {
-            try store.database().setClusterAutomaticCellular(enabled)
+            try store.database().setAutomaticCellular(enabled)
             automaticCellular = enabled
             stopSaveWorker()
             resumeSaves()
@@ -817,7 +823,7 @@ final class LocalTransfer: ObservableObject {
 
     private var permitsAutomaticAudio: Bool {
         guard let path = clusterPath?.currentPath else { return true }
-        return ClusterTransferPolicy.permitsAutomaticAudio(online: path.status == .satisfied,
+        return TransferPolicy.permitsAutomaticAudio(online: path.status == .satisfied,
             cellular: path.usesInterfaceType(.cellular), optedIn: automaticCellular)
     }
 
@@ -863,32 +869,45 @@ final class LocalTransfer: ObservableObject {
         }
     }
 
+    @discardableResult
+    func restoreHost() async -> Bool {
+        let attempt = generation
+        let files = store
+        do {
+            if let host = try await CatalogStorage.shared.perform({ try files.database().hostConnection() }) {
+                guard generation == attempt else { return false }
+                try await adoptStoredHost(host, attempt: attempt)
+                automaticCellular = try await CatalogStorage.shared.perform { try files.database().automaticCellular() }
+            } else {
+                let retained = try await CatalogStorage.shared.perform { try files.database().retainedHostLibrary() }
+                guard generation == attempt else { return false }
+                if hostConnection != nil {
+                    stopHostPlayback()
+                    artworkSource?.stop()
+                    artworkSource = nil
+                    hostConnection = nil
+                    connected = false
+                }
+                retainedHostLibrary = retained
+                if retainsHostCatalog { clusterMutationsUnavailable = true }
+            }
+            return true
+        } catch {
+            guard generation == attempt, !(error is CancellationError) else { return false }
+            if registrationReadState == "not_read" { registrationReadState = "failed" }
+            connectionEvent("restore_peer_failed", outcome: "failed", fields: ["reason": "cluster_database"], error: error)
+            status = error.localizedDescription
+            return false
+        }
+    }
+
     func restorePeer(readIdentity: (@MainActor () async throws -> String)? = nil) async {
         connectionEvent("restore_peer_called")
         let attempt = generation
         var stage = "cluster_database"
         do {
             let files = store
-            if let host = try await CatalogStorage.shared.perform({ try files.database().hostConnection() }) {
-                guard generation == attempt else { return }
-                try await adoptStoredHost(host, attempt: attempt)
-                automaticCellular = try await CatalogStorage.shared.perform { try files.database().clusterAutomaticCellular() }
-                return
-            }
-            let retained = try await CatalogStorage.shared.perform { try files.database().retainedHostLibrary() }
-            guard generation == attempt else { return }
-            if hostConnection != nil {
-                stopHostPlayback()
-                artworkSource?.stop()
-                artworkSource = nil
-                hostConnection = nil
-                connected = false
-            }
-            retainedHostLibrary = retained
-            if retainsHostCatalog {
-                clusterMutationsUnavailable = true
-                return
-            }
+            guard await restoreHost(), generation == attempt, !usesHostCatalog else { return }
             let recover = !recoveredClusterJobs
             let state = try await CatalogStorage.shared.perform {
                 let database = try files.database()
@@ -1423,7 +1442,7 @@ final class LocalTransfer: ObservableObject {
         } catch { status = error.localizedDescription }
     }
 
-    func removeClusterCopy(_ entry: LocalEntry) throws {
+    func removeSavedCopy(_ entry: LocalEntry) throws {
         guard readyForLocalCopyRemoval else { throw LocalMusicError.transferBusy }
         guard LocalMusicStore.valid(entry) else { throw LocalMusicError.invalidData }
         let database = try store.database()

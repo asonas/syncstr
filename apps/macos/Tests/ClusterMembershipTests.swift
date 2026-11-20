@@ -137,16 +137,16 @@ final class ClusterMembershipTests: XCTestCase {
         }
     }
     func testAutomaticAudioRequiresWifiOrExplicitCellularOptInAndSettingsPersist() throws {
-        XCTAssertTrue(ClusterTransferPolicy.permitsAutomaticAudio(online: true, cellular: false, optedIn: false))
-        XCTAssertFalse(ClusterTransferPolicy.permitsAutomaticAudio(online: true, cellular: true, optedIn: false))
-        XCTAssertTrue(ClusterTransferPolicy.permitsAutomaticAudio(online: true, cellular: true, optedIn: true))
-        XCTAssertFalse(ClusterTransferPolicy.permitsAutomaticAudio(online: false, cellular: true, optedIn: true))
+        XCTAssertTrue(TransferPolicy.permitsAutomaticAudio(online: true, cellular: false, optedIn: false))
+        XCTAssertFalse(TransferPolicy.permitsAutomaticAudio(online: true, cellular: true, optedIn: false))
+        XCTAssertTrue(TransferPolicy.permitsAutomaticAudio(online: true, cellular: true, optedIn: true))
+        XCTAssertFalse(TransferPolicy.permitsAutomaticAudio(online: false, cellular: true, optedIn: true))
         let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".sqlite")
         defer { try? FileManager.default.removeItem(at: url) }
         let database = try CatalogDatabase(url)
-        XCTAssertFalse(try database.clusterAutomaticCellular())
-        try database.setClusterAutomaticCellular(true)
-        XCTAssertTrue(try CatalogDatabase(url).clusterAutomaticCellular())
+        XCTAssertFalse(try database.automaticCellular())
+        try database.setAutomaticCellular(true)
+        XCTAssertTrue(try CatalogDatabase(url).automaticCellular())
     }
     struct Fixture: Decodable {
         let membership: ClusterMembership

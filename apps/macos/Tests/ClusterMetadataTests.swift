@@ -631,7 +631,7 @@ struct ClusterMetadataTests {
         #expect(!library.transfer.canDeleteSharedTrack)
         #expect(library.canRemoveLocalCopy(entry.track))
         #expect(try await library.transfer.playbackFile(entry.track) == f.store.fileURL(entry))
-        try library.transfer.removeClusterCopy(entry)
+        try library.transfer.removeSavedCopy(entry)
         #expect(try !reopened.hasAudioPin(entry))
         #expect(!f.store.hasFile(entry))
         #expect(!library.canRemoveLocalCopy(entry.track))

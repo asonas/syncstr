@@ -83,7 +83,7 @@ struct PlaylistDocument: Codable, Equatable, Identifiable {
             !value.isEmpty && value.utf8.count <= 256 && value.unicodeScalars.allSatisfy { !CharacterSet.controlCharacters.contains($0) }
         }
         guard identity(sourceLibrary), identity(sourcePlaylist), !sourceLibrary.contains(":"), !sourcePlaylist.contains(":"),
-              id == "\(sourceLibrary):\(sourcePlaylist)", ClusterIdentity.isLowercaseHex256(sourceFingerprint),
+              id == "\(sourceLibrary):\(sourcePlaylist)", SHA256Hex.isValid(sourceFingerprint),
               ["folder", "manual", "snapshot"].contains(kind), !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
               name.utf8.count <= 4096, items.count <= 100_000,
               parent.map({ identity($0) && $0 != id }) ?? true,
@@ -94,7 +94,7 @@ struct PlaylistDocument: Codable, Equatable, Identifiable {
                   (item.artist?.utf8.count ?? 0) <= 4096, (item.album?.utf8.count ?? 0) <= 4096,
                   (item.trackId == nil) == (item.sha256 == nil),
                   item.trackId.map(identity) ?? true,
-                  item.sha256.map(ClusterIdentity.isLowercaseHex256) ?? true else { throw LocalMusicError.invalidData }
+                  item.sha256.map(SHA256Hex.isValid) ?? true else { throw LocalMusicError.invalidData }
         }
     }
 }

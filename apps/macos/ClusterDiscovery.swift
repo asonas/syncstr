@@ -49,7 +49,7 @@ final class ClusterDiscovery: NSObject, NetServiceBrowserDelegate, NetServiceDel
         guard let data = sender.txtRecordData() else { return }
         let properties = NetService.dictionary(fromTXTRecord: data)
         guard properties["version"] == Data("1".utf8), let bytes = properties["id"],
-              let id = String(data: bytes, encoding: .utf8), ClusterIdentity.isLowercaseHex256(id),
+              let id = String(data: bytes, encoding: .utf8), SHA256Hex.isValid(id),
               let key = try? IrohLib.EndpointId.fromString(s: id) else { return }
         let addresses = (sender.addresses ?? []).compactMap { data -> String? in
             data.withUnsafeBytes { buffer in

@@ -408,7 +408,7 @@ final class HostAPITests: XCTestCase {
                 }
             }
             let reopened = makeTransfer(store: files, hostConfiguration: config)
-            await reopened.restorePeer()
+            await reopened.restoreHost()
             reopened.connected = true
             reopened.onCatalog = { _ in XCTFail("Replaced the stored catalog") }
             do {
@@ -450,7 +450,7 @@ final class HostAPITests: XCTestCase {
             library.transfer.cancel()
             XCTAssertEqual(library.localCatalog?.name, "Fixture")
             XCTAssertFalse(library.playlists.isEmpty)
-            if restoreFirst { await library.transfer.restorePeer() }
+            if restoreFirst { await library.transfer.restoreHost() }
             let result = try await library.transfer.refreshHost()
             XCTAssertEqual(result, .unchanged)
             XCTAssertEqual(library.transfer.hostConnection?.address, b)
@@ -881,7 +881,7 @@ final class HostAPITests: XCTestCase {
             return HostReply(status: 304, headers: ["Syncstr-Switch": "2.second"])
         }
         let reopened = makeTransfer(store: files, hostConfiguration: config)
-        await reopened.restorePeer()
+        await reopened.restoreHost()
         do { _ = try await reopened.refreshHost(); XCTFail("Startup request succeeded") } catch is URLError {}
         _ = try await reopened.libraryInformation(at: address)
         await fulfillment(of: [refreshed], timeout: 3)
@@ -1075,7 +1075,7 @@ final class HostAPITests: XCTestCase {
         }
         let reopened = makeLibrary(localStore: files, hostConfiguration: config)
         let observation = reopened.$tracks.filter { !$0.isEmpty }.first().sink { _ in published.fulfill() }
-        await reopened.transfer.restorePeer()
+        await reopened.transfer.restoreHost()
         await fulfillment(of: [published, hashed], timeout: 15, enforceOrder: true)
         observation.cancel()
         try Data("bad".utf8).write(to: url, options: .atomic)
@@ -1095,8 +1095,7 @@ final class HostAPITests: XCTestCase {
         try files.database().saveAudioPin(entry)
         files = LocalMusicStore(root: files.root)
         files.inventoryDigest = { _ in XCTFail("Re-read unchanged saved audio"); return "" }
-        var catalog = LocalCatalog(id: libraryID, name: "Fixture", entries: [entry])
-        catalog.remoteArtwork = []
+        let catalog = LocalCatalog(id: libraryID, name: "Fixture", entries: [entry], source: .host)
         let url = files.fileURL(entry)
         let saved = try await CatalogStorage.shared.savedHostFiles(in: catalog, store: files)
         XCTAssertEqual(saved[entry.track.id], url)

@@ -55,8 +55,8 @@ struct ClusterInvitation: Codable {
         guard text.utf8.count <= 16384 else { throw LocalMusicError.invalidData }
         var invitation = try JSONDecoder().decode(Self.self, from: Data(text.utf8))
         guard invitation.version == 1, UUID(uuidString: invitation.cluster) != nil,
-              ClusterIdentity.isLowercaseHex256(invitation.host),
-              ClusterIdentity.isLowercaseHex256(invitation.secret) else { throw LocalMusicError.invalidData }
+              SHA256Hex.isValid(invitation.host),
+              SHA256Hex.isValid(invitation.secret) else { throw LocalMusicError.invalidData }
         invitation.relay = try invitation.relay.map(validatedRelay)
         return invitation
     }
@@ -74,7 +74,7 @@ struct ClusterGrant: Codable, Equatable {
 
     func validate() throws {
         guard version == 1, UUID(uuidString: cluster) != nil,
-              ClusterIdentity.isLowercaseHex256(member) else { throw LocalMusicError.invalidData }
+              SHA256Hex.isValid(member) else { throw LocalMusicError.invalidData }
         try ClusterCrypto.verify(id: id, author: issuer, signature: signature,
             payload: ClusterCrypto.payload("syncstr-enrollment-grant-v1", [version, cluster, issuer, member, host, authority as Any? ?? NSNull()]))
     }
@@ -98,9 +98,9 @@ struct ClusterRevocation: Codable, Equatable {
     func validate() throws {
         let references = observed + changeHeads
         guard version == 1, UUID(uuidString: cluster) != nil,
-              ClusterIdentity.isLowercaseHex256(member), observed.count <= 4352, changeHeads.count <= 64,
+              SHA256Hex.isValid(member), observed.count <= 4352, changeHeads.count <= 64,
               Set(references).count == references.count,
-              references.allSatisfy(ClusterIdentity.isLowercaseHex256) else { throw LocalMusicError.invalidData }
+              references.allSatisfy(SHA256Hex.isValid) else { throw LocalMusicError.invalidData }
         try ClusterCrypto.verify(id: id, author: issuer, signature: signature,
             payload: ClusterCrypto.payload("syncstr-membership-revocation-v1", [version, cluster, issuer, member, authority, observed, changeHeads]))
     }

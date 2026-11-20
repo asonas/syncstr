@@ -247,18 +247,18 @@ final class HostAPIClient: Sendable {
               Set(document.entries.map(\.track.id)).count == document.entries.count,
               document.entries.allSatisfy(LocalMusicStore.valid) else { throw LocalMusicError.invalidData }
         let assets = document.organization.artwork?.assets ?? [:]
-        guard assets.allSatisfy({ ClusterIdentity.isLowercaseHex256($0.key) && $0.value.isEmpty }) else { throw LocalMusicError.invalidData }
+        guard assets.allSatisfy({ SHA256Hex.isValid($0.key) && $0.value.isEmpty }) else { throw LocalMusicError.invalidData }
         let ids = Set(assets.keys)
         document.organization.artwork?.assets = [:]
         try document.organization.validate(remoteAssets: ids)
-        var catalog = LocalCatalog(id: document.id, name: document.name, entries: document.entries, organization: document.organization)
-        catalog.remoteArtwork = ids
+        let catalog = LocalCatalog(id: document.id, name: document.name, entries: document.entries,
+                                   organization: document.organization, source: .host, remoteArtwork: ids)
         return .updated(CatalogUpdate(catalog: catalog, playlists: document.playlists, conflicts: document.conflictedPlaylists,
                                       marker: document.marker, etag: tag, hostSwitch: http.value(forHTTPHeaderField: "Syncstr-Switch")))
     }
 
     func audio(sha256: String) async throws -> URL {
-        guard ClusterIdentity.isLowercaseHex256(sha256) else { throw LocalMusicError.invalidData }
+        guard SHA256Hex.isValid(sha256) else { throw LocalMusicError.invalidData }
         return try await retryAudioDownload { resume in
             let progress = AudioDownloadProgress()
             let file: URL
@@ -338,7 +338,7 @@ final class HostAPIClient: Sendable {
     }
 
     func artwork(id: String) async throws -> Data {
-        guard ClusterIdentity.isLowercaseHex256(id) else { throw LocalMusicError.invalidData }
+        guard SHA256Hex.isValid(id) else { throw LocalMusicError.invalidData }
         var delay = 2
         while true {
             try Task.checkCancellation()

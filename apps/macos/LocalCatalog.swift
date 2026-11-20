@@ -122,7 +122,7 @@ struct PreparedLocalCatalog {
         }, uniquingKeysWith: { first, _ in first })
         for asset in catalog.organization?.artwork?.assets.keys.map({ $0 }) ?? [] { artworkURLs[asset] = store.artworkURL(asset: asset) }
         self.artworkURLs = artworkURLs
-        self.files = catalog.remoteArtwork == nil ? try store.savedLocalFiles(in: catalog) : [:]
+        self.files = catalog.source != .host ? try store.savedLocalFiles(in: catalog) : [:]
     }
 }
 import UniformTypeIdentifiers
@@ -235,6 +235,8 @@ struct LocalCatalog: Codable {
     var entries: [LocalEntry]
     var organization: AlbumOrganization? = nil
     var logicalAudio: Bool? = nil
+    enum Source: String, Codable { case host }
+    var source: Source? = nil
     var remoteArtwork: Set<String>? = nil
 
     mutating func organize(folders: [String: String] = [:]) {
@@ -267,6 +269,12 @@ enum LocalMusicError: LocalizedError {
         case .legacyMutationsUnavailable: "この接続では音源の追加、アルバム情報や表示・非表示の変更、競合の解消、アルバム名の選択は利用できません。"
         case .backgroundAcquisition: "バックグラウンドでは次の音源を取得できません。アプリを開いて再試行してください。"
         }
+    }
+}
+
+enum SHA256Hex {
+    static func isValid(_ value: String) -> Bool {
+        value.utf8.count == 64 && value.utf8.allSatisfy { (48...57).contains($0) || (97...102).contains($0) }
     }
 }
 

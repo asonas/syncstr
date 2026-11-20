@@ -879,7 +879,7 @@ final class ClusterSession {
         let response = try await receive(Response.self, stream: stream)
         if response.status == "needs-attention" { throw LocalMusicError.clusterNeedsAttention }
         guard response.status == "edited", response.object == edit.entry.sha256,
-              let revision = response.revision, ClusterIdentity.isLowercaseHex256(revision) else { throw LocalMusicError.invalidData }
+              let revision = response.revision, SHA256Hex.isValid(revision) else { throw LocalMusicError.invalidData }
         return revision
     }
 

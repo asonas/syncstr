@@ -180,11 +180,11 @@ extension LocalTransfer {
                 try Task.checkCancellation()
                 guard saveGeneration == token else { return }
                 guard let catalog = try await store.snapshotInBackground()?.catalog,
-                      catalog.remoteArtwork == nil || hostConnection?.library == catalog.id else { return }
+                      catalog.source != .host || hostConnection?.library == catalog.id else { return }
                 try Task.checkCancellation()
                 guard saveGeneration == token else { return }
                 processableLibrary = catalog.id
-                func identity(_ entry: LocalEntry) -> String { catalog.remoteArtwork != nil ? entry.trackSaveIdentity : entry.saveIdentity }
+                func identity(_ entry: LocalEntry) -> String { catalog.source == .host ? entry.trackSaveIdentity : entry.saveIdentity }
                 for index in saveRequests.indices {
                     guard saveRequests[index].library == catalog.id,
                           [.waiting, .wifi, .saving].contains(saveRequests[index].state) else { continue }

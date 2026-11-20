@@ -145,10 +145,10 @@ struct ClusterSignedChange: Codable, Equatable {
         object["id"] = id
         object["signature"] = signature
         let change = try JSONDecoder().decode(ClusterChange.self, from: JSONSerialization.data(withJSONObject: object))
-        guard change.version == 1, ClusterIdentity.isLowercaseHex256(change.object),
+        guard change.version == 1, SHA256Hex.isValid(change.object),
               change.parents.count <= 64, change.previous.count <= 64,
               Set(change.parents).count == change.parents.count, Set(change.previous).count == change.previous.count,
-              (change.parents + change.previous).allSatisfy({ ClusterIdentity.isLowercaseHex256($0) && $0 != id }) else {
+              (change.parents + change.previous).allSatisfy({ SHA256Hex.isValid($0) && $0 != id }) else {
             throw LocalMusicError.invalidData
         }
         try ClusterCrypto.verify(id: id, author: change.author, signature: signature, payload: Data(payload.utf8))

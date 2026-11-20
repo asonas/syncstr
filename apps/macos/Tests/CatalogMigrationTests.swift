@@ -6,6 +6,40 @@ import XCTest
 #endif
 
 final class CatalogMigrationTests: XCTestCase {
+    func testDeviceCellularSettingMigratesOnceAndDefaultsOff() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = LocalMusicStore(root: root)
+        XCTAssertFalse(try store.database().automaticCellular())
+        var connection: OpaquePointer?
+        XCTAssertEqual(sqlite3_open(root.appendingPathComponent("catalog.sqlite").path, &connection), SQLITE_OK)
+        defer { sqlite3_close(connection) }
+        let legacy = "DROP TABLE device_transfer_settings; INSERT INTO cluster_transfer_settings VALUES (1, 1)"
+        XCTAssertEqual(sqlite3_exec(connection, legacy, nil, nil, nil), SQLITE_OK)
+        XCTAssertTrue(try store.database().automaticCellular())
+        try store.database().setAutomaticCellular(false)
+        XCTAssertFalse(try store.database().automaticCellular())
+    }
+
+    func testStoredHostHeaderWithoutSourceRestoresAsHostCatalog() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = LocalMusicStore(root: root)
+        let database = try store.database()
+        var connection: OpaquePointer?
+        XCTAssertEqual(sqlite3_open(root.appendingPathComponent("catalog.sqlite").path, &connection), SQLITE_OK)
+        defer { sqlite3_close(connection) }
+        let legacy = """
+            INSERT INTO host_connection(singleton,address,library,name,hosts,header)
+            VALUES(1,'https://host.example.test','library','Fixture','[]',
+                   '{"id":"library","name":"Fixture","entries":[],"remoteArtwork":[]}')
+            """
+        XCTAssertEqual(sqlite3_exec(connection, legacy, nil, nil, nil), SQLITE_OK)
+        XCTAssertEqual(try store.load()?.source, .host)
+        _ = try database.forgetHost()
+        XCTAssertEqual(try store.load()?.source, .host)
+    }
+
     func testCatalogReadRetainsUnchangedArtworkFileAndRepairsMissingCopy() throws {
         let (store, catalog) = try legacyStore()
         _ = try store.load()
