@@ -111,6 +111,11 @@ extension LocalTransfer {
                 if entries.count != restored[index].entries.count {
                     restored[index].entries = entries
                     restored[index].completed.formIntersection(entries.flatMap { [$0.saveIdentity, $0.trackSaveIdentity] })
+                    // The failure may have come from a dropped entry; let the worker check the rest again.
+                    if restored[index].state == .failed {
+                        restored[index].state = .waiting
+                        restored[index].error = nil
+                    }
                 }
                 if restored[index].state == .saving { restored[index].state = .waiting }
             }
