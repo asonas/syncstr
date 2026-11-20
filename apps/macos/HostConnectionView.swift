@@ -171,7 +171,7 @@ struct HostConnectionSettings: View {
             if let message { Text(message).font(.callout) }
         } else {
             Button("ホストに接続") { open(HostSetupRequest()) }
-            if transfer.clusterRegistration != nil || transfer.peerName != nil || transfer.pairedName != nil {
+            if !transfer.usesHostCatalog, transfer.clusterRegistration != nil || transfer.peerName != nil || transfer.pairedName != nil {
                 PeerSetupView(transfer: transfer)
             }
         }

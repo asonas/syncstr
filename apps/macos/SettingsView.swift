@@ -25,7 +25,7 @@ struct SettingsView: View {
             PlaybackDiagnosticSettings(recorder: library.diagnostics)
             Divider()
             HostConnectionSettings(transfer: library.transfer) { hostSetup = $0 }
-            if !library.transfer.hasLibrarySource, library.transfer.pairedName != nil {
+            if !library.transfer.hasLibrarySource, !library.transfer.usesHostCatalog, library.transfer.pairedName != nil {
                 Divider()
                 DisclosureGroup("従来の接続") {
                     Button("従来の端末間転送") { showingLegacy = true }

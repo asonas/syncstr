@@ -549,7 +549,7 @@ struct PhoneRoot: View {
                 HostConnectionSettings(transfer: library.transfer) { hostSetup = $0 }
             }
             if library.transfer.showsLibraryEditControls { Section { AddMusicButton(library: library) } }
-            if !library.transfer.hasLibrarySource, library.transfer.pairedName != nil {
+            if !library.transfer.hasLibrarySource, !library.transfer.usesHostCatalog, library.transfer.pairedName != nil {
                 Section("従来の接続") {
                     NavigationLink("従来の端末間転送") {
                         ScrollView { PhonePairingView(transfer: library.transfer).padding(20) }
