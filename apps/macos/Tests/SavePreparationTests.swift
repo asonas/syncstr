@@ -8,12 +8,16 @@ import AVFoundation
 
 @MainActor
 struct SavePreparationTests {
-    private func fixture(root: URL) throws -> (LocalMusicStore, LocalEntry) {
+    private func fixture(root: URL, host: Bool = false) throws -> (LocalMusicStore, LocalEntry) {
         let store = LocalMusicStore(root: root)
         let data = Data(repeating: 7, count: 1024)
         let entry = LocalEntry(track: Track(id: "track", title: "Track", artist: nil, suffix: "wav", size: 1024),
             sha256: LocalMusicStore.digest(data), artwork: nil)
-        try store.save(LocalCatalog(id: "fixture", name: "Fixture", entries: [entry]))
+        if host {
+            try saveHostFixture([entry], in: store)
+        } else {
+            try store.save(LocalCatalog(id: "fixture", name: "Fixture", entries: [entry]))
+        }
         return (store, entry)
     }
 
@@ -77,10 +81,11 @@ struct SavePreparationTests {
     func closingLibraryWhilePreparingSaveDoesNotRestartSaving() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }
-        let (store, entry) = try fixture(root: root)
+        let (store, entry) = try fixture(root: root, host: true)
         let library = Library(localStore: store)
         defer { library.closeLibrary() }
-        try library.openLocal(try #require(try store.load()))
+        await library.openSavedLocalLibrary()
+        await library.inventoryTask?.value
         try library.transfer.playbackCache.store.prepare()
         try Data(repeating: 7, count: 1024).write(to: library.transfer.playbackCache.store.fileURL(entry))
         let writer = try lockCatalog(store)
@@ -100,7 +105,7 @@ struct SavePreparationTests {
     func repeatedSaveWhilePreparingDoesNotWaitForAnotherCatalogRead() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }
-        let (store, entry) = try fixture(root: root)
+        let (store, entry) = try fixture(root: root, host: true)
         let transfer = LocalTransfer(store: store)
         defer { transfer.stopSaveWorker() }
         transfer.setSavesBackgrounded(true)

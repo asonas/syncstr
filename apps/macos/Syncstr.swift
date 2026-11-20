@@ -407,8 +407,10 @@ struct LibraryView: View {
                                 .buttonStyle(.plain).foregroundStyle(Studio.signal)
                                 .accessibilityLabel("アルバムをシャッフル再生")
                                 playButton(album.tracks)
-                                OfflineSaveControls(library: library, tracks: album.tracks,
-                                                    scope: "album:" + album.id, iconOnly: true)
+                                if library.showsOfflineSaveControls {
+                                    OfflineSaveControls(library: library, tracks: album.tracks,
+                                                        scope: "album:" + album.id, iconOnly: true)
+                                }
                             }
                         }.frame(minHeight: wide ? 272 : nil, alignment: .topLeading)
                         if wide { Spacer(minLength: 0) }
@@ -588,7 +590,7 @@ struct LibraryView: View {
             }.buttonStyle(.plain)
                 .accessibilityLabel("\(track.title)、\(track.artist ?? "アーティスト不明")、\(time(track.duration ?? 0))")
                 .accessibilityAddTraits(library.current?.id == track.id ? .isSelected : [])
-            if let request = library.saveRequest(for: [track], scope: "track:" + track.id),
+            if library.showsOfflineSaveControls, let request = library.saveRequest(for: [track], scope: "track:" + track.id),
                request.state != .complete && !library.hasManagedCopy(track) {
                 Text(request.state == .wifi ? "Wi-Fi待ち" : request.state == .saving ? "保存中" : request.state == .failed ? "保存失敗" : request.state == .cancelled ? "保存中止" : "接続待ち")
                     .font(.caption).foregroundStyle(.secondary)
@@ -598,16 +600,18 @@ struct LibraryView: View {
             }
             Menu {
                 Button("再生") { library.play(track, in: tracks) }
-                if library.isLocalCopyRemovalPending(track) {
-                    Text("保存の解除待ち")
-                } else if let request = library.saveRequest(for: [track], scope: "track:" + track.id),
-                   [.waiting, .wifi, .saving].contains(request.state) {
-                    Button(request.entries.count > 1 ? "アルバム保存を中止" : "保存を中止") { library.transfer.cancelSave(request) }
-                } else if library.localFiles[track.id] == nil {
-                    Button("この端末に保存") { Task { await library.transfer.requestSave([track], scope: "track:" + track.id) } }
-                }
-                if library.canRemoveLocalCopy(track) && !library.isLocalCopyRemovalPending(track) {
-                    Button("この端末の保存を解除", role: .destructive) { library.localCopiesToRemove = [track] }.disabled(library.transfer.busy)
+                if library.showsOfflineSaveControls {
+                    if library.isLocalCopyRemovalPending(track) {
+                        Text("保存の解除待ち")
+                    } else if let request = library.saveRequest(for: [track], scope: "track:" + track.id),
+                       [.waiting, .wifi, .saving].contains(request.state) {
+                        Button(request.entries.count > 1 ? "アルバム保存を中止" : "保存を中止") { library.transfer.cancelSave(request) }
+                    } else if library.localFiles[track.id] == nil {
+                        Button("この端末に保存") { Task { await library.transfer.requestSave([track], scope: "track:" + track.id) } }
+                    }
+                    if library.canRemoveLocalCopy(track) && !library.isLocalCopyRemovalPending(track) {
+                        Button("この端末の保存を解除", role: .destructive) { library.localCopiesToRemove = [track] }.disabled(library.transfer.busy)
+                    }
                 }
                 Button("アルバムを表示") { library.selectedAlbum = track.albumKey; library.search = ""; library.showingNowPlaying = false }
                 Button("アーティストを表示") { self.showArtist(track.artist ?? "アーティスト不明") }

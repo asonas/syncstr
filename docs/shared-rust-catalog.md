@@ -71,7 +71,7 @@ uses the production v5 server. A scripted authenticated host exercises invalid
 and incomplete responses without changing production server behavior. Synthetic
 cases follow the identity, alias, preferred-hash, exact-pin, scoped-conflict, and
 incomplete-refresh cases in
-[`SharedAudioTests.swift`](../apps/macos/Tests/SharedAudioTests.swift), adding signed
+`SharedAudioTests.swift`, adding signed
 playlist history and credential-free Rust reopen checks.
 The existing [`album-artwork.json`](../headless/fixtures/album-artwork.json) fixture
 is exercised through the public API with both JPEG bytes and empty references.

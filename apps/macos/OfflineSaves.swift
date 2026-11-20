@@ -11,7 +11,13 @@ struct OfflineSaveRequest: Codable, Identifiable {
     var error: String?
 }
 
+extension LocalCatalog {
+    var supportsOfflineSaves: Bool { source == .host }
+}
+
 extension Library {
+    var showsOfflineSaveControls: Bool { localCatalog?.supportsOfflineSaves == true }
+
     func saveRequest(for tracks: [Track], scope: String) -> OfflineSaveRequest? {
         guard let catalog = localCatalog else { return nil }
         return transfer.saveRequests.first { $0.library == catalog.id && $0.id == scope }
@@ -47,6 +53,7 @@ extension LocalTransfer {
                 preparation.cancel()
             }
             guard let catalog = snapshot?.catalog else { throw LocalMusicError.invalidData }
+            guard catalog.supportsOfflineSaves else { return }
             try Task.checkCancellation()
             guard preparingSaves[scope]?.token == token else { return }
             let entries = catalog.entries.filter { ids.contains($0.track.id) }

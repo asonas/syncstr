@@ -367,12 +367,14 @@ struct PhoneRoot: View {
                             .disabled(album.tracks.isEmpty)
                             .accessibilityLabel("再生")
                             .accessibilityIdentifier("album-play")
-                            OfflineSaveControls(library: library, tracks: album.tracks, scope: "album:" + album.id, iconOnly: true)
-                                .foregroundStyle(PhoneStyle.signal)
-                                .accessibilityIdentifier("album-save")
+                            if library.showsOfflineSaveControls {
+                                OfflineSaveControls(library: library, tracks: album.tracks, scope: "album:" + album.id, iconOnly: true)
+                                    .foregroundStyle(PhoneStyle.signal)
+                                    .accessibilityIdentifier("album-save")
+                            }
                         }
                         .overlay(alignment: .bottom) {
-                            if let request = library.saveRequest(for: album.tracks, scope: "album:" + album.id),
+                            if library.showsOfflineSaveControls, let request = library.saveRequest(for: album.tracks, scope: "album:" + album.id),
                                [.waiting, .wifi, .saving].contains(request.state) {
                                 Text("\(album.tracks.filter { library.localFiles[$0.id] != nil }.count)/\(album.tracks.count)曲を保存済み")
                                     .font(.caption).foregroundStyle(.secondary).offset(y: 20)
@@ -480,16 +482,18 @@ struct PhoneRoot: View {
                 .buttonStyle(.plain)
                 .accessibilityIdentifier("track-\(track.id)")
                 .accessibilityValue(library.current?.id == track.id ? (library.loading ? library.playbackLoadingLabel : library.playing ? "再生中" : "選択中") : "")
-                OfflineSaveControls(library: library, tracks: [track], scope: "track:" + track.id, compact: true)
-                    .buttonStyle(.borderless)
-                    .foregroundStyle(accented ? Color.white : PhoneStyle.signal)
-                    .tint(accented ? .white : PhoneStyle.signal)
+                if library.showsOfflineSaveControls {
+                    OfflineSaveControls(library: library, tracks: [track], scope: "track:" + track.id, compact: true)
+                        .buttonStyle(.borderless)
+                        .foregroundStyle(accented ? Color.white : PhoneStyle.signal)
+                        .tint(accented ? .white : PhoneStyle.signal)
+                }
             }
         }
         .contextMenu {
-            if library.isLocalCopyRemovalPending(track) {
+            if library.showsOfflineSaveControls && library.isLocalCopyRemovalPending(track) {
                 Text("保存の解除待ち")
-            } else if library.canRemoveLocalCopy(track) {
+            } else if library.showsOfflineSaveControls && library.canRemoveLocalCopy(track) {
                 Button("この端末の保存を解除", role: .destructive) { library.localCopiesToRemove = [track] }.disabled(library.transfer.busy)
             }
         }

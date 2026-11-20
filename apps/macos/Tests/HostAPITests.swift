@@ -608,7 +608,9 @@ final class HostAPITests: XCTestCase {
         var waiting = entries[1]
         waiting.track.addedAt = 1
         try files.save(LocalCatalog(id: libraryID, name: "Fixture", entries: [waiting]))
-        await library.transfer.requestSave([waiting.track], scope: "waiting")
+        let legacyRequests = [OfflineSaveRequest(id: "waiting", library: libraryID, entries: [waiting])]
+        try JSONEncoder().encode(legacyRequests).write(to: files.root.appendingPathComponent("offline-saves.json"))
+        library.transfer.restoreSaves()
         XCTAssertEqual(library.transfer.saveRequests.first?.entries, [waiting])
         _ = try await library.transfer.confirmHost(address, information: hostInformation(address))
         try await waitFor { library.hasManagedCopy(entries[0].track) }

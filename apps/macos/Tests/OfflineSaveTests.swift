@@ -72,6 +72,15 @@ extension XCTestCase {
     }
 }
 
+func saveHostFixture(_ entries: [LocalEntry], in store: LocalMusicStore) throws {
+    let database = try store.database()
+    let catalog = LocalCatalog(id: "fixture", name: "Library", entries: entries, source: .host)
+    let host = try HostConnection(address: HostAddress("https://music.example.test"), library: catalog.id,
+                                  name: catalog.name, hosts: [])
+    try database.saveHostCatalog(CatalogUpdate(catalog: catalog, etag: "fixture"), connection: host,
+                                 replacing: database.hostConnection())
+}
+
 @MainActor
 final class OfflineSaveTests: XCTestCase {
     private var root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
@@ -79,7 +88,7 @@ final class OfflineSaveTests: XCTestCase {
     override func tearDown() { try? FileManager.default.removeItem(at: root) }
 
     func testBusyTransferReportsRemovalBusyInsteadOfInvalidData() throws {
-        let (store, entries) = try fixture()
+        let (store, entries) = try fixture(host: false)
         let transfer = makeTransfer(store: store)
         transfer.busy = true
         XCTAssertThrowsError(try transfer.removeSavedCopy(entries[0])) { error in
@@ -100,8 +109,11 @@ final class OfflineSaveTests: XCTestCase {
         let (store, entries) = try fixture()
         try Data(repeating: 1, count: 1024).write(to: store.fileURL(entries[0]))
         try Data(repeating: 2, count: 1024).write(to: store.fileURL(entries[1]))
+        try store.database().saveAudioPin(entries[0])
+        try store.database().saveAudioPin(entries[1])
         let library = makeLibrary(localStore: store)
-        try library.openLocal(try XCTUnwrap(store.load()))
+        await library.openSavedLocalLibrary()
+        await library.inventoryTask?.value
         library.transfer.setSavesBackgrounded(true)
         try cache(entries[2], transfer: library.transfer, number: 3)
         await library.transfer.requestSave([entries[2].track], scope: "track:track-3")
@@ -123,6 +135,7 @@ final class OfflineSaveTests: XCTestCase {
         defer { observation.cancel() }
         await fulfillment(of: [completed], timeout: 2)
 
+        await library.inventoryTask?.value
         XCTAssertFalse(library.transfer.busy)
         XCTAssertNil(library.transfer.saveWorker)
         XCTAssertTrue(library.transfer.readyForLocalCopyRemoval)
@@ -136,15 +149,56 @@ final class OfflineSaveTests: XCTestCase {
         XCTAssertNil(library.message)
     }
 
-    private func fixture() throws -> (LocalMusicStore, [LocalEntry]) {
+    private func fixture(host: Bool = true) throws -> (LocalMusicStore, [LocalEntry]) {
         let store = LocalMusicStore(root: root.appendingPathComponent("library"))
         let entries = (1...3).map { number in
             let bytes = Data(repeating: UInt8(number), count: 1024)
             return LocalEntry(track: Track(id: "track-\(number)", title: "Track \(number)", artist: "Artist", album: "Album",
                 suffix: "wav", size: UInt64(bytes.count)), sha256: LocalMusicStore.digest(bytes), artwork: nil)
         }
-        try store.save(LocalCatalog(id: "fixture", name: "Library", entries: entries))
+        if host {
+            try saveHostFixture(entries, in: store)
+        } else {
+            try store.save(LocalCatalog(id: "fixture", name: "Library", entries: entries))
+        }
         return (store, entries)
+    }
+
+    private func hostTransfer(_ store: LocalMusicStore) async throws -> LocalTransfer {
+        let transfer = makeTransfer(store: store)
+        await transfer.restoreHost()
+        let host = try XCTUnwrap(transfer.hostConnection)
+        transfer.hostAudioGate.deferRequests(to: host.address.origin, for: .seconds(300))
+        return transfer
+    }
+
+    func testSaveControlsFollowDisplayedCatalogSource() async throws {
+        let (store, entries) = try fixture(host: false)
+        let library = makeLibrary(localStore: store)
+        XCTAssertFalse(library.showsOfflineSaveControls)
+        try library.openLocal(try XCTUnwrap(store.load()))
+        XCTAssertFalse(library.showsOfflineSaveControls)
+        try saveHostFixture(entries, in: store)
+        try Data(repeating: 1, count: 1024).write(to: store.fileURL(entries[0]))
+        try store.database().saveAudioPin(entries[0])
+        await library.openSavedLocalLibrary()
+        XCTAssertTrue(library.showsOfflineSaveControls)
+        try await library.transfer.disconnectHost()
+        XCTAssertTrue(library.transfer.retainsHostCatalog)
+        XCTAssertTrue(library.showsOfflineSaveControls)
+        await library.inventoryTask?.value
+        XCTAssertTrue(library.canRemoveLocalCopy(entries[0].track))
+        await library.transfer.requestSave([entries[1].track], scope: "track:track-2")
+        XCTAssertEqual(library.saveRequest(for: [entries[1].track], scope: "track:track-2")?.state, .waiting)
+    }
+
+    func testRequestSaveRefusesLocalCatalog() async throws {
+        let (store, entries) = try fixture(host: false)
+        let transfer = makeTransfer(store: store)
+        transfer.setSavesBackgrounded(true)
+        await transfer.requestSave([entries[0].track], scope: "track:track-1")
+        XCTAssertTrue(transfer.saveRequests.isEmpty)
+        XCTAssertTrue(makeTransfer(store: store).saveRequests.isEmpty)
     }
 
     private func cache(_ entry: LocalEntry, transfer: LocalTransfer, number: UInt8) throws {
@@ -184,7 +238,7 @@ final class OfflineSaveTests: XCTestCase {
     }
 
     func testPendingSaveRetriesAfterUnreadableSnapshotRecovers() async throws {
-        let (source, entries) = try fixture()
+        let (source, entries) = try fixture(host: false)
         let catalog = try XCTUnwrap(source.load())
         let store = LocalMusicStore(root: root.appendingPathComponent("recovering"))
         try store.prepare()
@@ -205,7 +259,7 @@ final class OfflineSaveTests: XCTestCase {
 
     func testCatalogContentionDoesNotPreventMainActorFromReleasingWriter() async throws {
         let (store, entries) = try fixture()
-        let transfer = makeTransfer(store: store)
+        let transfer = try await hostTransfer(store)
         transfer.setSavesBackgrounded(true)
         try cache(entries[0], transfer: transfer, number: 1)
         await transfer.requestSave([entries[0].track], scope: "track:track-1")
@@ -226,7 +280,7 @@ final class OfflineSaveTests: XCTestCase {
 
     func testSaveStartWaitsForCatalogWithoutBlockingMainActor() async throws {
         let (store, entries) = try fixture()
-        let transfer = makeTransfer(store: store)
+        let transfer = try await hostTransfer(store)
         transfer.setSavesBackgrounded(true)
         try cache(entries[0], transfer: transfer, number: 1)
         let writer = try lockCatalog(store)
@@ -244,7 +298,7 @@ final class OfflineSaveTests: XCTestCase {
 
     func testCancelDuringRetryPreparationDoesNotRecreateSaveIntent() async throws {
         let (store, entries) = try fixture()
-        let transfer = makeTransfer(store: store)
+        let transfer = try await hostTransfer(store)
         transfer.setSavesBackgrounded(true)
         await transfer.requestSave([entries[0].track], scope: "track:track-1")
         let request = try XCTUnwrap(transfer.saveRequests.first)
@@ -259,26 +313,26 @@ final class OfflineSaveTests: XCTestCase {
         try await settled(transfer)
         XCTAssertEqual(transfer.saveRequests.first?.state, .cancelled)
         XCTAssertFalse(store.hasFile(entries[0]))
-        let restored = makeTransfer(store: store)
+        let restored = try await hostTransfer(store)
         XCTAssertEqual(restored.saveRequests.first?.state, .cancelled)
     }
 
     func testOfflineIntentAndPartialResultsSurviveRestartAndAlbumGrowth() async throws {
         let (store, entries) = try fixture()
-        let transfer = makeTransfer(store: store)
+        let transfer = try await hostTransfer(store)
         try cache(entries[0], transfer: transfer, number: 1)
         await transfer.requestSave(Array(entries.prefix(2)).map(\.track), scope: "album:fixture")
         try await settled(transfer)
         let request = try XCTUnwrap(transfer.saveRequests.first)
         XCTAssertEqual(request.state, .waiting)
         XCTAssertEqual(request.entries.count, 2)
-        XCTAssertEqual(request.completed, [entries[0].sha256])
+        XCTAssertEqual(request.completed, [entries[0].trackSaveIdentity])
         XCTAssertTrue(store.hasFile(entries[0]))
         XCTAssertFalse(store.hasFile(entries[1]))
         transfer.stopSaveWorker()
-        let restored = makeTransfer(store: store)
+        let restored = try await hostTransfer(store)
         XCTAssertEqual(restored.saveRequests.first?.entries.count, 2, "Later album additions are not automatically requested")
-        XCTAssertEqual(restored.saveRequests.first?.completed, [entries[0].sha256])
+        XCTAssertEqual(restored.saveRequests.first?.completed, [entries[0].trackSaveIdentity])
         try cache(entries[1], transfer: restored, number: 2)
         restored.resumeSaves()
         try await settled(restored)
@@ -295,7 +349,7 @@ final class OfflineSaveTests: XCTestCase {
 
     func testCancelRetainsCompletedAudioAndDoesNotResumeRemainingItems() async throws {
         let (store, entries) = try fixture()
-        let transfer = makeTransfer(store: store)
+        let transfer = try await hostTransfer(store)
         try cache(entries[0], transfer: transfer, number: 1)
         await transfer.requestSave(entries.map(\.track), scope: "album:fixture")
         try await settled(transfer)
@@ -306,21 +360,21 @@ final class OfflineSaveTests: XCTestCase {
         XCTAssertEqual(transfer.saveRequests.first?.state, .cancelled)
         XCTAssertTrue(store.hasFile(entries[0]))
         XCTAssertFalse(store.hasFile(entries[1]))
-        let restored = makeTransfer(store: store)
+        let restored = try await hostTransfer(store)
         XCTAssertEqual(restored.saveRequests.first?.state, .cancelled)
     }
 
     func testRemovingOneTrackKeepsOtherAlbumSaveIntentAfterRestart() async throws {
         let (store, entries) = try fixture()
-        let transfer = makeTransfer(store: store)
+        let transfer = try await hostTransfer(store)
         try cache(entries[0], transfer: transfer, number: 1)
         await transfer.requestSave(entries.map(\.track), scope: "album:fixture")
         try await settled(transfer)
         try transfer.cancelSaves(containing: [entries[1].track])
-        let restored = makeTransfer(store: store)
+        let restored = try await hostTransfer(store)
         let request = try XCTUnwrap(restored.saveRequests.first)
         XCTAssertEqual(request.entries.map { $0.track.id }, ["track-1", "track-3"])
-        XCTAssertEqual(request.completed, [entries[0].sha256])
+        XCTAssertEqual(request.completed, [entries[0].trackSaveIdentity])
         XCTAssertEqual(request.state, .waiting)
         try cache(entries[2], transfer: restored, number: 3)
         restored.resumeSaves()
@@ -332,13 +386,16 @@ final class OfflineSaveTests: XCTestCase {
     }
 
     func testRemovingOneRegistrationKeepsSharedHashCompletionForOtherRegistration() async throws {
-        let (store, entries) = try fixture()
+        let (store, entries) = try fixture(host: false)
         var other = entries[0]
         other.track.id = "other-registration"
-        try store.save(LocalCatalog(id: "fixture", name: "Library", entries: [entries[0], other, entries[1]]))
+        let registrations = [entries[0], other, entries[1]]
+        try store.save(LocalCatalog(id: "fixture", name: "Library", entries: registrations))
+        let legacyQueue = [OfflineSaveRequest(id: "album:fixture", library: "fixture", entries: registrations)]
+        try JSONEncoder().encode(legacyQueue).write(to: store.root.appendingPathComponent("offline-saves.json"))
         let transfer = makeTransfer(store: store)
         try cache(entries[0], transfer: transfer, number: 1)
-        await transfer.requestSave([entries[0].track, other.track, entries[1].track], scope: "album:fixture")
+        transfer.resumeSaves()
         try await settled(transfer)
         try transfer.cancelSaves(containing: [entries[0].track])
         let restored = makeTransfer(store: store)
@@ -351,27 +408,27 @@ final class OfflineSaveTests: XCTestCase {
 
     func testWaitingAlbumStillProtectsLaterCachedTracks() async throws {
         let (store, entries) = try fixture()
-        let transfer = makeTransfer(store: store)
+        let transfer = try await hostTransfer(store)
         try cache(entries[2], transfer: transfer, number: 3)
         await transfer.requestSave(entries.map(\.track), scope: "album:fixture")
         try await settled(transfer)
         XCTAssertEqual(transfer.saveRequests.first?.state, .waiting)
         XCTAssertTrue(store.hasFile(entries[2]))
-        XCTAssertEqual(transfer.saveRequests.first?.completed, [entries[2].sha256])
+        XCTAssertEqual(transfer.saveRequests.first?.completed, [entries[2].trackSaveIdentity])
     }
 
     func testFailurePreservesSuccessAndRetryUsesCurrentCatalog() async throws {
         let (store, entries) = try fixture()
-        let transfer = makeTransfer(store: store)
+        let transfer = try await hostTransfer(store)
         transfer.setSavesBackgrounded(true)
         await transfer.requestSave(Array(entries.prefix(2)).map(\.track), scope: "album:fixture")
-        try store.save(LocalCatalog(id: "fixture", name: "Library", entries: [entries[0], entries[2]]))
+        try saveHostFixture([entries[0], entries[2]], in: store)
         try cache(entries[0], transfer: transfer, number: 1)
         transfer.setSavesBackgrounded(false)
         try await settled(transfer)
         XCTAssertEqual(transfer.saveRequests.first?.state, .failed)
-        XCTAssertEqual(transfer.saveRequests.first?.completed, [entries[0].sha256])
-        try store.save(LocalCatalog(id: "fixture", name: "Library", entries: entries))
+        XCTAssertEqual(transfer.saveRequests.first?.completed, [entries[0].trackSaveIdentity])
+        try saveHostFixture(entries, in: store)
         try cache(entries[1], transfer: transfer, number: 2)
         await transfer.requestSave(Array(entries.prefix(2)).map(\.track), scope: "album:fixture")
         try await settled(transfer)
@@ -383,13 +440,15 @@ final class OfflineSaveTests: XCTestCase {
     func testRemovalReclaimsManagedAndCachedAudioWithoutDeletingCatalogOrOriginal() async throws {
         let (store, entries) = try fixture()
         let library = makeLibrary(localStore: store)
-        try library.openLocal(try XCTUnwrap(store.load()))
+        await library.openSavedLocalLibrary()
+        await library.inventoryTask?.value
         let original = root.appendingPathComponent("original.wav")
         try Data(repeating: 1, count: 1024).write(to: original)
         try cache(entries[0], transfer: library.transfer, number: 1)
         await library.transfer.requestSave([entries[0].track], scope: "track:track-1")
         try await settled(library.transfer)
         XCTAssertEqual(library.saveRequest(for: [entries[0].track], scope: "track:track-1")?.state, .complete)
+        await library.inventoryTask?.value
         XCTAssertTrue(library.canRemoveLocalCopy(entries[0].track))
         library.removeLocalCopies([entries[0].track])
         XCTAssertFalse(store.hasFile(entries[0]))
@@ -403,11 +462,13 @@ final class OfflineSaveTests: XCTestCase {
     func testRemovalKeepsConfirmedTargetAfterAlertDismissalClearsPendingTracks() async throws {
         let (store, entries) = try fixture()
         let library = makeLibrary(localStore: store)
-        try library.openLocal(try XCTUnwrap(store.load()))
+        await library.openSavedLocalLibrary()
+        await library.inventoryTask?.value
         for index in 0..<2 {
             try cache(entries[index], transfer: library.transfer, number: UInt8(index + 1))
             await library.transfer.requestSave([entries[index].track], scope: "track:" + entries[index].track.id)
             try await settled(library.transfer)
+            await library.inventoryTask?.value
             XCTAssertTrue(library.canRemoveLocalCopy(entries[index].track))
         }
 
@@ -416,6 +477,7 @@ final class OfflineSaveTests: XCTestCase {
         // SwiftUI can dismiss the alert before invoking its destructive action.
         library.localCopiesToRemove = []
         library.removeLocalCopies(confirmedTracks)
+        await library.inventoryTask?.value
 
         XCTAssertNil(library.message)
         XCTAssertFalse(store.hasFile(entries[0]))

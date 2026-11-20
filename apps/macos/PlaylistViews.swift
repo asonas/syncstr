@@ -173,7 +173,9 @@ private struct PlaylistDetail: View {
                 Button { library.startAlbum(playable.map(\.track)) } label: {
                     Label { Text("再生") } icon: { Image("regen-filled-play").renderingMode(.template) }.frame(maxWidth: .infinity, minHeight: 32)
                 }.buttonStyle(.borderedProminent)
-                OfflineSaveControls(library: library, tracks: playable.map(\.track), scope: "playlist:" + document.id, iconOnly: true).frame(width: 44)
+                if library.showsOfflineSaveControls {
+                    OfflineSaveControls(library: library, tracks: playable.map(\.track), scope: "playlist:" + document.id, iconOnly: true).frame(width: 44)
+                }
             }
             .disabled(playable.isEmpty || library.playlistConflicts.contains(document.id))
         }

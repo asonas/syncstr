@@ -64,33 +64,35 @@ struct PhoneNowPlaying: View {
                             .font(.system(size: metadataSize))
                             .frame(maxWidth: .infinity, alignment: .leading)
                             .fixedSize(horizontal: false, vertical: true)
-                            Menu {
-                                if library.isLocalCopyRemovalPending(track) {
-                                    Text("保存の解除待ち")
-                                } else if let request = library.saveRequest(for: [track], scope: "track:" + track.id),
-                                   [.waiting, .wifi, .saving].contains(request.state) {
-                                    Text(request.state == .wifi ? "Wi-Fi接続待ち" : request.state == .saving ? "保存中" : "接続待ち")
-                                    Button(request.entries.count > 1 ? "アルバム保存を中止" : "保存を中止") { library.transfer.cancelSave(request) }
-                                } else if library.localFiles[track.id] == nil {
-                                    if let request = library.saveRequest(for: [track], scope: "track:" + track.id), let error = request.error { Text(error) }
-                                    Button(library.saveRequest(for: [track], scope: "track:" + track.id)?.state == .failed ? "保存を再試行" : "この端末に保存") {
-                                        Task { await library.transfer.requestSave([track], scope: "track:" + track.id) }
+                            if library.showsOfflineSaveControls {
+                                Menu {
+                                    if library.isLocalCopyRemovalPending(track) {
+                                        Text("保存の解除待ち")
+                                    } else if let request = library.saveRequest(for: [track], scope: "track:" + track.id),
+                                       [.waiting, .wifi, .saving].contains(request.state) {
+                                        Text(request.state == .wifi ? "Wi-Fi接続待ち" : request.state == .saving ? "保存中" : "接続待ち")
+                                        Button(request.entries.count > 1 ? "アルバム保存を中止" : "保存を中止") { library.transfer.cancelSave(request) }
+                                    } else if library.localFiles[track.id] == nil {
+                                        if let request = library.saveRequest(for: [track], scope: "track:" + track.id), let error = request.error { Text(error) }
+                                        Button(library.saveRequest(for: [track], scope: "track:" + track.id)?.state == .failed ? "保存を再試行" : "この端末に保存") {
+                                            Task { await library.transfer.requestSave([track], scope: "track:" + track.id) }
+                                        }
+                                    } else {
+                                        Text("保存済み")
                                     }
-                                } else {
-                                    Text("保存済み")
+                                    if library.canRemoveLocalCopy(track) && !library.isLocalCopyRemovalPending(track) {
+                                        Button("この端末の保存を解除", role: .destructive) { library.localCopiesToRemove = [track] }
+                                    }
+                                } label: {
+                                    // The original SVG has a 3 pt transparent inset on its right.
+                                    RegenIcon(name: "dots")
+                                        .offset(x: 3)
+                                        .frame(width: 44, height: 44, alignment: .trailing)
+                                        .contentShape(Rectangle())
                                 }
-                                if library.canRemoveLocalCopy(track) && !library.isLocalCopyRemovalPending(track) {
-                                    Button("この端末の保存を解除", role: .destructive) { library.localCopiesToRemove = [track] }
-                                }
-                            } label: {
-                                // The original SVG has a 3 pt transparent inset on its right.
-                                RegenIcon(name: "dots")
-                                    .offset(x: 3)
-                                    .frame(width: 44, height: 44, alignment: .trailing)
-                                    .contentShape(Rectangle())
+                                .buttonStyle(.plain)
+                                .accessibilityLabel("曲の操作")
                             }
-                            .buttonStyle(.plain)
-                            .accessibilityLabel("曲の操作")
                         }
                         .frame(minHeight: 52)
                         .padding(.leading, 32)
