@@ -64,6 +64,9 @@ struct PhoneAlbumBrowser<Detail: View>: View {
                 if let openedID { scrollPosition.scrollTo(id: openedID, anchor: .center) }
             }
         }
+        .onChange(of: library.transfer.showsLibraryEditControls) { _, editable in
+            if !editable { selecting = false; selected.removeAll() }
+        }
         .onChange(of: albums.map(\.id)) { _, ids in selected.formIntersection(ids) }
         .onKeyPress(.escape) {
             selecting = false
@@ -79,7 +82,7 @@ struct PhoneAlbumBrowser<Detail: View>: View {
             if selecting { toggle(album.id) } else { open(album) }
         } label: {
             VStack(alignment: .leading, spacing: 4) {
-                PhoneArtwork(url: album.coverArt.flatMap { library.artworkURLs[$0] })
+                PhoneArtwork(url: album.coverArt.flatMap { library.artworkURL(for: $0) })
                     .overlay(alignment: .topTrailing) {
                         if selecting {
                             Image(systemName: selected.contains(album.id) ? "checkmark.circle.fill" : "circle")
@@ -105,6 +108,7 @@ struct PhoneAlbumBrowser<Detail: View>: View {
         .buttonStyle(.plain)
         .gesture(
             CommandAlbumClick {
+                guard library.transfer.showsLibraryEditControls else { return }
                 selecting = true
                 toggle(album.id)
             }
@@ -113,13 +117,15 @@ struct PhoneAlbumBrowser<Detail: View>: View {
         .accessibilityIdentifier("album-\(album.id)")
         .accessibilityAddTraits(selected.contains(album.id) ? .isSelected : [])
         .contextMenu {
-            let targets = selected.contains(album.id) ? selected : [album.id]
-            Button(hidden ? "非表示を解除する" : "非表示にする") {
-                changeVisibility(targets)
-            }.disabled(library.albumsVisibilityUnavailable(targets))
-            if let notice = library.albumsVisibilityNotice(targets) { Text(notice) }
-            ForEach(targets.sorted(), id: \.self) { id in
-                if let status = library.albumVisibilityStatus(id) { Text(status) }
+            if library.transfer.showsLibraryEditControls {
+                let targets = selected.contains(album.id) ? selected : [album.id]
+                Button(hidden ? "非表示を解除する" : "非表示にする") {
+                    changeVisibility(targets)
+                }.disabled(library.albumsVisibilityUnavailable(targets))
+                if let notice = library.albumsVisibilityNotice(targets) { Text(notice) }
+                ForEach(targets.sorted(), id: \.self) { id in
+                    if let status = library.albumVisibilityStatus(id) { Text(status) }
+                }
             }
         }
     }
@@ -139,16 +145,18 @@ struct PhoneAlbumBrowser<Detail: View>: View {
                 Image("album-sort").resizable().renderingMode(.template).frame(width: 24, height: 24)
             }
             .accessibilityLabel("並び替え")
-            Button(selecting ? "完了" : "選択") {
-                searchFocused = false
-                selecting.toggle()
-                selected.removeAll()
+            if library.transfer.showsLibraryEditControls {
+                Button(selecting ? "完了" : "選択") {
+                    searchFocused = false
+                    selecting.toggle()
+                    selected.removeAll()
+                }
             }
         }
     }
 
     @ViewBuilder private var selectionBar: some View {
-        if selecting {
+        if library.transfer.showsLibraryEditControls, selecting {
             VStack(alignment: .leading, spacing: 4) {
                 HStack {
                     Text("\(selected.count)枚を選択")

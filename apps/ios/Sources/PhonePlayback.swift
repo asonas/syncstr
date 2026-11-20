@@ -112,7 +112,7 @@ final class PhonePlayback: ObservableObject {
             MPNowPlayingInfoCenter.default().nowPlayingInfo = nil
             return
         }
-        let url = track.coverArt.flatMap { library.artworkURLs[$0] }
+        let url = track.coverArt.flatMap { library.artworkURL(for: $0) }
         if artworkURL != url || artworkTrackID != track.id {
             artworkTask?.cancel()
             artworkURL = url

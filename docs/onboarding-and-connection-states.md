@@ -162,6 +162,8 @@ A device is in exactly one of three states. "Through a mirror" qualifies the con
 
 Through a mirror, the device keeps its own catalog when that is newer than the mirror's, as the mirrors design requires. A track whose file no reachable host has uses the secondary text color, as in the unreachable state, and tapping it gives the reason.
 
+After a disconnect, the device keeps the last host catalog until the listener connects to a host again. The catalog still indexes saved tracks, even on a device with an older cluster registration. The device remembers the catalog's address and library ID so it can ask before replacing the library at that address.
+
 A device that was never connected shows no reason line. When the owner withdraws a device's access in Tailscale, the device sees the "host unreachable" state, because a refused connection looks like an unreachable host. It keeps its offline saves and its playback cache, because withdrawing access stops requests to the host and cannot reach files already on the device.
 
 From ASO-172 on, the line for two hosts that accept changes appears on the library landing and in Settings. The first release has one host, so it never shows. It is the case where two hosts report the same switch number with different primaries, which the mirrors design leaves to this document for wording. A device in the first release makes no change, so the line asks for a fix on the hosts and nothing on the device stops.
@@ -291,7 +293,7 @@ Appearance, the playback-cache limit and usage, and playback diagnostics stay on
 
 ### Edits that leave a connected device
 
-In the first release a device reads and downloads, and the listener edits the library on the primary. These controls are hidden on a device connected to a host and stay on a host and on a local-only device:
+In the first release a device reads and downloads, and the listener edits the library on the primary. A device hides these controls while connected to a host and while showing its retained catalog after disconnect. Hosts and local-only devices keep them:
 
 - 音楽ファイルを追加 in the iPhone toolbar (PhoneRoot.swift lines 138 and 262-264) and in the Mac sidebar (Syncstr.swift lines 198-207).
 - Hiding and showing albums (PhoneRoot.swift lines 326-332, Syncstr.swift line 331). The category 非表示にしたアルバム stays, read-only.

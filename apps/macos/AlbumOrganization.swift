@@ -331,11 +331,11 @@ struct AlbumOrganization: Codable, Equatable {
         try validate()
     }
 
-    func validate() throws {
+    func validate(remoteAssets: Set<String> = []) throws {
         guard albums.count <= 100000, tracks.count <= 100000, choices.count <= 200000,
               Set(albums.map(\.id)).count == albums.count, Set(tracks.map(\.id)).count == tracks.count,
               Set(choices.map(\.id)).count == choices.count else { throw LocalMusicError.invalidData }
-        try artwork?.validate(tracks: Set(tracks.map(\.id)))
+        try artwork?.validate(tracks: Set(tracks.map(\.id)), remoteAssets: remoteAssets)
         let albumIDs = Set(albums.map(\.id))
         let trackIDs = Set(tracks.map(\.id))
         for (former, _) in trackAliases ?? [:] {
@@ -367,7 +367,7 @@ struct AlbumOrganization: Codable, Equatable {
             if revision.kind == "membership" {
                 guard trackIDs.contains(canonicalTrack(revision.subject)), revision.value.map({ albumIDs.contains(canonical($0)) }) ?? true else { throw LocalMusicError.invalidData }
             } else if revision.kind == "artwork" {
-                guard albumIDs.contains(canonical(revision.subject)), revision.value.map({ artwork?.assets[$0] != nil }) ?? true else { throw LocalMusicError.invalidData }
+                guard albumIDs.contains(canonical(revision.subject)), revision.value.map({ artwork?.assets[$0] != nil || remoteAssets.contains($0) }) ?? true else { throw LocalMusicError.invalidData }
             } else if (revision.kind == "classification" || revision.kind == "visibility") {
                 guard albumIDs.contains(canonical(revision.subject)), revision.value == nil || revision.value == "true" || revision.value == "false" else { throw LocalMusicError.invalidData }
             }

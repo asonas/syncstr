@@ -31,7 +31,7 @@ struct SyncstrApp: App {
 
     var body: some Scene {
         WindowGroup {
-            PhoneRoot(library: library)
+            PhoneWindow(library: library)
                 .focusedSceneObject(library)
                 .modifier(AppAppearance())
                 .defaultAppStorage(appearanceDefaults)
@@ -47,10 +47,49 @@ struct SyncstrApp: App {
                         library.transfer.stopBrowsing()
                     } else if phase == .active {
                         library.setBackgrounded(false)
-                        if library.transfer.clusterRegistration != nil && !library.transfer.busy { library.transfer.connectCluster() }
+                        if library.transfer.hasHostActivity || (library.transfer.hasLibrarySource && !library.transfer.busy) {
+                            library.transfer.refreshConnection()
+                        }
                     }
                 }
         }
         .commands { PlaybackCommands() }
+    }
+}
+
+private struct PhonePresentationAnchor: UIViewRepresentable {
+    let view: UIView
+    func makeUIView(context: Context) -> UIView { view }
+    func updateUIView(_ uiView: UIView, context: Context) {}
+}
+
+private struct PhoneWindow: View {
+    @ObservedObject var library: Library
+    @State private var hostSetup: HostSetupRequest?
+
+    @State private var pendingLink: HostSetupRequest?
+    @State private var presentationAnchor = UIView()
+
+    var body: some View {
+        PhoneRoot(library: library, hostSetup: $hostSetup)
+            .onOpenURL { url in
+                if let hostSetup { hostSetup.input = .link(url) }
+                else { pendingLink = HostSetupRequest(input: .link(url)) }
+            }
+            .background { PhonePresentationAnchor(view: presentationAnchor).allowsHitTesting(false) }
+            .task(id: pendingLink?.id) {
+                guard let request = pendingLink else { return }
+                while !Task.isCancelled {
+                    if let root = presentationAnchor.window?.rootViewController {
+                        if root.presentedViewController == nil, library.trackMetadataPresentation == nil,
+                           !library.showingNowPlaying {
+                            hostSetup = request
+                            pendingLink = nil
+                            return
+                        }
+                    }
+                    do { try await Task.sleep(for: .milliseconds(100)) } catch { return }
+                }
+            }
     }
 }

@@ -210,6 +210,7 @@ final class LocalTransfer: ObservableObject {
                 idleWaiters.removeAll()
                 for waiter in waiters.values { waiter.resume() }
             }
+            if !busy { drainHostRefresh() }
             if !busy && pendingOrganization {
                 pendingOrganization = false
                 Task { syncOrganization() }
@@ -249,6 +250,7 @@ final class LocalTransfer: ObservableObject {
     func connectionEvent(_ event: String, outcome: String = "observed", fields: [String: String] = [:], error: Error? = nil, operationID: UUID? = nil) {
 #if os(macOS)
         var values = fields
+        values["connection_mode"] = fields["connection_mode"] ?? connectionMode
         values["operation_id"] = (operationID ?? generation).uuidString
         values["connected"] = String(connected)
         values["client_present"] = String(client != nil)
@@ -330,30 +332,369 @@ final class LocalTransfer: ObservableObject {
     }
     var saveRetry: Task<Void, Never>?
     var saveRetryInterval: Duration = .seconds(15)
+    var hostAudioGate = HostAudioGate()
     private var saveReconnectAttempts = 0
     private var saveReconnectNotBefore: ContinuousClock.Instant?
     private(set) var saveReconnecting = false
     var saveSource: (any LibrarySource)?
     var saveGeneration = UUID()
     var savesBackgrounded = false
-    var savePathIsCellular: Bool { clusterPath.currentPath.usesInterfaceType(.cellular) }
+    var savePathIsCellular: Bool { clusterPath?.currentPath.usesInterfaceType(.cellular) == true }
     var permitsAutomaticSaveAudio: Bool { permitsAutomaticAudio }
-    private let clusterPath = NWPathMonitor()
+    private let clusterPath: NWPathMonitor?
     private var automaticAudioOperation = false
     private var clusterRetry: Task<Void, Never>?
     private let clusterAddresses: [PeerAddress]?
     private lazy var clusterNetwork = ClusterNetwork(store: store, secrets: peerSecrets, addresses: clusterAddresses)
     private let librarySourceFactory: (@MainActor () -> any LibrarySource)?
-    private lazy var connectedLibrarySource = makeLibrarySource(using: clusterNetwork)
+    private var clusterSource: (any LibrarySource)?
+    private var connectedLibrarySource: any LibrarySource {
+        if let clusterSource { return clusterSource }
+        let source = makeLibrarySource(using: clusterNetwork)
+        clusterSource = source
+        return source
+    }
+    @Published private(set) var hostConnection: HostConnection? {
+        didSet {
+            if oldValue?.address != hostConnection?.address || oldValue?.library != hostConnection?.library {
+                onHostChange?(hostConnection)
+            }
+        }
+    }
+    @Published private(set) var changedHostLibrary: String?
+    @Published private(set) var retainedHostLibrary: String?
+    var showsLibraryEditControls: Bool { !usesHostCatalog }
+    var retainsHostCatalog: Bool { retainedHostLibrary != nil }
+    var usesHostCatalog: Bool { hostConnection != nil || retainsHostCatalog }
+    private var hostPlaybackSources: [UUID: any LibrarySource] = [:]
+    private var artworkSource: HostLibrarySource?
+    private var hostAudio = HostAudioFiles()
+    private let hostConfiguration: URLSessionConfiguration
+    private var observedSwitch: String?
+    private var hostOperation: (id: UUID, task: Task<HostRefreshResult, Error>, automatic: Bool)?
+    var hasHostActivity: Bool { hostConnection != nil || hostOperation != nil }
+    private var pendingHostRefresh = false
+    var hasLibrarySource: Bool { hostConnection != nil || clusterRegistration != nil }
+    var connectionMode: String { hostConnection != nil ? "host" : retainsHostCatalog ? "offline" : clusterRegistration != nil ? "cluster" : "legacy" }
+    var onHostPlaylists: (([PlaylistDocument], Set<String>) -> Void)?
+    var onHostDisconnected: (() async -> Void)?
+    var onHostChange: ((HostConnection?) -> Void)?
 
-    // An injected factory (tests) takes precedence and ignores `network`.
-    func makeLibrarySource(using network: ClusterNetwork? = nil) -> any LibrarySource {
-        librarySourceFactory?() ?? ClusterLibrarySource(network: network ?? ClusterNetwork(store: store, secrets: peerSecrets))
+    enum HostRefreshResult: Equatable {
+        case updated, unchanged, differentLibrary(String)
     }
 
-    var canSyncPlaylists: Bool { clusterRegistration != nil || peerName != nil }
+    func libraryInformation(at address: HostAddress) async throws -> HostLibraryInfo {
+        let client = HostAPIClient(address: address, configuration: hostConfiguration, audioGate: hostAudioGate,
+                                   switchObserved: hostSwitchObserver(address: address, library: hostConnection?.library))
+        defer { client.stop() }
+        return try await client.library()
+    }
+
+    func confirmHost(_ address: HostAddress, information: HostLibraryInfo, replacingLibrary: Bool = false,
+                     didCommit: (@Sendable () async -> Void)? = nil) async throws -> HostRefreshResult {
+        try await runHostOperation {
+            try await self.applyHostConfirmation(address, information: information, replacingLibrary: replacingLibrary, didCommit: didCommit)
+        }
+    }
+
+    private func runHostOperation(_ action: @escaping @MainActor () async throws -> HostRefreshResult) async throws -> HostRefreshResult {
+        try Task.checkCancellation()
+        let task = startHostOperation(action: action)
+        return try await withTaskCancellationHandler { try await task.value } onCancel: { task.cancel() }
+    }
+
+    private func startHostOperation(automatic: Bool = false, action: @escaping @MainActor () async throws -> HostRefreshResult) -> Task<HostRefreshResult, Error> {
+        let previous = hostOperation
+        if previous?.automatic == true { pendingHostRefresh = true }
+        previous?.task.cancel()
+        let id = UUID()
+        let task = Task {
+            defer {
+                if hostOperation?.id == id {
+                    hostOperation = nil
+                    drainHostRefresh()
+                }
+            }
+            _ = await previous?.task.result
+            try Task.checkCancellation()
+            do { return try await action() }
+            catch {
+                try Task.checkCancellation()
+                throw error
+            }
+        }
+        hostOperation = (id, task, automatic)
+        return task
+    }
+
+    private func applyHostConfirmation(_ address: HostAddress, information: HostLibraryInfo, replacingLibrary: Bool,
+                                       didCommit: (@Sendable () async -> Void)?) async throws -> HostRefreshResult {
+        let files = store
+        let startingGeneration = generation
+        let (saved, retained) = try await CatalogStorage.shared.perform {
+            let database = try files.database()
+            return try (database.hostConnection(), database.retainedLibrary(at: address))
+        }
+        try Task.checkCancellation()
+        guard generation == startingGeneration else { throw CancellationError() }
+        let knownLibrary = saved?.address == address ? saved?.library : retained
+        if let knownLibrary, knownLibrary != information.library, !replacingLibrary {
+            return .differentLibrary(information.library)
+        }
+        if let saved, saved.address == address, saved.library == information.library {
+            try await adoptStoredHost(saved, attempt: startingGeneration)
+            if saved.hosts != information.hosts {
+                try await CatalogStorage.shared.commit { try files.database().updateHosts(information.hosts, for: saved) }
+                hostConnection?.hosts = information.hosts
+            }
+            guard generation == startingGeneration else { throw CancellationError() }
+            return try await refreshStoredHost(confirming: true, didCommit: didCommit)
+        } else {
+            let host = HostConnection(address: address, library: information.library, name: information.name, hosts: information.hosts)
+            let source = hostSource(host)
+            defer { source.stop() }
+            guard case .updated(let update) = try await source.refreshCatalog() else { throw HostAPIError.notHost }
+            try Task.checkCancellation()
+            guard startingGeneration == generation else { throw CancellationError() }
+            guard update.catalog.id == information.library else { return .differentLibrary(update.catalog.id) }
+            let prepared = try await CatalogStorage.shared.commitHostCatalog(update, host: host, replacing: saved,
+                store: files, didCommit: didCommit)
+            cancelActiveConnection(reason: "changing_library_host")
+            try publishHost(update, prepared: prepared, host: host, changingHost: true)
+            resumeSaves()
+            return .updated
+        }
+    }
+
+    private func activateHost(_ host: HostConnection) {
+        stopSaveWorker()
+        stopBrowsing()
+#if os(macOS)
+        stopHosting()
+#endif
+        artworkSource?.stop()
+        artworkSource = nil
+        hostAudio = HostAudioFiles()
+        stopHostPlayback()
+        retainedHostLibrary = nil
+        observedSwitch = host.hostSwitch
+        hostConnection = host
+        changedHostLibrary = nil
+        clusterRegistration = nil
+        clusterMutationsUnavailable = true
+        clusterAudioAdditionAvailable = false
+        clusterSupportedOperations = []
+        sharedTrackResolutionAvailable = false
+        sharedTrackResolutionDeferred = false
+        clusterLastPath = nil
+        clusterMetadataEdits = []
+        clusterBatches = []
+        clusterChanges = []
+        clusterConflicts = []
+        clusterAlbumConflicts = []
+        sharedTrackConflicts = []
+        disputedMembers = []
+        pendingClusterMetadata = false
+        clusterResultsPending = false
+    }
+
+    func disconnectHost(didCommit: (@Sendable () async -> Void)? = nil) async throws {
+        _ = try await runHostOperation {
+            guard self.hostConnection != nil else { return .unchanged }
+            let files = self.store
+            let retained = try await CatalogStorage.shared.commit { try files.database().forgetHost() }
+            await didCommit?()
+            // The caller can cancel during the delete. Restore the screen in an uncancelled task.
+            await Task { await self.finishHostDisconnect(retained: retained) }.value
+            return .updated
+        }
+    }
+
+    private func finishHostDisconnect(retained: String?) async {
+        cancelActiveConnection(reason: "disconnect_host")
+        stopSaveWorker()
+        stopHostPlayback()
+        hostConnection = nil
+        hostAudio = HostAudioFiles()
+        observedSwitch = nil
+        catalog = nil
+        changedHostLibrary = nil
+        retainedHostLibrary = retained
+        status = nil
+        clusterMutationsUnavailable = retained != nil
+        onHostPlaylists?([], [])
+        if retained == nil { await restorePeer() }
+        await onHostDisconnected?()
+        resumeSaves()
+    }
+
+    private func hostSource(_ host: HostConnection) -> HostLibrarySource {
+        HostLibrarySource(host: host, configuration: hostConfiguration, store: store, files: hostAudio, audioGate: hostAudioGate,
+                          switchObserved: hostSwitchObserver(address: host.address, library: host.library))
+    }
+
+    private func hostSwitchObserver(address: HostAddress, library: String?) -> @Sendable (String) -> Void {
+        { [weak self] value in
+            Task { @MainActor in
+                guard let self, self.hostConnection?.address == address,
+                      self.hostConnection?.library == library else { return }
+                let previous = self.observedSwitch
+                self.observedSwitch = value
+                if let previous, previous != value {
+                    self.refreshConnection()
+                }
+            }
+        }
+    }
+
+    func requestHostArtwork(_ id: String, received: @escaping @MainActor (String, URL) -> Void) {
+        guard let hostConnection else { return }
+        if artworkSource == nil { artworkSource = hostSource(hostConnection) }
+        artworkSource?.requestArtwork(id, received: received)
+    }
+
+    func refreshConnection() {
+        guard hasHostActivity else { connectCluster(); return }
+        pendingHostRefresh = true
+        drainHostRefresh()
+    }
+
+    private func drainHostRefresh() {
+        guard pendingHostRefresh, hostOperation == nil else { return }
+        guard hostConnection != nil else { pendingHostRefresh = false; return }
+        guard !busy, !savesBackgrounded else { return }
+        _ = startHostOperation(automatic: true) {
+            guard !self.busy else { return .unchanged }
+            self.pendingHostRefresh = false
+            do { return try await self.refreshStoredHost(confirming: false) }
+            catch {
+                if !Task.isCancelled && !isHostCancellation(error) { self.status = error.localizedDescription }
+                throw error
+            }
+        }
+    }
+
+    func refreshHost() async throws -> HostRefreshResult {
+        let attempt = generation
+        while let previous = hostOperation {
+            _ = await previous.task.result
+            try Task.checkCancellation()
+            guard generation == attempt else { throw CancellationError() }
+        }
+        guard hostConnection != nil else { throw CancellationError() }
+        return try await runHostOperation {
+            try await self.refreshStoredHost(confirming: false)
+        }
+    }
+
+    private func refreshStoredHost(confirming: Bool, didCommit: (@Sendable () async -> Void)? = nil) async throws -> HostRefreshResult {
+        try await waitForIdle(until: .now.advanced(by: .seconds(15)))
+        try Task.checkCancellation()
+        busy = true
+        let attempt = generation
+        let files = store
+        defer { if generation == attempt { busy = false; resumeSaves() } }
+        let (stored, retained) = try await CatalogStorage.shared.perform {
+            let database = try files.database()
+            let host = try database.hostConnection()
+            return (host, host == nil ? try database.retainedHostLibrary() : nil)
+        }
+        guard generation == attempt else { throw CancellationError() }
+        guard let host = stored else {
+            await Task { await self.finishHostDisconnect(retained: retained) }.value
+            return .updated
+        }
+        try await adoptStoredHost(host, attempt: attempt)
+        let source = hostSource(host)
+        artworkSource?.retryArtwork()
+        defer { source.stop() }
+        connectionEvent("refresh_host", outcome: "started", fields: ["connection_mode": "host"])
+        do {
+            let result = try await source.refreshCatalog()
+            try Task.checkCancellation()
+            guard generation == attempt else { throw CancellationError() }
+            switch result {
+            case .unchanged:
+                status = nil
+                connected = true
+                changedHostLibrary = nil
+                connectionEvent("refresh_host", outcome: "succeeded", fields: ["result": "unchanged", "remote_catalog_id": host.library])
+                return .unchanged
+            case .updated(let update):
+                guard update.catalog.id == host.library else {
+                    if !confirming {
+                        connected = false
+                        changedHostLibrary = update.catalog.id
+                    }
+                    connectionEvent("refresh_host", outcome: "different_library", fields: ["connection_mode": "host", "remote_catalog_id": update.catalog.id])
+                    return .differentLibrary(update.catalog.id)
+                }
+                let prepared = try await CatalogStorage.shared.commitHostCatalog(update, host: host, replacing: host,
+                    store: files, didCommit: didCommit)
+                try publishHost(update, prepared: prepared, host: host, changingHost: false)
+                connectionEvent("refresh_host", outcome: "succeeded", fields: ["result": "updated", "remote_catalog_id": host.library])
+                return .updated
+            }
+        } catch {
+            if generation == attempt && !Task.isCancelled && !isHostCancellation(error) {
+                connected = false
+                connectionEvent("refresh_host", outcome: "failed", fields: ["connection_mode": "host"], error: error)
+            }
+            throw error
+        }
+    }
+
+    private func publishHost(_ update: CatalogUpdate, prepared: PreparedLocalCatalog, host: HostConnection, changingHost: Bool) throws {
+        var host = host
+        host.etag = update.etag
+        host.hostSwitch = update.hostSwitch
+        host.marker = update.marker
+        host.name = update.catalog.name
+        try onCatalog?(prepared)
+        if changingHost {
+            activateHost(host)
+        } else { hostConnection = host }
+        changedHostLibrary = nil
+        status = nil
+        catalog = update.catalog
+        onHostPlaylists?(update.playlists, update.conflicts)
+        connected = true
+    }
+
+    private func adoptStoredHost(_ host: HostConnection, attempt: UUID) async throws {
+        guard hostConnection != host || (host.etag != nil && catalog?.id != host.library) else { return }
+        let files = store
+        if host.etag != nil {
+            let (prepared, lists) = try await CatalogStorage.shared.perform {
+                let database = try files.database()
+                guard try database.hostConnection() == host, let snapshot = try database.snapshot() else { throw CancellationError() }
+                return try (PreparedLocalCatalog(snapshot.catalog, store: files), database.playlistDocuments())
+            }
+            guard generation == attempt else { throw CancellationError() }
+            try onCatalog?(prepared)
+            catalog = prepared.catalog
+            onHostPlaylists?(lists.documents, lists.conflicts)
+        }
+        if hostConnection?.address != host.address || hostConnection?.library != host.library { activateHost(host) }
+        else { hostConnection = host }
+    }
+
+    private func stopHostPlayback() {
+        for source in hostPlaybackSources.values { source.stop() }
+        hostPlaybackSources.removeAll()
+    }
+
+    func makeLibrarySource(using network: ClusterNetwork? = nil) -> any LibrarySource {
+        if let hostConnection { return hostSource(hostConnection) }
+        if let librarySourceFactory { return librarySourceFactory() }
+        return ClusterLibrarySource(network: network ?? ClusterNetwork(store: store, secrets: peerSecrets))
+    }
+
+    var canSyncPlaylists: Bool { !usesHostCatalog && (clusterRegistration != nil || peerName != nil) }
 
     private func exchangePlaylists(_ request: PlaylistRequest? = nil, attempt: PlaylistUpdateAttempt? = nil) async throws -> PlaylistResponse? {
+        guard !usesHostCatalog else { throw LocalMusicError.legacyMutationsUnavailable }
         if clusterRegistration != nil { return try await clusterNetwork.playlistExchange(request, attempt: attempt) }
         guard let saved = try await peerPairing.load(), let bytes = Data(base64Encoded: saved.key) else { throw LocalMusicError.clusterUnavailable }
         let address = try JSONDecoder().decode(PeerAddress.self, from: bytes)
@@ -427,8 +768,8 @@ final class LocalTransfer: ObservableObject {
         service: "as.ason.syncstr.local-pair", label: "syncstr paired device"),
         peerSecrets: CredentialStore = CredentialStore(service: "as.ason.syncstr.p2p.identity"),
         peerPairing: CredentialStore = CredentialStore(service: "as.ason.syncstr.p2p.peer"), diagnostics: PlaybackDiagnostics? = nil,
-        clusterAddresses: [PeerAddress]? = nil,
-        librarySourceFactory: (@MainActor () -> any LibrarySource)? = nil) {
+        clusterAddresses: [PeerAddress]? = nil, hostConfiguration: URLSessionConfiguration = .ephemeral,
+        librarySourceFactory: (@MainActor () -> any LibrarySource)? = nil, pathMonitor: NWPathMonitor? = NWPathMonitor()) {
         self.diagnostics = diagnostics
         self.store = store
         self.secrets = secrets
@@ -436,7 +777,10 @@ final class LocalTransfer: ObservableObject {
         self.peerPairing = peerPairing
         self.clusterAddresses = clusterAddresses
         self.librarySourceFactory = librarySourceFactory
+        self.hostConfiguration = hostConfiguration
+        clusterPath = pathMonitor
         restoreSaves()
+        guard let clusterPath else { return }
         clusterPath.pathUpdateHandler = { [weak self] path in
             Task { @MainActor in
                 guard let self else { return }
@@ -459,7 +803,7 @@ final class LocalTransfer: ObservableObject {
         clusterPath.start(queue: .global(qos: .utility))
     }
 
-    deinit { clusterPath.cancel() }
+    deinit { clusterPath?.cancel() }
 
     func setAutomaticCellular(_ enabled: Bool) {
         do {
@@ -472,12 +816,13 @@ final class LocalTransfer: ObservableObject {
     }
 
     private var permitsAutomaticAudio: Bool {
-        let path = clusterPath.currentPath
+        guard let path = clusterPath?.currentPath else { return true }
         return ClusterTransferPolicy.permitsAutomaticAudio(online: path.status == .satisfied,
             cellular: path.usesInterfaceType(.cellular), optedIn: automaticCellular)
     }
 
     func browse() {
+        guard !usesHostCatalog else { return }
         guard browser == nil else { return }
         let browser = NWBrowser(for: .bonjour(type: Self.service, domain: nil), using: .tcp)
         self.browser = browser
@@ -524,6 +869,26 @@ final class LocalTransfer: ObservableObject {
         var stage = "cluster_database"
         do {
             let files = store
+            if let host = try await CatalogStorage.shared.perform({ try files.database().hostConnection() }) {
+                guard generation == attempt else { return }
+                try await adoptStoredHost(host, attempt: attempt)
+                automaticCellular = try await CatalogStorage.shared.perform { try files.database().clusterAutomaticCellular() }
+                return
+            }
+            let retained = try await CatalogStorage.shared.perform { try files.database().retainedHostLibrary() }
+            guard generation == attempt else { return }
+            if hostConnection != nil {
+                stopHostPlayback()
+                artworkSource?.stop()
+                artworkSource = nil
+                hostConnection = nil
+                connected = false
+            }
+            retainedHostLibrary = retained
+            if retainsHostCatalog {
+                clusterMutationsUnavailable = true
+                return
+            }
             let recover = !recoveredClusterJobs
             let state = try await CatalogStorage.shared.perform {
                 let database = try files.database()
@@ -573,6 +938,7 @@ final class LocalTransfer: ObservableObject {
     private func updateClusterState(_ database: CatalogDatabase? = nil) async throws {
         let files = store
         let attempt = generation
+        guard !usesHostCatalog else { return }
         clusterLastPath = clusterNetwork.lastPath
         do {
             let state = try await CatalogStorage.shared.perform { try ClusterUIState(database ?? files.database()) }
@@ -628,6 +994,7 @@ final class LocalTransfer: ObservableObject {
     }
 
     func queueAlbumVisibility(_ ids: Set<String>, hidden: Bool) -> (saved: Int, failures: [String]) {
+        guard !usesHostCatalog else { return (0, [LocalMusicError.legacyMutationsUnavailable.localizedDescription]) }
         var saved = 0
         var failures: [String] = []
         do {
@@ -644,6 +1011,7 @@ final class LocalTransfer: ObservableObject {
     }
 
     func discardTrackMetadata(_ edit: ClusterMetadataEdit) {
+        guard !usesHostCatalog else { return }
         do {
             try store.database().discardMetadataMutation(edit.id)
             clusterMetadataEdits = try store.database().clusterMetadataEdits()
@@ -652,6 +1020,7 @@ final class LocalTransfer: ObservableObject {
     }
 
     private func permitsClusterMutations() -> Bool {
+        guard !usesHostCatalog else { return false }
         do {
             if try store.database().sharedAudioSnapshot() != nil || clusterNetwork.sharedAudio { clusterMutationsUnavailable = true }
             guard !clusterMutationsUnavailable else { status = clusterMutationNotice; return false }
@@ -674,6 +1043,7 @@ final class LocalTransfer: ObservableObject {
     }
 
     func connectCluster(invitation: String? = nil, name: String = "ライブラリ") {
+        guard !usesHostCatalog else { return }
 #if DEBUG
         // UI fixtures have no live host, including when scene activation requests a reconnect.
         if SharedAudioUIFixture.requested { return }
@@ -683,6 +1053,7 @@ final class LocalTransfer: ObservableObject {
             return
         }
         cancel(reason: "starting_cluster_connection")
+        clusterSource = makeLibrarySource(using: clusterNetwork)
         let attempt = generation
         busy = true
         connectionEvent("connect_cluster_called", fields: ["invitation_supplied": String(invitation != nil)])
@@ -701,7 +1072,8 @@ final class LocalTransfer: ObservableObject {
                     let files = store
                     clusterRegistration = try await CatalogStorage.shared.perform { try files.database().clusterRegistration() }
                 }
-                let catalog = try await connectedLibrarySource.refreshCatalog()
+                guard case .updated(let refresh) = try await connectedLibrarySource.refreshCatalog() else { return }
+                let catalog = refresh.catalog
                 try Task.checkCancellation()
                 guard generation == attempt else { return }
                 try await publishCatalog(catalog, attempt: attempt)
@@ -743,7 +1115,8 @@ final class LocalTransfer: ObservableObject {
                         guard let self, self.generation == attempt else { return }
                         try? await self.updateClusterState(database)
                     }
-                    let updated = try await connectedLibrarySource.refreshCatalog()
+                    guard case .updated(let refresh) = try await connectedLibrarySource.refreshCatalog() else { return }
+                    let updated = refresh.catalog
                     try Task.checkCancellation()
                     guard generation == attempt else { return }
                     try await publishCatalog(updated, attempt: attempt)
@@ -853,6 +1226,7 @@ final class LocalTransfer: ObservableObject {
     }
 
     func importCluster(_ files: [URL]) {
+        guard !usesHostCatalog else { return }
         if clusterMutationsUnavailable || clusterNetwork.sharedAudio || (try? store.database().sharedAudioSnapshot()) != nil {
             importClusterAudio(files)
             return
@@ -935,7 +1309,8 @@ final class LocalTransfer: ObservableObject {
                         guard let self, self.generation == attempt else { return }
                         try? await self.updateClusterState()
                     }
-                    let updated = try await connectedLibrarySource.refreshCatalog()
+                    guard case .updated(let refresh) = try await connectedLibrarySource.refreshCatalog() else { return }
+                    let updated = refresh.catalog
                     try await publishCatalog(updated, attempt: attempt)
                     catalog = updated
                     try await updateClusterState()
@@ -1052,6 +1427,25 @@ final class LocalTransfer: ObservableObject {
         guard readyForLocalCopyRemoval else { throw LocalMusicError.transferBusy }
         guard LocalMusicStore.valid(entry) else { throw LocalMusicError.invalidData }
         let database = try store.database()
+        if usesHostCatalog {
+            let pendingImport = try database.clusterBatches().flatMap(\.items).contains {
+                $0.entry?.sha256 == entry.sha256 && $0.state != .stored
+            }
+            let referenced = try database.otherCatalogFiles(for: entry.sha256)
+            let retained = try database.removeAudioPin(entry)
+            let otherSave = saveRequests.contains { request in
+                request.state != .cancelled && request.entries.contains { $0.track.id != entry.track.id && $0.sha256 == entry.sha256 }
+            }
+            if !retained && !pendingImport && !otherSave {
+                for url in Set(store.hostFileURLs(entry) + playbackCache.store.hostFileURLs(entry))
+                    where !referenced.contains(url) && url != playbackCache.protectedURL && FileManager.default.fileExists(atPath: url.path) {
+                    try FileManager.default.removeItem(at: url)
+                }
+                if !referenced.contains(store.fileURL(entry)) { try database.forgetReceived(entry) }
+            }
+            onSaved?()
+            return
+        }
         if let registration = try database.clusterRegistration(),
            try registration.membership.chain(registration.localGrant)[0].host { throw LocalMusicError.unauthorized }
         if try database.sharedAudioSnapshot() != nil {
@@ -1090,8 +1484,8 @@ final class LocalTransfer: ObservableObject {
 
     func connectPeer(addressText: String, expected: String, name: String, playbackLibrary: String? = nil) {
         connectionEvent("connect_peer_called", fields: ["expected_peer_id": expected])
-        guard clusterRegistration == nil else {
-            connectionEvent("connect_peer_skipped", fields: ["reason": "cluster_registered"])
+        guard !retainsHostCatalog, !hasLibrarySource else {
+            connectionEvent("connect_peer_skipped", fields: ["reason": hostConnection == nil ? "cluster_registered" : "confirmed_host"])
             return
         }
         cancel(reason: "starting_peer_connection")
@@ -1195,6 +1589,7 @@ final class LocalTransfer: ObservableObject {
     }
 
     func reconnectPeer() async {
+        guard !usesHostCatalog else { return }
         connectionEvent("reconnect_peer_called")
         var stage = "saved_peer_keychain"
         do {
@@ -1226,7 +1621,7 @@ final class LocalTransfer: ObservableObject {
     }
 
     func reconnectPeerForWaitingSaves() async {
-        guard clusterRegistration == nil, lastLegacyDevice == nil, peerName != nil, !busy, !legacyChannelUsable,
+        guard !retainsHostCatalog, !hasLibrarySource, lastLegacyDevice == nil, peerName != nil, !busy, !legacyChannelUsable,
               !savesBackgrounded, saveReconnectNotBefore.map({ $0 <= .now }) ?? true else { return }
         saveReconnectAttempts += 1
         connectionEvent("save_reconnect_started", fields: ["attempt": String(saveReconnectAttempts)])
@@ -1252,6 +1647,7 @@ final class LocalTransfer: ObservableObject {
     }
 
     func uploadPeer(files: [URL]) {
+        guard !usesHostCatalog else { return }
         if clusterRegistration != nil { importCluster(files); return }
         guard let client = client as? PeerMusicConnection, connected, !busy else { return }
         if client.isClosed {
@@ -1354,6 +1750,7 @@ final class LocalTransfer: ObservableObject {
     }
 
     func syncOrganization() {
+        guard !usesHostCatalog else { return }
         if clusterRegistration != nil {
             guard permitsClusterMutations() else { return }
             do {
@@ -1388,7 +1785,30 @@ final class LocalTransfer: ObservableObject {
 
     func cancel() { cancel(reason: "cancel_requested") }
 
+    func stopAndWait() async {
+        let worker = saveWorker
+        let retry = saveRetry
+        let refresh = hostOperation?.task
+        let active = operation
+        let artwork = artworkSource
+        setSavesBackgrounded(true)
+        cancelSavePreparations()
+        stopHostPlayback()
+        cancel()
+        await worker?.value
+        await retry?.value
+        _ = await refresh?.result
+        await active?.value
+        await artwork?.waitForArtwork()
+    }
+
     func cancel(reason: String) {
+        pendingHostRefresh = false
+        hostOperation?.task.cancel()
+        cancelActiveConnection(reason: reason)
+    }
+
+    private func cancelActiveConnection(reason: String) {
         connectionEvent("cancel", outcome: client != nil || connected ? "disconnected" : "observed", fields: ["reason": reason])
         clusterRetry?.cancel(); clusterRetry = nil
         automaticAudioOperation = false
@@ -1397,7 +1817,9 @@ final class LocalTransfer: ObservableObject {
         operation = nil
         client?.close()
         client = nil
-        clusterNetwork.stop()
+        if hostConnection != nil { artworkSource?.stop(); artworkSource = nil }
+        else if let clusterSource { clusterSource.stop(); self.clusterSource = nil }
+        else if clusterRegistration != nil { clusterNetwork.stop() }
         connected = false
         receivingCatalog = false
         busy = false
@@ -1438,6 +1860,7 @@ final class LocalTransfer: ObservableObject {
 
 #if os(macOS)
     func host(_ folder: LocalFolder, newPairing: Bool = false) async throws {
+        guard !usesHostCatalog else { throw LocalMusicError.legacyMutationsUnavailable }
         if newPairing { await forget() }
         stopHosting()
         let epoch = hosting
@@ -1562,8 +1985,8 @@ final class LocalTransfer: ObservableObject {
 
     func connect(_ device: NearbyMusicDevice, code: String, name: String) {
         connectionEvent("connect_tls_called", fields: ["device_id": device.id])
-        guard clusterRegistration == nil else {
-            connectionEvent("connect_tls_skipped", fields: ["reason": "cluster_registered"])
+        guard !retainsHostCatalog, !hasLibrarySource else {
+            connectionEvent("connect_tls_skipped", fields: ["reason": hostConnection == nil ? "cluster_registered" : "confirmed_host"])
             return
         }
         cancel(reason: "starting_tls_connection")
@@ -1624,6 +2047,7 @@ final class LocalTransfer: ObservableObject {
                       allowAcquisition: Bool = true,
                       progress: @escaping (PlaybackPreparation) -> Void = { _ in }) async throws -> URL {
         progress(.checking)
+        let selectedHost = hostConnection
         let entry: LocalEntry
         let libraryID: String
         do {
@@ -1631,7 +2055,13 @@ final class LocalTransfer: ObservableObject {
             entry = source.entry
             libraryID = source.library
         } catch { diagnostic?.failure("resolution", error); throw error }
-        if store.hasFile(entry), try LocalMusicStore.digest(file: store.fileURL(entry)) == entry.sha256 { return store.fileURL(entry) }
+        let files = store
+        let hostCatalog = usesHostCatalog
+        if let file = try await CatalogStorage.shared.perform({
+            if hostCatalog, try !files.database().hasAudioPin(entry) { return nil as URL? }
+            return try files.verifiedFile(entry, host: hostCatalog)
+        }) { return file }
+        guard !retainsHostCatalog else { throw LocalMusicError.disconnected }
         diagnostic?.record("resolution", "catalog_entry", fields: ["track_id": entry.track.id, "sha256": entry.sha256, "expected_size": String(entry.track.size ?? 0)])
         if let cached = try await playbackCache.fileInBackground(entry, diagnostic: diagnostic) {
             diagnostic?.record("selection", "mode", fields: ["mode": "local", "reason": "cache_hit"])
@@ -1645,22 +2075,27 @@ final class LocalTransfer: ObservableObject {
         diagnostic?.record("local", "acquisition_required", fields: ["reason": "no_usable_local_file"])
         do { try await playbackCache.makeRoomInBackground(for: entry) }
         catch { diagnostic?.failure("cache_capacity", error); throw error }
-        connectionEvent("playback_connection_decision", fields: ["mode": clusterRegistration == nil ? "legacy" : "cluster",
-            "reason": clusterRegistration == nil ? "in_memory_registration_nil" : "in_memory_registration_present",
-            "connection_start": clusterRegistration == nil ? "reconnect_if_saved_endpoint" : "per_playback_cluster_network"])
+        guard hostConnection?.address == selectedHost?.address, hostConnection?.library == selectedHost?.library,
+              selectedHost == nil || selectedHost?.library == libraryID else { throw CancellationError() }
+        connectionEvent("playback_connection_decision", fields: ["mode": connectionMode,
+            "reason": hostConnection != nil ? "confirmed_host" : clusterRegistration == nil ? "in_memory_registration_nil" : "in_memory_registration_present",
+            "connection_start": hostConnection != nil ? "host_https" : clusterRegistration == nil ? "reconnect_if_saved_endpoint" : "per_playback_cluster_network"])
         if let diagnostic { diagnostics?.captureConnections(in: diagnostic) }
-        diagnostic?.record("selection", "mode", fields: ["mode": clusterRegistration == nil ? "legacy" : "cluster", "registration_read": registrationReadState,
+        diagnostic?.record("selection", "mode", fields: ["mode": connectionMode, "registration_read": registrationReadState,
             "registration_present": String(clusterRegistration != nil)])
         progress(.connecting)
-        if clusterRegistration == nil { return try await legacyPlaybackFile(entry, libraryID: libraryID, diagnostic: diagnostic, progress: progress) }
+        if !hasLibrarySource { return try await legacyPlaybackFile(entry, libraryID: libraryID, diagnostic: diagnostic, progress: progress) }
         let source = makeLibrarySource()
+        let playbackID = UUID()
+        if selectedHost != nil { hostPlaybackSources[playbackID] = source }
         return try await withTaskCancellationHandler {
-            defer { source.stop() }
+            defer { hostPlaybackSources[playbackID] = nil; source.stop() }
             try await source.download(entry, cache: playbackCache.store, diagnostic: diagnostic) { fraction in
                 progress(.receiving(UInt64(fraction * Double(entry.track.size ?? 0)), entry.track.size ?? 0))
             }
             try Task.checkCancellation()
             guard let result = try await playbackCache.fileInBackground(entry, diagnostic: diagnostic) else { throw LocalMusicError.invalidData }
+            guard hostConnection?.address == selectedHost?.address, hostConnection?.library == selectedHost?.library else { throw CancellationError() }
             return result
         } onCancel: {
             Task { @MainActor in source.stop() }
@@ -1751,11 +2186,18 @@ final class LocalTransfer: ObservableObject {
         }
     }
 
-    private func waitForIdle() async throws {
+    private func waitForIdle(until deadline: ContinuousClock.Instant? = nil) async throws {
         let attempt = generation
         while busy {
             try Task.checkCancellation()
             let id = UUID()
+            let timeout = deadline.map { deadline in
+                Task {
+                    try await Task.sleep(until: deadline, clock: .continuous)
+                    idleWaiters.removeValue(forKey: id)?.resume(throwing: URLError(.timedOut))
+                }
+            }
+            defer { timeout?.cancel() }
             try await withTaskCancellationHandler {
                 try await withCheckedThrowingContinuation { (waiter: CheckedContinuation<Void, Error>) in
                     if Task.isCancelled { waiter.resume(throwing: CancellationError()) }
@@ -1772,7 +2214,7 @@ final class LocalTransfer: ObservableObject {
     }
 
     func copy(_ tracks: [Track]) {
-        if clusterRegistration != nil { copyCluster(tracks); return }
+        if hasLibrarySource { copyFromLibrarySource(tracks); return }
         guard let client, let catalog, connected, !busy else { return }
         let entries = tracks.compactMap { track in catalog.entries.first { $0.track.id == track.id } }
         let attempt = generation
@@ -1829,38 +2271,47 @@ final class LocalTransfer: ObservableObject {
         }
     }
 
-    private func copyCluster(_ tracks: [Track]) {
+    private func copyFromLibrarySource(_ tracks: [Track]) {
         guard !busy else { return }
         let attempt = generation
+        let host = hostConnection.map(hostSource)
+        let source: any LibrarySource = host.map { $0 as any LibrarySource } ?? connectedLibrarySource
         busy = true; completed = 0; total = tracks.count; progress = 0
         operation = Task {
-            defer { if generation == attempt { busy = false; activeTrack = nil } }
+            defer {
+                host?.stop()
+                if generation == attempt { busy = false; activeTrack = nil }
+            }
             do {
                 let saved = try store.load()
                 for track in tracks {
                     try Task.checkCancellation()
                     guard let entry = saved?.entries.first(where: { $0.track.id == track.id }) else { throw LocalMusicError.invalidData }
                     let files = store
-                    if !files.hasFile(entry), let cached = try playbackCache.file(entry) {
-                        let temporary = store.root.appendingPathComponent(".cache-save-" + UUID().uuidString)
-                        defer { try? FileManager.default.removeItem(at: temporary) }
-                        try FileManager.default.copyItem(at: cached, to: temporary)
-                        try files.importFile(temporary, entry: entry)
-                        onSaved?()
+                    let useHostFiles = host != nil
+                    var savedLocally = try await CatalogStorage.shared.perform {
+                        try files.verifiedFile(entry, host: useHostFiles, inventory: useHostFiles ? files.database() : nil, requireHash: true) != nil
                     }
-                    if try await Task.detached(operation: {
-                        try files.hasFile(entry) && LocalMusicStore.digest(file: files.fileURL(entry)) == entry.sha256
-                    }).value {
-                        try await connectedLibrarySource.recoverDownloadedFile(entry)
+                    if !savedLocally, let cached = try await playbackCache.fileInBackground(entry) {
+                        savedLocally = try await CatalogStorage.shared.perform {
+                            try files.importCachedFile(cached, entry: entry, host: useHostFiles)
+                        }
+                    }
+                    try Task.checkCancellation()
+                    guard generation == attempt else { return }
+                    if savedLocally {
+                        if host == nil { try await source.recoverDownloadedFile(entry) }
+                        else { try files.database().saveAudioPin(entry) }
+                        onSaved?()
                         completed += 1
                         continue
                     }
                     activeTrack = track.id
                     status = "「\(track.title)」を保存中…"
-                    try await clusterNetwork.download(object: entry.sha256) { fraction in
+                    try await source.download(entry, cache: nil, diagnostic: nil) { fraction in
                         self.progress = (Double(self.completed) + fraction) / Double(max(1, self.total))
                     }
-                    clusterLastPath = clusterNetwork.lastPath
+                    if host == nil, generation == attempt { clusterLastPath = clusterNetwork.lastPath }
                     try Task.checkCancellation()
                     guard generation == attempt else { return }
                     completed += 1

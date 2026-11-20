@@ -34,7 +34,7 @@ struct StudioButton: ButtonStyle {
 struct LibraryView: View {
     @ObservedObject var library: Library
     @State private var importingAudio = false
-    @State private var showingPeerSetup = false
+    @State private var hostSetup: HostSetupRequest?
     @State private var showingUploadStatus = false
     @State private var showingClusterResults = false
     @State private var hoveredTrack: String?
@@ -64,8 +64,10 @@ struct LibraryView: View {
             } else {
                 VStack(spacing: 20) {
                     Text("自分の音楽を、どの端末でも").font(.title)
-                    Text("ライブラリに参加するか、この端末に音楽を追加して聴き始められます。")
-                    Button("既存のライブラリに参加") { showingPeerSetup = true }.buttonStyle(.borderedProminent)
+                    Text("このMacの音楽を聴くか、NASや別のMacのライブラリに接続できます。")
+                    Button(library.transfer.hostConnection == nil ? "ホストに接続" : "ライブラリと接続") {
+                        hostSetup = HostSetupRequest(showsSettings: library.transfer.hostConnection != nil)
+                    }.buttonStyle(.borderedProminent)
                     LocalFolderButton(library: library).buttonStyle(.borderedProminent)
                     AddMusicButton(library: library)
                     if library.hasSavedLocalLibrary {
@@ -107,16 +109,29 @@ struct LibraryView: View {
             selectedAlbums.formIntersection(ids)
         }
         .task { await library.restoreLibrary() }
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
+            if library.transfer.hasHostActivity { library.transfer.refreshConnection() }
+        }
         .modifier(OfflineSaveRemoval(library: library))
         .modifier(TrackMetadataEditing(library: library))
-        .sheet(isPresented: $showingPeerSetup) {
-            ScrollView { PeerSetupView(transfer: library.transfer).padding(24) }
-                .frame(width: 500, height: 600)
-                .toolbar { Button("閉じる") { showingPeerSetup = false } }
+        .onOpenURL { url in
+            showingClusterResults = false
+            if let hostSetup, !hostSetup.showsSettings { hostSetup.input = .link(url) }
+            else { hostSetup = HostSetupRequest(input: .link(url)) }
+        }
+        .sheet(item: $hostSetup) { request in
+            if request.showsSettings {
+                VStack(alignment: .leading, spacing: 16) {
+                    HostConnectionSettings(transfer: library.transfer) { hostSetup = $0 }
+                    Button("閉じる") { hostSetup = nil }
+                }.padding(24).frame(minWidth: 440)
+            } else {
+                HostConnectionView(transfer: library.transfer, request: request)
+            }
         }
         .sheet(isPresented: $showingClusterResults) { ClusterImportResults(transfer: library.transfer) }
         .onChange(of: library.transfer.busy) { _, busy in
-            if !busy && !showingPeerSetup && library.transfer.clusterResultsPending {
+            if !busy && hostSetup == nil && library.transfer.clusterResultsPending {
                 library.transfer.clusterResultsPending = false
                 showingClusterResults = true
             }
@@ -149,7 +164,7 @@ struct LibraryView: View {
                 }
                 Spacer(minLength: 0)
                 if showingAlbumGrid {
-                    if !selectedAlbums.isEmpty {
+                    if library.transfer.showsLibraryEditControls, !selectedAlbums.isEmpty {
                         Text("\(selectedAlbums.count)枚を選択中").foregroundStyle(.secondary)
                         Button(albumVisibilityLabel) { changeAlbumVisibility(selectedAlbums) }
                             .disabled(library.albumsVisibilityUnavailable(selectedAlbums))
@@ -160,10 +175,10 @@ struct LibraryView: View {
                     .frame(minWidth: 120, idealWidth: 240, maxWidth: 240)
                     .layoutPriority(-1)
             }
-            if showingAlbumGrid, !selectedAlbums.isEmpty, let notice = library.albumsVisibilityNotice(selectedAlbums) {
+            if library.transfer.showsLibraryEditControls, showingAlbumGrid, !selectedAlbums.isEmpty, let notice = library.albumsVisibilityNotice(selectedAlbums) {
                 Text(notice).font(.caption).foregroundStyle(.secondary)
             }
-            if showingAlbumGrid {
+            if library.transfer.showsLibraryEditControls, showingAlbumGrid {
                 ForEach(selectedAlbums.sorted(), id: \.self) { id in
                     if let status = library.albumVisibilityStatus(id) { Text(status).font(.caption).foregroundStyle(.secondary) }
                 }
@@ -195,16 +210,18 @@ struct LibraryView: View {
                 .accessibilityAddTraits(library.destination == destination && !library.showingNowPlaying ? .isSelected : [])
             }
             rule.padding(.vertical, 16)
-            Button {
-                importingAudio = true
-            } label: {
-                HStack(spacing: 8) { MacIcon("cloud-upload"); Text("音源ファイルを追加") }
-                    .frame(maxWidth: .infinity, minHeight: 32, alignment: .leading)
-                    .padding(.horizontal, 8)
-                    .contentShape(Rectangle())
+            if library.transfer.showsLibraryEditControls {
+                Button {
+                    importingAudio = true
+                } label: {
+                    HStack(spacing: 8) { MacIcon("cloud-upload"); Text("音源ファイルを追加") }
+                        .frame(maxWidth: .infinity, minHeight: 32, alignment: .leading)
+                        .padding(.horizontal, 8)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain).disabled(library.transfer.busy || library.audioAdditionNotice != nil)
+                .help(library.audioAdditionNotice ?? "ライブラリに音源を追加します。未登録の場合もこの端末で再生できます")
             }
-            .buttonStyle(.plain).disabled(library.transfer.busy || library.audioAdditionNotice != nil)
-            .help(library.audioAdditionNotice ?? "ライブラリに音源を追加します。未登録の場合もこの端末で再生できます")
             if showingUploadStatus && library.transfer.busy {
                 ProgressView(value: library.transfer.progress).padding(.horizontal, 8)
                 Button("中断する") { library.transfer.cancel() }.buttonStyle(.plain).padding(.horizontal, 8)
@@ -326,15 +343,17 @@ struct LibraryView: View {
             .accessibilityAddTraits(selectedAlbums.contains(album.id) ? .isSelected : [])
             .accessibilityAction(named: Text("アルバムを開く")) { openAlbum(album.id) }
             .contextMenu {
-                let targets: Set<String> = selectedAlbums.contains(album.id) ? selectedAlbums : [album.id]
-                let saving = targets.contains(where: library.isSavingAlbumVisibility)
-                let action = library.destination == .hiddenAlbums ? "非表示を解除する" : "非表示にする"
-                Button(saving ? "保存しています…" : targets.count > 1 ? "選択した\(targets.count)枚を\(action)" : action) {
-                    changeAlbumVisibility(targets)
-                }.disabled(library.albumsVisibilityUnavailable(targets))
-                if let notice = library.albumsVisibilityNotice(targets) { Text(notice) }
-                ForEach(targets.sorted(), id: \.self) { id in
-                    if let status = library.albumVisibilityStatus(id) { Text(status) }
+                if library.transfer.showsLibraryEditControls {
+                    let targets: Set<String> = selectedAlbums.contains(album.id) ? selectedAlbums : [album.id]
+                    let saving = targets.contains(where: library.isSavingAlbumVisibility)
+                    let action = library.destination == .hiddenAlbums ? "非表示を解除する" : "非表示にする"
+                    Button(saving ? "保存しています…" : targets.count > 1 ? "選択した\(targets.count)枚を\(action)" : action) {
+                        changeAlbumVisibility(targets)
+                    }.disabled(library.albumsVisibilityUnavailable(targets))
+                    if let notice = library.albumsVisibilityNotice(targets) { Text(notice) }
+                    ForEach(targets.sorted(), id: \.self) { id in
+                        if let status = library.albumVisibilityStatus(id) { Text(status) }
+                    }
                 }
                 Button("アルバムを開く") { openAlbum(album.id) }
             }
@@ -553,11 +572,13 @@ struct LibraryView: View {
             trackRow(track, index: index, tracks: preservingQueue ? nil : tracks, showArtist: showArtist)
                 .contextMenu {
                     TrackMetadataMenu(library: library, track: track)
-                    Button(library.albumVisibilityLabel(track.albumKey)) {
-                        library.setAlbumHidden(track.albumKey, hidden: !library.isAlbumHidden(track.albumKey))
-                    }.disabled(library.albumVisibilityNotice(track.albumKey) != nil || library.isSavingAlbumVisibility(track.albumKey))
-                    if let notice = library.albumVisibilityNotice(track.albumKey) { Text(notice) }
-                    if let status = library.albumVisibilityStatus(track.albumKey) { Text(status) }
+                    if library.transfer.showsLibraryEditControls {
+                        Button(library.albumVisibilityLabel(track.albumKey)) {
+                            library.setAlbumHidden(track.albumKey, hidden: !library.isAlbumHidden(track.albumKey))
+                        }.disabled(library.albumVisibilityNotice(track.albumKey) != nil || library.isSavingAlbumVisibility(track.albumKey))
+                        if let notice = library.albumVisibilityNotice(track.albumKey) { Text(notice) }
+                        if let status = library.albumVisibilityStatus(track.albumKey) { Text(status) }
+                    }
                 }
                 .overlay(alignment: .bottom) { rule }
         }
@@ -702,7 +723,7 @@ struct LibraryView: View {
     }
 
     private func artworkURL(_ id: String?) -> URL? {
-        id.flatMap { library.artworkURLs[$0] }
+        id.flatMap { library.artworkURL(for: $0) }
     }
 
     private var playbackBar: some View {
@@ -925,8 +946,10 @@ struct SyncstrApp: App {
     var body: some Scene {
         WindowGroup("Syncstr") {
             LibraryView(library: library).onAppear { _ = playback }
+                .handlesExternalEvents(preferring: ["syncstr://"], allowing: ["syncstr://"])
                 .modifier(AppAppearance())
         }
+            .handlesExternalEvents(matching: ["syncstr://"])
             .defaultSize(width: 1080, height: 740)
             .windowStyle(.hiddenTitleBar)
             .windowToolbarStyle(.unifiedCompact)

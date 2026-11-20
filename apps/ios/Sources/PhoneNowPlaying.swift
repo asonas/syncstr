@@ -50,7 +50,7 @@ struct PhoneNowPlaying: View {
             ScrollView {
                 if let track = library.current {
                     VStack(spacing: 0) {
-                        PhoneArtwork(url: track.coverArt.flatMap { library.artworkURLs[$0] })
+                        PhoneArtwork(url: track.coverArt.flatMap { library.artworkURL(for: $0) })
                             .frame(width: artworkSize(in: geometry.size))
                             .frame(maxWidth: .infinity)
                             .padding(.horizontal, 20)

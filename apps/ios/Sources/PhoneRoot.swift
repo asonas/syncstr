@@ -47,6 +47,7 @@ private enum TabletSection: String, CaseIterable, Identifiable {
 
 struct PhoneRoot: View {
     @ObservedObject var library: Library
+    @Binding var hostSetup: HostSetupRequest?
     @State private var tab = PhoneTab.library
     @State private var tabletSection: TabletSection? = .recent
     @FocusState private var searchFocused: Bool
@@ -92,6 +93,7 @@ struct PhoneRoot: View {
         }
         .modifier(OfflineSaveRemoval(library: library, enabled: !library.showingNowPlaying))
         .modifier(TrackMetadataEditing(library: library, enabled: !library.showingNowPlaying))
+        .sheet(item: $hostSetup) { HostConnectionView(transfer: library.transfer, request: $0) }
         .sheet(isPresented: $library.showingNowPlaying) {
             PhoneNowPlaying(library: library)
                 .presentationDragIndicator(.visible)
@@ -140,7 +142,9 @@ struct PhoneRoot: View {
             NavigationStack {
                 Group {
                     switch tabletSection ?? .recent {
-                    case .recent: recentAlbums
+                    case .recent:
+                        if library.connected { recentAlbums }
+                        else { catalog }
                     case .albums:
                         if library.connected { PhoneAlbumBrowser(library: library, detail: albumDetail) }
                         else { catalog }
@@ -175,7 +179,7 @@ struct PhoneRoot: View {
                         ForEach(library.albums(for: artist)) { album in
                             NavigationLink { AnyView(albumDetail(album)) } label: {
                                 HStack(spacing: 20) {
-                                    PhoneArtwork(url: album.coverArt.flatMap { library.artworkURLs[$0] })
+                                    PhoneArtwork(url: album.coverArt.flatMap { library.artworkURL(for: $0) })
                                         .frame(width: dynamicTypeSize.isAccessibilitySize ? 80 : 128)
                                     VStack(alignment: .leading, spacing: 4) {
                                         Text(album.title).font(.headline).foregroundStyle(AppearanceColors.primary)
@@ -236,18 +240,15 @@ struct PhoneRoot: View {
                 NavigationLink { PlaylistBrowser(library: library) } label: { categoryLabel("すべてのプレイリスト", icon: "music") }.buttonStyle(.plain)
                 VStack(alignment: .leading, spacing: 8) {
                     Text("最近追加した項目").font(.title3.bold())
-                    if !library.connected {
-                        Text("ライブラリに参加するか、この端末に音楽を追加して聴き始められます。")
-                        NavigationLink("既存のライブラリに参加") {
-                            ScrollView { PeerSetupView(transfer: library.transfer).padding(20) }
-                                .navigationTitle("ライブラリに参加")
-                        }
+                    if !library.connected && library.transfer.showsLibraryEditControls {
+                        Text("ホストのライブラリに接続するか、この端末に音楽を追加して聴き始められます。")
+                        Button("ホストに接続") { hostSetup = HostSetupRequest() }
                         AddMusicButton(library: library)
                         if library.hasSavedLocalLibrary {
                             Button("保存した音楽を開く") { Task { await library.openSavedLocalLibrary() } }
                         }
                     } else if library.tracks.isEmpty {
-                        Text("音楽はまだありません。音楽ファイルを追加できます。")
+                        Text(library.transfer.showsLibraryEditControls ? "音楽はまだありません。音楽ファイルを追加できます。" : "音楽はまだありません。")
                         AddMusicButton(library: library)
                     }
                     recentAlbumGrid
@@ -314,7 +315,7 @@ struct PhoneRoot: View {
         ForEach(albums) { album in
             NavigationLink { albumDetail(album) } label: {
                 VStack(alignment: .leading, spacing: 4) {
-                    PhoneArtwork(url: album.coverArt.flatMap { library.artworkURLs[$0] })
+                    PhoneArtwork(url: album.coverArt.flatMap { library.artworkURL(for: $0) })
                     Text(album.title).font(.subheadline.bold()).foregroundStyle(AppearanceColors.primary)
                         .lineLimit(dynamicTypeSize.isAccessibilitySize ? nil : 2)
                     Text(album.artist).font(.subheadline).foregroundStyle(PhoneStyle.secondary)
@@ -324,11 +325,13 @@ struct PhoneRoot: View {
             .buttonStyle(.plain)
             .accessibilityIdentifier("album-\(album.id)")
             .contextMenu {
-                Button(library.albumVisibilityLabel(album.id)) {
-                    library.setAlbumHidden(album.id, hidden: !library.isAlbumHidden(album.id))
-                }.disabled(library.albumVisibilityNotice(album.id) != nil || library.isSavingAlbumVisibility(album.id))
-                if let notice = library.albumVisibilityNotice(album.id) { Text(notice) }
-                if let status = library.albumVisibilityStatus(album.id) { Text(status) }
+                if library.transfer.showsLibraryEditControls {
+                    Button(library.albumVisibilityLabel(album.id)) {
+                        library.setAlbumHidden(album.id, hidden: !library.isAlbumHidden(album.id))
+                    }.disabled(library.albumVisibilityNotice(album.id) != nil || library.isSavingAlbumVisibility(album.id))
+                    if let notice = library.albumVisibilityNotice(album.id) { Text(notice) }
+                    if let status = library.albumVisibilityStatus(album.id) { Text(status) }
+                }
             }
         }
     }
@@ -340,7 +343,7 @@ struct PhoneRoot: View {
                 let layout = wide ? AnyLayout(HStackLayout(alignment: .top, spacing: 32)) : AnyLayout(VStackLayout(spacing: 20))
                 let artworkSize = max(0, min(geometry.size.width - 80, dynamicTypeSize.isAccessibilitySize ? 120 : 320))
                 layout {
-                    PhoneArtwork(url: album.coverArt.flatMap { library.artworkURLs[$0] })
+                    PhoneArtwork(url: album.coverArt.flatMap { library.artworkURL(for: $0) })
                         .frame(width: artworkSize)
                     VStack(alignment: wide ? .leading : .center, spacing: 20) {
                         VStack(alignment: wide ? .leading : .center, spacing: 4) {
@@ -542,9 +545,11 @@ struct PhoneRoot: View {
             Section { AppearanceSettings() }
             Section { PlaybackDiagnosticSettings(recorder: library.diagnostics) }
             Section { PlaybackStorageSettings(library: library) }
-            Section("ライブラリと接続") { PeerSetupView(transfer: library.transfer) }
-            Section { AddMusicButton(library: library) }
-            if library.transfer.clusterRegistration == nil {
+            Section("ライブラリと接続") {
+                HostConnectionSettings(transfer: library.transfer) { hostSetup = $0 }
+            }
+            if library.transfer.showsLibraryEditControls { Section { AddMusicButton(library: library) } }
+            if !library.transfer.hasLibrarySource, !library.transfer.usesHostCatalog, library.transfer.pairedName != nil {
                 Section("従来の接続") {
                     NavigationLink("従来の端末間転送") {
                         ScrollView { PhonePairingView(transfer: library.transfer).padding(20) }
@@ -554,8 +559,10 @@ struct PhoneRoot: View {
             }
             Section {
                 LabeledContent("曲数", value: "\(library.tracks.count)")
-                if library.connected && library.transfer.clusterRegistration == nil {
-                    Button("ライブラリを閉じる") { library.closeLibrary() }
+                if library.connected && !library.transfer.hasLibrarySource {
+                    if !library.transfer.usesHostCatalog {
+                        Button("ライブラリを閉じる") { library.closeLibrary() }
+                    }
                 } else if library.hasSavedLocalLibrary {
                     Button("保存した音楽を開く") { Task { await library.openSavedLocalLibrary() } }
                 }
@@ -564,6 +571,7 @@ struct PhoneRoot: View {
         .scrollContentBackground(.hidden)
         .background(PhoneStyle.graphite)
         .navigationTitle("設定")
+        .task { if library.transfer.hostConnection == nil { await library.transfer.restorePairing() } }
         .scrollDismissesKeyboard(.interactively)
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
@@ -573,7 +581,7 @@ struct PhoneRoot: View {
     }
 
     private func artwork(_ id: String?, size: CGFloat) -> some View {
-        PhoneArtwork(url: id.flatMap { library.artworkURLs[$0] })
+        PhoneArtwork(url: id.flatMap { library.artworkURL(for: $0) })
             .frame(width: size, height: size)
     }
 
