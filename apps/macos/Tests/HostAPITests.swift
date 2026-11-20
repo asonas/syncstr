@@ -14,6 +14,15 @@ private struct HostReply {
     var gate: HostResponseGate?
 }
 
+private final class EvictedPlaybackCache: PlaybackCache {
+    override func fileInBackground(_ entry: LocalEntry, diagnostic: PlaybackDiagnosticContext? = nil) async throws -> URL? {
+        let verified = try await super.fileInBackground(entry, diagnostic: diagnostic)
+        let url = try XCTUnwrap(verified)
+        try FileManager.default.removeItem(at: url)
+        return url
+    }
+}
+
 private final class HostResponseGate: @unchecked Sendable {
     private let lock = NSLock()
     private var responses: [() -> Void] = []
@@ -101,7 +110,7 @@ final class HostAPITests: XCTestCase {
     private let node = "884b012a-9e94-4e12-b142-83601fe897e0"
     private var marker: String { "1.\(node).\(String(repeating: "a", count: 64))" }
 
-    private func fixture() throws -> (HostReply, String, Data) {
+    private func fixture(secondHash: String? = nil) throws -> (HostReply, String, Data) {
         let bundle = Bundle(for: Self.self)
         func object(_ name: String) throws -> [String: Any] {
             let file = try XCTUnwrap(bundle.url(forResource: name, withExtension: "json"))
@@ -113,6 +122,7 @@ final class HostAPITests: XCTestCase {
         member["sha256"] = audioSHA256
         var second = member
         second["id"] = "track-b"
+        if let secondHash { second["sha256"] = secondHash }
         organization["tracks"] = [member, second]
         var artwork = try XCTUnwrap(organization["artwork"] as? [String: Any])
         let assets = try XCTUnwrap(artwork["assets"] as? [String: String])
@@ -130,6 +140,7 @@ final class HostAPITests: XCTestCase {
             track["coverArt"] = id
             track["albumId"] = "album-a"
             result["track"] = track
+            if id == "track-b", let secondHash { result["sha256"] = secondHash }
             return result
         }
         let playlist: [String: Any] = ["id": "xml:list", "sourceLibrary": "xml", "sourcePlaylist": "list",
@@ -470,6 +481,7 @@ final class HostAPITests: XCTestCase {
         await library.transfer.requestSave([waiting.track], scope: "waiting")
         XCTAssertEqual(library.transfer.saveRequests.first?.entries, [waiting])
         _ = try await library.transfer.confirmHost(address, information: hostInformation(address))
+        await library.inventoryTask?.value
         XCTAssertTrue(library.hasManagedCopy(entries[0].track))
         XCTAssertFalse(library.hasManagedCopy(entries[1].track))
         let playback = try await library.transfer.playbackFile(entries[0].track, allowAcquisition: false)
@@ -478,9 +490,11 @@ final class HostAPITests: XCTestCase {
         await library.transfer.saveWorker?.value
         XCTAssertEqual(library.transfer.saveRequests.first?.entries, [entries[1]])
         XCTAssertEqual(library.transfer.saveRequests.first?.state, .complete)
+        await library.inventoryTask?.value
         XCTAssertFalse(files.hasFile(entries[1]))
         XCTAssertTrue(library.hasManagedCopy(entries[1].track))
         library.removeLocalCopies([entries[0].track])
+        await library.inventoryTask?.value
         XCTAssertFalse(library.hasManagedCopy(entries[0].track))
         XCTAssertTrue(library.hasManagedCopy(entries[1].track))
         XCTAssertTrue(FileManager.default.fileExists(atPath: legacy.path))
@@ -801,8 +815,10 @@ final class HostAPITests: XCTestCase {
         let track = try XCTUnwrap(library.localCatalog?.entries.first?.track)
         await library.transfer.requestSave([track], scope: "test")
         await library.transfer.saveWorker?.value
+        await library.inventoryTask?.value
         XCTAssertTrue(library.hasManagedCopy(track))
         library.removeLocalCopies([track])
+        await library.inventoryTask?.value
         XCTAssertFalse(library.hasManagedCopy(track))
         XCTAssertEqual(try Data(contentsOf: files.fileURL(legacy)), Data("abc".utf8))
         var connection: OpaquePointer?
@@ -833,7 +849,9 @@ final class HostAPITests: XCTestCase {
         ])
         try database.saveClusterBatch(batch)
         library.refreshLocalFiles()
+        await library.inventoryTask?.value
         library.removeLocalCopies([entry.track])
+        await library.inventoryTask?.value
         XCTAssertFalse(library.hasManagedCopy(entry.track))
         XCTAssertEqual(try Data(contentsOf: files.fileURL(entry)), Data("abc".utf8))
     }
@@ -981,22 +999,724 @@ final class HostAPITests: XCTestCase {
         XCTAssertEqual(transfer.hostConnection?.hosts, next.hosts)
     }
 
-    func testAudioRestartsAfterTransientErrorWithoutResumeData() async throws {
-        let address = try HostAddress("https://confirmed.example.test")
-        var requests = 0
-        let client = HostAPIClient(address: address, configuration: configuration { request in
-            requests += 1
-            if requests == 1 { throw URLError(.notConnectedToInternet) }
-            XCTAssertNil(request.value(forHTTPHeaderField: "Range"))
-            return HostReply(data: Data("abc".utf8))
+    func testUnreachableHostEndsPlaybackAndCopyAndLeavesSaveWaiting() async throws {
+        let bytes = Data("def".utf8)
+        let (reply, _, _) = try fixture(secondHash: LocalMusicStore.digest(bytes))
+        let files = store()
+        var fetches = 0
+        let library = Library(localStore: files, hostConfiguration: configuration { request in
+            if request.url?.lastPathComponent == "catalog" { return reply }
+            fetches += 1
+            throw URLError(.cannotConnectToHost)
         })
+        let transfer = library.transfer
+        let address = try HostAddress("https://confirmed.example.test")
+        _ = try await transfer.confirmHost(address, information: hostInformation(address))
+        let entries = try XCTUnwrap(library.localCatalog?.entries)
+        let failed = expectation(description: "playback failed")
+        let playback = library.$playbackFailure.compactMap { $0 }.first().sink { _ in failed.fulfill() }
+        library.play(entries[0].track)
+        await fulfillment(of: [failed], timeout: 15)
+        XCTAssertFalse(library.loading)
+        XCTAssertEqual(fetches, 1)
+        playback.cancel()
+        library.pause()
+
+        transfer.copy([entries[0].track])
+        XCTAssertTrue(transfer.busy)
+        let idle = expectation(description: "copy released busy")
+        let copy = transfer.$busy.filter { !$0 }.first().sink { _ in idle.fulfill() }
+        await fulfillment(of: [idle], timeout: 15)
+        copy.cancel()
+        XCTAssertEqual(fetches, 2)
+        if transfer.busy { transfer.cancel() }
+
+        let cache = transfer.playbackCache.store
+        try cache.prepare()
+        try bytes.write(to: cache.fileURL(entries[1]))
+        let waiting = expectation(description: "save processed later cached track")
+        let saves = transfer.$saveRequests.filter { $0.first?.state == .waiting && $0.first?.completed.isEmpty == false }
+            .first().sink { _ in waiting.fulfill() }
+        await transfer.requestSave(entries.map(\.track), scope: "album")
+        await fulfillment(of: [waiting], timeout: 15)
+        XCTAssertEqual(transfer.saveRequests.first?.completed, [entries[1].trackSaveIdentity])
+        XCTAssertTrue(try files.database().hasAudioPin(entries[1]))
+        XCTAssertEqual(fetches, 3)
+        transfer.stopSaveWorker()
+        saves.cancel()
+    }
+
+    func testStoredHostPublishesBeforeInventoryAndHashesChangesOffMain() async throws {
+        let (reply, _, _) = try fixture()
+        var files = store()
+        let config = configuration { _ in reply }
+        let address = try HostAddress("https://confirmed.example.test")
+        let initial = Library(localStore: files, hostConfiguration: config)
+        _ = try await initial.transfer.confirmHost(address, information: hostInformation(address))
+        await initial.inventoryTask?.value
+        let entry = try XCTUnwrap(initial.localCatalog?.entries.first)
+        let url = files.fileURL(entry)
+        try Data("abc".utf8).write(to: url)
+        try files.database().saveAudioPin(entry)
+        let published = expectation(description: "catalog published")
+        let hashed = expectation(description: "legacy pin verified")
+        let changed = expectation(description: "modified file verified")
+        files.inventoryDigest = { url in
+            XCTAssertFalse(Thread.isMainThread)
+            let digest = try LocalMusicStore.digest(file: url)
+            if digest == entry.sha256 { hashed.fulfill() } else { changed.fulfill() }
+            return digest
+        }
+        let reopened = Library(localStore: files, hostConfiguration: config)
+        let observation = reopened.$tracks.filter { !$0.isEmpty }.first().sink { _ in published.fulfill() }
+        await reopened.transfer.restorePeer()
+        await fulfillment(of: [published, hashed], timeout: 15, enforceOrder: true)
+        observation.cancel()
+        try Data("bad".utf8).write(to: url, options: .atomic)
+        reopened.refreshLocalFiles()
+        await fulfillment(of: [changed], timeout: 15)
+        await reopened.inventoryTask?.value
+        XCTAssertFalse(reopened.hasManagedCopy(entry.track))
+    }
+
+    func testImportedHostFileNeedsNoInventoryHashOnReopen() async throws {
+        var files = store()
+        let entry = LocalEntry(track: Track(id: "track", title: "Fixture", artist: "Fixture", suffix: "wav", size: 3), sha256: audioSHA256)
+        try files.prepare()
+        let temporary = files.root.appendingPathComponent("incoming")
+        try Data("abc".utf8).write(to: temporary)
+        try files.importFile(temporary, entry: entry, host: true)
+        try files.database().saveAudioPin(entry)
+        files = LocalMusicStore(root: files.root)
+        files.inventoryDigest = { _ in XCTFail("Re-read unchanged saved audio"); return "" }
+        var catalog = LocalCatalog(id: libraryID, name: "Fixture", entries: [entry])
+        catalog.remoteArtwork = []
+        let url = files.fileURL(entry)
+        let saved = try await CatalogStorage.shared.savedHostFiles(in: catalog, store: files)
+        XCTAssertEqual(saved[entry.track.id], url)
+        let handle = try FileHandle(forWritingTo: url)
+        try handle.write(contentsOf: Data("bad".utf8))
+        try handle.close()
+        XCTAssertNil(try files.verifiedFile(entry, host: true))
+    }
+
+    func testUnreachableAudioFailsWithoutRetry() async throws {
+        let address = try HostAddress("https://confirmed.example.test")
+        for code: URLError.Code in [.cannotConnectToHost, .cannotFindHost, .dnsLookupFailed, .notConnectedToInternet,
+                                    .timedOut, .networkConnectionLost] {
+            var requests = 0
+            let client = HostAPIClient(address: address, configuration: configuration { request in
+                requests += 1
+                XCTAssertEqual(request.timeoutInterval, 60)
+                guard requests == 1 else { throw URLError(.badURL) }
+                throw URLError(code)
+            }, retrySleep: { _ in XCTFail("Waited to retry an unreachable host") })
+            defer { client.stop() }
+            do { _ = try await client.audio(sha256: audioSHA256); XCTFail("Unexpected audio") }
+            catch { XCTAssertEqual((error as? URLError)?.code, code) }
+            XCTAssertEqual(requests, 1)
+        }
+    }
+
+    private actor RetryWaits {
+        var delays: [Duration] = []
+        func record(_ delay: Duration) { delays.append(delay) }
+    }
+
+    func testResumeRangeFailureRestartsOnlyOnce() async throws {
+        let client = HostAPIClient(address: try HostAddress("https://confirmed.example.test"), retrySleep: { _ in })
         defer { client.stop() }
-        let started = ContinuousClock.now
-        let file = try await client.audio(sha256: audioSHA256)
-        defer { try? FileManager.default.removeItem(at: file) }
-        XCTAssertEqual(try Data(contentsOf: file), Data("abc".utf8))
-        XCTAssertEqual(requests, 2)
-        XCTAssertGreaterThanOrEqual(started.duration(to: .now), .seconds(2))
+        var offsets: [Data?] = []
+        let resume = Data([1])
+        do {
+            _ = try await client.retryAudioDownload { data in
+                offsets.append(data)
+                guard offsets.count <= 4 else { throw URLError(.badURL) }
+                if data != nil { throw HostAPIError.status(416) }
+                throw InterruptedAudioDownload(error: URLError(.networkConnectionLost), resumeData: resume, bytesHeld: 10)
+            }
+            XCTFail("Unexpected audio")
+        } catch { XCTAssertEqual(error as? HostAPIError, .status(416)) }
+        XCTAssertEqual(offsets, [nil, resume, nil, resume])
+    }
+
+    func testLongRetryAfterFailsImmediately() async throws {
+        let waits = RetryWaits()
+        let client = HostAPIClient(address: try HostAddress("https://confirmed.example.test"), retrySleep: { await waits.record($0) })
+        defer { client.stop() }
+        var attempts = 0
+        do {
+            _ = try await client.retryAudioDownload { _ in
+                attempts += 1
+                throw HostAPIError.rateLimited(301)
+            }
+            XCTFail("Unexpected audio")
+        } catch { XCTAssertEqual(error as? HostAPIError, .rateLimited(301)) }
+        XCTAssertEqual(attempts, 1)
+        let delays = await waits.delays
+        XCTAssertTrue(delays.isEmpty)
+    }
+
+    func testRateLimitStartsFreshProgressAccounting() async throws {
+        let client = HostAPIClient(address: try HostAddress("https://confirmed.example.test"), retrySleep: { _ in })
+        defer { client.stop() }
+        let file = store().root
+        let offsets: [Int64?] = [100, 100, 100, nil, 0, 20, 40, 60]
+        var step = 0
+        let result = try await client.retryAudioDownload { resume in
+            XCTAssertEqual(resume == nil, step == 0 || step == 4)
+            guard step < offsets.count else { return file }
+            defer { step += 1 }
+            guard let bytes = offsets[step] else { throw HostAPIError.rateLimited(1) }
+            throw InterruptedAudioDownload(error: URLError(.networkConnectionLost), resumeData: Data([1]), bytesHeld: bytes)
+        }
+        XCTAssertEqual(result, file)
+    }
+
+    private final class ManualClock: @unchecked Sendable {
+        let start = ContinuousClock.now
+        private let lock = NSLock()
+        private var elapsed = Duration.zero
+        private var expected: [(Duration, XCTestExpectation)] = []
+        private var sleepers: [(Duration, AsyncStream<Void>.Continuation)] = []
+
+        var now: ContinuousClock.Instant { lock.withLock { start + elapsed } }
+        var gate: HostAudioGate { HostAudioGate(now: { self.now }, sleepUntil: sleep) }
+
+        func expectSleep(until seconds: Int) -> XCTestExpectation {
+            let event = XCTestExpectation(description: "sleep until virtual second \(seconds)")
+            lock.withLock { expected.append((.seconds(seconds), event)) }
+            return event
+        }
+
+        private func sleep(until deadline: ContinuousClock.Instant) async throws {
+            let (stream, wake) = AsyncStream<Void>.makeStream()
+            try lock.withLock {
+                guard !expected.isEmpty else {
+                    XCTFail("Unexpected sleep until \(start.duration(to: deadline))")
+                    throw CancellationError()
+                }
+                let (offset, event) = expected.removeFirst()
+                guard start.duration(to: deadline) == offset else {
+                    event.fulfill()
+                    XCTFail("Expected sleep until \(offset), got \(start.duration(to: deadline))")
+                    throw CancellationError()
+                }
+                if deadline > start + elapsed { sleepers.append((start.duration(to: deadline), wake)) }
+                else { wake.finish() }
+                event.fulfill()
+            }
+            for await _ in stream {}
+            try Task.checkCancellation()
+        }
+
+        func advance(to seconds: Int) {
+            lock.withLock {
+                elapsed = .seconds(seconds)
+                sleepers.removeAll { offset, wake in
+                    if offset > elapsed { return false }
+                    wake.finish()
+                    return true
+                }
+            }
+        }
+    }
+
+    func testSaveRequestsShareHostRetryAfter() async throws {
+        let (reply, _, _) = try fixture()
+        var fetches = 0
+        let files = store()
+        let clock = ManualClock()
+        let library = Library(localStore: files, hostConfiguration: configuration { request in
+            if request.url?.lastPathComponent == "catalog" { return reply }
+            fetches += 1
+            if fetches > 1 { return HostReply(data: Data("abc".utf8)) }
+            return HostReply(status: 429, headers: ["Retry-After": "3600"])
+        })
+        let transfer = library.transfer
+        transfer.hostAudioGate = clock.gate
+        let address = try HostAddress("https://confirmed.example.test")
+        _ = try await transfer.confirmHost(address, information: hostInformation(address))
+        let entries = try XCTUnwrap(library.localCatalog?.entries)
+        defer { transfer.stopSaveWorker() }
+        let first = clock.expectSleep(until: 300)
+        await transfer.requestSave([entries[0].track], scope: "first")
+        await fulfillment(of: [first], timeout: 15)
+        let cancelled = try XCTUnwrap(transfer.saveRetry)
+        let second = clock.expectSleep(until: 300)
+        await transfer.requestSave([entries[1].track], scope: "second")
+        await cancelled.value
+        XCTAssertTrue(cancelled.isCancelled)
+        await fulfillment(of: [second], timeout: 15)
+        clock.advance(to: 299)
+        XCTAssertEqual(transfer.saveRequests.map(\.state), [.waiting, .waiting])
+        XCTAssertEqual(fetches, 1)
+        let retry = try XCTUnwrap(transfer.saveRetry)
+        clock.advance(to: 300)
+        await retry.value
+        await transfer.saveWorker?.value
+        XCTAssertEqual(fetches, 2)
+        XCTAssertEqual(transfer.saveRequests.map(\.state), [.complete, .complete])
+    }
+
+    func testWorkerRetryIntervalDoesNotExtendFiveSecondHostDeadline() async throws {
+        let (reply, _, _) = try fixture()
+        var fetches = 0
+        let clock = ManualClock()
+        let library = Library(localStore: store(), hostConfiguration: configuration { request in
+            if request.url?.lastPathComponent == "catalog" { return reply }
+            fetches += 1
+            return HostReply(status: 429, headers: ["Retry-After": fetches == 3 ? "5" : "0"])
+        })
+        let transfer = library.transfer
+        transfer.hostAudioGate = clock.gate
+        let address = try HostAddress("https://confirmed.example.test")
+        _ = try await transfer.confirmHost(address, information: hostInformation(address))
+        let track = try XCTUnwrap(library.tracks.first)
+        let first = clock.expectSleep(until: 2)
+        await transfer.requestSave([track], scope: "album")
+        await fulfillment(of: [first], timeout: 15)
+        let second = clock.expectSleep(until: 6)
+        clock.advance(to: 2)
+        await fulfillment(of: [second], timeout: 15)
+        let waiting = clock.expectSleep(until: 21)
+        clock.advance(to: 6)
+        await fulfillment(of: [waiting], timeout: 15)
+        XCTAssertEqual(transfer.hostAudioGate.deadline(for: address.origin), clock.start + .seconds(11))
+        let retry = try XCTUnwrap(transfer.saveRetry)
+        transfer.cancelSave(try XCTUnwrap(transfer.saveRequests.first))
+        await retry.value
+        clock.advance(to: 21)
+        XCTAssertNil(transfer.saveWorker)
+        XCTAssertEqual(transfer.saveRequests.first?.state, .cancelled)
+        XCTAssertEqual(fetches, 3)
+    }
+
+    func testHostRepublishPreservesSavedStateAndPendingPlaybackCheck() async throws {
+        let (reply, _, _) = try fixture()
+        let files = store()
+        let library = Library(localStore: files, hostConfiguration: configuration { _ in reply })
+        let address = try HostAddress("https://confirmed.example.test")
+        _ = try await library.transfer.confirmHost(address, information: hostInformation(address))
+        await library.inventoryTask?.value
+        let catalog = try XCTUnwrap(library.localCatalog)
+        let entry = try XCTUnwrap(catalog.entries.first)
+        let url = files.fileURL(entry)
+        try Data("abc".utf8).write(to: url)
+        try files.database().saveAudioPin(entry)
+        library.refreshLocalFiles()
+        await library.inventoryTask?.value
+        XCTAssertTrue(library.hasManagedCopy(entry.track))
+        library.current = entry.track
+        library.playing = true
+        try FileManager.default.removeItem(at: url)
+        library.transfer.onSaved?()
+        try library.transfer.onCatalog?(PreparedLocalCatalog(catalog, store: files))
+        XCTAssertTrue(library.canRemoveLocalCopy(entry.track))
+        await library.inventoryTask?.value
+        XCTAssertFalse(library.hasManagedCopy(entry.track))
+        XCTAssertFalse(library.playing)
+    }
+
+    func testReselectingTrackPreservesNewPlaybackDuringInventory() async throws {
+        let (reply, _, _) = try fixture()
+        let held = HostResponseGate(started: expectation(description: "new playback requested audio"))
+        let files = store()
+        let library = Library(localStore: files, hostConfiguration: configuration { request in
+            request.url?.lastPathComponent == "catalog" ? reply : HostReply(data: Data("abc".utf8), gate: held)
+        })
+        let address = try HostAddress("https://confirmed.example.test")
+        _ = try await library.transfer.confirmHost(address, information: hostInformation(address))
+        let entry = try XCTUnwrap(library.localCatalog?.entries.first)
+        try Data("abc".utf8).write(to: files.fileURL(entry))
+        try files.database().saveAudioPin(entry)
+        library.refreshLocalFiles()
+        await library.inventoryTask?.value
+        XCTAssertTrue(library.hasManagedCopy(entry.track))
+        library.current = entry.track
+        library.playing = true
+        try FileManager.default.removeItem(at: files.fileURL(entry))
+        library.transfer.onSaved?()
+        library.play(entry.track)
+        library.transfer.onSaved?() // Track B finished saving before A's inventory check.
+        await library.inventoryTask?.value
+        XCTAssertFalse(library.hasManagedCopy(entry.track))
+        XCTAssertTrue(library.loading)
+        if library.loading { await fulfillment(of: [held.started], timeout: 15) }
+        library.pause()
+        held.release()
+    }
+
+    func testInventoryKeepsSavedCopyWhenRecordWriteFails() async throws {
+        let (reply, _, _) = try fixture()
+        var files = store()
+        files.inventoryDigest = { url in
+            let bytes = try Data(contentsOf: url)
+            if bytes == Data("err".utf8) { throw CocoaError(.fileReadUnknown) }
+            return LocalMusicStore.digest(bytes)
+        }
+        let library = Library(localStore: files, hostConfiguration: configuration { _ in reply })
+        let address = try HostAddress("https://confirmed.example.test")
+        _ = try await library.transfer.confirmHost(address, information: hostInformation(address))
+        await library.inventoryTask?.value
+        let entry = try XCTUnwrap(library.localCatalog?.entries.first)
+        try Data("abc".utf8).write(to: files.fileURL(entry))
+        try files.database().saveAudioPin(entry)
+        var db: OpaquePointer?
+        XCTAssertEqual(sqlite3_open(files.root.appendingPathComponent("catalog.sqlite").path, &db), SQLITE_OK)
+        defer { sqlite3_close(db) }
+        let sql = "CREATE TRIGGER reject_record BEFORE INSERT ON verified_audio_files BEGIN SELECT RAISE(FAIL, 'fixture'); END"
+        XCTAssertEqual(sqlite3_exec(db, sql, nil, nil, nil), SQLITE_OK)
+        library.refreshLocalFiles()
+        await library.inventoryTask?.value
+        XCTAssertTrue(library.hasManagedCopy(entry.track))
+        library.current = entry.track
+        library.playing = true
+        try Data("err".utf8).write(to: files.fileURL(entry), options: .atomic)
+        library.transfer.onSaved?()
+        await library.inventoryTask?.value
+        XCTAssertTrue(library.hasManagedCopy(entry.track))
+        XCTAssertTrue(library.playing)
+        try FileManager.default.removeItem(at: files.fileURL(entry))
+        library.refreshLocalFiles()
+        await library.inventoryTask?.value
+        XCTAssertFalse(library.hasManagedCopy(entry.track))
+        XCTAssertFalse(library.playing)
+    }
+
+    func testSaveRestartWaitsForOrdinaryRetryAfter() async throws {
+        try await checkSharedDeadline(directCopy: false)
+    }
+
+    func testDirectCopyWaitsForOrdinaryRetryAfter() async throws {
+        try await checkSharedDeadline(directCopy: true)
+    }
+
+    private func checkSharedDeadline(directCopy: Bool) async throws {
+        let bytes = Data("def".utf8)
+        let hash = LocalMusicStore.digest(bytes)
+        let (reply, _, _) = try fixture(secondHash: hash)
+        let files = store()
+        let clock = ManualClock()
+        var fetches = 0
+        let library = Library(localStore: files, hostConfiguration: configuration { request in
+            let path = request.url?.lastPathComponent
+            if path == "catalog" { return reply }
+            fetches += 1
+            if fetches == 1 { return HostReply(status: 429, headers: ["Retry-After": "5"]) }
+            XCTAssertEqual(clock.now, clock.start + .seconds(5))
+            return HostReply(data: path == hash ? bytes : Data("abc".utf8))
+        })
+        let transfer = library.transfer
+        transfer.hostAudioGate = clock.gate
+        transfer.saveRetryInterval = .seconds(3)
+        defer { transfer.stopSaveWorker() }
+        let address = try HostAddress("https://confirmed.example.test")
+        _ = try await transfer.confirmHost(address, information: hostInformation(address))
+        let entries = try XCTUnwrap(library.localCatalog?.entries)
+        let limited = clock.expectSleep(until: 5)
+        await transfer.requestSave([entries[0].track], scope: "first")
+        await fulfillment(of: [limited], timeout: 15)
+        let worker = try XCTUnwrap(transfer.saveWorker)
+        let waiting = clock.expectSleep(until: 5)
+        let completed = expectation(description: "second track saved")
+        let observation: AnyCancellable
+        if directCopy {
+            transfer.copy([entries[1].track])
+            observation = transfer.$busy.filter { !$0 }.first().sink { _ in completed.fulfill() }
+        } else {
+            observation = transfer.$saveRequests.filter { $0.contains { $0.id == "second" && $0.state == .complete } }
+                .first().sink { _ in completed.fulfill() }
+            await transfer.requestSave([entries[1].track], scope: "second")
+        }
+        await fulfillment(of: [waiting], timeout: 15)
+        if directCopy { transfer.stopSaveWorker() }
+        await worker.value
+        XCTAssertTrue(worker.isCancelled)
+        clock.advance(to: 4)
+        XCTAssertEqual(fetches, 1)
+        clock.advance(to: 5)
+        await fulfillment(of: [completed], timeout: 15)
+        observation.cancel()
+        XCTAssertTrue(try files.database().hasAudioPin(entries[1]))
+    }
+
+    func testPlaybackRejectsLongGateAndWaitsForShortRemainder() async throws {
+        try await checkInteractiveDeadline(directCopy: false)
+    }
+
+    func testDirectCopyRejectsLongGateAndWaitsForShortRemainder() async throws {
+        try await checkInteractiveDeadline(directCopy: true)
+    }
+
+    private func checkInteractiveDeadline(directCopy: Bool) async throws {
+        let bytes = Data("def".utf8)
+        let hash = LocalMusicStore.digest(bytes)
+        let (reply, _, _) = try fixture(secondHash: hash)
+        let clock = ManualClock()
+        var requests: [String] = []
+        let files = store()
+        let library = Library(localStore: files, hostConfiguration: configuration { request in
+            let path = request.url!.lastPathComponent
+            if path == "catalog" { return reply }
+            requests.append(path)
+            if path == hash {
+                XCTAssertEqual(clock.now, clock.start + .seconds(300))
+                return HostReply(data: bytes)
+            }
+            return HostReply(status: 429, headers: ["Retry-After": "3600"])
+        })
+        let transfer = library.transfer
+        transfer.hostAudioGate = clock.gate
+        let address = try HostAddress("https://confirmed.example.test")
+        _ = try await transfer.confirmHost(address, information: hostInformation(address))
+        let entries = try XCTUnwrap(library.localCatalog?.entries)
+        func acquire() async throws {
+            if directCopy {
+                transfer.copy([entries[1].track])
+                let idle = expectation(description: "direct copy finished")
+                let observation = transfer.$busy.filter { !$0 }.first().sink { _ in idle.fulfill() }
+                await fulfillment(of: [idle], timeout: 15)
+                observation.cancel()
+            } else {
+                _ = try await transfer.playbackFile(entries[1].track)
+            }
+        }
+        do {
+            _ = try await transfer.playbackFile(entries[0].track)
+            XCTFail("Expected HTTP 429")
+        } catch { XCTAssertEqual(error as? HostAPIError, .rateLimited(3600)) }
+        XCTAssertEqual(transfer.hostAudioGate.deadline(for: address.origin), clock.start + .seconds(300))
+        clock.advance(to: 289)
+        do {
+            try await acquire()
+            XCTAssertTrue(directCopy)
+            XCTAssertEqual(transfer.status, HostAPIError.rateLimited(11).localizedDescription)
+        } catch { XCTAssertEqual(error as? HostAPIError, .rateLimited(11)) }
+        XCTAssertEqual(requests, [audioSHA256])
+        clock.advance(to: 290)
+        let sleeping = clock.expectSleep(until: 300)
+        let short = Task { try await acquire() }
+        await fulfillment(of: [sleeping], timeout: 15)
+        clock.advance(to: 299)
+        XCTAssertEqual(requests, [audioSHA256])
+        clock.advance(to: 300)
+        try await short.value
+        XCTAssertEqual(requests, [audioSHA256, hash])
+        if directCopy { XCTAssertTrue(try files.database().hasAudioPin(entries[1])) }
+    }
+
+    func testChangedHashClearsSavedStateBeforeInventory() async throws {
+        let (reply, _, _) = try fixture()
+        let files = store()
+        let library = Library(localStore: files, hostConfiguration: configuration { _ in reply })
+        let address = try HostAddress("https://confirmed.example.test")
+        _ = try await library.transfer.confirmHost(address, information: hostInformation(address))
+        var catalog = try XCTUnwrap(library.localCatalog)
+        let entry = catalog.entries[0]
+        try Data("abc".utf8).write(to: files.fileURL(entry))
+        try files.database().saveAudioPin(entry)
+        library.refreshLocalFiles()
+        await library.inventoryTask?.value
+        XCTAssertTrue(library.canRemoveLocalCopy(entry.track))
+        catalog.entries[0].sha256 = LocalMusicStore.digest(Data("def".utf8))
+        try library.transfer.onCatalog?(PreparedLocalCatalog(catalog, store: files))
+        XCTAssertFalse(library.canRemoveLocalCopy(entry.track))
+        await library.inventoryTask?.value
+    }
+
+    func testAlternatingRateLimitsRequireOverallProgress() async throws {
+        let client = HostAPIClient(address: try HostAddress("https://confirmed.example.test"), retrySleep: { _ in })
+        defer { client.stop() }
+        for progressing in [false, true] {
+            var attempt = 0
+            let destination = store().root
+            do {
+                let file = try await client.retryAudioDownload { resume in
+                    attempt += 1
+                    if attempt > 20 { return destination }
+                    if resume != nil { throw HostAPIError.rateLimited(0) }
+                    throw InterruptedAudioDownload(error: URLError(.networkConnectionLost), resumeData: Data([1]),
+                                                   bytesHeld: progressing ? Int64(attempt * 100) : 100)
+                }
+                XCTAssertTrue(progressing, "Stalled transfer exhausted the fixture")
+                XCTAssertEqual(file, destination)
+            } catch {
+                XCTAssertFalse(progressing)
+                XCTAssertEqual(error as? HostAPIError, .rateLimited(0))
+                XCTAssertLessThan(attempt, 20)
+            }
+        }
+    }
+
+    func testInventoryAttributeAndVerificationCacheErrors() throws {
+        let files = store()
+        let entry = LocalEntry(track: Track(id: "track", title: "Fixture", artist: "Fixture", suffix: "wav", size: 3), sha256: audioSHA256)
+        let database = try files.database()
+        let url = files.fileURL(entry)
+        try Data("abc".utf8).write(to: url)
+        var db: OpaquePointer?
+        XCTAssertEqual(sqlite3_open(files.root.appendingPathComponent("catalog.sqlite").path, &db), SQLITE_OK)
+        defer { sqlite3_close(db) }
+        XCTAssertEqual(sqlite3_exec(db, "DROP TABLE verified_audio_files", nil, nil, nil), SQLITE_OK)
+        XCTAssertEqual(try files.verifiedFile(entry, host: true, inventory: database), url)
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: files.root.path)
+        defer { try? FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: files.root.path) }
+        XCTAssertThrowsError(try files.verifiedFile(entry, host: true, inventory: database))
+    }
+
+    private func save(_ entry: LocalEntry, with transfer: LocalTransfer, directCopy: Bool) async {
+        if directCopy {
+            transfer.copy([entry.track])
+            let idle = expectation(description: "copy finished")
+            let observation = transfer.$busy.filter { !$0 }.first().sink { _ in idle.fulfill() }
+            await fulfillment(of: [idle], timeout: 15)
+            observation.cancel()
+        } else {
+            await transfer.requestSave([entry.track], scope: "track")
+            await transfer.saveWorker?.value
+        }
+    }
+
+    func testSaveDownloadsWhenVerifiedCacheSourceDisappears() async throws {
+        let (reply, _, _) = try fixture()
+        for directCopy in [false, true] {
+            let files = store()
+            let bytes = Data("abc".utf8)
+            var downloads = 0
+            let library = Library(localStore: files, hostConfiguration: configuration { request in
+                if request.url?.lastPathComponent == "catalog" { return reply }
+                downloads += 1
+                return HostReply(data: bytes)
+            })
+            let transfer = library.transfer
+            let address = try HostAddress("https://confirmed.example.test")
+            _ = try await transfer.confirmHost(address, information: hostInformation(address))
+            let entry = try XCTUnwrap(library.localCatalog?.entries.first)
+            let cache = EvictedPlaybackCache(root: transfer.playbackCache.store.root)
+            transfer.playbackCache = cache
+            try cache.store.prepare()
+            try bytes.write(to: cache.store.fileURL(entry))
+            await save(entry, with: transfer, directCopy: directCopy)
+            XCTAssertEqual(downloads, 1)
+            XCTAssertTrue(try files.database().hasAudioPin(entry))
+            if directCopy { XCTAssertEqual(transfer.completed, 1) }
+            else { XCTAssertEqual(transfer.saveRequests.first?.state, .complete) }
+        }
+    }
+
+    func testNewPinRejectsChangedBytesWithMatchingStamp() async throws {
+        let (reply, _, _) = try fixture()
+        for directCopy in [false, true] {
+            let files = store()
+            let library = Library(localStore: files, hostConfiguration: configuration { request in
+                request.url?.lastPathComponent == "catalog" ? reply : HostReply(status: 404)
+            })
+            let transfer = library.transfer
+            let address = try HostAddress("https://confirmed.example.test")
+            _ = try await transfer.confirmHost(address, information: hostInformation(address))
+            let entry = try XCTUnwrap(library.localCatalog?.entries.first)
+            let url = files.fileURL(entry)
+            let stamp = [FileAttributeKey.modificationDate: Date(timeIntervalSince1970: 1_700_000_000)]
+            try Data("abc".utf8).write(to: url)
+            try FileManager.default.setAttributes(stamp, ofItemAtPath: url.path)
+            let database = try files.database()
+            XCTAssertEqual(try files.verifiedFile(entry, host: true, inventory: database), url)
+            let handle = try FileHandle(forWritingTo: url)
+            try handle.write(contentsOf: Data("bad".utf8))
+            try handle.close()
+            try FileManager.default.setAttributes(stamp, ofItemAtPath: url.path)
+            await save(entry, with: transfer, directCopy: directCopy)
+            XCTAssertFalse(try database.hasAudioPin(entry))
+        }
+    }
+
+    func testPinOnlySaveRecordsVerificationBeforeInventory() async throws {
+        let (reply, _, _) = try fixture()
+        for directCopy in [false, true] {
+            var files = store()
+            let library = Library(localStore: files, hostConfiguration: configuration { _ in reply })
+            let transfer = library.transfer
+            let address = try HostAddress("https://confirmed.example.test")
+            _ = try await transfer.confirmHost(address, information: hostInformation(address))
+            await library.inventoryTask?.value
+            transfer.onSaved = nil
+            let catalog = try XCTUnwrap(library.localCatalog)
+            let entry = catalog.entries[0]
+            try Data("abc".utf8).write(to: files.fileURL(entry))
+            if directCopy {
+                transfer.copy([entry.track])
+                let idle = expectation(description: "pin-only copy finished")
+                let observation = transfer.$busy.filter { !$0 }.first().sink { _ in idle.fulfill() }
+                await fulfillment(of: [idle], timeout: 2)
+                observation.cancel()
+            } else {
+                await transfer.requestSave([entry.track], scope: "pin-only")
+                await transfer.saveWorker?.value
+            }
+            files.inventoryDigest = { _ in XCTFail("Pin-only save left no verification record"); return "" }
+            let saved = try await CatalogStorage.shared.savedHostFiles(in: catalog, store: files)
+            XCTAssertEqual(saved[entry.track.id], files.fileURL(entry))
+        }
+    }
+
+    func testAudioResumesWhileBytesGrow() async throws {
+        let waits = RetryWaits()
+        let client = HostAPIClient(address: try HostAddress("https://confirmed.example.test"),
+                                   retrySleep: { await waits.record($0) })
+        defer { client.stop() }
+        let offsets: [Int64] = [4, 4, 4, 8, 8, 8, 12, 16, 20, 24, 28]
+        let file = store().root
+        var attempt = 0
+        let result = try await client.retryAudioDownload { resume in
+            XCTAssertEqual(resume, attempt == 0 ? nil : Data([UInt8(attempt)]))
+            guard attempt < offsets.count else { return file }
+            let held = offsets[attempt]
+            attempt += 1
+            throw InterruptedAudioDownload(error: URLError(.networkConnectionLost),
+                                           resumeData: Data([UInt8(attempt)]), bytesHeld: held)
+        }
+        XCTAssertEqual(result, file)
+        let delays = await waits.delays
+        XCTAssertEqual(delays, [2, 4, 8, 16, 32, 64, 128, 256, 300, 300, 300].map { .seconds($0) })
+    }
+
+    func testAudioStopsAfterThreeResumesWithoutProgress() async throws {
+        let waits = RetryWaits()
+        let client = HostAPIClient(address: try HostAddress("https://confirmed.example.test"),
+                                   retrySleep: { await waits.record($0) })
+        defer { client.stop() }
+        var attempts = 0
+        do {
+            _ = try await client.retryAudioDownload { _ in
+                attempts += 1
+                guard attempts <= 4 else { throw URLError(.badURL) }
+                throw InterruptedAudioDownload(error: URLError(.networkConnectionLost),
+                                               resumeData: Data([UInt8(attempts)]), bytesHeld: 4096)
+            }
+            XCTFail("Unexpected audio")
+        } catch { XCTAssertEqual((error as? URLError)?.code, .networkConnectionLost) }
+        XCTAssertEqual(attempts, 4)
+        let delays = await waits.delays
+        XCTAssertEqual(delays, [.seconds(2), .seconds(4), .seconds(8)])
+    }
+
+    func testAudioStopsAfterThreeConsecutiveRateLimits() async throws {
+        let waits = RetryWaits()
+        var attempts = 0
+        let client = HostAPIClient(address: try HostAddress("https://confirmed.example.test"),
+                                   configuration: configuration { _ in
+            attempts += 1
+            guard attempts <= 3 else { throw URLError(.badURL) }
+            return HostReply(status: 429, headers: ["Retry-After": "60"],
+                             data: Data(#"{"error":"rate-limited","message":"busy"}"#.utf8))
+        }, retrySleep: { await waits.record($0) })
+        defer { client.stop() }
+        do { _ = try await client.audio(sha256: audioSHA256); XCTFail("Unexpected audio") }
+        catch { XCTAssertEqual(error as? HostAPIError, .rateLimited(60)) }
+        XCTAssertEqual(attempts, 3)
+        let delays = await waits.delays
+        XCTAssertEqual(delays, [.seconds(60), .seconds(2), .seconds(60), .seconds(4)])
     }
 
     func testCorruptAudioAndArtworkNeverReachPlaybackOrStorage() async throws {

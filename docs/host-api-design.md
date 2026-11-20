@@ -242,7 +242,7 @@ Today `api.rs` and `shared_audio_api.rs` end every request after two hours, and 
 | Host, at start | From ASO-172 on, a primary reads the library information of every known host before it accepts changes, for at most 5 seconds in total across all hosts. It then starts, whatever it heard. |
 | Device, library information of known hosts | 15 seconds without a response, the same as an interactive request. Reads of several hosts run in parallel. |
 | Device, interactive | 15 seconds without a response, then show the cause. |
-| Device, audio | `timeoutIntervalForRequest` of 60 seconds, which resets whenever data arrives. `timeoutIntervalForResource` no shorter than its 7-day default. After a failure, resume from the bytes held, waiting 2 seconds at first and doubling up to 5 minutes. |
+| Device, audio | `timeoutIntervalForRequest` of 60 seconds, which resets whenever data arrives. `timeoutIntervalForResource` no shorter than its 7-day default. After a failure, resume from the bytes held, waiting 2 seconds at first and doubling up to 5 minutes. The device caps the `Retry-After` delay at 300 seconds and applies it to every audio request to that host. If more than 10 seconds remain, a person's playback or copy fails immediately. |
 
 ## The contract is a file that tests enforce
 

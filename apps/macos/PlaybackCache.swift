@@ -52,7 +52,7 @@ actor PlaybackDownload {
 }
 
 @MainActor
-final class PlaybackCache {
+class PlaybackCache {
     let store: LocalMusicStore
     var protectedURL: URL?
     private let settings: URL

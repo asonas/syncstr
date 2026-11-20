@@ -318,6 +318,31 @@ final class OfflineSaveTests: XCTestCase {
         XCTAssertEqual(try FileManager.default.attributesOfItem(atPath: store.fileURL(entries[0]).path)[.modificationDate] as? Date, firstDate)
     }
 
+    func testClusterSaveHashesLocalAudioEvenWithHostVerificationRecord() async throws {
+        var (store, entries) = try fixture()
+        let entry = entries[0]
+        let temporary = root.appendingPathComponent("incoming")
+        try Data(repeating: 1, count: 1024).write(to: temporary)
+        try store.importFile(temporary, entry: entry)
+        let database = try store.database()
+        store.inventoryDigest = { _ in throw CocoaError(.fileReadUnknown) }
+        XCTAssertThrowsError(try store.verifiedFile(entry, host: true, inventory: database)) {
+            XCTAssertEqual(($0 as? CocoaError)?.code, .fileReadUnknown)
+        }
+
+        let url = store.fileURL(entry)
+        try Data(repeating: 0, count: 1024).write(to: url, options: .atomic)
+        store.inventoryDigest = { _ in entry.sha256 }
+        XCTAssertEqual(try store.verifiedFile(entry, host: true, inventory: database), url)
+        let transfer = LocalTransfer(store: store)
+        defer { transfer.stopSaveWorker() }
+        try cache(entry, transfer: transfer, number: 1)
+        await transfer.requestSave([entry.track], scope: "track")
+        await transfer.saveWorker?.value
+        XCTAssertEqual(transfer.saveRequests.first?.state, .complete)
+        XCTAssertEqual(try Data(contentsOf: url), Data(repeating: 1, count: 1024))
+    }
+
     func testCancelRetainsCompletedAudioAndDoesNotResumeRemainingItems() async throws {
         let (store, entries) = try fixture()
         let transfer = LocalTransfer(store: store)

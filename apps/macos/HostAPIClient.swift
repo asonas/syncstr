@@ -78,20 +78,90 @@ enum HostAPIError: LocalizedError, Equatable {
     }
 }
 
-final class HostRedirectPolicy: NSObject, URLSessionTaskDelegate {
+class HostRedirectPolicy: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
     func urlSession(_ session: URLSession, task: URLSessionTask, willPerformHTTPRedirection response: HTTPURLResponse,
                     newRequest request: URLRequest, completionHandler: @escaping (URLRequest?) -> Void) {
         completionHandler(nil)
     }
 }
 
+final class HostAudioGate: @unchecked Sendable {
+    private let lock = NSLock()
+    private var deadlines: [URL: ContinuousClock.Instant] = [:]
+
+    let now: @Sendable () -> ContinuousClock.Instant
+    let sleepUntil: @Sendable (ContinuousClock.Instant) async throws -> Void
+
+    init(now: @escaping @Sendable () -> ContinuousClock.Instant = { .now },
+         sleepUntil: @escaping @Sendable (ContinuousClock.Instant) async throws -> Void = { try await Task.sleep(until: $0, clock: .continuous) }) {
+        self.now = now
+        self.sleepUntil = sleepUntil
+    }
+
+    func deferRequests(to origin: URL, for duration: Duration) {
+        let until = now() + min(duration, .seconds(300))
+        lock.withLock { deadlines[origin] = max(deadlines[origin] ?? until, until) }
+    }
+
+    func deadline(for origin: URL) -> ContinuousClock.Instant? {
+        lock.withLock { deadlines[origin] }
+    }
+
+    func wait(for origin: URL) async throws {
+        while let until = deadline(for: origin) {
+            try Task.checkCancellation()
+            let remaining = now().duration(to: until)
+            guard remaining > .zero else { break }
+            if remaining > .seconds(10) {
+                let parts = remaining.components
+                throw HostAPIError.rateLimited(Int(parts.seconds) + (parts.attoseconds > 0 ? 1 : 0))
+            }
+            try await sleepUntil(until)
+        }
+        try Task.checkCancellation()
+    }
+}
+
+private final class AudioDownloadProgress: HostRedirectPolicy, URLSessionDownloadDelegate, @unchecked Sendable {
+    private let lock = NSLock()
+    private var written: Int64 = 0
+    var bytesHeld: Int64 { lock.withLock { written } }
+
+    func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask,
+                    didResumeAtOffset fileOffset: Int64, expectedTotalBytes: Int64) {
+        lock.withLock { written = fileOffset }
+    }
+
+    func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask, didWriteData bytesWritten: Int64,
+                    totalBytesWritten: Int64, totalBytesExpectedToWrite: Int64) {
+        lock.withLock { written = totalBytesWritten }
+    }
+
+    func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask, didFinishDownloadingTo location: URL) {}
+}
+
+struct InterruptedAudioDownload: Error {
+    let error: URLError
+    let resumeData: Data
+    let bytesHeld: Int64
+}
+
 final class HostAPIClient: Sendable {
+    private let audioGate: HostAudioGate?
+    private let retrySleep: @Sendable (Duration) async throws -> Void
     private let address: HostAddress
     private let session: URLSession
     private let switchObserved: @Sendable (String) -> Void
 
     init(address: HostAddress, configuration: URLSessionConfiguration = .ephemeral,
+         audioGate: HostAudioGate? = nil,
+         retrySleep: (@Sendable (Duration) async throws -> Void)? = nil,
          switchObserved: @escaping @Sendable (String) -> Void = { _ in }) {
+        self.retrySleep = retrySleep ?? { duration in
+            if let audioGate { try await audioGate.sleepUntil(audioGate.now() + duration) }
+            else { try await Task.sleep(for: duration) }
+        }
+        self.audioGate = audioGate
         self.address = address
         self.switchObserved = switchObserved
         let settings = configuration.copy() as! URLSessionConfiguration
@@ -114,6 +184,10 @@ final class HostAPIClient: Sendable {
 
     private func response(_ response: URLResponse) throws -> HTTPURLResponse {
         guard let http = response as? HTTPURLResponse else { throw HostAPIError.notHost }
+        if http.statusCode == 429 {
+            let after = http.value(forHTTPHeaderField: "Retry-After").flatMap(Int.init)
+            audioGate?.deferRequests(to: address.origin, for: .seconds(max(0, after ?? 2)))
+        }
         if let value = http.value(forHTTPHeaderField: "Syncstr-Switch") { switchObserved(value) }
         return http
     }
@@ -185,38 +259,80 @@ final class HostAPIClient: Sendable {
 
     func audio(sha256: String) async throws -> URL {
         guard ClusterIdentity.isLowercaseHex256(sha256) else { throw LocalMusicError.invalidData }
+        return try await retryAudioDownload { resume in
+            let progress = AudioDownloadProgress()
+            let file: URL
+            let reply: URLResponse
+            do {
+                if let resume {
+                    (file, reply) = try await session.download(resumeFrom: resume, delegate: progress)
+                } else {
+                    (file, reply) = try await session.download(for: request("audio/" + sha256, timeout: 60), delegate: progress)
+                }
+            } catch let error as URLError where error.code != .cancelled {
+                guard let data = error.downloadTaskResumeData, !data.isEmpty else { throw error }
+                throw InterruptedAudioDownload(error: error, resumeData: data, bytesHeld: progress.bytesHeld)
+            }
+            do {
+                let http = try response(reply)
+                if http.statusCode == 429 {
+                    throw HostAPIError.rateLimited(http.value(forHTTPHeaderField: "Retry-After").flatMap(Int.init))
+                }
+                if !(resume != nil && http.statusCode == 206), http.statusCode != 200 {
+                    let handle = try FileHandle(forReadingFrom: file)
+                    defer { try? handle.close() }
+                    try check(http, body: try handle.read(upToCount: 65536) ?? Data())
+                }
+                return file
+            } catch {
+                try? FileManager.default.removeItem(at: file)
+                throw error
+            }
+        }
+    }
+
+    func retryAudioDownload(_ download: (Data?) async throws -> URL) async throws -> URL {
         var resume: Data?
+        var highWater: Int64 = 0
+        var previousRestartMaximum: Int64 = 0
+        var stalledRestarts = 0
+        var stalled = 0
+        var rateLimits = 0
+        var restarted = false
         var delay = 2
         while true {
             try Task.checkCancellation()
+            try await audioGate?.wait(for: address.origin)
             do {
-                let file: URL
-                let reply: URLResponse
-                if let resume { (file, reply) = try await session.download(resumeFrom: resume) }
-                else { (file, reply) = try await session.download(for: request("audio/" + sha256, timeout: 60)) }
-                do {
-                    let http = try response(reply)
-                    if !(resume != nil && http.statusCode == 206), http.statusCode != 200 {
-                        let handle = try FileHandle(forReadingFrom: file)
-                        defer { try? handle.close() }
-                        try check(http, body: try handle.read(upToCount: 65536) ?? Data())
-                    }
-                    return file
-                } catch {
-                    try? FileManager.default.removeItem(at: file)
-                    throw error
-                }
-            } catch let error as URLError where error.code != .cancelled {
-                resume = error.downloadTaskResumeData
-                if resume == nil, ![.timedOut, .networkConnectionLost, .notConnectedToInternet, .cannotConnectToHost,
-                                    .cannotFindHost, .dnsLookupFailed, .resourceUnavailable].contains(error.code) { throw error }
-            } catch HostAPIError.status(416) where resume != nil {
+                return try await download(resume)
+            } catch let failure as InterruptedAudioDownload {
+                stalled = failure.bytesHeld > highWater ? 0 : stalled + 1
+                guard stalled < 3 else { throw failure.error }
+                highWater = max(highWater, failure.bytesHeld)
+                resume = failure.resumeData
+                rateLimits = 0
+            } catch HostAPIError.status(416) where resume != nil && !restarted {
+                restarted = true
                 resume = nil
+                highWater = 0
+                stalled = 0
+                rateLimits = 0
             } catch HostAPIError.rateLimited(let after) {
-                try await Task.sleep(for: .seconds(max(0, after ?? 0)))
+                rateLimits += 1
+                stalledRestarts = highWater > previousRestartMaximum ? 0 : stalledRestarts + 1
+                previousRestartMaximum = max(previousRestartMaximum, highWater)
+                guard rateLimits < 3, stalledRestarts < 3, (after ?? 0) <= 300 else { throw HostAPIError.rateLimited(after) }
+                // URLSession consumes the resume file even when the resumed request returns 429.
                 resume = nil
+                highWater = 0
+                stalled = 0
+                if let audioGate {
+                    try await audioGate.wait(for: address.origin)
+                } else if let after, after > 0 {
+                    try await retrySleep(.seconds(after))
+                }
             }
-            try await Task.sleep(for: .seconds(delay))
+            try await retrySleep(.seconds(delay))
             delay = min(delay * 2, 300)
         }
     }

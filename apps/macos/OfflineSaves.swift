@@ -162,10 +162,15 @@ extension LocalTransfer {
                 if saveGeneration == token {
                     saveWorker = nil
                     if saveRequests.contains(where: { (snapshotReadFailed || $0.library == processableLibrary) && [.waiting, .wifi, .saving].contains($0.state) }) {
+                        let deadline = hostConnection.flatMap { self.hostAudioGate.deadline(for: $0.address.origin) }
+                        let interval = saveRetryInterval
+                        let gate = hostAudioGate
                         saveRetry = Task { [weak self, needsPeer] in
                             // A successful connection resumes saves itself and cancels this retry.
                             if needsPeer { await self?.reconnectPeerForWaitingSaves() }
-                            do { try await Task.sleep(for: self?.saveRetryInterval ?? .seconds(15)) } catch { return }
+                            let now = gate.now()
+                            let retryAt = max(now + interval, deadline ?? now)
+                            do { try await gate.sleepUntil(retryAt); try Task.checkCancellation() } catch { return }
                             self?.resumeSaves()
                         }
                     }
@@ -206,7 +211,7 @@ extension LocalTransfer {
                                 saveRequests[index].entries[position] = current
                             }
                             let saved = try await CatalogStorage.shared.perform { [files = store, entry, host = hostConnection != nil] in
-                                try files.verifiedFile(entry, host: host) != nil
+                                try files.verifiedFile(entry, host: host, inventory: host ? files.database() : nil, requireHash: true) != nil
                             }
                             guard saveGeneration == token else { return }
                             if saved {
@@ -220,10 +225,20 @@ extension LocalTransfer {
                                 if hostConnection != nil { onSaved?() }
                                 continue
                             }
-                            if let cached = try playbackCache.file(entry) {
-                                try await protectCachedFile(cached, entry: entry)
-                            } else {
+                            let cached = try await playbackCache.fileInBackground(entry)
+                            try Task.checkCancellation()
+                            guard saveGeneration == token else { return }
+                            var savedFromCache = false
+                            if let cached { savedFromCache = try await protectCachedFile(cached, entry: entry) }
+                            if !savedFromCache {
+                                try Task.checkCancellation()
+                                guard saveGeneration == token else { return }
                                 if waiting { continue }
+                                if let host = hostConnection, let deadline = hostAudioGate.deadline(for: host.address.origin),
+                                   hostAudioGate.now() < deadline {
+                                    waiting = true
+                                    continue
+                                }
                                 if automatic && !permitsAutomaticSaveAudio {
                                     saveRequests[index].state = savePathIsCellular ? .wifi : .waiting
                                     waiting = true
@@ -240,7 +255,10 @@ extension LocalTransfer {
                                 } else if legacyChannelUsable && !busy {
                                     let cached = try await playbackFile(entry.track)
                                     try Task.checkCancellation()
-                                    try await protectCachedFile(cached, entry: entry)
+                                    guard try await protectCachedFile(cached, entry: entry) else {
+                                        waiting = true
+                                        continue
+                                    }
                                     legacySaveCompleted()
                                 } else {
                                     waiting = true
@@ -259,6 +277,7 @@ extension LocalTransfer {
                             guard saveGeneration == token else { return }
                             if case LocalMusicError.clusterUnavailable = error { waiting = true }
                             else if hostConnection != nil, error is URLError { waiting = true }
+                            else if case HostAPIError.rateLimited = error { waiting = true }
                             else if case LocalMusicError.disconnected = error { waiting = true }
                             else if (error as? CocoaError)?.code == .fileWriteOutOfSpace {
                                 failure = "この端末の空き容量が不足しているため保存できません。空き容量を増やして再試行してください。"
@@ -281,15 +300,15 @@ extension LocalTransfer {
         }
     }
 
-    private func protectCachedFile(_ url: URL, entry: LocalEntry) async throws {
-        let temporary = store.root.appendingPathComponent(".offline-save-" + UUID().uuidString)
-        defer { try? FileManager.default.removeItem(at: temporary) }
-        if entry.track.audioHash != nil { try FileManager.default.linkItem(at: url, to: temporary) }
-        else { try FileManager.default.copyItem(at: url, to: temporary) }
-        try store.importFile(temporary, entry: entry, recordReceipt: entry.track.audioHash == nil)
-        if clusterRegistration != nil {
+    private func protectCachedFile(_ url: URL, entry: LocalEntry) async throws -> Bool {
+        let imported = try await CatalogStorage.shared.perform { [store, host = hostConnection != nil] in
+            try store.importCachedFile(url, entry: entry, link: entry.track.audioHash != nil,
+                                       recordReceipt: entry.track.audioHash == nil, host: host)
+        }
+        if imported, clusterRegistration != nil {
             try await makeLibrarySource().recoverDownloadedFile(entry)
         }
+        return imported
     }
 }
 

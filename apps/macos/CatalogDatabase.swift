@@ -9,6 +9,15 @@ extension CatalogDatabase {
         })
     }
 
+    func matchesVerifiedAudio(_ url: URL, stamp: String, hash: String) -> Bool {
+        (try? rows("SELECT 1 FROM verified_audio_files WHERE path = ? AND stamp = ? AND hash = ?",
+                   [url.lastPathComponent, stamp, hash]).isEmpty) == false
+    }
+
+    func recordVerifiedAudio(_ url: URL, stamp: String, hash: String) {
+        try? execute("INSERT OR REPLACE INTO verified_audio_files VALUES (?, ?, ?)", [url.lastPathComponent, stamp, hash])
+    }
+
     private func pinTrackID(_ entry: LocalEntry) throws -> String {
         if entry.track.audioHash == nil { return entry.track.id }
         return try sharedAudioSnapshot()?.catalog.addresses[entry.track.id] ?? entry.track.id
@@ -571,7 +580,7 @@ final class CatalogDatabase {
             let version = try rows("PRAGMA user_version").first?.first ?? nil
             guard ["0", "1", "2", "3", "4", "5", "6", "7"].contains(version) else { throw LocalMusicError.invalidData }
             if version == "7" {
-                let required: Set<String> = ["retained_host_catalog", "host_connection", "host_entries", "host_playlists", "shared_audio_snapshot", "shared_audio_saves", "catalog", "entries", "received_files", "organization", "artwork_assets",
+                let required: Set<String> = ["verified_audio_files", "retained_host_catalog", "host_connection", "host_entries", "host_playlists", "shared_audio_snapshot", "shared_audio_saves", "catalog", "entries", "received_files", "organization", "artwork_assets",
                     "cluster_schema", "cluster_identity", "cluster_peers", "cluster_objects", "cluster_locations",
                     "cluster_pending_changes", "cluster_jobs", "cluster_registration", "cluster_signed_changes",
                     "cluster_peer_cursors", "cluster_track_ids", "cluster_import_batches", "cluster_transfer_settings", "cluster_metadata_queue", "playlist_records", "playlist_cursors", "playlist_authorities"]
@@ -582,6 +591,7 @@ final class CatalogDatabase {
                 try execute("CREATE TABLE IF NOT EXISTS catalog (singleton INTEGER PRIMARY KEY CHECK(singleton = 1), id TEXT NOT NULL, name TEXT NOT NULL, source_root TEXT)")
                 try execute("CREATE TABLE IF NOT EXISTS entries (id TEXT PRIMARY KEY, position INTEGER NOT NULL, sha256 TEXT NOT NULL, payload TEXT NOT NULL, source_path TEXT)")
                 try execute("CREATE INDEX IF NOT EXISTS entries_content ON entries(sha256)")
+                try execute("CREATE TABLE IF NOT EXISTS verified_audio_files (path TEXT PRIMARY KEY, stamp TEXT NOT NULL, hash TEXT NOT NULL)")
                 try execute("CREATE TABLE IF NOT EXISTS received_files (relative_path TEXT PRIMARY KEY, sha256 TEXT NOT NULL)")
                 try execute("CREATE TABLE IF NOT EXISTS organization (singleton INTEGER PRIMARY KEY CHECK(singleton = 1), payload TEXT NOT NULL)")
                 try execute("CREATE TABLE IF NOT EXISTS artwork_assets (id TEXT PRIMARY KEY, payload TEXT NOT NULL)")

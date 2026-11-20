@@ -182,6 +182,8 @@ final class Library: ObservableObject {
     private var seeking: UUID?
     private var restoredLibrary = false
     private var catalogGeneration = UUID()
+    private(set) var inventoryTask: Task<Void, Never>?
+    private var pendingLocalPlaybackTrack: (id: String, request: UUID)?
     private var orderedQueue: [Track] = []
     private var wantsPlayback = false
     private var backgrounded = false
@@ -222,6 +224,11 @@ final class Library: ObservableObject {
         self.localStore = localStore
         self.transfer = LocalTransfer(store: localStore, secrets: pairingSecrets, peerSecrets: peerSecrets, peerPairing: peerPairing, diagnostics: self.diagnostics, hostConfiguration: hostConfiguration)
         transfer.onCatalog = { [weak self] prepared in try self?.applyLocal(prepared) }
+        transfer.onHostChange = { [weak self] host in
+            guard let self else { return }
+            inventoryTask?.cancel()
+            if let host, localCatalog?.remoteArtwork != nil, localCatalog?.id == host.library { refreshLocalFiles() }
+        }
         transfer.onHostPlaylists = { [weak self] documents, conflicts in
             self?.playlists = documents
             self?.playlistConflicts = conflicts
@@ -238,9 +245,10 @@ final class Library: ObservableObject {
         }
         transfer.onSaved = { [weak self] in
             guard let self else { return }
-            let wasLocal = current.map { self.localFiles[$0.id] != nil } ?? false
+            if let current, localFiles[current.id] != nil, pendingLocalPlaybackTrack?.id != current.id {
+                pendingLocalPlaybackTrack = (current.id, playbackRequest)
+            }
             refreshLocalFiles()
-            if wasLocal, transfer.hasLibrarySource, let current, localFiles[current.id] == nil { stop() }
         }
         transferChanges = transfer.objectWillChange.sink { [weak self] in self?.objectWillChange.send() }
         removalChanges = transfer.$readyForLocalCopyRemoval.dropFirst().filter { $0 }.sink { [weak self] _ in
@@ -586,10 +594,13 @@ final class Library: ObservableObject {
         if prepared.catalog.remoteArtwork == nil {
             try Data().write(to: localStore.root.appendingPathComponent("active"), options: .atomic)
         }
+        inventoryTask?.cancel()
         catalogGeneration = UUID()
         let catalog = prepared.catalog
         let sameLibrary = localCatalog?.id == catalog.id
         if !sameLibrary {
+            pendingLocalPlaybackTrack = nil
+            savedAudioPins = []
             visibilityGeneration = UUID()
             visibilityRequests = [:]
             transfer.cancelSavePreparations()
@@ -626,7 +637,18 @@ final class Library: ObservableObject {
         message = nil
         if !sameLibrary { navigate(.albums) }
         else if let selectedAlbum { self.selectedAlbum = catalog.organization?.canonical(selectedAlbum) }
-        applyLocalFiles(prepared.files)
+        if catalog.remoteArtwork != nil {
+            var retained: [String: URL] = [:]
+            if sameLibrary {
+                for entry in catalog.entries {
+                    if let url = localFiles[entry.track.id], localStore.hostFileURLs(entry).contains(url) {
+                        retained[entry.track.id] = url
+                    }
+                }
+            }
+            applyLocalFiles(retained, inventoryComplete: false)
+            refreshLocalFiles()
+        } else { applyLocalFiles(prepared.files) }
         restorePlayback()
         if let current, !tracks.contains(where: { $0.id == current.id }),
            (try? sharedAudioCatalog?.entry(current.id, hash: current.audioHash))?.track.unavailable != false {
@@ -711,12 +733,27 @@ final class Library: ObservableObject {
     }
 
     func refreshLocalFiles() {
+        inventoryTask?.cancel()
         guard let localCatalog else { return }
-        applyLocalFiles((try? localStore.savedFiles(in: localCatalog)) ?? [:])
+        func publish(_ files: [String: URL]) {
+            objectWillChange.send()
+            applyLocalFiles(files)
+        }
+        guard localCatalog.remoteArtwork != nil else {
+            if let files = try? localStore.savedLocalFiles(in: localCatalog) { publish(files) }
+            return
+        }
+        let generation = catalogGeneration
+        let host = transfer.hostConnection?.address
+        inventoryTask = Task { [localStore] in
+            let files = try? await CatalogStorage.shared.savedHostFiles(in: localCatalog, store: localStore)
+            guard let files, !Task.isCancelled, catalogGeneration == generation, host == transfer.hostConnection?.address else { return }
+            publish(files)
+        }
     }
 
-    private func applyLocalFiles(_ files: [String: URL]) {
-        if sharedAudioCatalog != nil { savedAudioPins = (try? localStore.database().savedAudioPins()) ?? [] }
+    private func applyLocalFiles(_ files: [String: URL], inventoryComplete: Bool = true) {
+        if sharedAudioCatalog != nil, let pins = try? localStore.database().savedAudioPins() { savedAudioPins = pins }
         managedTracks = Set(files.keys)
         localFiles = files
 #if os(macOS)
@@ -727,6 +764,10 @@ final class Library: ObservableObject {
 #if os(iOS)
         downloaded = Set(localFiles.keys)
 #endif
+        guard inventoryComplete else { return }
+        if let pending = pendingLocalPlaybackTrack, pending.request == playbackRequest,
+           current?.id == pending.id, transfer.hasLibrarySource, localFiles[pending.id] == nil { stop() }
+        pendingLocalPlaybackTrack = nil
     }
 
     var hasSavedLocalLibrary: Bool {
@@ -1267,6 +1308,8 @@ final class Library: ObservableObject {
     }
 
     func closeLibrary() {
+        inventoryTask?.cancel()
+        pendingLocalPlaybackTrack = nil
         trackMetadataPresentation = nil
         pendingLocalCopyRemovals = []
         removalLibraryID = nil

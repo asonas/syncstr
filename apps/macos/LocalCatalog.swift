@@ -73,6 +73,20 @@ actor CatalogStorage {
         return result
     }
 
+    func savedHostFiles(in catalog: LocalCatalog, store: LocalMusicStore) async throws -> [String: URL] {
+        try Task.checkCancellation()
+        let inventory = try database(store)
+        let pins = try inventory.savedAudioPins()
+        var files: [String: URL] = [:]
+        for entry in catalog.entries {
+            try Task.checkCancellation()
+            guard pins.contains(entry.trackSaveIdentity) else { continue }
+            files[entry.track.id] = try store.verifiedFile(entry, host: true, inventory: inventory)
+            await Task.yield()
+        }
+        return files
+    }
+
     func save(_ catalog: LocalCatalog, store: LocalMusicStore) throws {
         try Task.checkCancellation()
         try store.save(catalog, database: database(store))
@@ -104,7 +118,7 @@ struct PreparedLocalCatalog {
         }, uniquingKeysWith: { first, _ in first })
         for asset in catalog.organization?.artwork?.assets.keys.map({ $0 }) ?? [] { artworkURLs[asset] = store.artworkURL(asset: asset) }
         self.artworkURLs = artworkURLs
-        self.files = try store.savedFiles(in: catalog)
+        self.files = catalog.remoteArtwork == nil ? try store.savedLocalFiles(in: catalog) : [:]
     }
 }
 import UniformTypeIdentifiers
@@ -253,8 +267,7 @@ enum LocalMusicError: LocalizedError {
 }
 
 struct LocalMusicStore {
-    // Inventory refreshes revisit every pin. Playback still verifies the bytes before use.
-    private static let inventoryHashes = NSCache<NSString, NSString>()
+    var inventoryDigest: @Sendable (URL) throws -> String = { try LocalMusicStore.digest(file: $0) }
     var root = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
         .appendingPathComponent("LocalMusic", isDirectory: true)
 
@@ -388,37 +401,36 @@ struct LocalMusicStore {
         return legacy == current ? [current] : [current, legacy]
     }
 
-    func verifiedFile(_ entry: LocalEntry, host: Bool, forInventory: Bool = false) throws -> URL? {
+    private func fileStamp(_ attributes: [FileAttributeKey: Any]) -> String? {
+        guard let modified = attributes[.modificationDate] as? Date, let size = attributes[.size] as? NSNumber,
+              let inode = attributes[.systemFileNumber] as? NSNumber else { return nil }
+        return "\(inode):\(size):\(modified.timeIntervalSinceReferenceDate)"
+    }
+
+    func verifiedFile(_ entry: LocalEntry, host: Bool, inventory: CatalogDatabase? = nil, requireHash: Bool = false) throws -> URL? {
         guard Self.valid(entry), entry.track.unavailable != true else { return nil }
         for url in host ? hostFileURLs(entry) : [fileURL(entry)] {
-            guard let attributes = try? FileManager.default.attributesOfItem(atPath: url.path),
-                  let size = attributes[.size] as? NSNumber, size.uint64Value == entry.track.size else { continue }
-            var key: NSString?
-            if forInventory, let modified = attributes[.modificationDate] as? Date, let inode = attributes[.systemFileNumber] as? NSNumber {
-                key = "\(url.path):\(inode):\(size):\(modified.timeIntervalSinceReferenceDate)" as NSString
+            let attributes: [FileAttributeKey: Any]
+            do { attributes = try FileManager.default.attributesOfItem(atPath: url.path) }
+            catch let error as CocoaError where error.code == .fileReadNoSuchFile || error.code == .fileNoSuchFile { continue }
+            guard let size = attributes[.size] as? NSNumber, size.uint64Value == entry.track.size else { continue }
+            let stamp = fileStamp(attributes)
+            if !requireHash, let inventory, let stamp, inventory.matchesVerifiedAudio(url, stamp: stamp, hash: entry.sha256) { return url }
+            let digest = try inventory == nil ? Self.digest(file: url) : inventoryDigest(url)
+            if digest == entry.sha256 {
+                if let inventory, let stamp { inventory.recordVerifiedAudio(url, stamp: stamp, hash: digest) }
+                return url
             }
-            if let key, let digest = Self.inventoryHashes.object(forKey: key) {
-                if digest as String == entry.sha256 { return url }
-                continue
-            }
-            let digest = try Self.digest(file: url)
-            if let key { Self.inventoryHashes.setObject(digest as NSString, forKey: key) }
-            if digest == entry.sha256 { return url }
         }
         return nil
     }
 
-    func savedFiles(in catalog: LocalCatalog) throws -> [String: URL] {
+    func savedLocalFiles(in catalog: LocalCatalog) throws -> [String: URL] {
         var files: [String: URL] = [:]
-        let host = catalog.remoteArtwork != nil
-        let pins = host || catalog.logicalAudio == true ? try database().savedAudioPins() : []
+        let pins = catalog.logicalAudio == true ? try database().savedAudioPins() : []
         for entry in catalog.entries {
             try Task.checkCancellation()
-            if host {
-                if pins.contains(entry.trackSaveIdentity) {
-                    files[entry.track.id] = try verifiedFile(entry, host: true, forInventory: true)
-                }
-            } else if hasFile(entry), catalog.logicalAudio != true || pins.contains(entry.saveIdentity) {
+            if hasFile(entry), catalog.logicalAudio != true || pins.contains(entry.saveIdentity) {
                 files[entry.track.id] = fileURL(entry)
             }
         }
@@ -443,7 +455,21 @@ struct LocalMusicStore {
         return size.uint64Value == entry.track.size
     }
 
-    func importFile(_ temporary: URL, entry: LocalEntry, recordReceipt: Bool = true, diagnostic: PlaybackDiagnosticContext? = nil) throws {
+    func importCachedFile(_ source: URL, entry: LocalEntry, link: Bool = false, recordReceipt: Bool = true, host: Bool) throws -> Bool {
+        let temporary = root.appendingPathComponent(".cache-save-" + UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: temporary) }
+        do {
+            if link { try FileManager.default.linkItem(at: source, to: temporary) }
+            else { try FileManager.default.copyItem(at: source, to: temporary) }
+        } catch let error as CocoaError where error.code == .fileNoSuchFile || error.code == .fileReadNoSuchFile {
+            if access(source.path, F_OK) == -1, errno == ENOENT { return false }
+            throw error
+        }
+        try importFile(temporary, entry: entry, recordReceipt: recordReceipt, host: host)
+        return true
+    }
+
+    func importFile(_ temporary: URL, entry: LocalEntry, recordReceipt: Bool = true, host: Bool = false, diagnostic: PlaybackDiagnosticContext? = nil) throws {
         var stage = "verification"
         do {
             guard Self.valid(entry) else { throw LocalMusicError.invalidData }
@@ -465,7 +491,14 @@ struct LocalMusicStore {
             } else {
                 try FileManager.default.moveItem(at: temporary, to: destination)
             }
-            if recordReceipt { try database().recordReceived(entry) }
+            if recordReceipt {
+                let database = try database()
+                try database.recordReceived(entry)
+                if host, let attributes = try? FileManager.default.attributesOfItem(atPath: destination.path),
+                   let stamp = fileStamp(attributes) {
+                    database.recordVerifiedAudio(destination, stamp: stamp, hash: entry.sha256)
+                }
+            }
             diagnostic?.record("save", "import", outcome: "succeeded")
         } catch { diagnostic?.failure(stage, error); throw error }
     }

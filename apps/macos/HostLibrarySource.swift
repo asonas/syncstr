@@ -38,7 +38,7 @@ final class HostAudioFiles {
             let copy = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
             defer { try? FileManager.default.removeItem(at: copy) }
             try FileManager.default.copyItem(at: previous, to: copy)
-            do { try store.importFile(copy, entry: entry, recordReceipt: recordReceipt, diagnostic: diagnostic) }
+            do { try store.importFile(copy, entry: entry, recordReceipt: recordReceipt, host: true, diagnostic: diagnostic) }
             catch LocalMusicError.invalidData { return nil }
             return destination
         }) {
@@ -51,7 +51,7 @@ final class HostAudioFiles {
             defer { try? FileManager.default.removeItem(at: temporary) }
             do {
                 try await CatalogStorage.shared.perform {
-                    try store.importFile(temporary, entry: entry, recordReceipt: recordReceipt, diagnostic: diagnostic)
+                    try store.importFile(temporary, entry: entry, recordReceipt: recordReceipt, host: true, diagnostic: diagnostic)
                 }
                 verified[hash] = destination
                 return
@@ -76,8 +76,9 @@ final class HostLibrarySource: LibrarySource {
     private var failed = Set<String>()
 
     init(host: HostConnection, configuration: URLSessionConfiguration, store: LocalMusicStore, files: HostAudioFiles,
+         audioGate: HostAudioGate,
          switchObserved: @escaping @Sendable (String) -> Void) {
-        client = HostAPIClient(address: host.address, configuration: configuration, switchObserved: switchObserved)
+        client = HostAPIClient(address: host.address, configuration: configuration, audioGate: audioGate, switchObserved: switchObserved)
         self.store = store
         self.files = files
         etag = host.etag
