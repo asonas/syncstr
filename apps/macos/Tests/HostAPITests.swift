@@ -609,6 +609,80 @@ final class HostAPITests: XCTestCase {
         XCTAssertEqual(try Data(contentsOf: file), Data("abc".utf8))
     }
 
+    func testDisconnectDuringCommittedSwitchRetainsPublishedCatalog() async throws {
+        let (catalog, _, _) = try fixture()
+        let files = store()
+        let a = try HostAddress("https://first.example.test")
+        let b = try HostAddress("https://second.example.test")
+        var second = catalog
+        second.data = Data(String(decoding: catalog.data, as: UTF8.self)
+            .replacingOccurrences(of: "track-a", with: "second-track").utf8)
+        let library = Library(localStore: files, hostConfiguration: configuration { request in
+            request.url?.host == a.host ? catalog : second
+        })
+        let transfer = library.transfer
+        _ = try await transfer.confirmHost(a, information: hostInformation(a))
+        let committed = expectation(description: "switch committed")
+        let cancelled = expectation(description: "disconnect cancelled the switch")
+        let gate = HostResponseGate(started: committed)
+        let switching = Task {
+            try await transfer.confirmHost(b, information: hostInformation(b)) {
+                await withTaskCancellationHandler {
+                    await withCheckedContinuation { continuation in gate.hold { continuation.resume() } }
+                } onCancel: { cancelled.fulfill() }
+            }
+        }
+        await fulfillment(of: [committed], timeout: 3)
+        let disconnect = Task { try await transfer.disconnectHost() }
+        await fulfillment(of: [cancelled], timeout: 3)
+        gate.release()
+        _ = try await switching.value
+        do { try await disconnect.value } catch { XCTFail("Disconnect failed: \(error)") }
+        let database = try files.database()
+        XCTAssertNil(try database.hostConnection())
+        XCTAssertNil(transfer.hostConnection)
+        XCTAssertEqual(try database.retainedLibrary(at: b), libraryID)
+        XCTAssertEqual(transfer.retainedHostLibrary, libraryID)
+        let trackIDs = try XCTUnwrap(database.snapshot()).catalog.entries.map(\.track.id)
+        XCTAssertTrue(trackIDs.contains("second-track"))
+        XCTAssertEqual(library.tracks.map(\.id).sorted(), trackIDs.sorted())
+    }
+
+    func testCancelledSameHostRefreshPublishesCommittedVersion() async throws {
+        let (catalog, _, _) = try fixture()
+        let files = store()
+        let address = try HostAddress("https://first.example.test")
+        let nextMarker = "2.\(node).\(String(repeating: "b", count: 64))"
+        var next = catalog
+        next.headers["ETag"] = "W/\"\(libraryID).\(nextMarker)\""
+        next.data = Data(String(decoding: catalog.data, as: UTF8.self)
+            .replacingOccurrences(of: marker, with: nextMarker)
+            .replacingOccurrences(of: "Fixture playlist", with: "Updated playlist").utf8)
+        let library = Library(localStore: files, hostConfiguration: configuration { request in
+            request.value(forHTTPHeaderField: "If-None-Match") == nil ? catalog : next
+        })
+        let transfer = library.transfer
+        _ = try await transfer.confirmHost(address, information: hostInformation(address))
+        let committed = expectation(description: "refresh committed")
+        let gate = HostResponseGate(started: committed)
+        let refresh = Task {
+            try await transfer.confirmHost(address, information: hostInformation(address)) {
+                await withCheckedContinuation { continuation in gate.hold { continuation.resume() } }
+            }
+        }
+        await fulfillment(of: [committed], timeout: 3)
+        XCTAssertEqual(try files.database().hostConnection()?.marker, nextMarker)
+        transfer.cancel()
+        gate.release()
+        do {
+            let result = try await refresh.value
+            XCTAssertEqual(result, .updated)
+        } catch { XCTFail("Committed refresh failed: \(error)") }
+        XCTAssertEqual(transfer.hostConnection?.marker, nextMarker)
+        XCTAssertTrue(transfer.connected)
+        XCTAssertEqual(library.playlists.map(\.name), ["Updated playlist"])
+    }
+
     func testConcurrentConfirmationWaitsForCommittedHostToPublish() async throws {
         let (catalog, _, _) = try fixture()
         let a = try HostAddress("https://first.example.test")
