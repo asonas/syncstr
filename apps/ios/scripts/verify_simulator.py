@@ -3,10 +3,7 @@
 
 import argparse
 import json
-import os
 from pathlib import Path
-import plistlib
-import shutil
 import subprocess
 import sys
 import tempfile
@@ -15,7 +12,7 @@ import time
 
 INFRASTRUCTURE_EXIT = 78
 PREPARATION_STEPS = {"boot", "bootstatus", "migration-shutdown", "restart", "restart-ready",
-                     "v5-ready", "unit-ready", "responsiveness-ready", "ui-ready"}
+                     "unit-ready", "responsiveness-ready", "ui-ready"}
 
 
 class SimulatorInfrastructureError(RuntimeError):
@@ -49,31 +46,6 @@ def test_attempts(tree):
     return visit(tree)
 
 
-def prepare_v5_fixture(root, device, run):
-    binaries = Path(os.environ.get("SYNCSTR_V5_TEST_BIN_DIR", root / ".build/v5-rust/debug"))
-    generator = binaries / "examples/shared_audio_fixture"
-    if not generator.is_file() or not os.access(generator, os.X_OK):
-        raise RuntimeError("Required v5 fixture generator is missing; build shared_audio_fixture first")
-    app = root / ".build/SimulatorDerivedData/Build/Products/Debug-iphonesimulator/Syncstr.app"
-    with (app / "Info.plist").open("rb") as info:
-        bundle_id = plistlib.load(info)["CFBundleIdentifier"]
-    # Xcode can leave the requested device shut down after a preceding test phase.
-    run(["xcrun", "simctl", "bootstatus", device, "-b"], "v5-ready")
-    run(["xcrun", "simctl", "install", device, str(app)], "v5-install")
-    container = Path(subprocess.check_output(
-        ["xcrun", "simctl", "get_app_container", device, bundle_id, "data"], text=True).strip())
-    destination = container / "Documents/v5-fixture"
-    destination.mkdir(parents=True)
-    # Keep generated signing keys/tokens out of the app and uploaded test artifacts.
-    with tempfile.TemporaryDirectory(prefix="syncstr-v5-private-") as temporary:
-        source = Path(temporary) / "fixture"
-        run([str(generator), str(source)], "v5-generate")
-        for name in ("snapshot.json", "reader-enrollment.json", "tone.wav"):
-            shutil.copyfile(source / name, destination / name)
-    # Xcode may relocate the data container when it installs the UI-test build.
-    return "v5-fixture"
-
-
 def main(attempt=1):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--device", choices=("iphone", "ipad"), default="iphone")
@@ -86,18 +58,17 @@ def main(attempt=1):
     print(f"Verification results: {output}", flush=True)
     command_timings = {}
 
-    def run(command, name, environment=None):
+    def run(command, name):
         timeout = command_timeout(name)
         started = time.monotonic()
         outcome = "passed"
         try:
             with (output / (name + ".log")).open("w") as log:
                 subprocess.run(command, cwd=root, stdout=log, stderr=subprocess.STDOUT,
-                               check=True, env=environment, timeout=timeout)
+                               check=True, timeout=timeout)
         except (subprocess.TimeoutExpired, subprocess.CalledProcessError) as error:
             outcome = "timed_out" if isinstance(error, subprocess.TimeoutExpired) else "failed"
-            if name in PREPARATION_STEPS or (name == "v5-install" and
-                    (isinstance(error, subprocess.TimeoutExpired) or error.returncode == 149)):
+            if name in PREPARATION_STEPS:
                 raise SimulatorInfrastructureError(name, error) from error
             raise
         finally:
@@ -138,17 +109,6 @@ def main(attempt=1):
         responsiveness = "SyncstrTests/LibraryPresentationTests/testSelectionAndPlaybackUpdatesBrowseRetainedCatalogWithoutBlocking()"
         phases = [("Syncstr", "unit"), ("Syncstr", "responsiveness")] if args.device == "iphone" else []
         for scheme, name in phases + [("SyncstrUITests", "ui")]:
-            environment = None
-            if name == "ui" and (not args.only_testing or any("SharedAudioFlowTests" in item for item in args.only_testing)):
-                if args.device == "ipad":
-                    # iPhone's unit phase builds the app before fixture installation.
-                    run(["xcodebuild", "-project", "apps/ios/Syncstr.xcodeproj", "-scheme", "SyncstrUITests",
-                         "-disableAutomaticPackageResolution", "-onlyUsePackageVersionsFromResolvedFile",
-                         "-destination", "platform=iOS Simulator,id=" + device,
-                         "-derivedDataPath", str(root / ".build" / "SimulatorDerivedData"),
-                         "CODE_SIGNING_ALLOWED=NO", "build-for-testing"], "ui-build")
-                fixture = prepare_v5_fixture(root, device, run)
-                environment = dict(os.environ, TEST_RUNNER_SYNCSTR_V5_FIXTURE_ROOT=fixture)
             run(["xcrun", "simctl", "bootstatus", device, "-b"], name + "-ready")
             command = [
                 "xcodebuild", "-project", "apps/ios/Syncstr.xcodeproj", "-scheme", scheme,
@@ -168,7 +128,7 @@ def main(attempt=1):
                 command += ["-skip-testing:" + responsiveness]
             bundle = output / (name + ".xcresult")
             try:
-                run(command, name, environment)
+                run(command, name)
             except subprocess.CalledProcessError:
                 # Xcode can restart a crashed runner at the next test, skipping its retry.
                 if "Restarting after unexpected exit, crash, or test timeout" not in (output / (name + ".log")).read_text():
@@ -190,7 +150,7 @@ def main(attempt=1):
                 target = "SyncstrUITests" if name == "ui" else "SyncstrTests"
                 retry += ["-only-testing:" + (test if test.startswith(target + "/") else target + "/" + test)
                           for test in tests]
-                run(retry, name + "-retry", environment)
+                run(retry, name + "-retry")
                 run(["xcrun", "xcresulttool", "get", "test-results", "tests", "--path",
                      str(bundle)], name + "-retry-tests")
                 retried = test_attempts(json.loads((output / (name + "-retry-tests.log")).read_text()))

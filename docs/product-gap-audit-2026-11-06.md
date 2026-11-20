@@ -156,7 +156,7 @@ PR #15's four CI checks are green. Its new [v5 UI test](https://github.com/asona
 
 **Proposed contract:** required acceptance cases must report executed/passed, skipped, or blocked by exact build. Keep fixture generation reproducible and fail the relevant acceptance gate if required fixtures are missing. Preserve targeted regression CI while making the broader release matrix explicit.
 
-**Acceptance:** ASO-5 real-operation baseline, ASO-9 final iOS and library presentation, ASO-12 cross-platform shared audio, and the [M3 remaining manual cases](cluster-apple-m3.md#verification-record-and-outstanding-gates) have named owners and evidence. Integration, distribution, production activation and physical-device acceptance remain separate states.
+**Acceptance:** ASO-5 real-operation baseline, ASO-9 final iOS and library presentation, ASO-12 cross-platform shared audio, and the [M3 remaining manual cases](cluster-implementation-plan.md#m3-apple-application-integration) have named owners and evidence. Integration, distribution, production activation and physical-device acceptance remain separate states.
 
 ## Explicitly deferred or requiring a new product decision
 

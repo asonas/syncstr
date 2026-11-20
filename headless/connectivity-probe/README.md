@@ -85,7 +85,7 @@ The default suite exercises persistent identity, pairing/revocation, CLI lifecyc
 
 The [disposable Linux lab](network-lab/README.md) verifies actual UDP blocking and restoration, WAN-isolated LAN discovery, and a pinned relay process behind a TLS/WebSocket proxy. These privileged, ignored tests run only inside a dedicated VM; ordinary `cargo test` does not alter network rules.
 
-The standalone Swift probe pins the same IrohLib 1.1.0 release as the apps. It does not launch Syncstr, use its Keychain, or touch its library. On an Apple Silicon Mac with Swift 6 or later:
+The standalone Swift probe pins IrohLib 1.1.0 for this experiment. It does not launch Syncstr, use its Keychain, or touch its library. On an Apple Silicon Mac with Swift 6 or later:
 
 ```sh
 mise exec -- swift build --package-path apple

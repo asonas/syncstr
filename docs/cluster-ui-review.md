@@ -16,7 +16,7 @@ The review captured six states in the running macOS app: albums, album details, 
 
 Source inspection at `04ad188` found that macOS retains legacy transfer after enrollment; shared setup mixes invitations, legacy P2P, hosts, connection paths, and library actions; some iPhone empty/error states still require a Mac. Disconnected iPhone album saving can offer legacy pairing while track saving accepts retained membership. Shared playback requires local audio and otherwise asks the listener to connect to a Mac. Automatic source selection and local-copy removal exist; album-level save removal does not.
 
-Sources: [macOS UI](../apps/macos/Syncstr.swift), [Settings](../apps/macos/SettingsView.swift), [setup](../apps/macos/PeerSetup.swift), [legacy setup](../apps/macos/LocalSetup.swift), [transfer](../apps/macos/LocalTransfer.swift), [playback](../apps/macos/Library.swift), and [iPhone UI](../apps/ios/Sources/PhoneRoot.swift). Recheck current code before implementation.
+Sources: [macOS UI](../apps/macos/Syncstr.swift), [Settings](../apps/macos/SettingsView.swift), `PeerSetup.swift`, [legacy setup](../apps/macos/LocalSetup.swift), [transfer](../apps/macos/LocalTransfer.swift), [playback](../apps/macos/Library.swift), and [iPhone UI](../apps/ios/Sources/PhoneRoot.swift). Recheck current code before implementation.
 
 Compilation fragmentation and missing artwork belong to the existing data-repair work, not a visual redesign. Preserve the clear navigation, playback hierarchy, search feedback, and full accessibility labels observed. The idle player's disabled controls and its overlap with lower artist names are deferred observations; last-row reachability was not verified.
 
@@ -117,6 +117,6 @@ The listener confirmed this consolidated specification as the shared understandi
 ## References
 
 - [Cluster product model](cluster-model-design.md)
-- [Apple integration and verification limits](cluster-apple-m3.md)
+- [Apple integration and verification limits](cluster-implementation-plan.md#m3-apple-application-integration)
 - [Retention decision](adr/0005-distinguish-playback-cache-from-offline-saves.md)
 - [Platform design guidance](../DESIGN.md)

@@ -1,18 +1,14 @@
 # syncstr for macOS
 
-A native player for one music library. Join an existing cluster library using an invitation, import audio files for local playback without enrollment, or select a music folder. Importing does not assign the library-host role.
+The Mac app reads a host library over HTTPS or plays music stored on the Mac.
 
 ## Library entry and offline saves
 
-First launch offers **Join an existing library**, **Select Music Folder**, and **Add music files**. Folder access uses a security-scoped bookmark, and originals are never edited. Settings contains library registration, hosts and connection diagnostics, conflicts, communication policy, and storage settings. New cluster creation and library-host role assignment are outside this GUI delivery.
+On first launch, choose **Connect to host**, enter the host address, and confirm the library. The Mac reads the catalog, playlists, artwork, and audio from the host's `/api/v1`. To play local originals, choose **Select Music Folder**. Syncstr remembers folder access with a security-scoped bookmark. Folder selection is disabled while a host is connected. Disconnect in Settings to choose a folder again. Local libraries also support adding individual audio files.
 
 Track and album actions save audio on this device without host selection. Pending requests and successful tracks survive restart. Unreachable sources show connection waiting; automatic resumption obeys the cellular setting. Retry fetches unfinished items, and cancellation keeps successful saves. Album requests snapshot their tracks; later additions need another Save. Removing a save deletes its managed audio and cache copy, preserves originals and shared-library entries, and confirms interruption of an affected player. Host copies cannot be removed through this action.
 
-The former sidebar transfer action is under Settings > **Legacy connections** > **Legacy device transfer**. Select a music folder, start pairing there, and connect from the phone's corresponding Settings page. See [the legacy transfer guide](../../docs/local-music-transfer.md) for trust and protocol limits.
-
-## P2P node connection
-
-Settings also provides explicit headless P2P registration, catalog access, audio uploads, and downloads. See [P2P music transfer](../../docs/p2p-music-transfer.md). The app bundles the pinned official IrohLib package and its dependency notices; existing Bonjour pairing is retained.
+Settings includes the host connection, playback diagnostics, and saving controls. The cellular preference applies to automatic saves.
 
 ## Build and run
 
@@ -48,7 +44,7 @@ an album and returning centers it in the list. The title-bar search filters the
 current section. Open an album and select a track to play it; the mini-player
 opens the Now Playing view in the same window.
 
-Click an album to select it, Command-click to add or remove albums from the selection, and double-click or press Return to open a selected album. Escape clears the selection. The toolbar and album context menu can hide selected albums together; **Hidden Albums** offers the corresponding batch restore action. Visibility changes use the existing cluster synchronization.
+Click an album to select it, Command-click to add or remove albums from the selection, and double-click or press Return to open a selected album. Escape clears the selection. The toolbar and album context menu can hide selected albums together; **Hidden Albums** offers the corresponding batch restore action. These actions are available for local libraries. Host catalogs are read-only.
 
 The three-line menu beside search sorts albums by title or artist in ascending or descending natural order. The other field breaks ties. Sorting also applies to search results and hidden albums and does not change the playback queue.
 
@@ -58,7 +54,7 @@ Album Play always starts a new album queue from its first track. Player controls
 
 The current track, position, decided queue order, shuffle, and repeat restore paused after relaunch. Opening Now Playing preserves the library search and scroll position. The mini-player appears only after selecting a track, and the queue can be inspected in Now Playing.
 
-Unsaved cluster tracks are acquired and verified before playback, with preparation, cancellation, and retry feedback. Playback acquisition uses a separate cache, defaulting to 10 GB and configurable in Settings. Older cache is evicted without removing explicit saves, original source files, or library-host copies. Existing paired transfers also support playback acquisition while connected. Hosts remain automatically selected for cluster playback; no acquisition occurs merely on application launch.
+Playing an unsaved host track downloads and verifies its audio before playback. You can cancel preparation or retry a failed download. The playback cache defaults to 10 GB. Change its limit in Settings. Eviction preserves explicit saves and local originals.
 
 Select a track again after a playback failure and check folder access. Playlist editing, playback history synchronization, and editing source files' metadata are not implemented. Local-folder audio plays directly from the selected folder.
 
@@ -91,9 +87,7 @@ Configure Xcode Cloud with:
 
 [ci_post_clone.sh](../ios/ci_scripts/ci_post_clone.sh) generates both platforms' projects and schemes after cloning. The workflow project path is the generated `.xcodeproj`, not `apps/macos` or `project.yml`.
 
-Distribution builds enable App Sandbox, outgoing network access, and read access to user-selected files. Their bundle ID and container differ from the manual `build.sh` build, so select the music folder and pair your phone in that distribution variant. Check Archive success and TestFlight delivery separately in App Store Connect.
-
-macOS builds target Apple Silicon (`arm64`). The pinned IrohLib 1.1.0 release provides only an arm64 macOS binary, so Intel Mac distribution requires a compatible x86_64 library before enabling that architecture.
+Distribution builds enable App Sandbox, outgoing network access, and read access to user-selected files. Their bundle ID and container differ from the manual `build.sh` build, so select the music folder or configure the host address in that distribution variant. Check Archive success and TestFlight delivery separately in App Store Connect.
 
 ## Verification
 
@@ -106,9 +100,9 @@ mise exec -- xcodegen generate --spec apps/ios/project.yml
 env DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer xcodebuild -project apps/ios/Syncstr.xcodeproj -scheme SyncstrMac -destination 'platform=macOS' CODE_SIGNING_ALLOWED=NO test
 ```
 
-The macOS test suite above also checks local transfer over a real TLS loopback connection, pairing rejection, interruption/retry, and file integrity.
+The [host API tests](Tests/HostAPITests.swift) cover catalog reads, interrupted downloads, and rejection of corrupt audio and artwork.
 
-Verify continuous playback, end-of-queue behavior, seeking, and folder restoration with the real AVPlayer and a short silent audio fixture. Run this as a standalone executable with access to macOS audio services and Keychain. It uses temporary storage and a unique test-only Keychain service and does not access normal pairing credentials:
+Verify continuous playback, end-of-queue behavior, seeking, and folder restoration with the real AVPlayer and a short silent audio fixture. Run this as a standalone executable with access to macOS audio services. It uses temporary files:
 
 ```sh
 mise exec -- xcodegen generate --spec apps/ios/project.yml
@@ -116,4 +110,4 @@ env DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer xcodebuild -project
 apps/macos/.build/Checks/Build/Products/Debug/LibraryCheck
 ```
 
-Manually verify folder selection, your own sample tracks, audible playback, pause/resume, track changes, seeking, folder restoration after restart, and iPhone pairing. A passing build does not establish audible playback.
+Manually verify folder selection, your own sample tracks, audible playback, pause/resume, track changes, seeking, folder restoration after restart, and playback from the configured host. A passing build does not establish audible playback.
