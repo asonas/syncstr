@@ -560,6 +560,23 @@ final class HostAPITests: XCTestCase {
         XCTAssertTrue(library.localCatalog?.entries.contains { $0.trackSaveIdentity == valid.trackSaveIdentity } == true)
     }
 
+    func testRestoreKeepsFailureOfRequestWithOnlyValidEntries() throws {
+        let files = store()
+        try files.prepare()
+        let valid = LocalEntry(track: Track(id: "track-a", title: "Fixture", artist: nil, suffix: "wav", size: 3), sha256: audioSHA256)
+        let url = files.root.appendingPathComponent("offline-saves.json")
+        try JSONEncoder().encode([OfflineSaveRequest(id: "album", library: libraryID, entries: [valid],
+                                                     state: .failed, error: "Storage is full")]).write(to: url)
+        let library = makeLibrary(localStore: files)
+        library.transfer.setSavesBackgrounded(true)
+        let persisted = try JSONDecoder().decode([OfflineSaveRequest].self, from: Data(contentsOf: url))
+        for queue in [library.transfer.saveRequests, persisted] {
+            let restored = try XCTUnwrap(queue.first)
+            XCTAssertEqual(restored.state, .failed)
+            XCTAssertEqual(restored.error, "Storage is full")
+        }
+    }
+
     func testSuccessfulPlaylistReloadClearsPreviousMessage() async {
         let library = makeLibrary(localStore: store())
         library.playlistMessage = "Previous load failed"
