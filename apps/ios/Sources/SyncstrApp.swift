@@ -81,10 +81,6 @@ private struct PhoneWindow: View {
                 guard let request = pendingLink else { return }
                 while !Task.isCancelled {
                     if let root = presentationAnchor.window?.rootViewController {
-                        if library.trackMetadataPresentation == nil, library.showingNowPlaying,
-                           root.presentedViewController?.presentedViewController == nil {
-                            library.showingNowPlaying = false
-                        }
                         if root.presentedViewController == nil, library.trackMetadataPresentation == nil,
                            !library.showingNowPlaying {
                             hostSetup = request

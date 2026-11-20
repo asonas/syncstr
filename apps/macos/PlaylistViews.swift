@@ -39,6 +39,9 @@ struct PlaylistBrowser: View {
         .navigationTitle(title)
         .toolbar { ToolbarItemGroup(placement: .primaryAction) { actions } }
         #endif
+        .onChange(of: library.transfer.showsLibraryEditControls) { _, editable in
+            if !editable { importing = false }
+        }
         .sheet(isPresented: $importing) { PlaylistMigrationView(library: library) }
         .task {
             await library.refreshPlaylists()

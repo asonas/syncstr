@@ -8,13 +8,15 @@ struct SettingsView: View {
     var body: some View {
         ScrollView { VStack(alignment: .leading, spacing: 16) {
             AppearanceSettings()
-            Divider()
-            Text("音楽の追加").font(.headline)
-            AddMusicButton(library: library)
-            if !library.transfer.hasLibrarySource {
-                LocalFolderButton(library: library)
-                Text("登録せずにこの端末で再生できます。ライブラリホストには設定されません。")
-                    .foregroundStyle(Studio.fog)
+            if library.transfer.showsLibraryEditControls {
+                Divider()
+                Text("音楽の追加").font(.headline)
+                AddMusicButton(library: library)
+                if !library.transfer.hasLibrarySource {
+                    LocalFolderButton(library: library)
+                    Text("登録せずにこの端末で再生できます。ライブラリホストには設定されません。")
+                        .foregroundStyle(Studio.fog)
+                }
             }
             if let message = library.message { Text(message).textSelection(.enabled) }
             Divider()

@@ -201,6 +201,27 @@ final class OfflineSaveTests: XCTestCase {
         XCTAssertTrue(transfer.saveRequests.isEmpty)
     }
 
+    func testPendingSaveRetriesAfterUnreadableSnapshotRecovers() async throws {
+        let (source, entries) = try fixture()
+        let catalog = try XCTUnwrap(source.load())
+        let store = LocalMusicStore(root: root.appendingPathComponent("recovering"))
+        try store.prepare()
+        let legacy = store.root.appendingPathComponent("catalog.json")
+        try Data("unreadable".utf8).write(to: legacy)
+        let transfer = LocalTransfer(store: store)
+        defer { transfer.stopSaveWorker() }
+        try cache(entries[0], transfer: transfer, number: 1)
+        transfer.saveRequests = [OfflineSaveRequest(id: "waiting", library: catalog.id, entries: [entries[0]])]
+        transfer.saveRetryInterval = .milliseconds(250)
+        transfer.resumeSaves()
+        try await settled(transfer)
+        let retry = try XCTUnwrap(transfer.saveRetry)
+        try JSONEncoder().encode(catalog).write(to: legacy, options: .atomic)
+        await retry.value
+        try await settled(transfer)
+        XCTAssertEqual(transfer.saveRequests.first?.state, .complete)
+    }
+
     func testCatalogContentionDoesNotPreventMainActorFromReleasingWriter() async throws {
         let (store, entries) = try fixture()
         let transfer = LocalTransfer(store: store)

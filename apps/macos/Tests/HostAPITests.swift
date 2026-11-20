@@ -556,6 +556,92 @@ final class HostAPITests: XCTestCase {
         XCTAssertEqual(try Data(contentsOf: file), Data("abc".utf8))
     }
 
+    func testFirstConfirmationRejectsMismatchedCatalogWithoutRememberingHost() async throws {
+        let (catalog, _, _) = try fixture()
+        let files = store()
+        let address = try HostAddress("https://first.example.test")
+        let info = hostInformation(address)
+        let advertised = HostLibraryInfo(library: UUID().uuidString, name: info.name, host: info.host,
+                                        hosts: info.hosts, role: info.role, marker: info.marker)
+        let transfer = LocalTransfer(store: files, hostConfiguration: configuration { _ in catalog })
+        let result = try await transfer.confirmHost(address, information: advertised)
+        XCTAssertEqual(result, .differentLibrary(libraryID))
+        XCTAssertNil(try files.database().hostConnection())
+        XCTAssertNil(transfer.hostConnection)
+        XCTAssertFalse(transfer.connected)
+    }
+
+    func testCancellationAfterHostCommitPublishesScreenPlaylistsAndPlayback() async throws {
+        let (catalog, _, _) = try fixture()
+        let files = store()
+        let a = try HostAddress("https://first.example.test")
+        let b = try HostAddress("https://second.example.test")
+        var second = catalog
+        second.data = Data(String(decoding: catalog.data, as: UTF8.self)
+            .replacingOccurrences(of: "Fixture playlist", with: "Second playlist")
+            .replacingOccurrences(of: "track-a", with: "second-track").utf8)
+        let library = Library(localStore: files, hostConfiguration: configuration { request in
+            if request.url?.host == a.host { return catalog }
+            XCTAssertEqual(request.url?.host, b.host)
+            return request.url?.lastPathComponent == "catalog" ? second : HostReply(data: Data("abc".utf8))
+        })
+        let transfer = library.transfer
+        _ = try await transfer.confirmHost(a, information: hostInformation(a))
+        let committed = expectation(description: "B committed before publication")
+        let gate = HostResponseGate(started: committed)
+        let switchHost = Task {
+            try await transfer.confirmHost(b, information: hostInformation(b)) {
+                await withCheckedContinuation { continuation in gate.hold { continuation.resume() } }
+            }
+        }
+        await fulfillment(of: [committed], timeout: 3)
+        XCTAssertEqual(try files.database().hostConnection()?.address, b)
+        switchHost.cancel()
+        transfer.cancel()
+        gate.release()
+        let result = try await switchHost.value
+        XCTAssertEqual(result, .updated)
+        XCTAssertEqual(transfer.hostConnection?.address, b)
+        XCTAssertTrue(transfer.connected)
+        XCTAssertEqual(library.playlists.map(\.name), ["Second playlist"])
+        let track = try XCTUnwrap(library.tracks.first { $0.id == "second-track" })
+        let file = try await transfer.playbackFile(track)
+        XCTAssertEqual(try Data(contentsOf: file), Data("abc".utf8))
+    }
+
+    func testConcurrentConfirmationWaitsForCommittedHostToPublish() async throws {
+        let (catalog, _, _) = try fixture()
+        let a = try HostAddress("https://first.example.test")
+        let b = try HostAddress("https://second.example.test")
+        let early = expectation(description: "second GET before first confirmation can publish")
+        early.isInverted = true
+        let lock = NSLock()
+        var holding = true
+        let transfer = LocalTransfer(store: store(), hostConfiguration: configuration { request in
+            if request.url?.host == b.host, lock.withLock({ holding }) { early.fulfill() }
+            return catalog
+        })
+        let committed = expectation(description: "first commit")
+        let cancelled = expectation(description: "second confirmation supersedes first")
+        let gate = HostResponseGate(started: committed)
+        let first = Task {
+            try await transfer.confirmHost(a, information: hostInformation(a)) {
+                await withTaskCancellationHandler {
+                    await withCheckedContinuation { continuation in gate.hold { continuation.resume() } }
+                } onCancel: { cancelled.fulfill() }
+            }
+        }
+        await fulfillment(of: [committed], timeout: 3)
+        let second = Task { try await transfer.confirmHost(b, information: hostInformation(b)) }
+        await fulfillment(of: [cancelled], timeout: 3)
+        await fulfillment(of: [early], timeout: 0.3)
+        lock.withLock { holding = false }
+        gate.release()
+        _ = try await first.value
+        _ = try await second.value
+        XCTAssertEqual(transfer.hostConnection?.address, b)
+    }
+
     func testNewLinkCancelsHeldConfirmationBeforeConfirmingLatestLink() async throws {
         let (catalog, _, _) = try fixture()
         let info = try informationReply(library: libraryID)
@@ -582,6 +668,24 @@ final class HostAPITests: XCTestCase {
         await flow.confirm(using: transfer)
         guard case .connected = flow.phase else { return XCTFail("Latest confirmation failed") }
         XCTAssertEqual(transfer.hostConnection?.address, b)
+    }
+
+    func testMissingArtworkDoesNotScheduleAnotherGET() async throws {
+        let (catalog, id, _) = try fixture()
+        let address = try HostAddress("https://first.example.test")
+        let missing = expectation(description: "missing artwork requested")
+        let retry = expectation(description: "repeated missing artwork GET")
+        retry.isInverted = true
+        var first = true
+        let transfer = LocalTransfer(store: store(), hostConfiguration: configuration { request in
+            if request.url?.lastPathComponent == "catalog" { return catalog }
+            if first { first = false; missing.fulfill() } else { retry.fulfill() }
+            return HostReply(status: 404)
+        })
+        _ = try await transfer.confirmHost(address, information: hostInformation(address))
+        transfer.requestHostArtwork(id) { _, _ in XCTFail("Published missing artwork") }
+        await fulfillment(of: [missing], timeout: 3)
+        await fulfillment(of: [retry], timeout: 2.5)
     }
 
     func testChangingAddressForSameLibraryCancelsPlaybackGET() async throws {

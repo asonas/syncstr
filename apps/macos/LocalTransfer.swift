@@ -389,20 +389,22 @@ final class LocalTransfer: ObservableObject {
         return try await client.library()
     }
 
-    func confirmHost(_ address: HostAddress, information: HostLibraryInfo, replacingLibrary: Bool = false) async throws -> HostRefreshResult {
+    func confirmHost(_ address: HostAddress, information: HostLibraryInfo, replacingLibrary: Bool = false,
+                     didCommit: (@Sendable () async -> Void)? = nil) async throws -> HostRefreshResult {
         try Task.checkCancellation()
         let previous = hostConfirmation
         previous?.cancel()
         let task = Task {
             _ = await previous?.result
             try Task.checkCancellation()
-            return try await applyHostConfirmation(address, information: information, replacingLibrary: replacingLibrary)
+            return try await applyHostConfirmation(address, information: information, replacingLibrary: replacingLibrary, didCommit: didCommit)
         }
         hostConfirmation = task
         return try await withTaskCancellationHandler { try await task.value } onCancel: { task.cancel() }
     }
 
-    private func applyHostConfirmation(_ address: HostAddress, information: HostLibraryInfo, replacingLibrary: Bool) async throws -> HostRefreshResult {
+    private func applyHostConfirmation(_ address: HostAddress, information: HostLibraryInfo, replacingLibrary: Bool,
+                                       didCommit: (@Sendable () async -> Void)?) async throws -> HostRefreshResult {
         let files = store
         let startingGeneration = generation
         let (saved, retained) = try await CatalogStorage.shared.perform {
@@ -425,28 +427,15 @@ final class LocalTransfer: ObservableObject {
             return try await refreshStoredHost(confirming: true)
         } else {
             let host = HostConnection(address: address, library: information.library, name: information.name, hosts: information.hosts)
-            let attempt = generation
-            if saved == nil, try await CatalogStorage.shared.perform({ try files.database().rememberHostIfLibraryEmpty(host) }) {
-                guard attempt == generation else { throw CancellationError() }
-                cancel(reason: "changing_library_host")
-                activateHost(host)
-                return try await refreshStoredHost(confirming: true)
-            }
-            guard attempt == generation else { throw CancellationError() }
             let source = hostSource(host)
             defer { source.stop() }
             guard case .updated(let update) = try await source.refreshCatalog() else { throw HostAPIError.notHost }
             try Task.checkCancellation()
-            guard attempt == generation else { throw CancellationError() }
+            guard startingGeneration == generation else { throw CancellationError() }
             guard update.catalog.id == information.library else { return .differentLibrary(update.catalog.id) }
-            let prepared = try await CatalogStorage.shared.perform {
-                let prepared = try PreparedLocalCatalog(update.catalog, store: files)
-                try Task.checkCancellation()
-                try files.database().saveHostCatalog(update, connection: host, replacing: saved)
-                return prepared
-            }
-            guard attempt == generation else { throw CancellationError() }
-            cancel(reason: "changing_library_host")
+            let prepared = try await CatalogStorage.shared.commitHostCatalog(update, host: host, replacing: saved,
+                store: files, didCommit: didCommit)
+            cancelActiveConnection(reason: "changing_library_host")
             try publishHost(update, prepared: prepared, host: host, changingHost: true)
             resumeSaves()
             return .updated
@@ -1759,6 +1748,11 @@ final class LocalTransfer: ObservableObject {
     func cancel() { cancel(reason: "cancel_requested") }
 
     func cancel(reason: String) {
+        hostConfirmation?.cancel()
+        cancelActiveConnection(reason: reason)
+    }
+
+    private func cancelActiveConnection(reason: String) {
         connectionEvent("cancel", outcome: client != nil || connected ? "disconnected" : "observed", fields: ["reason": reason])
         clusterRetry?.cancel(); clusterRetry = nil
         automaticAudioOperation = false

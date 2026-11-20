@@ -155,12 +155,13 @@ extension LocalTransfer {
         let token = saveGeneration
         saveWorker = Task { [weak self] in
             guard let self else { return }
+            var snapshotReadFailed = false
             var processableLibrary: String?
             var needsPeer = false
             defer {
                 if saveGeneration == token {
                     saveWorker = nil
-                    if saveRequests.contains(where: { $0.library == processableLibrary && [.waiting, .wifi, .saving].contains($0.state) }) {
+                    if saveRequests.contains(where: { (snapshotReadFailed || $0.library == processableLibrary) && [.waiting, .wifi, .saving].contains($0.state) }) {
                         saveRetry = Task { [weak self, needsPeer] in
                             // A successful connection resumes saves itself and cancels this retry.
                             if needsPeer { await self?.reconnectPeerForWaitingSaves() }
@@ -274,6 +275,7 @@ extension LocalTransfer {
             } catch is CancellationError {
                 // Verified files already committed to storage remain protected.
             } catch {
+                snapshotReadFailed = processableLibrary == nil
                 if saveGeneration == token { status = "保存待ちを更新できませんでした。\(error.localizedDescription)" }
             }
         }

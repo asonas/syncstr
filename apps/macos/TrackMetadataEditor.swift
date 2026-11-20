@@ -133,8 +133,10 @@ struct TrackMetadataChanges: View {
                         }
                         if edit.mutationState == .needsReview {
                             Button("ライブラリを更新") { library.transfer.refreshConnection() }.disabled(library.transfer.busy)
-                            Button("内容を確認して再送…") { library.presentTrackMetadata(edit.entry.track, replacing: edit) }
-                                .disabled(library.transfer.busy || library.transfer.trackMetadataNotice != nil)
+                            if library.transfer.showsLibraryEditControls {
+                                Button("内容を確認して再送…") { library.presentTrackMetadata(edit.entry.track, replacing: edit) }
+                                    .disabled(library.transfer.busy || library.transfer.trackMetadataNotice != nil)
+                            }
                         }
                         if edit.mutationState == .needsReview || edit.mutationState == .rejected ||
                             (edit.mutationState == .queued && edit.mutationHost == nil) {

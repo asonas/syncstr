@@ -727,16 +727,6 @@ final class CatalogDatabase {
                                   hosts: JSONDecoder().decode([HostLibraryInfo.Host].self, from: Data(hosts.utf8)), etag: row[4], marker: row[5], hostSwitch: row[6])
     }
 
-    func rememberHostIfLibraryEmpty(_ host: HostConnection) throws -> Bool {
-        try transaction {
-            guard try hostConnection() == nil, try !containsCatalog() else { return false }
-            let hosts = String(decoding: try JSONEncoder().encode(host.hosts), as: UTF8.self)
-            try execute("INSERT INTO host_connection(singleton,address,library,name,hosts) VALUES(1,?,?,?,?)",
-                        [host.address.origin.absoluteString, host.library, host.name, hosts])
-            return true
-        }
-    }
-
     func forgetHost() throws {
         try transaction {
             try execute("INSERT OR REPLACE INTO retained_host_catalog(library,header,address) SELECT library,header,address FROM host_connection WHERE header IS NOT NULL")
@@ -766,6 +756,7 @@ final class CatalogDatabase {
             for id in update.conflicts {
                 try execute("INSERT INTO host_playlists(id,conflicted) VALUES(?,1) ON CONFLICT(id) DO UPDATE SET conflicted=1", [id])
             }
+            try Task.checkCancellation()
         }
     }
 

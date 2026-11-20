@@ -123,20 +123,26 @@ final class HostLibrarySource: LibrarySource {
                 do {
                     let url: URL
                     do { url = try await storedArtwork(id) }
-                    catch LocalMusicError.invalidData { throw LocalMusicError.invalidData }
-                    catch {
+                    catch where Self.canRetryArtwork(error) {
                         try await Task.sleep(for: .seconds(2))
                         url = try await storedArtwork(id)
                     }
                     try Task.checkCancellation()
                     if !stopped { received(id, url) }
-                } catch LocalMusicError.invalidData {
-                    failed.insert(id)
-                } catch {
+                } catch where Self.canRetryArtwork(error) {
                     retryAfter[id] = .now.advanced(by: .seconds(2))
+                } catch {
+                    failed.insert(id)
                 }
             }
         }
+    }
+
+    private static func canRetryArtwork(_ error: Error) -> Bool {
+        if case HostAPIError.status(let code) = error { return (500..<600).contains(code) }
+        guard let error = error as? URLError else { return false }
+        return [.timedOut, .networkConnectionLost, .notConnectedToInternet, .cannotConnectToHost,
+                .cannotFindHost, .dnsLookupFailed, .resourceUnavailable].contains(error.code)
     }
 
     func storedArtwork(_ id: String) async throws -> URL {

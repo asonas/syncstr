@@ -560,7 +560,9 @@ struct PhoneRoot: View {
             Section {
                 LabeledContent("曲数", value: "\(library.tracks.count)")
                 if library.connected && !library.transfer.hasLibrarySource {
-                    Button("ライブラリを閉じる") { library.closeLibrary() }
+                    if !library.transfer.usesHostCatalog {
+                        Button("ライブラリを閉じる") { library.closeLibrary() }
+                    }
                 } else if library.hasSavedLocalLibrary {
                     Button("保存した音楽を開く") { Task { await library.openSavedLocalLibrary() } }
                 }

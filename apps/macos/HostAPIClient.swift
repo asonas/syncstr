@@ -223,15 +223,17 @@ final class HostAPIClient: Sendable {
         while true {
             try Task.checkCancellation()
             let (bytes, reply) = try await session.data(for: request("artwork/" + id))
-            do {
-                try check(response(reply), body: bytes)
-                guard LocalMusicStore.digest(bytes) == id, ArtworkImage.valid(bytes) else { throw LocalMusicError.invalidData }
-                return bytes
-            } catch HostAPIError.rateLimited(let after) {
+            let http = try response(reply)
+            if http.statusCode == 429 {
+                let after = http.value(forHTTPHeaderField: "Retry-After").flatMap(Int.init)
                 try await Task.sleep(for: .seconds(max(0, after ?? 0)))
                 try await Task.sleep(for: .seconds(delay))
                 delay = min(delay * 2, 300)
+                continue
             }
+            guard http.statusCode == 200 else { throw HostAPIError.status(http.statusCode) }
+            guard LocalMusicStore.digest(bytes) == id, ArtworkImage.valid(bytes) else { throw LocalMusicError.invalidData }
+            return bytes
         }
     }
 }

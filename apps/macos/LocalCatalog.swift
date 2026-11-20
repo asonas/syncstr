@@ -34,6 +34,16 @@ actor CatalogStorage {
         return result
     }
 
+    func commitHostCatalog(_ update: CatalogUpdate, host: HostConnection, replacing previous: HostConnection?,
+                           store: LocalMusicStore, didCommit: (@Sendable () async -> Void)?) async throws -> PreparedLocalCatalog {
+        try Task.checkCancellation()
+        let prepared = try PreparedLocalCatalog(update.catalog, store: store)
+        try Task.checkCancellation()
+        try store.database().saveHostCatalog(update, connection: host, replacing: previous)
+        await didCommit?()
+        return prepared
+    }
+
     private func database(_ store: LocalMusicStore) throws -> CatalogDatabase {
         let root = store.root.standardizedFileURL
         if let database = databases[root] { return database }

@@ -582,7 +582,10 @@ final class Library: ObservableObject {
     }
 
     private func applyLocal(_ prepared: PreparedLocalCatalog) throws {
-        try Data().write(to: localStore.root.appendingPathComponent("active"), options: .atomic)
+        // Host catalogs are restored from the database, including after disconnecting.
+        if prepared.catalog.remoteArtwork == nil {
+            try Data().write(to: localStore.root.appendingPathComponent("active"), options: .atomic)
+        }
         catalogGeneration = UUID()
         let catalog = prepared.catalog
         let sameLibrary = localCatalog?.id == catalog.id
