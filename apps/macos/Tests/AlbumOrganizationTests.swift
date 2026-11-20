@@ -23,7 +23,6 @@ final class AlbumOrganizationTests: XCTestCase {
         visible.set(subject: album, kind: "visibility", value: "false")
         try hidden.merge(visible)
         XCTAssertFalse(hidden.isHidden(album))
-        XCTAssertFalse(try hidden.forClusterObject(hidden.tracks[0].sha256).isHidden(album))
         try hidden.validate()
     }
 

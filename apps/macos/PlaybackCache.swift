@@ -1,55 +1,5 @@
 import Foundation
 import SwiftUI
-import Darwin
-
-actor PlaybackDownload {
-    private let executor = StorageExecutor(label: "as.ason.syncstr.audio")
-    nonisolated var unownedExecutor: UnownedSerialExecutor { executor.asUnownedSerialExecutor() }
-    private let store: LocalMusicStore
-    private let temporary: URL
-    private var handle: FileHandle?
-
-    init(store: LocalMusicStore) {
-        self.store = store
-        temporary = store.root.appendingPathComponent(".partial-" + UUID().uuidString)
-    }
-
-    func prepare() throws {
-        try Task.checkCancellation()
-        if handle == nil {
-            try store.prepare()
-            guard FileManager.default.createFile(atPath: temporary.path, contents: nil) else { throw CocoaError(.fileWriteUnknown) }
-            handle = try FileHandle(forWritingTo: temporary)
-        }
-    }
-
-    func append(_ bytes: Data) throws {
-        try prepare()
-        try handle?.write(contentsOf: bytes)
-    }
-
-    func finish(_ entry: LocalEntry, diagnostic: PlaybackDiagnosticContext?, durable: Bool = false) throws -> URL {
-        defer { discard() }
-        if durable { try handle?.synchronize() }
-        try handle?.close()
-        handle = nil
-        try Task.checkCancellation()
-        try store.importFile(temporary, entry: entry, recordReceipt: false, diagnostic: diagnostic)
-        if durable {
-            let descriptor = Darwin.open(store.root.path, O_RDONLY)
-            guard descriptor >= 0 else { throw LocalMusicError.invalidData }
-            defer { Darwin.close(descriptor) }
-            guard fsync(descriptor) == 0 else { throw LocalMusicError.invalidData }
-        }
-        return store.fileURL(entry)
-    }
-
-    func discard() {
-        try? handle?.close()
-        handle = nil
-        try? FileManager.default.removeItem(at: temporary)
-    }
-}
 
 @MainActor
 class PlaybackCache {
@@ -188,6 +138,7 @@ struct PlaybackStorageSettings: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
+            Toggle("モバイル通信でも自動転送する", isOn: Binding(get: { library.transfer.automaticCellular }, set: library.transfer.setAutomaticCellular))
             Stepper("再生キャッシュの上限: \(library.transfer.playbackCache.limitGB) GB", value: Binding(
                 get: { library.transfer.playbackCache.limitGB },
                 set: { value in

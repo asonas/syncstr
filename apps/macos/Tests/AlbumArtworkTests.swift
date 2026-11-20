@@ -115,50 +115,6 @@ final class AlbumArtworkTests: XCTestCase {
     }
 
 #if os(macOS)
-    func testVerifiedReplicaRecoversMissingTagsWithoutReplacingImportContextOrChoices() async throws {
-        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
-        defer { try? FileManager.default.removeItem(at: root) }
-        let store = LocalMusicStore(root: root.appendingPathComponent("replicas"))
-        try store.prepare()
-        let fixture = URL(fileURLWithPath: #filePath).deletingLastPathComponent().appendingPathComponent("Fixtures/untagged.mp3")
-        var entries: [LocalEntry] = []
-        for index in 0..<2 {
-            let source = root.appendingPathComponent("source-\(index).mp3")
-            try FileManager.default.copyItem(at: fixture, to: source)
-            try AudioTags.writeFile(source, fields: ["ALBUM": "Collection", "ARTIST": "Artist \(index)", "COMPILATION": "1"],
-                artwork: nil, mimeType: nil, changeArtwork: false)
-            var entry = try await UploadedMusic.entry(file: source, original: source)
-            entry.importedAlbum = nil
-            try store.importFile(source, entry: entry)
-            XCTAssertFalse(FileManager.default.fileExists(atPath: source.path))
-            entries.append(entry)
-        }
-        var catalog = LocalCatalog(id: "shared-import", name: "Collection", entries: entries)
-        catalog.organize(folders: Dictionary(uniqueKeysWithValues: entries.map { ($0.track.id, "Collection") }))
-        let initial = try XCTUnwrap(catalog.organization)
-        XCTAssertEqual(Set(initial.tracks.map { initial.canonical($0.importedAlbumID) }).count, 2)
-        let recovered = try await UploadedMusic.recoverClusterEvidence(catalog, store: store)
-        let organization = try XCTUnwrap(recovered.organization)
-        XCTAssertEqual(Set(organization.tracks.map { organization.canonical($0.importedAlbumID) }).count, 1)
-        XCTAssertEqual(organization.tracks.map(\.importContext), initial.tracks.map(\.importContext))
-        XCTAssertEqual(organization.choices, initial.choices)
-        XCTAssertTrue(organization.tracks.allSatisfy { $0.imported.compilationValues == ["1"] })
-        var transferred = AlbumOrganization()
-        for entry in entries { try transferred.merge(organization.forClusterObject(entry.sha256)) }
-        XCTAssertEqual(transferred.tracks.count, 2)
-        XCTAssertEqual(Set(transferred.tracks.map { transferred.canonical($0.importedAlbumID) }).count, 1)
-        let repeated = try await UploadedMusic.recoverClusterEvidence(recovered, store: store)
-        XCTAssertEqual(repeated.organization, organization)
-        XCTAssertTrue(try store.database().clusterJobs().isEmpty)
-        for entry in entries {
-            var damaged = try Data(contentsOf: store.fileURL(entry))
-            damaged[0] ^= 1
-            try damaged.write(to: store.fileURL(entry))
-        }
-        let invalid = try await UploadedMusic.recoverClusterEvidence(catalog, store: store)
-        XCTAssertEqual(invalid.organization, initial, "Unverified bytes cannot supply grouping evidence")
-    }
-
     func testRealMP3M4AAndFLACEmbeddedImagesImport() async throws {
         let fixture = try Self.fixture()
         let blue = try XCTUnwrap(fixture.organization.artwork?.assets[fixture.blue])
@@ -211,51 +167,4 @@ final class AlbumArtworkTests: XCTestCase {
         XCTAssertEqual(Set(reopened.organization?.artwork?.assets.keys.map { $0 } ?? []), [fixture.blue])
     }
 
-    @MainActor
-    func testImagesTravelSeparatelyAndMissingImagePreventsCommit() async throws {
-        let fixture = try Self.fixture()
-        let wire = ArtworkWireFixture([])
-        try await wire.sendOrganized(MusicMessage(kind: "catalog"), organization: fixture.organization)
-        let header = try await wire.receive()
-        XCTAssertNil(header.organization)
-        let imageFrames = wire.messages.filter { $0.kind == "artwork" }
-        XCTAssertEqual(imageFrames.count, 2)
-        XCTAssertTrue(imageFrames.allSatisfy { ($0.bytes?.count ?? 0) <= 512 * 1024 })
-        let incomplete = ArtworkWireFixture(wire.messages.filter { $0.track != fixture.blue })
-        do { _ = try await incomplete.receiveOrganization(header); XCTFail("Missing image accepted") }
-        catch { }
-        let received = try await wire.receiveOrganization(header)
-        XCTAssertEqual(received, fixture.organization)
-    }
-
-    @MainActor
-    func testIncompleteOrDuplicatedImageChunksCannotReplaceSavedCover() async throws {
-        let fixture = try Self.fixture()
-        let data = try JSONEncoder().encode(fixture.organization)
-        let midpoint = data.count / 2
-        let first = MusicMessage(kind: "organization", bytes: data.prefix(midpoint))
-        let last = MusicMessage(kind: "organization", bytes: data.suffix(data.count - midpoint))
-        let end = MusicMessage(kind: "organization-end")
-        let header = MusicMessage(kind: "catalog", track: "organization")
-        for messages in [[first], [first, first, last, end], [last, first, end]] {
-            let channel = ArtworkWireFixture(messages)
-            do { _ = try await channel.receiveOrganization(header); XCTFail("Incomplete image envelope accepted") }
-            catch { }
-        }
-        let valid = ArtworkWireFixture([first, last, end])
-        let received = try await valid.receiveOrganization(header)
-        XCTAssertEqual(received, fixture.organization)
-    }
-}
-
-@MainActor
-private final class ArtworkWireFixture: MusicChannel {
-    var messages: [MusicMessage]
-    init(_ messages: [MusicMessage]) { self.messages = messages }
-    func send(_ message: MusicMessage) async throws { messages.append(message) }
-    func receive() async throws -> MusicMessage {
-        guard !messages.isEmpty else { throw LocalMusicError.disconnected }
-        return messages.removeFirst()
-    }
-    func close() { }
 }

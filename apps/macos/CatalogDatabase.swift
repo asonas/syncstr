@@ -18,80 +18,21 @@ extension CatalogDatabase {
         try? execute("INSERT OR REPLACE INTO verified_audio_files VALUES (?, ?, ?)", [url.lastPathComponent, stamp, hash])
     }
 
-    private func pinTrackID(_ entry: LocalEntry) throws -> String {
-        if entry.track.audioHash == nil { return entry.track.id }
-        return try sharedAudioSnapshot()?.catalog.addresses[entry.track.id] ?? entry.track.id
-    }
-
     func saveAudioPin(_ entry: LocalEntry) throws {
-        try execute("INSERT OR REPLACE INTO shared_audio_saves VALUES (?, ?)", [try pinTrackID(entry), entry.sha256])
+        try execute("INSERT OR REPLACE INTO shared_audio_saves VALUES (?, ?)", [entry.track.id, entry.sha256])
     }
 
     func hasAudioPin(_ entry: LocalEntry) throws -> Bool {
-        try !rows("SELECT track FROM shared_audio_saves WHERE track = ? AND hash = ?", [try pinTrackID(entry), entry.sha256]).isEmpty
+        try !rows("SELECT track FROM shared_audio_saves WHERE track = ? AND hash = ?", [entry.track.id, entry.sha256]).isEmpty
     }
 
     func removeAudioPin(_ entry: LocalEntry) throws -> Bool {
         try transaction {
-            try execute("DELETE FROM shared_audio_saves WHERE track = ? AND hash = ?", [try pinTrackID(entry), entry.sha256])
+            try execute("DELETE FROM shared_audio_saves WHERE track = ? AND hash = ?", [entry.track.id, entry.sha256])
             return try !rows("SELECT track FROM shared_audio_saves WHERE hash = ?", [entry.sha256]).isEmpty
         }
     }
 
-    func sharedAudioSnapshot() throws -> SharedAudioSnapshot? {
-        guard let payload = try rows("SELECT payload FROM shared_audio_snapshot WHERE singleton = 1").first?[0] else { return nil }
-        return try JSONDecoder().decode(SharedAudioSnapshot.self, from: Data(payload.utf8))
-    }
-
-    func sharedAudioRefreshNotice() throws -> String? {
-        guard !(try rows("SELECT payload FROM shared_audio_refresh_notice WHERE singleton = 1")).isEmpty else { return nil }
-        return "ライブラリの更新が未完了です。前回の情報と保存済みの曲を保持しています。もう一度更新してください。"
-    }
-
-    func receiveSharedAudio(_ data: Data, peer: String) throws {
-        let snapshot = try JSONDecoder().decode(SharedAudioSnapshot.self, from: data)
-        let catalog = snapshot.catalog
-        guard let registration = try clusterRegistration() else { throw LocalMusicError.unauthorized }
-        let authority = try registration.membership.authorize(peer, host: true)
-        _ = try registration.membership.verify(registration.localGrant)
-        guard catalog.version == 1, catalog.cluster == authority.cluster,
-              SHA256Hex.isValid(catalog.baseline) else { throw LocalMusicError.incompatiblePeer }
-        if let previous = try sharedAudioSnapshot()?.catalog {
-            guard previous.baseline == catalog.baseline, previous.library == catalog.library else { throw LocalMusicError.incompatiblePeer }
-            if catalog.incomplete.isEmpty {
-                guard Set(previous.tracks.keys).isSubset(of: Set(catalog.tracks.keys)),
-                      previous.addresses.allSatisfy({ catalog.addresses[$0.key] == $0.value }),
-                      previous.pins.allSatisfy({ $0.value.isSubset(of: catalog.pins[$0.key, default: []]) }) else { throw LocalMusicError.incompatiblePeer }
-            }
-        }
-        // The current contract supplies incomplete record IDs, not their subjects.
-        // Persist the unresolved refresh separately and leave verified state intact.
-        if !catalog.incomplete.isEmpty {
-            guard catalog.incomplete.count <= 100000,
-                  catalog.incomplete.allSatisfy(SHA256Hex.isValid) else { throw LocalMusicError.invalidData }
-            try execute("INSERT OR REPLACE INTO shared_audio_refresh_notice VALUES (1, ?)",
-                [String(decoding: try JSONEncoder().encode(catalog.incomplete), as: UTF8.self)])
-            if try sharedAudioSnapshot() == nil { throw LocalMusicError.clusterNeedsAttention }
-            return
-        }
-        _ = try catalog.localCatalog(name: registration.name)
-        for (hash, object) in catalog.objects {
-            guard hash == object.sha256, SHA256Hex.isValid(hash),
-                  object.bytes.map({ $0 > 0 && $0 <= 20 * 1024 * 1024 * 1024 }) ?? true else { throw LocalMusicError.invalidData }
-        }
-        let accepted = Set(try rows("SELECT id FROM playlist_records").compactMap { $0[0] })
-        for record in snapshot.playlist_history { _ = try record.decode(membership: registration.membership, previouslyAccepted: accepted.contains(record.id)) }
-        try transaction {
-            for record in snapshot.playlist_history {
-                let body = try record.decode(membership: registration.membership, previouslyAccepted: accepted.contains(record.id))
-                guard body.cluster == catalog.cluster else { throw LocalMusicError.unauthorized }
-                try execute("INSERT OR IGNORE INTO playlist_records VALUES (?, ?, ?)",
-                    [record.id, body.document.id, String(decoding: try JSONEncoder().encode(record), as: UTF8.self)])
-            }
-            try execute("INSERT OR REPLACE INTO shared_audio_snapshot VALUES (1, ?)", [String(decoding: data, as: UTF8.self)])
-            try execute("DELETE FROM shared_audio_refresh_notice")
-        }
-    }
 }
 
 struct CatalogSnapshot {
@@ -101,50 +42,6 @@ struct CatalogSnapshot {
 }
 
 extension CatalogDatabase {
-    func rememberPlaylistAuthority(peer: String, membership: ClusterMembership) throws {
-        _ = try membership.authorize(peer, host: true)
-        guard let library = try rows("SELECT id FROM catalog WHERE singleton = 1").first?[0] else { throw LocalMusicError.invalidData }
-        try transaction {
-            var effective = membership
-            if let previous = try rows("SELECT peer, payload FROM playlist_authorities WHERE library_id = ?", [library]).first {
-                guard previous[0] == peer, let payload = previous[1] else { throw LocalMusicError.unauthorized }
-                effective = try JSONDecoder().decode(ClusterMembership.self, from: Data(payload.utf8)).merging(membership, presenter: peer)
-            }
-            try execute("INSERT OR REPLACE INTO playlist_authorities VALUES (?, ?, ?)",
-                [library, peer, String(decoding: try JSONEncoder().encode(effective), as: UTF8.self)])
-        }
-    }
-
-    private func playlistAuthority() throws -> (peer: String, membership: ClusterMembership)? {
-        guard let row = try rows("SELECT peer, payload FROM playlist_authorities WHERE library_id = (SELECT id FROM catalog WHERE singleton = 1)").first,
-              let peer = row[0], let payload = row[1] else { return nil }
-        return (peer, try JSONDecoder().decode(ClusterMembership.self, from: Data(payload.utf8)))
-    }
-
-    func playlistCursor(_ peer: String) throws -> Int64 {
-        guard let row = try rows("SELECT sequence FROM playlist_cursors WHERE peer = ?", [peer]).first,
-              let value = row[0], let sequence = Int64(value) else { return 0 }
-        return sequence
-    }
-
-    func receivePlaylist(peer: String, sequence: Int64, record: PlaylistRecord) throws {
-        try transaction {
-            guard sequence > 0 else { throw LocalMusicError.invalidData }
-            let membership: ClusterMembership
-            if let registration = try clusterRegistration() { membership = registration.membership }
-            else {
-                guard let authority = try playlistAuthority(), authority.peer == peer else { throw LocalMusicError.unauthorized }
-                membership = authority.membership
-            }
-            let grant = try membership.authorize(peer, host: true)
-            let body = try record.decode(membership: membership)
-            guard body.cluster == grant.cluster else { throw LocalMusicError.unauthorized }
-            try execute("INSERT OR IGNORE INTO playlist_records VALUES (?, ?, ?)",
-                [record.id, body.document.id, String(decoding: try JSONEncoder().encode(record), as: UTF8.self)])
-            try execute("INSERT INTO playlist_cursors VALUES (?, ?) ON CONFLICT(peer) DO UPDATE SET sequence = MAX(sequence, excluded.sequence)", [peer, String(sequence)])
-        }
-    }
-
     func playlistDocuments() throws -> (documents: [PlaylistDocument], conflicts: Set<String>) {
         if try hostCatalogLibrary() != nil {
             var documents: [PlaylistDocument] = []
@@ -155,199 +52,11 @@ extension CatalogDatabase {
             }
             return (documents, conflicts)
         }
-        let membership: ClusterMembership
-        let cluster: String
-        if let registration = try clusterRegistration() {
-            membership = registration.membership
-            cluster = try membership.chain(registration.localGrant)[0].cluster
-        } else if let authority = try playlistAuthority() {
-            membership = authority.membership
-            cluster = try membership.authorize(authority.peer, host: true).cluster
-        } else { return ([], []) }
-        var bodies: [String: PlaylistRecord.Body] = [:]
-        var conflicts: Set<String> = []
-        for row in try rows("SELECT payload FROM playlist_records ORDER BY id") {
-            guard let json = row[0] else { throw LocalMusicError.invalidData }
-            let record = try JSONDecoder().decode(PlaylistRecord.self, from: Data(json.utf8))
-            let body = try record.decode(membership: membership, previouslyAccepted: sharedAudioSnapshot() != nil)
-            guard body.cluster == cluster else { continue }
-            bodies[record.id] = body
-        }
-        var superseded: Set<String> = []
-        for body in bodies.values {
-            for parent in body.parents ?? [] {
-                guard let previous = bodies[parent], previous.document.id == body.document.id,
-                      try body.document.reconciling(previous.document) == body.document else { throw LocalMusicError.invalidData }
-                superseded.insert(parent)
-            }
-        }
-        var documents: [String: PlaylistDocument] = [:]
-        for id in bodies.keys.sorted() where !superseded.contains(id) {
-            guard let body = bodies[id] else { continue }
-            if let previous = documents[body.document.id], previous != body.document { conflicts.insert(body.document.id) }
-            else { documents[body.document.id] = body.document }
-        }
-        return (documents.values.sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }, conflicts)
+        return ([], [])
     }
 }
 
 extension CatalogDatabase {
-    private func migrateClusterMembership() throws {
-        try execute("CREATE TABLE IF NOT EXISTS shared_audio_refresh_notice (singleton INTEGER PRIMARY KEY CHECK(singleton = 1), payload TEXT NOT NULL)")
-        try execute("CREATE TABLE IF NOT EXISTS shared_audio_saves (track TEXT NOT NULL, hash TEXT NOT NULL, PRIMARY KEY(track, hash))")
-        try execute("CREATE TABLE IF NOT EXISTS shared_audio_snapshot (singleton INTEGER PRIMARY KEY CHECK(singleton = 1), payload TEXT NOT NULL)")
-        try execute("CREATE TABLE IF NOT EXISTS cluster_registration (singleton INTEGER PRIMARY KEY CHECK(singleton = 1), payload TEXT NOT NULL)")
-        try execute("CREATE TABLE IF NOT EXISTS cluster_signed_changes (id TEXT PRIMARY KEY, payload TEXT NOT NULL, accepted INTEGER NOT NULL CHECK(accepted IN (0, 1)))")
-        try execute("CREATE TABLE IF NOT EXISTS cluster_peer_cursors (peer TEXT PRIMARY KEY, sequence INTEGER NOT NULL)")
-        try execute("CREATE TABLE IF NOT EXISTS cluster_track_ids (object TEXT PRIMARY KEY, id TEXT NOT NULL UNIQUE)")
-        try execute("CREATE TABLE IF NOT EXISTS cluster_import_batches (id TEXT PRIMARY KEY, payload TEXT NOT NULL)")
-        try execute("CREATE TABLE IF NOT EXISTS cluster_transfer_settings (singleton INTEGER PRIMARY KEY CHECK(singleton = 1), cellular INTEGER NOT NULL CHECK(cellular IN (0, 1)))")
-        try execute("CREATE TABLE IF NOT EXISTS cluster_metadata_queue (object TEXT PRIMARY KEY, payload TEXT NOT NULL)")
-    }
-
-    func clusterMetadataEdits() throws -> [ClusterMetadataEdit] {
-        try rows("SELECT payload FROM cluster_metadata_queue ORDER BY rowid").map {
-            guard let payload = $0[0] else { throw LocalMusicError.invalidData }
-            return try JSONDecoder().decode(ClusterMetadataEdit.self, from: Data(payload.utf8))
-        }
-    }
-
-    func saveClusterMetadataEdit(_ edit: ClusterMetadataEdit) throws {
-        let payload = try JSONEncoder().encode(edit)
-        guard payload.count <= ClusterSignedChange.maximumBytes else { throw LocalMusicError.invalidData }
-        try execute("INSERT INTO cluster_metadata_queue VALUES (?, ?) ON CONFLICT(object) DO UPDATE SET payload = excluded.payload",
-            [edit.queueKey, String(decoding: payload, as: UTF8.self)])
-    }
-
-    func finishClusterMetadataEdit(_ edit: ClusterMetadataEdit, revision: String) throws {
-        guard SHA256Hex.isValid(revision) else { throw LocalMusicError.invalidData }
-        try transaction {
-            guard var pending = try clusterMetadataEdits().first(where: { $0.mutation == nil && $0.entry.sha256 == edit.entry.sha256 }) else { return }
-            if pending.id == edit.id {
-                try execute("DELETE FROM cluster_metadata_queue WHERE object = ?", [edit.entry.sha256])
-            } else if pending.parents == edit.parents {
-                pending.parents = [revision]
-                try saveClusterMetadataEdit(pending)
-            }
-        }
-    }
-
-    func beginMetadataMutation(_ id: String, host: String) throws -> ClusterMetadataEdit {
-        try transaction {
-            guard var edit = try clusterMetadataEdits().first(where: { $0.mutation?.request == id }),
-                  edit.canRetryMutation, SHA256Hex.isValid(host),
-                  edit.mutationHost == nil || edit.mutationHost == host else { throw LocalMusicError.invalidData }
-            edit.mutationHost = host
-            edit.mutationState = .sending
-            edit.mutationError = nil
-            try saveClusterMetadataEdit(edit)
-            return edit
-        }
-    }
-
-    func saveMetadataMutation(_ edit: ClusterMetadataEdit, replacing: String?) throws {
-        try transaction {
-            try saveClusterMetadataEdit(edit)
-            if let replacing { try discardMetadataMutation(replacing) }
-        }
-    }
-
-    func finishMetadataMutation(_ id: String, reply: ClusterMutationReply) throws {
-        try transaction {
-            guard var edit = try clusterMetadataEdits().first(where: { $0.mutation?.request == id }),
-                  edit.mutationState == .sending else { throw LocalMusicError.invalidData }
-            _ = try reply.validated(for: id)
-            switch reply {
-            case .objectStored: throw LocalMusicError.invalidData
-            case .accepted(_, _, let host, _):
-                guard host == edit.mutationHost else { throw LocalMusicError.invalidData }
-                edit.mutationState = .accepted
-            case .needsReview: edit.mutationState = .needsReview
-            case .rejected, .unsupported: edit.mutationState = .rejected
-            case .deferred: edit.mutationState = .queued
-            }
-            edit.mutationReply = reply
-            edit.mutationError = nil
-            try saveClusterMetadataEdit(edit)
-        }
-        if let edit = try clusterMetadataEdits().first(where: { $0.id == id }), edit.mutationState == .accepted {
-            try removeAdditionStaging(edit)
-        }
-    }
-
-    func metadataMutationUnavailable(_ id: String) throws {
-        guard var edit = try clusterMetadataEdits().first(where: { $0.mutation?.request == id }),
-              let request = edit.mutation, edit.canRetryMutation, edit.mutationHost == nil else { throw LocalMusicError.invalidData }
-        edit.mutationState = .rejected
-        edit.mutationReply = .unsupported(request: id, operation: request.operation.rawValue)
-        try saveClusterMetadataEdit(edit)
-    }
-
-    func metadataMutationInterrupted(_ id: String, reason: String) throws {
-        guard var edit = try clusterMetadataEdits().first(where: { $0.mutation?.request == id }),
-              edit.mutationState != .accepted, edit.mutationState != .needsReview,
-              edit.mutationState != .rejected else { return }
-        // Uploads are safe to replay elsewhere until a receipt pins registration.
-        if let addition = edit.addition, addition.receipt == nil { edit.mutationHost = nil }
-        edit.mutationState = edit.mutationHost == nil ? .queued : .outcomeUnknown
-        edit.mutationError = reason
-        try saveClusterMetadataEdit(edit)
-    }
-
-    func discardMetadataMutation(_ id: String) throws {
-        guard let edit = try clusterMetadataEdits().first(where: { $0.mutation?.request == id }),
-              edit.mutationState == .needsReview || edit.mutationState == .rejected ||
-                (edit.mutationState == .queued && edit.mutationHost == nil) else { throw LocalMusicError.invalidData }
-        try removeAdditionStaging(edit)
-        try execute("DELETE FROM cluster_metadata_queue WHERE object = ?", [edit.queueKey])
-    }
-
-    private func removeAdditionStaging(_ edit: ClusterMetadataEdit) throws {
-        guard edit.addition != nil else { return }
-        let file = try ClusterAudioAddition.stagedFile(root: root, request: edit.id)
-        if FileManager.default.fileExists(atPath: file.path) { try FileManager.default.removeItem(at: file) }
-    }
-
-    func rejectUnsentMetadataForRevokedMember() throws {
-        guard let registration = try clusterRegistration() else { return }
-        guard try registration.membership.isEffectivelyRevoked(registration.localGrant) else { return }
-        for var edit in try clusterMetadataEdits() where edit.canRetryMutation && edit.mutationHost == nil {
-            edit.mutationState = .rejected
-            edit.mutationReply = .rejected(request: edit.id, reason: .revoked)
-            try saveClusterMetadataEdit(edit)
-        }
-    }
-
-    func receiveClusterHelloRefusal(_ data: Data, peer: String) throws {
-        guard data.count <= 4 * 1024 * 1024 else { throw LocalMusicError.invalidData }
-        let refusal = try JSONDecoder().decode(ClusterHelloRefusalV5.self, from: data)
-        try transaction {
-            guard var registration = try clusterRegistration() else { throw LocalMusicError.unauthorized }
-            registration.membership = try refusal.verifiedMembership(registration: registration, peer: peer)
-            try execute("UPDATE cluster_registration SET payload = ? WHERE singleton = 1", [String(decoding: try JSONEncoder().encode(registration), as: UTF8.self)])
-            try rejectUnsentMetadataForRevokedMember()
-        }
-    }
-
-    func clusterRegistration() throws -> ClusterRegistration? {
-        guard let payload = try rows("SELECT payload FROM cluster_registration WHERE singleton = 1").first?.first ?? nil else { return nil }
-        return try JSONDecoder().decode(ClusterRegistration.self, from: Data(payload.utf8))
-    }
-
-    func saveClusterBatch(_ batch: ClusterImportBatch) throws {
-        guard UUID(uuidString: batch.id) != nil, SHA256Hex.isValid(batch.host),
-              Set(batch.items.map(\.id)).count == batch.items.count,
-              batch.items.allSatisfy({ UUID(uuidString: $0.id) != nil && ($0.entry.map(LocalMusicStore.valid) ?? true) }) else { throw LocalMusicError.invalidData }
-        try execute("INSERT INTO cluster_import_batches VALUES (?, ?) ON CONFLICT(id) DO UPDATE SET payload = excluded.payload", [batch.id, String(decoding: try JSONEncoder().encode(batch), as: UTF8.self)])
-    }
-
-    func clusterBatches() throws -> [ClusterImportBatch] {
-        try rows("SELECT payload FROM cluster_import_batches ORDER BY rowid").map { row in
-            guard let value = row[0] else { throw LocalMusicError.invalidData }
-            return try JSONDecoder().decode(ClusterImportBatch.self, from: Data(value.utf8))
-        }
-    }
-
     func automaticCellular() throws -> Bool {
         try rows("SELECT cellular FROM device_transfer_settings WHERE singleton = 1").first?.first == "1"
     }
@@ -355,212 +64,7 @@ extension CatalogDatabase {
     func setAutomaticCellular(_ enabled: Bool) throws {
         try execute("INSERT OR REPLACE INTO device_transfer_settings VALUES (1, ?)", [enabled ? "1" : "0"])
     }
-
-    func enrollCluster(invitation: ClusterInvitation, grantID: String, membership: ClusterMembership, ownID: String, name: String) throws {
-        guard name.utf8.count <= 2048 else { throw LocalMusicError.invalidData }
-        let relay = try invitation.relay.map(ClusterInvitation.validatedRelay)
-        let grant = try membership.verify(grantID)
-        guard grant.cluster == invitation.cluster, grant.issuer == invitation.host,
-              grant.member == ownID, grant.authority != nil else { throw LocalMusicError.unauthorized }
-        for item in membership.grants {
-            guard item.cluster == grant.cluster else { throw LocalMusicError.unauthorized }
-            _ = try membership.chain(item.id)
-        }
-        for item in membership.revocations { guard item.cluster == grant.cluster else { throw LocalMusicError.unauthorized } }
-        _ = try membership.revocationState()
-        try transaction {
-            var effective = membership
-            if let previous = try clusterRegistration() {
-                guard previous.localGrant == grantID, previous.membership.root == membership.root else { throw LocalMusicError.unauthorized }
-                effective = try previous.membership.merging(membership, presenter: invitation.host)
-            }
-            try execute("INSERT OR IGNORE INTO cluster_identity VALUES (1, ?, ?)", [grant.cluster, ownID])
-            guard let identity = try rows("SELECT id, member_id FROM cluster_identity WHERE singleton = 1").first,
-                  identity == [grant.cluster, ownID] else { throw LocalMusicError.unauthorized }
-            let registration = ClusterRegistration(name: name, localGrant: grantID, membership: effective, relay: relay)
-            try execute("INSERT OR REPLACE INTO cluster_registration VALUES (1, ?)", [String(decoding: try JSONEncoder().encode(registration), as: UTF8.self)])
-        }
-    }
-
-    func authenticateClusterPeer(_ peer: String, membership: ClusterMembership) throws {
-        try transaction {
-            guard var registration = try clusterRegistration() else { throw LocalMusicError.unauthorized }
-            registration.membership = try registration.membership.merging(membership, presenter: peer)
-            try execute("UPDATE cluster_registration SET payload = ? WHERE singleton = 1", [String(decoding: try JSONEncoder().encode(registration), as: UTF8.self)])
-        }
-        guard let registration = try clusterRegistration() else { throw LocalMusicError.unauthorized }
-        _ = try registration.membership.authorize(peer, host: true)
-        _ = try registration.membership.verify(registration.localGrant)
-        try transaction { try acceptPendingClusterChanges(registration.membership) }
-    }
-
-    func clusterCursor(_ peer: String) throws -> Int64 {
-        guard let value = try rows("SELECT sequence FROM cluster_peer_cursors WHERE peer = ?", [peer]).first?.first ?? nil else { return 0 }
-        guard let sequence = Int64(value), sequence >= 0 else { throw LocalMusicError.invalidData }
-        return sequence
-    }
-
-    private func readSignedChanges(acceptedOnly: Bool) throws -> [ClusterSignedChange] {
-        try rows("SELECT payload FROM cluster_signed_changes \(acceptedOnly ? "WHERE accepted = 1" : "") ORDER BY rowid").map { row in
-            guard let payload = row[0] else { throw LocalMusicError.invalidData }
-            return try JSONDecoder().decode(ClusterSignedChange.self, from: Data(payload.utf8))
-        }
-    }
-
-    func clusterChanges() throws -> [ClusterChange] {
-        guard let registration = try clusterRegistration() else { return [] }
-        return try readSignedChanges(acceptedOnly: true).map { try $0.decode(membership: registration.membership) }
-    }
-
-    func receiveClusterPage(peer: String, sequence: Int64, signed: ClusterSignedChange) throws {
-        try transaction {
-            guard sequence > 0, let registration = try clusterRegistration() else { throw LocalMusicError.unauthorized }
-            let membership = registration.membership
-            _ = try membership.authorize(peer, host: true)
-            _ = try membership.verify(registration.localGrant)
-            let change = try signed.decode(membership: membership)
-            guard change.cluster == membership.grants.first?.cluster else { throw LocalMusicError.unauthorized }
-            if let existing = try rows("SELECT payload FROM cluster_signed_changes WHERE id = ?", [signed.id]).first?.first ?? nil {
-                guard try JSONDecoder().decode(ClusterSignedChange.self, from: Data(existing.utf8)) == signed else { throw LocalMusicError.invalidData }
-            } else {
-                try execute("INSERT INTO cluster_signed_changes VALUES (?, ?, 0)", [signed.id, String(decoding: try JSONEncoder().encode(signed), as: UTF8.self)])
-            }
-            guard let row = try rows("SELECT COALESCE(SUM(length(CAST(payload AS BLOB))), 0) FROM cluster_signed_changes WHERE accepted = 0").first,
-                  let value = row[0], let size = Int(value),
-                  size <= 128 * 1024 * 1024 else { throw LocalMusicError.invalidData }
-            try acceptPendingClusterChanges(membership)
-            let current = try clusterCursor(peer)
-            guard sequence >= current else { throw LocalMusicError.invalidData }
-            try execute("INSERT INTO cluster_peer_cursors VALUES (?, ?) ON CONFLICT(peer) DO UPDATE SET sequence = excluded.sequence", [peer, String(sequence)])
-        }
-    }
-
-    private func acceptPendingClusterChanges(_ membership: ClusterMembership) throws {
-        let all = try readSignedChanges(acceptedOnly: false).map { try $0.decode(membership: membership) }
-        var accepted = try clusterChanges()
-        var known = Set(accepted.map(\.id))
-        while true {
-            let previous = known.count
-            for record in all where !known.contains(record.id) {
-                let ready = record.parents.allSatisfy { id in accepted.contains { $0.id == id && $0.object == record.object } }
-                    && record.previous.allSatisfy { id in accepted.contains { $0.id == id && $0.author == record.author } }
-                if ready, try record.authorized(by: membership, history: all) {
-                    if let entry = record.action.entry, let size = entry.track.size {
-                        try execute("INSERT OR IGNORE INTO cluster_objects VALUES (?, ?)", [entry.sha256, String(size)])
-                        guard try rows("SELECT bytes FROM cluster_objects WHERE sha256 = ?", [entry.sha256]).first?.first == String(size) else { throw LocalMusicError.invalidData }
-                    }
-                    try execute("UPDATE cluster_signed_changes SET accepted = 1 WHERE id = ?", [record.id])
-                    known.insert(record.id); accepted.append(record)
-                }
-            }
-            if previous == known.count { break }
-        }
-    }
-
-    func clusterDownloadEntry(object: String, peer: String) throws -> LocalEntry {
-        try transaction {
-            guard let registration = try clusterRegistration() else { throw LocalMusicError.unauthorized }
-            _ = try registration.membership.verify(registration.localGrant)
-            _ = try registration.membership.authorize(peer, host: true)
-            let records = try clusterChanges()
-            let states = try ClusterObjectState.project(records, membership: registration.membership)
-            guard let state = states.first(where: { $0.object == object }),
-                  let entry = try state.selected(in: records)?.action.entry else { throw LocalMusicError.invalidData }
-            return entry
-        }
-    }
-
-    func finishClusterDownload(_ jobID: String, entry: LocalEntry, file: URL) throws {
-        guard try LocalMusicStore.digest(file: file) == entry.sha256 else { throw LocalMusicError.invalidData }
-        try transaction {
-            guard let registration = try clusterRegistration() else { throw LocalMusicError.unauthorized }
-            let member = try registration.membership.verify(registration.localGrant).member
-            let records = try clusterChanges()
-            let states = try ClusterObjectState.project(records, membership: registration.membership)
-            guard let state = states.first(where: { $0.object == entry.sha256 }),
-                  let selected = try state.selected(in: records)?.action.entry,
-                  selected.track.size == entry.track.size else { throw LocalMusicError.invalidData }
-            try recordReceived(entry)
-            try execute("UPDATE cluster_jobs SET state = 'complete' WHERE id = ? AND sha256 = ? AND destination = ? AND state = 'running'", [jobID, entry.sha256, member])
-            guard sqlite3_changes(connection) == 1 else { throw LocalMusicError.invalidData }
-        }
-    }
-
-    func retryClusterJob(_ jobID: String) throws {
-        try execute("UPDATE cluster_jobs SET state = 'queued' WHERE id = ? AND state = 'running'", [jobID])
-    }
-
-    func clusterObjectStates() throws -> [ClusterObjectState] {
-        try transaction {
-            guard let registration = try clusterRegistration() else { return [] }
-            return try ClusterObjectState.project(clusterChanges(), membership: registration.membership)
-        }
-    }
-
-    func clusterAlbumConflicts() throws -> [ClusterAlbumConflict] {
-        try transaction {
-            guard let registration = try clusterRegistration() else { return [] }
-            let records = try clusterChanges()
-            let states = try ClusterObjectState.project(records, membership: registration.membership)
-            let selected = try states.filter { !$0.conflicted }.compactMap { try $0.selected(in: records) }
-            return try ClusterAlbumConflict.project(selected, organization: readSnapshot()?.catalog.organization ?? AlbumOrganization())
-        }
-    }
-
-    func clusterCatalog() throws -> LocalCatalog {
-        if let shared = try sharedAudioSnapshot() { return try shared.catalog.localCatalog(name: clusterRegistration()?.name ?? "Library") }
-        return try transaction {
-            guard let registration = try clusterRegistration() else { throw LocalMusicError.unauthorized }
-            let grant = try registration.membership.verify(registration.localGrant)
-            let previous = try readSnapshot()?.catalog
-            let records = try clusterChanges()
-            let states = try ClusterObjectState.project(records, membership: registration.membership)
-            let known = Set(records.map(\.object))
-            let selected = try states.filter { !$0.conflicted }.compactMap { try $0.selected(in: records) }
-            let albumConflicts = try ClusterAlbumConflict.project(selected, organization: previous?.organization ?? AlbumOrganization())
-            let blocked = Set(albumConflicts.flatMap(\.objects))
-            let conflicts = Set(states.filter(\.conflicted).map(\.object)).union(blocked)
-            var entries = (previous?.entries ?? []).filter { !known.contains($0.sha256) || conflicts.contains($0.sha256) }
-            var organization = previous?.organization ?? AlbumOrganization()
-            let deleted = try Set(states.filter { state in
-                guard !state.conflicted else { return false }
-                return try state.selected(in: records) == nil
-            }.map(\.object))
-            try organization.excludeClusterObjects(deleted)
-            var titles: [String: String] = [:]
-            for state in states where !state.conflicted && !blocked.contains(state.object) {
-                guard let record = try state.selected(in: records), var entry = record.action.entry,
-                      let incoming = record.action.organization else { continue }
-                try organization.merge(incoming)
-                for album in incoming.albums {
-                    let id = organization.canonical(album.id)
-                    titles[id] = album.title
-                }
-                let saved = try rows("SELECT id FROM cluster_track_ids WHERE object = ?", [state.object]).first?.first ?? nil
-                let id = saved ?? previous?.entries.first(where: { $0.sha256 == state.object })?.track.id ?? entry.track.id
-                try execute("INSERT OR IGNORE INTO cluster_track_ids VALUES (?, ?)", [state.object, id])
-                guard try rows("SELECT id FROM cluster_track_ids WHERE object = ?", [state.object]).first?.first == id else { throw LocalMusicError.invalidData }
-                if entry.track.id != id {
-                    if organization.trackAliases == nil { organization.trackAliases = [:] }
-                    if organization.tracks.contains(where: { $0.id == id }) {
-                        organization.trackAliases?[entry.track.id] = id
-                    }
-                    entry.track.id = id
-                    if entry.track.coverArt != nil { entry.track.coverArt = id }
-                }
-                entries.append(entry)
-            }
-            for index in organization.albums.indices {
-                if let title = titles[organization.canonical(organization.albums[index].id)] {
-                    organization.albums[index].title = title
-                }
-            }
-            try organization.validate()
-            return LocalCatalog(id: previous?.id ?? grant.cluster, name: registration.name, entries: entries, organization: organization)
-        }
-    }
 }
-
 /// Catalog replacement commits as one transaction.
 final class CatalogDatabase {
     private var connection: OpaquePointer?
@@ -578,14 +82,13 @@ final class CatalogDatabase {
         sqlite3_busy_timeout(connection, 5000)
         do {
             let version = try rows("PRAGMA user_version").first?.first ?? nil
-            guard ["0", "1", "2", "3", "4", "5", "6", "7"].contains(version) else { throw LocalMusicError.invalidData }
-            if version == "7" {
-                let required: Set<String> = ["device_transfer_settings", "verified_audio_files", "retained_host_catalog", "host_connection", "host_entries", "host_playlists", "shared_audio_snapshot", "shared_audio_saves", "catalog", "entries", "received_files", "organization", "artwork_assets",
-                    "cluster_schema", "cluster_identity", "cluster_peers", "cluster_objects", "cluster_locations",
-                    "cluster_pending_changes", "cluster_jobs", "cluster_registration", "cluster_signed_changes",
-                    "cluster_peer_cursors", "cluster_track_ids", "cluster_import_batches", "cluster_transfer_settings", "cluster_metadata_queue", "playlist_records", "playlist_cursors", "playlist_authorities"]
+            guard let version, let number = Int(version), (0...8).contains(number) else { throw LocalMusicError.invalidData }
+            if number == 8 {
+                let required: Set<String> = ["device_transfer_settings", "verified_audio_files", "retained_host_catalog",
+                    "host_connection", "host_entries", "host_playlists", "shared_audio_saves", "catalog", "entries",
+                    "received_files", "organization", "artwork_assets"]
                 let existing = Set(try rows("SELECT name FROM sqlite_master WHERE type = 'table'").compactMap { $0[0] })
-                if required.isSubset(of: existing), try rows("SELECT version FROM cluster_schema WHERE singleton = 1").first?.first == "1" { return }
+                if required.isSubset(of: existing) { return }
             }
             try transaction {
                 try execute("CREATE TABLE IF NOT EXISTS catalog (singleton INTEGER PRIMARY KEY CHECK(singleton = 1), id TEXT NOT NULL, name TEXT NOT NULL, source_root TEXT)")
@@ -595,18 +98,12 @@ final class CatalogDatabase {
                 try execute("CREATE TABLE IF NOT EXISTS received_files (relative_path TEXT PRIMARY KEY, sha256 TEXT NOT NULL)")
                 try execute("CREATE TABLE IF NOT EXISTS organization (singleton INTEGER PRIMARY KEY CHECK(singleton = 1), payload TEXT NOT NULL)")
                 try execute("CREATE TABLE IF NOT EXISTS artwork_assets (id TEXT PRIMARY KEY, payload TEXT NOT NULL)")
-                try execute("CREATE TABLE IF NOT EXISTS shared_audio_snapshot (singleton INTEGER PRIMARY KEY CHECK(singleton = 1), payload TEXT NOT NULL)")
                 try execute("CREATE TABLE IF NOT EXISTS shared_audio_saves (track TEXT NOT NULL, hash TEXT NOT NULL, PRIMARY KEY(track, hash))")
-                if !["4", "5", "6", "7"].contains(version) { _ = try readSnapshot() }
-                try migrateCluster()
-                try migrateClusterMembership()
+                if number < 4 { _ = try readSnapshot() }
                 try execute("CREATE TABLE IF NOT EXISTS device_transfer_settings (singleton INTEGER PRIMARY KEY CHECK(singleton = 1), cellular INTEGER NOT NULL CHECK(cellular IN (0, 1)))")
                 if try !rows("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'cluster_transfer_settings'").isEmpty {
                     try execute("INSERT OR IGNORE INTO device_transfer_settings(singleton, cellular) SELECT singleton, cellular FROM cluster_transfer_settings")
                 }
-                try execute("CREATE TABLE IF NOT EXISTS playlist_records (id TEXT PRIMARY KEY, playlist_id TEXT NOT NULL, payload TEXT NOT NULL)")
-                try execute("CREATE TABLE IF NOT EXISTS playlist_cursors (peer TEXT PRIMARY KEY, sequence INTEGER NOT NULL)")
-                try execute("CREATE TABLE IF NOT EXISTS playlist_authorities (library_id TEXT PRIMARY KEY, peer TEXT NOT NULL, payload TEXT NOT NULL)")
                 try execute("CREATE TABLE IF NOT EXISTS host_connection (singleton INTEGER PRIMARY KEY CHECK(singleton = 1), address TEXT NOT NULL, library TEXT NOT NULL, name TEXT NOT NULL, hosts TEXT NOT NULL, etag TEXT, marker TEXT, header TEXT)")
                 try execute("CREATE TABLE IF NOT EXISTS host_entries (id TEXT PRIMARY KEY, position INTEGER NOT NULL, payload TEXT NOT NULL)")
                 try execute("CREATE TABLE IF NOT EXISTS host_playlists (id TEXT PRIMARY KEY, position INTEGER, payload TEXT, conflicted INTEGER NOT NULL)")
@@ -622,7 +119,14 @@ final class CatalogDatabase {
                 if try !rows("PRAGMA table_info(retained_host_catalog)").contains(where: { $0[1] == "address" }) {
                     try execute("ALTER TABLE retained_host_catalog ADD COLUMN address TEXT")
                 }
-                try execute("PRAGMA user_version = 7")
+                for table in ["cluster_schema", "cluster_identity", "cluster_peers", "cluster_objects", "cluster_locations",
+                              "cluster_pending_changes", "cluster_jobs", "cluster_registration", "cluster_signed_changes",
+                              "cluster_peer_cursors", "cluster_track_ids", "cluster_import_batches", "cluster_metadata_queue",
+                              "cluster_transfer_settings", "shared_audio_snapshot", "shared_audio_refresh_notice",
+                              "playlist_records", "playlist_cursors", "playlist_authorities"] {
+                    try execute("DROP TABLE IF EXISTS \(table)")
+                }
+                try execute("PRAGMA user_version = 8")
             }
         } catch {
             sqlite3_close(connection)
@@ -714,14 +218,10 @@ final class CatalogDatabase {
 
     func otherCatalogFiles(for hash: String) throws -> Set<URL> {
         let store = LocalMusicStore(root: root)
-        var urls = Set(try rows("SELECT payload FROM entries WHERE sha256 = ?", [hash]).map { row in
+        return Set(try rows("SELECT payload FROM entries WHERE sha256 = ?", [hash]).map { row in
             let entry = try JSONDecoder().decode(LocalEntry.self, from: Data((row[0] ?? "").utf8))
             return store.fileURL(entry)
         })
-        if try sharedAudioSnapshot()?.catalog.objects[hash] != nil {
-            urls.insert(root.appendingPathComponent(hash + ".audio"))
-        }
-        return urls
     }
 
     private func hostCatalogLibrary() throws -> String? {
@@ -777,7 +277,7 @@ final class CatalogDatabase {
     }
 
     func containsCatalog() throws -> Bool {
-        try rows("SELECT CASE WHEN EXISTS(SELECT 1 FROM host_connection) THEN EXISTS(SELECT 1 FROM host_connection WHERE header IS NOT NULL) ELSE EXISTS(SELECT 1 FROM retained_host_catalog) OR EXISTS(SELECT 1 FROM catalog) OR EXISTS(SELECT 1 FROM shared_audio_snapshot) END").first?.first == "1"
+        try rows("SELECT CASE WHEN EXISTS(SELECT 1 FROM host_connection) THEN EXISTS(SELECT 1 FROM host_connection WHERE header IS NOT NULL) ELSE EXISTS(SELECT 1 FROM retained_host_catalog) OR EXISTS(SELECT 1 FROM catalog) END").first?.first == "1"
     }
 
     func playbackEntry(_ id: String, hash: String? = nil) throws -> (library: String, entry: LocalEntry)? {
@@ -787,11 +287,6 @@ final class CatalogDatabase {
             guard hash == nil || entry.sha256 == hash else { return nil }
             return (library, entry)
         }
-        if let shared = try sharedAudioSnapshot() {
-            let entry = try shared.catalog.entry(id, hash: hash)
-            guard entry.track.unavailable != true, LocalMusicStore.valid(entry) else { throw LocalMusicError.clusterNeedsAttention }
-            return (shared.catalog.library, entry)
-        }
         guard let row = try rows("SELECT catalog.id, entries.payload FROM catalog JOIN entries ON entries.id = ? WHERE catalog.singleton = 1", [id]).first,
               let library = row[0], let payload = row[1] else { return nil }
         let entry = try JSONDecoder().decode(LocalEntry.self, from: Data(payload.utf8))
@@ -800,10 +295,9 @@ final class CatalogDatabase {
     }
 
 
+    func localSnapshot() throws -> CatalogSnapshot? { try transaction { try readSnapshot() } }
+
     private func readSnapshot() throws -> CatalogSnapshot? {
-        if let shared = try sharedAudioSnapshot() {
-            return CatalogSnapshot(catalog: try shared.catalog.localCatalog(name: clusterRegistration()?.name ?? "Library"), sourceRoot: nil, sourcePaths: [:])
-        }
         guard let header = try rows("SELECT id, name, source_root FROM catalog WHERE singleton = 1").first,
               let id = header[0], let name = header[1] else { return nil }
         var entries: [LocalEntry] = []
@@ -839,11 +333,7 @@ final class CatalogDatabase {
     }
 
     func save(_ catalog: LocalCatalog, sourceRoot: URL? = nil, sourcePaths: [String: String]? = nil,
-              received: [LocalEntry] = [], clusterEdits: Bool = false) throws {
-        if try sharedAudioSnapshot() != nil {
-            guard catalog.logicalAudio == true else { throw LocalMusicError.incompatiblePeer }
-            return
-        }
+              received: [LocalEntry] = []) throws {
         guard Set(catalog.entries.map { $0.track.id }).count == catalog.entries.count,
               catalog.entries.allSatisfy(LocalMusicStore.valid) else { throw LocalMusicError.invalidData }
         try transaction {
@@ -855,10 +345,13 @@ final class CatalogDatabase {
             if organized.organization == nil, sameLibrary { organized.organization = previous?.catalog.organization }
             organized.organize(folders: root == nil ? [:] : paths.mapValues { ($0 as NSString).deletingLastPathComponent })
             try organized.organization?.validate()
-            if clusterEdits, let organization = organized.organization {
-                try recordOrganizationEdits(organization, previous: previous?.catalog, entries: organized.entries)
-            }
             try writeOrganization(organized.organization!)
+            if sourceRoot != nil {
+                guard try hostConnection() == nil else { throw CancellationError() }
+                try execute("DELETE FROM retained_host_catalog")
+                try execute("DELETE FROM host_entries")
+                try execute("DELETE FROM host_playlists")
+            }
             try execute("DELETE FROM entries")
             try execute("INSERT OR REPLACE INTO catalog VALUES (1, ?, ?, ?)", [catalog.id, catalog.name, root?.path])
             for (position, entry) in catalog.entries.enumerated() {
@@ -867,7 +360,6 @@ final class CatalogDatabase {
                     [entry.track.id, String(position), entry.sha256, payload, paths[entry.track.id]])
             }
             for entry in received { try recordReceived(entry) }
-            try indexClusterCatalog(organized, memberID: nil)
         }
     }
 
@@ -877,32 +369,14 @@ final class CatalogDatabase {
 
     func setAlbumsHidden(_ ids: Set<String>, hidden: Bool, libraryID: String) throws -> AlbumOrganization {
         try transaction {
-            guard try sharedAudioSnapshot() == nil else { throw LocalMusicError.legacyMutationsUnavailable }
+            guard try hostCatalogLibrary() == nil else { throw LocalMusicError.readOnlyCatalog }
             guard let catalog = try readSnapshot()?.catalog, catalog.id == libraryID,
                   var organization = catalog.organization else { throw LocalMusicError.invalidData }
             for id in ids.sorted() {
                 organization.set(subject: id, kind: "visibility", value: hidden ? "true" : "false")
             }
-            try recordOrganizationEdits(organization, previous: catalog, entries: catalog.entries)
             try writeOrganization(organization)
             return organization
-        }
-    }
-
-    private func recordOrganizationEdits(_ organization: AlbumOrganization, previous: LocalCatalog?, entries: [LocalEntry]) throws {
-        guard try sharedAudioSnapshot() == nil else { return }
-        guard let registration = try clusterRegistration() else { return }
-        _ = try registration.membership.verify(registration.localGrant)
-        let records = try clusterChanges()
-        let pending = try clusterMetadataEdits()
-        for state in try ClusterObjectState.project(records, membership: registration.membership) {
-            let metadata = try organization.forClusterObject(state.object)
-            guard try metadata != previous?.organization?.forClusterObject(state.object) else { continue }
-            guard !state.conflicted else { throw LocalMusicError.clusterNeedsAttention }
-            guard let selected = try state.selected(in: records)?.action.entry else { continue }
-            let entry = entries.first { $0.sha256 == state.object } ?? selected
-            let parents = pending.first(where: { $0.entry.sha256 == state.object })?.parents ?? state.heads.map(\.id)
-            try saveClusterMetadataEdit(ClusterMetadataEdit(id: UUID().uuidString, entry: entry, organization: metadata, parents: parents))
         }
     }
 
@@ -924,137 +398,5 @@ final class CatalogDatabase {
         var metadata = organization
         metadata.artwork?.assets = organization.artwork?.assets.mapValues { _ in Data() } ?? [:]
         try execute("INSERT OR REPLACE INTO organization VALUES (1, ?)", [String(decoding: try JSONEncoder().encode(metadata), as: UTF8.self)])
-    }
-}
-
-extension CatalogDatabase {
-    private func migrateCluster() throws {
-        try execute("CREATE TABLE IF NOT EXISTS cluster_schema (singleton INTEGER PRIMARY KEY CHECK(singleton = 1), version INTEGER NOT NULL)")
-        try execute("INSERT OR IGNORE INTO cluster_schema VALUES (1, 1)")
-        let inserted = sqlite3_changes(connection) == 1
-        guard try rows("SELECT version FROM cluster_schema WHERE singleton = 1").first?.first == "1" else { throw LocalMusicError.invalidData }
-        guard inserted else { return }
-        try execute("CREATE TABLE IF NOT EXISTS cluster_identity (singleton INTEGER PRIMARY KEY CHECK(singleton = 1), id TEXT NOT NULL, member_id TEXT NOT NULL)")
-        try execute("CREATE TABLE IF NOT EXISTS cluster_peers (id TEXT PRIMARY KEY, name TEXT NOT NULL, address TEXT)")
-        try execute("CREATE TABLE IF NOT EXISTS cluster_objects (sha256 TEXT PRIMARY KEY, bytes INTEGER NOT NULL CHECK(bytes > 0))")
-        try execute("CREATE TABLE IF NOT EXISTS cluster_locations (library_id TEXT NOT NULL, track_id TEXT NOT NULL, member_id TEXT NOT NULL, sha256 TEXT NOT NULL, PRIMARY KEY(library_id, track_id, member_id))")
-        try execute("CREATE TABLE IF NOT EXISTS cluster_pending_changes (id TEXT PRIMARY KEY, payload BLOB NOT NULL)")
-        try execute("CREATE TABLE IF NOT EXISTS cluster_jobs (id TEXT PRIMARY KEY, sha256 TEXT NOT NULL, source TEXT NOT NULL, destination TEXT NOT NULL, state TEXT NOT NULL CHECK(state IN ('queued', 'running', 'complete')))")
-        if let snapshot = try readSnapshot() { try indexClusterCatalog(snapshot.catalog, memberID: nil) }
-    }
-
-    private func indexClusterCatalog(_ catalog: LocalCatalog, memberID: String?) throws {
-        guard !catalog.id.isEmpty, memberID.map(SHA256Hex.isValid) ?? true else { throw LocalMusicError.invalidData }
-        for entry in catalog.entries {
-            guard SHA256Hex.isValid(entry.sha256), !entry.track.id.isEmpty,
-                  let size = entry.track.size, size > 0, size <= 20 * 1024 * 1024 * 1024 else { throw LocalMusicError.invalidData }
-            try execute("INSERT OR IGNORE INTO cluster_objects VALUES (?, ?)", [entry.sha256, String(size)])
-            guard try rows("SELECT bytes FROM cluster_objects WHERE sha256 = ?", [entry.sha256]).first?.first == String(size) else { throw LocalMusicError.invalidData }
-            try execute("INSERT INTO cluster_locations VALUES (?, ?, ?, ?) ON CONFLICT(library_id, track_id, member_id) DO UPDATE SET sha256 = excluded.sha256",
-                [catalog.id, entry.track.id, memberID ?? "", entry.sha256])
-        }
-    }
-
-    func observeClusterCatalog(_ catalog: LocalCatalog, memberID: String? = nil) throws {
-        try transaction { try indexClusterCatalog(catalog, memberID: memberID) }
-    }
-
-    func createCluster(memberID: String) throws -> ClusterIdentity {
-        guard SHA256Hex.isValid(memberID) else { throw LocalMusicError.invalidData }
-        return try transaction {
-            try execute("INSERT OR IGNORE INTO cluster_identity VALUES (1, ?, ?)", [UUID().uuidString.lowercased(), memberID])
-            guard let row = try rows("SELECT id, member_id FROM cluster_identity WHERE singleton = 1").first,
-                  let id = row[0], row[1] == memberID else { throw LocalMusicError.invalidData }
-            return ClusterIdentity(id: id, memberID: memberID)
-        }
-    }
-
-    func rememberClusterPeer(_ peer: ClusterKnownPeer) throws {
-        guard SHA256Hex.isValid(peer.id), peer.name.utf8.count <= 2048,
-              peer.address.map({ $0.utf8.count <= 16384 }) ?? true else { throw LocalMusicError.invalidData }
-        if let address = peer.address {
-            guard let value = try JSONSerialization.jsonObject(with: Data(address.utf8)) as? [String: Any],
-                  value["id"] as? String == peer.id else { throw LocalMusicError.invalidData }
-        }
-        try execute("INSERT INTO cluster_peers VALUES (?, ?, ?) ON CONFLICT(id) DO UPDATE SET name = excluded.name, address = excluded.address", [peer.id, peer.name, peer.address])
-    }
-
-    func forgetClusterPeer(_ id: String) throws {
-        try execute("DELETE FROM cluster_peers WHERE id = ?", [id])
-    }
-
-    func clusterInventory() throws -> ClusterInventory {
-        try transaction {
-            let identity = try rows("SELECT id, member_id FROM cluster_identity WHERE singleton = 1").first.map { row -> ClusterIdentity in
-                guard let id = row[0], let member = row[1] else { throw LocalMusicError.invalidData }
-                return ClusterIdentity(id: id, memberID: member)
-            }
-            let peers = try rows("SELECT id, name, address FROM cluster_peers ORDER BY id").map { row -> ClusterKnownPeer in
-                guard let id = row[0], let name = row[1] else { throw LocalMusicError.invalidData }
-                return ClusterKnownPeer(id: id, name: name, address: row[2])
-            }
-            let objects = try rows("SELECT sha256, bytes FROM cluster_objects ORDER BY sha256").map { row -> ClusterObject in
-                guard let hash = row[0], let size = row[1].flatMap(Int64.init) else { throw LocalMusicError.invalidData }
-                let locations = try rows("SELECT library_id, track_id, NULLIF(member_id, '') FROM cluster_locations WHERE sha256 = ? ORDER BY library_id, track_id, member_id", [hash]).map { row -> ClusterLocation in
-                    guard let library = row[0], let track = row[1] else { throw LocalMusicError.invalidData }
-                    return ClusterLocation(libraryID: library, trackID: track, memberID: row[2])
-                }
-                return ClusterObject(sha256: hash, bytes: size, locations: locations)
-            }
-            return ClusterInventory(cluster: identity, peers: peers, objects: objects)
-        }
-    }
-
-    func savePendingClusterChange(_ change: ClusterPendingChange) throws {
-        try change.validate()
-        try transaction {
-            let payload = String(decoding: try JSONEncoder().encode(change), as: UTF8.self)
-            try execute("INSERT OR IGNORE INTO cluster_pending_changes VALUES (?, CAST(? AS BLOB))", [change.id, payload])
-            guard let stored = try rows("SELECT payload FROM cluster_pending_changes WHERE id = ?", [change.id]).first?.first ?? nil,
-                  try JSONDecoder().decode(ClusterPendingChange.self, from: Data(stored.utf8)) == change else { throw LocalMusicError.invalidData }
-        }
-    }
-
-    func pendingClusterChanges() throws -> [ClusterPendingChange] {
-        try rows("SELECT payload FROM cluster_pending_changes ORDER BY rowid").map { row in
-            guard let payload = row[0] else { throw LocalMusicError.invalidData }
-            return try JSONDecoder().decode(ClusterPendingChange.self, from: Data(payload.utf8))
-        }
-    }
-
-    func enqueueClusterJob(_ job: ClusterTransferJob) throws {
-        guard UUID(uuidString: job.id) != nil, job.state == .queued, job.source != job.destination,
-              SHA256Hex.isValid(job.source), SHA256Hex.isValid(job.destination) else { throw LocalMusicError.invalidData }
-        try transaction {
-            guard try rows("SELECT EXISTS(SELECT 1 FROM cluster_objects WHERE sha256 = ?)", [job.sha256]).first?.first == "1" else { throw LocalMusicError.invalidData }
-            try execute("INSERT OR IGNORE INTO cluster_jobs VALUES (?, ?, ?, ?, 'queued')", [job.id, job.sha256, job.source, job.destination])
-            guard let row = try rows("SELECT sha256, source, destination FROM cluster_jobs WHERE id = ?", [job.id]).first,
-                  row == [job.sha256, job.source, job.destination] else { throw LocalMusicError.invalidData }
-        }
-    }
-
-    func beginClusterJob(_ id: String) throws {
-        try execute("UPDATE cluster_jobs SET state = 'running' WHERE id = ? AND state = 'queued'", [id])
-        guard sqlite3_changes(connection) == 1 else { throw LocalMusicError.invalidData }
-    }
-
-    func recoverClusterJobs() throws {
-        try execute("UPDATE cluster_jobs SET state = 'queued' WHERE state = 'running'")
-        for var edit in try clusterMetadataEdits() where edit.mutationState == .sending {
-            if let addition = edit.addition, addition.receipt == nil { edit.mutationHost = nil }
-            edit.mutationState = .queued
-            try saveClusterMetadataEdit(edit)
-        }
-        for edit in try clusterMetadataEdits() where edit.mutationState == .accepted {
-            try removeAdditionStaging(edit)
-        }
-    }
-
-    func clusterJobs() throws -> [ClusterTransferJob] {
-        try rows("SELECT id, sha256, source, destination, state FROM cluster_jobs ORDER BY rowid").map { row in
-            guard let id = row[0], let hash = row[1], let source = row[2], let destination = row[3],
-                  let state = row[4].flatMap(ClusterTransferJob.State.init(rawValue:)) else { throw LocalMusicError.invalidData }
-            return ClusterTransferJob(id: id, sha256: hash, source: source, destination: destination, state: state)
-        }
     }
 }

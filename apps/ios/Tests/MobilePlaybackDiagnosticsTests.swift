@@ -29,7 +29,6 @@ struct MobilePlaybackDiagnosticsTests {
         let rows = try jsonl.split(separator: "\n").map { try JSONSerialization.jsonObject(with: Data($0.utf8)) }
         #expect(!rows.isEmpty)
         #expect(jsonl.contains(first) && jsonl.contains(retry))
-        #expect(jsonl.contains("legacy_candidate"))
-        #expect(jsonl.contains("clusterUnavailable"))
+        #expect(jsonl.contains("disconnected"))
     }
 }

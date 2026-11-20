@@ -3,7 +3,6 @@ import SwiftUI
 struct SettingsView: View {
     @ObservedObject var library: Library
     @State private var hostSetup: HostSetupRequest?
-    @State private var showingLegacy = false
 
     var body: some View {
         ScrollView { VStack(alignment: .leading, spacing: 16) {
@@ -12,12 +11,11 @@ struct SettingsView: View {
                 Divider()
                 Text("音楽の追加").font(.headline)
                 AddMusicButton(library: library)
-                if !library.transfer.hasLibrarySource {
-                    LocalFolderButton(library: library)
-                    Text("登録せずにこの端末で再生できます。ライブラリホストには設定されません。")
-                        .foregroundStyle(Studio.fog)
-                }
             }
+            LocalFolderButton(library: library)
+            Text("登録せずにこの端末で再生できます。ライブラリホストには設定されません。")
+                .foregroundStyle(Studio.fog)
+
             if let message = library.message { Text(message).textSelection(.enabled) }
             Divider()
             PlaybackStorageSettings(library: library)
@@ -25,28 +23,10 @@ struct SettingsView: View {
             PlaybackDiagnosticSettings(recorder: library.diagnostics)
             Divider()
             HostConnectionSettings(transfer: library.transfer) { hostSetup = $0 }
-            if !library.transfer.hasLibrarySource, !library.transfer.usesHostCatalog, library.transfer.pairedName != nil {
-                Divider()
-                DisclosureGroup("従来の接続") {
-                    Button("従来の端末間転送") { showingLegacy = true }
-                }
-            }
         }.padding(24) }
         .frame(width: 520, height: 680)
         .background(Studio.graphite)
         .navigationTitle("設定")
         .sheet(item: $hostSetup) { HostConnectionView(transfer: library.transfer, request: $0) }
-        .sheet(isPresented: $showingLegacy) {
-            VStack {
-                if library.hasLocalFolder {
-                    MacPairingView(transfer: library.transfer) { Task { await library.startPairing() } }
-                        .task { await library.startPairing(newPairing: false) }
-                } else {
-                    Text("従来の転送に使う音楽フォルダを選んでください。")
-                    LocalFolderButton(library: library)
-                    Button("閉じる") { showingLegacy = false }
-                }
-            }.padding()
-        }
     }
 }

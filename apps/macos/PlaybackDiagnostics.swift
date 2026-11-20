@@ -169,7 +169,6 @@ final class PlaybackDiagnostics: @unchecked Sendable {
             context.record("connection_history", row.event, outcome: row.outcome, fields: fields)
         }
         var summary = ["history_omitted": String(omitted)]
-        summary["last_success_peer_id"] = last["succeeded"]?.fields["saved_peer_id"] ?? "not_observed"
         summary["last_success_catalog_id"] = last["succeeded"]?.fields["remote_catalog_id"] ?? "not_observed"
         for outcome in ["succeeded", "failed", "disconnected"] {
             summary["last_" + outcome + "_at"] = last[outcome]?.timestamp ?? "not_observed"
@@ -258,18 +257,8 @@ struct PlaybackDiagnosticContext: Sendable {
     let id: String
     let started: TimeInterval
     let recorder: PlaybackDiagnostics
-    var candidate: String? = nil
-
-    func source(_ ordinal: Int, peer: String) -> Self {
-        var result = self
-        result.candidate = "\(id)/\(ordinal)"
-        result.record("selection", "candidate", fields: ["ordinal": String(ordinal), "device_id": peer])
-        return result
-    }
 
     func record(_ stage: String, _ event: String, outcome: String = "observed", fields: [String: String] = [:], terminal: Bool = false) {
-        var fields = fields
-        if let candidate { fields["candidate_operation_id"] = candidate }
         recorder.append(self, stage: stage, event: event, outcome: outcome, fields: fields, terminal: terminal)
     }
 
@@ -286,7 +275,7 @@ struct PlaybackDiagnosticContext: Sendable {
             let prefix = depth == 0 ? "error" : "underlying_\(depth)"
             fields[prefix + "_type"] = depth == 0 ? String(describing: type(of: error)) : "NSError"
             let safeDomains = [NSCocoaErrorDomain, NSURLErrorDomain, NSPOSIXErrorDomain, "AVFoundationErrorDomain", "NSOSStatusErrorDomain", "Syncstr.CatalogDatabase"]
-            fields[prefix + "_domain"] = safeDomains.contains(value.domain) || value.domain == "IrohLib.IrohError" || (depth == 0 && error is LocalMusicError) ? value.domain : "omitted_untrusted_domain"
+            fields[prefix + "_domain"] = safeDomains.contains(value.domain) || (depth == 0 && error is LocalMusicError) ? value.domain : "omitted_untrusted_domain"
             fields[prefix + "_code"] = String(value.code)
             if value.domain == "Syncstr.CatalogDatabase" {
                 if let operation = value.userInfo["database_operation"] as? String,
@@ -306,9 +295,6 @@ struct PlaybackDiagnosticContext: Sendable {
             fields["error_category"] = String(describing: local)
         }
         if current != nil { fields["underlying_omitted"] = "cycle_or_depth_limit" }
-        if let keychain = error as? KeychainError {
-            fields["keychain_osstatus"] = String(keychain.status)
-        }
         return fields
     }
 

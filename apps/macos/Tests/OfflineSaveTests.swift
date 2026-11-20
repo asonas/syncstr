@@ -51,11 +51,8 @@ extension XCTestCase {
         return library
     }
 
-    func makeTransfer(store: LocalMusicStore, secrets: CredentialStore = CredentialStore(service: "syncstr-test-pair"),
-                      hostConfiguration: URLSessionConfiguration = .ephemeral,
-                      librarySourceFactory: (@MainActor () -> any LibrarySource)? = nil) -> LocalTransfer {
-        let transfer = LocalTransfer(store: store, secrets: secrets, hostConfiguration: hostConfiguration,
-                                     librarySourceFactory: librarySourceFactory, pathMonitor: nil)
+    func makeTransfer(store: LocalMusicStore, hostConfiguration: URLSessionConfiguration = .ephemeral) -> LocalTransfer {
+        let transfer = LocalTransfer(store: store, hostConfiguration: hostConfiguration, pathMonitor: nil)
         addTimedTeardown("stop transfer and close database") {
             await transfer.stopAndWait()
             await CatalogStorage.shared.closeDatabase(at: store.root)
@@ -81,42 +78,6 @@ final class OfflineSaveTests: XCTestCase {
 
     override func tearDown() { try? FileManager.default.removeItem(at: root) }
 
-    func testPlaybackRejectsDownloadedCacheFileWithWrongHashAndStopsSource() async throws {
-        let f = try SharedAudioTests.Fixture()
-        removeStoreAfterTest(f.store.root)
-        try f.database.receiveSharedAudio(f.snapshot(), peer: f.host)
-        let entry = try XCTUnwrap(f.database.playbackEntry("A")?.entry)
-        let source = CorruptPlaybackSource()
-        let transfer = makeTransfer(store: f.store, librarySourceFactory: { source })
-        await transfer.restorePeer(readIdentity: { throw LocalMusicError.unauthorized })
-
-        do {
-            _ = try await transfer.playbackFile(entry.track)
-            XCTFail("Playback accepted a file with the wrong hash")
-        } catch LocalMusicError.invalidData {}
-        XCTAssertEqual(source.downloaded.map(\.track.id), [entry.track.id])
-        XCTAssertEqual(source.downloaded.map(\.sha256), [entry.sha256])
-        XCTAssertTrue(source.stopped)
-        XCTAssertFalse(FileManager.default.fileExists(atPath: transfer.playbackCache.store.fileURL(entry).path))
-    }
-
-    private final class CorruptPlaybackSource: LibrarySource {
-        var stopped = false
-        var downloaded: [LocalEntry] = []
-
-        func refreshCatalog() async throws -> CatalogRefresh { throw LocalMusicError.clusterUnavailable }
-
-        func download(_ entry: LocalEntry, cache: LocalMusicStore?, diagnostic: PlaybackDiagnosticContext?,
-                      progress: @escaping @MainActor (Double) -> Void) async throws {
-            downloaded.append(entry)
-            let cache = try XCTUnwrap(cache)
-            try cache.prepare()
-            try Data("bad".utf8).write(to: cache.fileURL(entry))
-        }
-
-        func stop() { stopped = true }
-    }
-
     func testBusyTransferReportsRemovalBusyInsteadOfInvalidData() throws {
         let (store, entries) = try fixture()
         let transfer = makeTransfer(store: store)
@@ -133,47 +94,6 @@ final class OfflineSaveTests: XCTestCase {
                 return XCTFail("Expected invalidData, received \(error)")
             }
         }
-    }
-
-    func testConfirmedSharedAudioRemovalWaitsForBusyTransferAndKeepsB() async throws {
-        let f = try SharedAudioTests.Fixture()
-        removeStoreAfterTest(f.store.root)
-        try f.database.receiveSharedAudio(f.snapshot(), peer: f.host)
-        let a = try XCTUnwrap(f.database.playbackEntry("A")?.entry)
-        let b = try XCTUnwrap(f.database.playbackEntry("B")?.entry)
-        try Data("abc".utf8).write(to: f.store.fileURL(a))
-        try f.database.saveAudioPin(a)
-        try f.database.saveAudioPin(b)
-        let library = makeLibrary(localStore: f.store)
-        try library.openLocal(f.database.clusterCatalog())
-
-        library.transfer.busy = true
-        library.localCopiesToRemove = [a.track]
-        let confirmed = library.localCopiesToRemove
-        library.localCopiesToRemove = []
-        library.removeLocalCopies(confirmed)
-        XCTAssertTrue(library.isLocalCopyRemovalPending(a.track))
-        XCTAssertFalse(library.isLocalCopyRemovalPending(b.track))
-        XCTAssertTrue(f.store.hasSavedFile(a))
-        XCTAssertTrue(f.store.hasSavedFile(b))
-        XCTAssertNil(library.message)
-
-        let completed = expectation(description: "Confirmed removal resumes when busy becomes false")
-        let observation = library.$pendingLocalCopyRemovals.dropFirst().filter { $0.isEmpty }.prefix(1).sink { _ in
-            completed.fulfill()
-        }
-        defer { observation.cancel() }
-        // A failed transfer still becomes idle; removal does not require network success.
-        library.transfer.status = LocalMusicError.disconnected.localizedDescription
-        library.transfer.busy = false
-        await fulfillment(of: [completed], timeout: 2)
-        XCTAssertTrue(library.pendingLocalCopyRemovals.isEmpty)
-        XCTAssertFalse(f.store.hasSavedFile(a))
-        XCTAssertFalse(library.hasManagedCopy(a.track))
-        XCTAssertTrue(f.store.hasSavedFile(b))
-        XCTAssertTrue(library.hasManagedCopy(b.track))
-        XCTAssertTrue(f.store.hasFile(b))
-        XCTAssertNil(library.message)
     }
 
     func testConfirmedRemovalResumesAfterSaveWorkerFinishesWithoutBusyChanging() async throws {
@@ -373,30 +293,6 @@ final class OfflineSaveTests: XCTestCase {
         XCTAssertEqual(try FileManager.default.attributesOfItem(atPath: store.fileURL(entries[0]).path)[.modificationDate] as? Date, firstDate)
     }
 
-    func testClusterSaveHashesLocalAudioEvenWithHostVerificationRecord() async throws {
-        var (store, entries) = try fixture()
-        let entry = entries[0]
-        let temporary = root.appendingPathComponent("incoming")
-        try Data(repeating: 1, count: 1024).write(to: temporary)
-        try store.importFile(temporary, entry: entry)
-        let database = try store.database()
-        store.inventoryDigest = { _ in throw CocoaError(.fileReadUnknown) }
-        XCTAssertThrowsError(try store.verifiedFile(entry, host: true, inventory: database)) {
-            XCTAssertEqual(($0 as? CocoaError)?.code, .fileReadUnknown)
-        }
-
-        let url = store.fileURL(entry)
-        try Data(repeating: 0, count: 1024).write(to: url, options: .atomic)
-        store.inventoryDigest = { _ in entry.sha256 }
-        XCTAssertEqual(try store.verifiedFile(entry, host: true, inventory: database), url)
-        let transfer = makeTransfer(store: store)
-        try cache(entry, transfer: transfer, number: 1)
-        await transfer.requestSave([entry.track], scope: "track")
-        try await waitFor { transfer.saveRequests.first?.state == .complete }
-        XCTAssertEqual(transfer.saveRequests.first?.state, .complete)
-        XCTAssertEqual(try Data(contentsOf: url), Data(repeating: 1, count: 1024))
-    }
-
     func testCancelRetainsCompletedAudioAndDoesNotResumeRemainingItems() async throws {
         let (store, entries) = try fixture()
         let transfer = makeTransfer(store: store)
@@ -533,25 +429,6 @@ final class OfflineSaveTests: XCTestCase {
     }
 
 #if os(macOS)
-    func testColdRestoreKeepsClusterCatalogWhenOriginalFolderCannotBeOpened() async throws {
-        let (store, entries) = try fixture()
-        let catalog = try XCTUnwrap(store.load())
-        try store.database().save(catalog, sourceRoot: root.appendingPathComponent("unavailable"), sourcePaths: [:])
-        let url = try XCTUnwrap(Bundle(for: Self.self).url(forResource: "cluster-signed", withExtension: "json"))
-        let fixture = try JSONDecoder().decode(ClusterMembershipTests.Fixture.self, from: Data(contentsOf: url))
-        let grant = try fixture.membership.authorize(fixture.client)
-        try store.database().enrollCluster(invitation: ClusterInvitation(version: 1, cluster: grant.cluster, host: grant.issuer,
-            secret: String(repeating: "a", count: 64), expires: 1600), grantID: grant.id,
-            membership: fixture.membership, ownID: fixture.client, name: "Library")
-        try Data(repeating: 1, count: 1024).write(to: store.fileURL(entries[0]))
-        let library = makeLibrary(localStore: store)
-        await library.openSavedLocalLibrary()
-        XCTAssertTrue(library.connected)
-        XCTAssertEqual(Set(library.tracks.map(\.id)), Set(entries.map { $0.track.id }))
-        XCTAssertTrue(library.hasManagedCopy(entries[0].track))
-        XCTAssertEqual(try store.database().clusterRegistration()?.localGrant, grant.id)
-    }
-
     func testFolderRestorationRetainsImportedManagedFilesWithoutImplicitHosting() async throws {
         let store = LocalMusicStore(root: root.appendingPathComponent("library"))
         let source = root.appendingPathComponent("source")
@@ -560,71 +437,12 @@ final class OfflineSaveTests: XCTestCase {
         try FileManager.default.copyItem(at: fixtures.appendingPathComponent("untagged.m4a"), to: source.appendingPathComponent("source.m4a"))
         let library = makeLibrary(localStore: store)
         await library.chooseFolder(source)
-        XCTAssertNil(library.transfer.advertisedPort)
         await library.addMusic([fixtures.appendingPathComponent("untagged.mp3")])
         XCTAssertEqual(library.tracks.count, 2)
         let restored = makeLibrary(localStore: store)
         await restored.openSavedLocalLibrary()
         XCTAssertEqual(Set(restored.tracks.map(\.id)), Set(library.tracks.map(\.id)))
         XCTAssertTrue(restored.tracks.allSatisfy { restored.localFiles[$0.id] != nil })
-        XCTAssertNil(restored.transfer.advertisedPort)
-    }
-
-    func testQueuedAlbumResumesAfterPairingAndCancelKeepsCompletedTrack() async throws {
-        let (store, entries) = try fixture()
-        let source = root.appendingPathComponent("originals")
-        try FileManager.default.createDirectory(at: source, withIntermediateDirectories: true)
-        var files: [String: URL] = [:]
-        for (index, entry) in entries.enumerated() {
-            let file = source.appendingPathComponent(entry.track.id + ".wav")
-            try Data(repeating: UInt8(index + 1), count: 1024).write(to: file)
-            files[entry.track.id] = file
-        }
-        var catalog = try XCTUnwrap(store.load())
-        catalog.id = UUID().uuidString
-        try store.save(catalog)
-        let senderCredentials = CredentialStore(service: "syncstr-save-sender-" + UUID().uuidString)
-        let receiverCredentials = CredentialStore(service: "syncstr-save-receiver-" + UUID().uuidString)
-        let sender = makeTransfer(store: LocalMusicStore(root: root.appendingPathComponent("sender")), secrets: senderCredentials)
-        let receiver = makeTransfer(store: store, secrets: receiverCredentials)
-        defer { sender.stopHosting() }
-        await receiver.requestSave(entries.map(\.track), scope: "album:fixture")
-        try await settled(receiver)
-        XCTAssertEqual(receiver.saveRequests.first?.state, .waiting)
-        receiver.onSaved = {
-            if let request = receiver.saveRequests.first, request.completed.count == 1 { receiver.cancelSave(request) }
-        }
-        try await sender.host(LocalFolder(root: source, catalog: catalog, files: files, skipped: []))
-        try await waitFor { sender.advertisedPort != nil }
-        let device = NearbyMusicDevice(id: "Syncstr-" + catalog.id, name: "Fixture host",
-            endpoint: .hostPort(host: "127.0.0.1", port: try XCTUnwrap(sender.advertisedPort)))
-        receiver.connect(device, code: sender.code, name: "Fixture listener")
-        try await waitFor { sender.pendingName != nil }
-        sender.approve(true)
-        try await waitFor { !receiver.busy && receiver.saveRequests.first?.state == .cancelled }
-        XCTAssertEqual(entries.filter(store.hasFile).count, 1)
-        receiver.onSaved = nil
-        await receiver.requestSave(entries.map(\.track), scope: "album:fixture")
-        try await waitFor { receiver.saveRequests.first?.state == .complete }
-        XCTAssertTrue(entries.allSatisfy(store.hasFile))
-        XCTAssertTrue(files.values.allSatisfy { FileManager.default.fileExists(atPath: $0.path) })
-        await sender.forget()
-        await receiver.forget()
-    }
-
-    func testHostCopyCannotBeRemovedThroughOfflineSaveAction() async throws {
-        let (store, entries) = try fixture()
-        let url = try XCTUnwrap(Bundle(for: Self.self).url(forResource: "cluster-signed", withExtension: "json"))
-        let fixture = try JSONDecoder().decode(ClusterMembershipTests.Fixture.self, from: Data(contentsOf: url))
-        let grant = try fixture.membership.authorize(fixture.host)
-        XCTAssertTrue(grant.host)
-        try store.database().enrollCluster(invitation: ClusterInvitation(version: 1, cluster: grant.cluster, host: grant.issuer,
-            secret: String(repeating: "a", count: 64), expires: 1600), grantID: grant.id,
-            membership: fixture.membership, ownID: fixture.host, name: "Library")
-        try Data(repeating: 1, count: 1024).write(to: store.fileURL(entries[0]))
-        let transfer = makeTransfer(store: store)
-        XCTAssertThrowsError(try transfer.removeSavedCopy(entries[0]))
-        XCTAssertTrue(store.hasFile(entries[0]))
     }
 
     func testFreshFileImportNeedsNeitherEnrollmentNorLegacyHosting() async throws {
@@ -636,8 +454,6 @@ final class OfflineSaveTests: XCTestCase {
         XCTAssertTrue(library.connected, library.message ?? "")
         XCTAssertEqual(library.tracks.count, 1)
         XCTAssertTrue(library.hasManagedCopy(try XCTUnwrap(library.tracks.first)))
-        XCTAssertNil(try store.database().clusterRegistration())
-        XCTAssertNil(library.transfer.advertisedPort)
         XCTAssertEqual(try Data(contentsOf: source), bytes)
         let restored = makeLibrary(localStore: store)
         await restored.openSavedLocalLibrary()

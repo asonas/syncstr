@@ -15,12 +15,6 @@ final class StorageExecutor: SerialExecutor {
     }
 }
 
-@globalActor
-actor TransportActor {
-    static let shared = TransportActor()
-    nonisolated var unownedExecutor: UnownedSerialExecutor { CatalogStorage.shared.unownedExecutor }
-}
-
 actor CatalogStorage {
     static let shared = CatalogStorage()
     private let executor = StorageExecutor(label: "as.ason.syncstr.catalog")
@@ -91,19 +85,6 @@ actor CatalogStorage {
         return files
     }
 
-    func save(_ catalog: LocalCatalog, store: LocalMusicStore) throws {
-        try Task.checkCancellation()
-        try store.save(catalog, database: database(store))
-    }
-
-    func prepare(_ catalog: LocalCatalog, store: LocalMusicStore) throws -> PreparedLocalCatalog {
-        try Task.checkCancellation()
-        var catalog = catalog
-        catalog.organize()
-        try save(catalog, store: store)
-        try Task.checkCancellation()
-        return try PreparedLocalCatalog(catalog, store: store)
-    }
 }
 
 struct PreparedLocalCatalog {
@@ -135,48 +116,6 @@ struct LocalEntry: Codable, Equatable {
 }
 
 enum UploadedMusic {
-    static func recoverClusterEvidence(_ catalog: LocalCatalog, store: LocalMusicStore) async throws -> LocalCatalog {
-        let database = try store.database()
-        let records = try database.clusterChanges()
-        let blocked = try Set(database.clusterObjectStates().filter {
-            if $0.conflicted { return true }
-            return try $0.selected(in: records) == nil
-        }.map(\.object)).union(database.clusterAlbumConflicts().flatMap(\.objects))
-        let recovery = Task.detached {
-            var catalog = catalog
-            guard var organization = catalog.organization else { return catalog }
-            for index in catalog.entries.indices {
-                try Task.checkCancellation()
-                var entry = catalog.entries[index]
-                guard !blocked.contains(entry.sha256),
-                      let record = organization.tracks.first(where: { $0.id == organization.canonicalTrack(entry.track.id) }),
-                      record.imported.tagValues == nil, store.hasFile(entry),
-                      (try? LocalMusicStore.digest(file: store.fileURL(entry))) == entry.sha256,
-                      let tags = try? AudioTags.readFile(store.fileURL(entry)),
-                      (try? LocalMusicStore.digest(file: store.fileURL(entry))) == entry.sha256 else { continue }
-                entry.importedAlbum = ImportedAlbumMetadata.read(tags)
-                func number(_ key: String) -> Int? {
-                    (tags[key] as? [String])?.first?.split(separator: "/").first.flatMap { Int($0) }
-                }
-                entry.track.discNumber = entry.track.discNumber ?? number("DISCNUMBER")
-                entry.track.track = entry.track.track ?? number("TRACKNUMBER")
-                organization.importEntries([entry])
-                if let image = (tags["artwork"] as? Data).flatMap(ArtworkImage.normalize) {
-                    try organization.captureArtwork(image, track: organization.canonicalTrack(entry.track.id), source: "embedded", context: entry.sha256)
-                }
-                catalog.entries[index] = entry
-            }
-            try organization.validate()
-            catalog.organization = organization
-            return catalog
-        }
-        return try await withTaskCancellationHandler {
-            try await recovery.value
-        } onCancel: {
-            recovery.cancel()
-        }
-    }
-
     static func prepare(_ files: [URL], organization: AlbumOrganization, sourceID: String) async throws -> (entries: [LocalEntry], organization: AlbumOrganization) {
         var entries: [LocalEntry] = []
         var folders: [String: String] = [:]
@@ -234,13 +173,11 @@ struct LocalCatalog: Codable {
     var name: String
     var entries: [LocalEntry]
     var organization: AlbumOrganization? = nil
-    var logicalAudio: Bool? = nil
     enum Source: String, Codable { case host }
     var source: Source? = nil
     var remoteArtwork: Set<String>? = nil
 
     mutating func organize(folders: [String: String] = [:]) {
-        guard logicalAudio != true else { return }
         var organization = organization ?? AlbumOrganization()
         organization.importEntries(entries, folders: folders, sourceID: id)
         organization.retainLegacyArtwork(entries)
@@ -249,8 +186,8 @@ struct LocalCatalog: Codable {
 }
 
 enum LocalMusicError: LocalizedError {
-    case invalidData, disconnected, unauthorized, changedFile, noMusic, invalidCode, incompatiblePeer
-    case clusterUnavailable, clusterNeedsAttention, legacyMutationsUnavailable
+    case invalidData, disconnected, noMusic
+    case readOnlyCatalog
     case backgroundAcquisition
     case transferBusy
 
@@ -259,14 +196,8 @@ enum LocalMusicError: LocalizedError {
         case .invalidData: "音楽の情報を確認できませんでした。もう一度転送してください。"
         case .transferBusy: "転送中のため保存を解除できません。転送が終わってからもう一度お試しください。"
         case .disconnected: "接続が切れました。保存済みの音楽は引き続き聴けます。接続を確認して再試行してください。"
-        case .unauthorized: "ライブラリへのアクセスが許可されませんでした。設定の登録内容を確認するか、ライブラリの管理者に確認してください。"
-        case .changedFile: "音源が変更されたか読み込めません。ライブラリを更新してください。"
         case .noMusic: "再生できる音源が見つかりませんでした。別のフォルダを選んでください。"
-        case .invalidCode: "Macに表示された32文字のコードを入力してください。"
-        case .incompatiblePeer: "接続先のSyncstrを更新してください。アルバムの整理情報に対応していません。"
-        case .clusterUnavailable: "利用できる音源に接続できません。保存済みの音楽は引き続き聴けます。接続後に再試行できます。"
-        case .clusterNeedsAttention: "保存先で変更の確認が必要です。ライブラリを更新して競合を確認し、解消後に再試行してください。音源はこの端末に保持しています。"
-        case .legacyMutationsUnavailable: "この接続では音源の追加、アルバム情報や表示・非表示の変更、競合の解消、アルバム名の選択は利用できません。"
+        case .readOnlyCatalog: "この接続では音源の追加、アルバム情報や表示・非表示の変更、競合の解消、アルバム名の選択は利用できません。"
         case .backgroundAcquisition: "バックグラウンドでは次の音源を取得できません。アプリを開いて再試行してください。"
         }
     }
@@ -315,15 +246,15 @@ struct LocalMusicStore {
     }
 
     @concurrent
-    func setAlbumHidden(_ id: String, hidden: Bool, libraryID: String) async throws -> (organization: AlbumOrganization, pendingMetadata: Bool) {
+    func setAlbumHidden(_ id: String, hidden: Bool, libraryID: String) async throws -> AlbumOrganization {
         return try await setAlbumsHidden([id], hidden: hidden, libraryID: libraryID)
     }
 
     @concurrent
-    func setAlbumsHidden(_ ids: Set<String>, hidden: Bool, libraryID: String) async throws -> (organization: AlbumOrganization, pendingMetadata: Bool) {
+    func setAlbumsHidden(_ ids: Set<String>, hidden: Bool, libraryID: String) async throws -> AlbumOrganization {
         let database = try database()
         let organization = try database.setAlbumsHidden(ids, hidden: hidden, libraryID: libraryID)
-        return (organization, try !database.clusterMetadataEdits().isEmpty)
+        return organization
     }
 
     var hasCatalog: Bool {
@@ -356,19 +287,11 @@ struct LocalMusicStore {
         return database
     }
 
-    func save(_ catalog: LocalCatalog, clusterEdits: Bool = false, database: CatalogDatabase? = nil) throws {
-        let database = try database ?? self.database()
+    func save(_ catalog: LocalCatalog) throws {
+        let database = try database()
         try writeArtwork(catalog)
-        let received = try database.clusterRegistration() == nil ? catalog.entries.filter(hasFile) : []
-        try database.save(catalog, received: received, clusterEdits: clusterEdits)
-    }
-
-    func rememberClusterPeer(_ peer: ClusterKnownPeer) throws {
-        try database().rememberClusterPeer(peer)
-    }
-
-    func forgetClusterPeer(_ id: String) throws {
-        try database().forgetClusterPeer(id)
+        let received = catalog.entries.filter(hasFile)
+        try database.save(catalog, received: received)
     }
 
     private func writeArtwork(_ catalog: LocalCatalog) throws {
@@ -384,7 +307,7 @@ struct LocalMusicStore {
         }
         for entry in catalog.entries {
             try Task.checkCancellation()
-            guard Self.valid(entry) || catalog.logicalAudio == true else { throw LocalMusicError.invalidData }
+            guard Self.valid(entry) else { throw LocalMusicError.invalidData }
             if let artwork = entry.artwork {
                 let url = artworkURL(entry)
                 if (try? Data(contentsOf: url)) != artwork { try artwork.write(to: url, options: .atomic) }
@@ -400,11 +323,11 @@ struct LocalMusicStore {
             && !entry.track.id.isEmpty && entry.track.id.utf8.count <= 1024
             && (entry.track.coverArt == nil || entry.track.coverArt == entry.track.id)
             && (entry.artwork?.count ?? 0) <= 512 * 1024
-            && (entry.track.audioHash == entry.sha256 || ["mp3", "m4a", "aac", "flac", "wav", "aiff", "aif", "alac"].contains(entry.track.suffix ?? ""))
+            && ["mp3", "m4a", "aac", "flac", "wav", "aiff", "aif", "alac"].contains(entry.track.suffix ?? "")
     }
 
     func fileURL(_ entry: LocalEntry) -> URL {
-        root.appendingPathComponent(entry.sha256).appendingPathExtension(entry.track.audioHash == nil ? entry.track.suffix ?? "audio" : "audio")
+        root.appendingPathComponent(entry.sha256).appendingPathExtension(entry.track.suffix ?? "audio")
     }
 
     func hostFileURLs(_ entry: LocalEntry) -> [URL] {
@@ -420,7 +343,7 @@ struct LocalMusicStore {
     }
 
     func verifiedFile(_ entry: LocalEntry, host: Bool, inventory: CatalogDatabase? = nil, requireHash: Bool = false) throws -> URL? {
-        guard Self.valid(entry), entry.track.unavailable != true else { return nil }
+        guard Self.valid(entry) else { return nil }
         for url in host ? hostFileURLs(entry) : [fileURL(entry)] {
             let attributes: [FileAttributeKey: Any]
             do { attributes = try FileManager.default.attributesOfItem(atPath: url.path) }
@@ -439,10 +362,9 @@ struct LocalMusicStore {
 
     func savedLocalFiles(in catalog: LocalCatalog) throws -> [String: URL] {
         var files: [String: URL] = [:]
-        let pins = catalog.logicalAudio == true ? try database().savedAudioPins() : []
         for entry in catalog.entries {
             try Task.checkCancellation()
-            if hasFile(entry), catalog.logicalAudio != true || pins.contains(entry.saveIdentity) {
+            if hasFile(entry) {
                 files[entry.track.id] = fileURL(entry)
             }
         }
@@ -455,29 +377,22 @@ struct LocalMusicStore {
 
     func artworkURL(asset: String) -> URL { root.appendingPathComponent(asset + ".jpg") }
 
-    func hasSavedFile(_ entry: LocalEntry) -> Bool {
-        guard hasFile(entry) else { return false }
-        guard entry.track.audioHash != nil else { return true }
-        return (try? database().hasAudioPin(entry)) == true
-    }
-
     func hasFile(_ entry: LocalEntry) -> Bool {
-        guard entry.track.unavailable != true, Self.valid(entry), let attributes = try? FileManager.default.attributesOfItem(atPath: fileURL(entry).path),
+        guard Self.valid(entry), let attributes = try? FileManager.default.attributesOfItem(atPath: fileURL(entry).path),
               let size = attributes[.size] as? NSNumber else { return false }
         return size.uint64Value == entry.track.size
     }
 
-    func importCachedFile(_ source: URL, entry: LocalEntry, link: Bool = false, recordReceipt: Bool = true, host: Bool) throws -> Bool {
+    func importCachedFile(_ source: URL, entry: LocalEntry, host: Bool) throws -> Bool {
         let temporary = root.appendingPathComponent(".cache-save-" + UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: temporary) }
         do {
-            if link { try FileManager.default.linkItem(at: source, to: temporary) }
-            else { try FileManager.default.copyItem(at: source, to: temporary) }
+            try FileManager.default.copyItem(at: source, to: temporary)
         } catch let error as CocoaError where error.code == .fileNoSuchFile || error.code == .fileReadNoSuchFile {
             if access(source.path, F_OK) == -1, errno == ENOENT { return false }
             throw error
         }
-        try importFile(temporary, entry: entry, recordReceipt: recordReceipt, host: host)
+        try importFile(temporary, entry: entry, host: host)
         return true
     }
 

@@ -1,13 +1,25 @@
 import AVFoundation
 import AppKit
 import AudioTags
-import CryptoKit
-import Network
 import Security
 import XCTest
 
 @MainActor
 final class LocalTransferTests: XCTestCase {
+    func testLegacyKeychainCleanupRunsOnceAndAcceptsMissingItems() async {
+        let suite = UUID().uuidString
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let cleanup = LegacyKeychainCleanup()
+        var services: [String] = []
+        await cleanup.run(defaults: defaults) { service in
+            services.append(service)
+            return service.hasSuffix("identity") ? errSecSuccess : errSecItemNotFound
+        }
+        await cleanup.run(defaults: defaults) { _ in XCTFail("Repeated cleanup"); return errSecSuccess }
+        XCTAssertEqual(services, ["as.ason.syncstr.local-pair", "as.ason.syncstr.p2p.identity", "as.ason.syncstr.p2p.peer"])
+    }
+
     func testCompilationUpgradeRereadsOriginalTagsAndRetainsContextAfterMove() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }
@@ -44,36 +56,6 @@ final class LocalTransferTests: XCTestCase {
         let prepared = try await UploadedMusic.prepare(Array(rescanned.files.values), organization: AlbumOrganization(), sourceID: "uploader")
         XCTAssertEqual(Set(prepared.organization.tracks.compactMap { prepared.organization.albumID(for: $0.id) }).count, 1)
         XCTAssertTrue(prepared.organization.tracks.allSatisfy { !($0.importContext?.folder.contains(root.path) ?? true) })
-    }
-
-    func testExistingPairingRecordSurvivesAccountModelRemoval() async throws {
-        let service = "syncstr-pairing-update-test-" + UUID().uuidString
-        let store = CredentialStore(service: service)
-        let query: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: service,
-            kSecAttrAccount as String: "last-login"
-        ]
-        defer { SecItemDelete(query as CFDictionary) }
-        var item = query
-        item[kSecValueData as String] = Data(#"{"server":"fixture-library","username":"Fixture Phone","password":"0123456789abcdef0123456789abcdef"}"#.utf8)
-        item[kSecAttrSynchronizable as String] = false
-        XCTAssertEqual(SecItemAdd(item as CFDictionary, nil), errSecSuccess)
-        let saved = try await store.load()
-        XCTAssertEqual(saved, PairingCredentials(libraryID: "fixture-library", name: "Fixture Phone",
-            key: "0123456789abcdef0123456789abcdef"))
-        try await store.save(try XCTUnwrap(saved))
-        let reopened = try await store.load()
-        XCTAssertEqual(reopened, saved)
-    }
-
-    private func wait(_ condition: () -> Bool, file: StaticString = #filePath, line: UInt = #line) async throws {
-        for _ in 0..<400 {
-            if condition() { return }
-            try await Task.sleep(for: .milliseconds(25))
-        }
-        XCTFail("Timed out waiting for public state", file: file, line: line)
-        throw LocalMusicError.disconnected
     }
 
     private func fixture(_ root: URL, name: String = "First") throws -> URL {
@@ -113,163 +95,6 @@ final class LocalTransferTests: XCTestCase {
         XCTAssertTrue(returned.catalog.entries.contains { $0.track.id == entry.track.id })
         XCTAssertEqual(returned.catalog.organization?.choice(subject: album, kind: "classification")?.value, "true")
         XCTAssertEqual(try LocalMusicStore.digest(file: returned.files[entry.track.id]!), entry.sha256)
-    }
-
-    func testPairTransferRetryAndRestorePreserveOriginalAudio() async throws {
-        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
-        defer { try? FileManager.default.removeItem(at: root) }
-        let source = root.appendingPathComponent("album")
-        let original = try fixture(source)
-        let second = try fixture(source, name: "Second")
-        let originalBytes = try Data(contentsOf: original)
-        let expected = SHA256.hash(data: originalBytes).map { String(format: "%02x", $0) }.joined()
-        var folder = try await LocalFolder.scan(source, id: UUID().uuidString)
-        let organizedAlbum = try XCTUnwrap(folder.catalog.organization?.albumID(for: folder.catalog.entries[0].track.id))
-        folder.catalog.organization?.set(subject: organizedAlbum, kind: "classification", value: "true")
-        XCTAssertEqual(folder.catalog.entries.count, 2)
-        let senderStore = CredentialStore(service: "syncstr-test-sender-" + UUID().uuidString)
-        let receiverStore = CredentialStore(service: "syncstr-test-receiver-" + UUID().uuidString)
-        let files = LocalMusicStore(root: root.appendingPathComponent("received"))
-        let sender = LocalTransfer(store: LocalMusicStore(root: root.appendingPathComponent("sender")), secrets: senderStore)
-        let diagnostics = PlaybackDiagnostics(root: root.appendingPathComponent("diagnostics"))
-        let receiver = LocalTransfer(store: files, secrets: receiverStore, diagnostics: diagnostics)
-        do {
-            try await sender.host(folder)
-            try await wait { sender.advertisedPort != nil }
-            var device = NearbyMusicDevice(id: "Syncstr-" + folder.catalog.id, name: "Fixture Mac",
-                endpoint: .hostPort(host: "127.0.0.1", port: sender.advertisedPort!))
-            receiver.connect(device, code: sender.code, name: "Fixture Phone")
-            try await wait { sender.pendingName != nil || !receiver.busy }
-            XCTAssertEqual(sender.pendingName, "Fixture Phone", receiver.status ?? "")
-            XCTAssertNil(try files.load(), "Catalog must not be exposed before approval")
-            sender.approve(true)
-            try await wait { !receiver.busy }
-            XCTAssertTrue(receiver.connected, receiver.status ?? "")
-            XCTAssertEqual(try files.load()?.organization?.choice(subject: organizedAlbum, kind: "classification")?.value, "true")
-            let trace = diagnostics.begin(title: "Fixture", track: folder.catalog.entries[0].track.id,
-                sha256: folder.catalog.entries[0].sha256, library: folder.catalog.id)
-            let cached = try await receiver.playbackFile(folder.catalog.entries[0].track, diagnostic: trace)
-            let diagnosticTrace = await diagnostics.recent().first
-            XCTAssertTrue(diagnosticTrace?.events.contains { $0.event == "connect_tls" && $0.outcome == "succeeded" } == true)
-            XCTAssertTrue(diagnosticTrace?.events.contains { $0.stage == "selection" && $0.fields["mode"] == "tls_psk_channel" } == true)
-            XCTAssertTrue(diagnosticTrace?.events.contains { $0.stage == "verification" && $0.event == "hash" && $0.outcome == "matched" } == true)
-            XCTAssertTrue(diagnosticTrace?.events.contains { $0.stage == "save" && $0.outcome == "succeeded" } == true)
-            XCTAssertEqual(try LocalMusicStore.digest(file: cached), folder.catalog.entries[0].sha256)
-            XCTAssertFalse(files.hasFile(folder.catalog.entries[0]))
-            receiver.cancel()
-            let uncached = folder.catalog.entries[1]
-            let recovered = try await receiver.playbackFile(uncached.track)
-            XCTAssertTrue(receiver.connected, receiver.status ?? "")
-            XCTAssertEqual(try LocalMusicStore.digest(file: recovered), uncached.sha256)
-            receiver.onSaved = { if receiver.completed == 1 { receiver.cancel() } }
-            receiver.copy(folder.catalog.entries.map(\.track))
-            try await wait { !receiver.busy }
-            XCTAssertEqual(receiver.completed, 1)
-            XCTAssertEqual(folder.catalog.entries.filter { files.hasFile($0) }.count, 1)
-            receiver.onSaved = nil
-            receiver.connect(device, code: "", name: "Fixture Phone")
-            try await wait { !receiver.busy }
-            XCTAssertTrue(receiver.connected, receiver.status ?? "")
-            receiver.copy(folder.catalog.entries.map(\.track))
-            try await wait { !receiver.busy }
-            XCTAssertEqual(receiver.completed, 2, receiver.status ?? "")
-            let restored = try XCTUnwrap(files.load())
-            XCTAssertEqual(restored.entries.count, 2)
-            let entry = try XCTUnwrap(restored.entries.first { $0.track.title == "First" })
-            XCTAssertEqual(entry.sha256, expected)
-            XCTAssertEqual(try Data(contentsOf: files.fileURL(entry)), originalBytes)
-            let before = try files.fileURL(entry).resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate
-            receiver.copy(folder.catalog.entries.map(\.track))
-            try await wait { !receiver.busy }
-            XCTAssertEqual(receiver.completed, 2)
-            XCTAssertEqual(try files.fileURL(entry).resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate, before)
-            XCTAssertEqual(try Data(contentsOf: original), originalBytes)
-            XCTAssertTrue(FileManager.default.fileExists(atPath: second.path))
-            receiver.cancel()
-            receiver.connect(device, code: "", name: "Fixture Phone")
-            try await wait { !receiver.busy }
-            XCTAssertTrue(receiver.connected, receiver.status ?? "")
-            XCTAssertNil(sender.pendingName, "Saved pairing must reconnect without approval")
-            receiver.cancel()
-            var reduced = folder
-            var phoneCatalog = try XCTUnwrap(files.load())
-            phoneCatalog.organization?.set(subject: organizedAlbum, kind: "classification", value: "false")
-            try files.save(phoneCatalog)
-            reduced.catalog.organization?.set(subject: organizedAlbum, kind: "classification", value: nil)
-            reduced.catalog.entries.removeFirst()
-            reduced.catalog.entries[0].track = Track(id: reduced.catalog.entries[0].track.id, title: "Changed title",
-                artist: nil, suffix: "wav", size: reduced.catalog.entries[0].track.size)
-            try await sender.host(reduced)
-            try await wait { sender.advertisedPort != nil }
-            device.endpoint = .hostPort(host: "127.0.0.1", port: sender.advertisedPort!)
-            receiver.connect(device, code: "", name: "Fixture Phone")
-            try await wait { !receiver.busy }
-            let retained = try XCTUnwrap(files.load())
-            XCTAssertTrue(retained.organization?.hasConflict(subject: organizedAlbum, kind: "classification") ?? false)
-            XCTAssertEqual(retained.organization?.choice(subject: organizedAlbum, kind: "classification")?.value, "false")
-            let removed = folder.catalog.entries[0]
-            XCTAssertEqual(retained.entries.first { $0.track.id == removed.track.id }?.track.title, removed.track.title)
-            XCTAssertEqual(retained.entries.first { $0.track.id == reduced.catalog.entries[0].track.id }?.track.title, "Changed title")
-            XCTAssertTrue(retained.entries.allSatisfy(files.hasFile), "Metadata refresh must retain completed local audio")
-            let missing = reduced.catalog.entries[0]
-            try FileManager.default.removeItem(at: files.fileURL(missing))
-            try Data("changed source".utf8).write(to: folder.files[missing.track.id]!)
-            receiver.copy([missing.track])
-            try await wait { !receiver.busy }
-            XCTAssertFalse(files.hasFile(missing))
-            XCTAssertEqual(receiver.status, LocalMusicError.changedFile.localizedDescription)
-            await sender.forget()
-            receiver.cancel()
-            XCTAssertEqual(folder.catalog.entries.filter { files.hasFile($0) }.count, 1, "Removing pairing must retain received music")
-            await receiver.forget()
-        } catch {
-            await sender.forget()
-            await receiver.forget()
-            throw error
-        }
-    }
-
-    func testRejectedPairingDoesNotPersistCredentialsOrExposeCatalog() async throws {
-        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
-        defer { try? FileManager.default.removeItem(at: root) }
-        _ = try fixture(root.appendingPathComponent("source"))
-        let folder = try await LocalFolder.scan(root.appendingPathComponent("source"), id: UUID().uuidString)
-        let senderStore = CredentialStore(service: "syncstr-test-sender-" + UUID().uuidString)
-        let receiverStore = CredentialStore(service: "syncstr-test-receiver-" + UUID().uuidString)
-        let files = LocalMusicStore(root: root.appendingPathComponent("received"))
-        let sender = LocalTransfer(secrets: senderStore)
-        let receiver = LocalTransfer(store: files, secrets: receiverStore)
-        do {
-            try await sender.host(folder)
-            try await wait { sender.advertisedPort != nil }
-            let wrongKey = MusicConnection(NWConnection(to: .hostPort(host: "127.0.0.1", port: sender.advertisedPort!),
-                using: try MusicConnection.parameters(code: String(repeating: "0", count: 32), identity: folder.catalog.id)))
-            do { try await wrongKey.start(); XCTFail("A different pairing key must not authenticate") }
-            catch { XCTAssertNil(sender.pendingName) }
-            wrongKey.close()
-            let cluster = MusicConnection(NWConnection(to: .hostPort(host: "127.0.0.1", port: sender.advertisedPort!),
-                using: try MusicConnection.parameters(code: sender.code, identity: folder.catalog.id)))
-            try await cluster.start()
-            try await cluster.send(MusicMessage(kind: "cluster-hello", clusterCapabilities: ClusterCapabilities(version: 1, membership: true, deletions: true, conflicts: true)))
-            let upgrade = try await cluster.receive()
-            XCTAssertEqual(upgrade.kind, "upgrade-required")
-            XCTAssertFalse(try XCTUnwrap(upgrade.clusterCapabilities).allowsAutomaticWriter)
-            XCTAssertNil(sender.pendingName)
-            cluster.close()
-            receiver.connect(NearbyMusicDevice(id: "Syncstr-" + folder.catalog.id, name: "Fixture Mac",
-                endpoint: .hostPort(host: "127.0.0.1", port: sender.advertisedPort!)), code: sender.code, name: "Fixture Phone")
-            try await wait { sender.pendingName != nil }
-            sender.approve(false)
-            try await wait { !receiver.busy }
-            XCTAssertFalse(receiver.connected)
-            XCTAssertNil(try files.load())
-            let senderSaved = try await senderStore.load()
-            let receiverSaved = try await receiverStore.load()
-            XCTAssertNil(senderSaved)
-            XCTAssertNil(receiverSaved)
-            await sender.forget()
-            await receiver.forget()
-        } catch { await sender.forget(); await receiver.forget(); throw error }
     }
 
     func testCorruptAndPartialFilesNeverBecomeAvailable() throws {

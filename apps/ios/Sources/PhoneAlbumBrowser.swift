@@ -122,10 +122,6 @@ struct PhoneAlbumBrowser<Detail: View>: View {
                 Button(hidden ? "非表示を解除する" : "非表示にする") {
                     changeVisibility(targets)
                 }.disabled(library.albumsVisibilityUnavailable(targets))
-                if let notice = library.albumsVisibilityNotice(targets) { Text(notice) }
-                ForEach(targets.sorted(), id: \.self) { id in
-                    if let status = library.albumVisibilityStatus(id) { Text(status) }
-                }
             }
         }
     }
@@ -163,12 +159,6 @@ struct PhoneAlbumBrowser<Detail: View>: View {
                     Spacer()
                     Button(hidden ? "非表示を解除" : "非表示にする") { changeVisibility(selected) }
                         .disabled(library.albumsVisibilityUnavailable(selected))
-                }
-                if let notice = library.albumsVisibilityNotice(selected) {
-                    Text(notice).font(.caption).foregroundStyle(.secondary)
-                }
-                ForEach(selected.sorted(), id: \.self) { id in
-                    if let status = library.albumVisibilityStatus(id) { Text(status).font(.caption).foregroundStyle(.secondary) }
                 }
             }.padding(20).background(.regularMaterial)
         }

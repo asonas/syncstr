@@ -5,12 +5,7 @@
     enum MobileUITestFixture {
         static func makeLibrary() throws -> Library {
             let root = FileManager.default.temporaryDirectory.appendingPathComponent("ui-fixture-" + UUID().uuidString)
-            let service = "as.ason.syncstr.ui-test." + UUID().uuidString
-            let library = Library(
-                localStore: LocalMusicStore(root: root),
-                pairingSecrets: CredentialStore(service: service + ".pairing"),
-                peerSecrets: CredentialStore(service: service + ".identity"),
-                peerPairing: CredentialStore(service: service + ".peer"))
+            let library = Library(localStore: LocalMusicStore(root: root))
             let entries = (0..<281).map { index in
                 LocalEntry(
                     track: Track(

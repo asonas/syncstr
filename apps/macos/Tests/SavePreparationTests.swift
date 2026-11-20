@@ -48,60 +48,6 @@ struct SavePreparationTests {
         #expect(!library.transfer.connected)
     }
 
-    #if os(macOS)
-    @Test
-    func playbackWaitsForApprovalAndCancellingOneWaiterPreservesConnection() async throws {
-        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
-        defer { try? FileManager.default.removeItem(at: root) }
-        let (files, entry) = try fixture(root: root)
-        var catalog = try #require(try files.load())
-        catalog.id = UUID().uuidString
-        try files.save(catalog)
-        let source = root.appendingPathComponent("source.wav")
-        try Data(repeating: 7, count: 1024).write(to: source)
-        let folder = LocalFolder(root: root, catalog: catalog, files: [entry.track.id: source], skipped: [])
-        let sender = LocalTransfer(store: LocalMusicStore(root: root.appendingPathComponent("sender")),
-            secrets: CredentialStore(service: "syncstr-test-" + UUID().uuidString))
-        let receiver = LocalTransfer(store: files, secrets: CredentialStore(service: "syncstr-test-" + UUID().uuidString))
-        func wait(_ predicate: () -> Bool) async throws {
-            for _ in 0..<1200 {
-                if predicate() { return }
-                try await Task.sleep(for: .milliseconds(25))
-            }
-            try #require(predicate())
-        }
-        do {
-            try await sender.host(folder)
-            try await wait { sender.advertisedPort != nil }
-            receiver.connect(NearbyMusicDevice(id: "Syncstr-" + catalog.id, name: "Fixture Mac",
-                endpoint: .hostPort(host: "127.0.0.1", port: try #require(sender.advertisedPort))), code: sender.code, name: "Fixture Phone")
-            try await wait { sender.pendingName != nil }
-            let cancelled = Task { try await receiver.playbackFile(entry.track) }
-            try await Task.sleep(for: .milliseconds(100))
-            cancelled.cancel()
-            do { _ = try await cancelled.value; Issue.record("Cancelled playback continued") }
-            catch is CancellationError { }
-            #expect(receiver.busy)
-            var finished = false
-            let playback = Task {
-                defer { finished = true }
-                return try await receiver.playbackFile(entry.track)
-            }
-            try await Task.sleep(for: .milliseconds(150))
-            #expect(!finished)
-            sender.approve(true)
-            let url = try await playback.value
-            #expect(try LocalMusicStore.digest(file: url) == entry.sha256)
-            #expect(receiver.connected)
-            await sender.forget()
-            await receiver.forget()
-        } catch {
-            await sender.forget()
-            await receiver.forget()
-            throw error
-        }
-    }
-    #endif
 
     @Test
     func playbackRemainsCancellableWhileCatalogIsLocked() async throws {
