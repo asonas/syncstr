@@ -172,7 +172,7 @@ struct HostConnectionSettings: View {
         } else {
             Button("ホストに接続") { open(HostSetupRequest()) }
             if transfer.clusterRegistration != nil || transfer.peerName != nil || transfer.pairedName != nil {
-                DisclosureGroup("従来のライブラリ接続") { PeerSetupView(transfer: transfer) }
+                PeerSetupView(transfer: transfer)
             }
         }
     }
