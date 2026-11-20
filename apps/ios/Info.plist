@@ -18,6 +18,17 @@
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
 	<string>$(MARKETING_VERSION)</string>
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleURLName</key>
+			<string>as.ason.syncstr.host</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>syncstr</string>
+			</array>
+		</dict>
+	</array>
 	<key>CFBundleVersion</key>
 	<string>$(CURRENT_PROJECT_VERSION)</string>
 	<key>ITSAppUsesNonExemptEncryption</key>
@@ -28,7 +39,7 @@
 		<string>_syncstr-cluster._udp</string>
 	</array>
 	<key>NSCameraUsageDescription</key>
-	<string>接続先のペアリング用QRコードを読み取るために使用します。</string>
+	<string>ライブラリのあるMacやNASのQRコードを読み取るために使用します。</string>
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>MacとiPhoneの間で音楽を転送するために使用します。</string>
 	<key>UIBackgroundModes</key>

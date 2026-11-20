@@ -47,6 +47,7 @@ private enum TabletSection: String, CaseIterable, Identifiable {
 
 struct PhoneRoot: View {
     @ObservedObject var library: Library
+    @Binding var hostSetup: HostSetupRequest?
     @State private var tab = PhoneTab.library
     @State private var tabletSection: TabletSection? = .recent
     @FocusState private var searchFocused: Bool
@@ -92,6 +93,7 @@ struct PhoneRoot: View {
         }
         .modifier(OfflineSaveRemoval(library: library, enabled: !library.showingNowPlaying))
         .modifier(TrackMetadataEditing(library: library, enabled: !library.showingNowPlaying))
+        .sheet(item: $hostSetup) { HostConnectionView(transfer: library.transfer, request: $0) }
         .sheet(isPresented: $library.showingNowPlaying) {
             PhoneNowPlaying(library: library)
                 .presentationDragIndicator(.visible)
@@ -140,7 +142,9 @@ struct PhoneRoot: View {
             NavigationStack {
                 Group {
                     switch tabletSection ?? .recent {
-                    case .recent: recentAlbums
+                    case .recent:
+                        if library.connected { recentAlbums }
+                        else { catalog }
                     case .albums:
                         if library.connected { PhoneAlbumBrowser(library: library, detail: albumDetail) }
                         else { catalog }
@@ -237,11 +241,8 @@ struct PhoneRoot: View {
                 VStack(alignment: .leading, spacing: 8) {
                     Text("最近追加した項目").font(.title3.bold())
                     if !library.connected {
-                        Text("ライブラリに参加するか、この端末に音楽を追加して聴き始められます。")
-                        NavigationLink("既存のライブラリに参加") {
-                            ScrollView { PeerSetupView(transfer: library.transfer).padding(20) }
-                                .navigationTitle("ライブラリに参加")
-                        }
+                        Text("ホストのライブラリに接続するか、この端末に音楽を追加して聴き始められます。")
+                        Button("ホストに接続") { hostSetup = HostSetupRequest() }
                         AddMusicButton(library: library)
                         if library.hasSavedLocalLibrary {
                             Button("保存した音楽を開く") { Task { await library.openSavedLocalLibrary() } }
@@ -542,9 +543,11 @@ struct PhoneRoot: View {
             Section { AppearanceSettings() }
             Section { PlaybackDiagnosticSettings(recorder: library.diagnostics) }
             Section { PlaybackStorageSettings(library: library) }
-            Section("ライブラリと接続") { PeerSetupView(transfer: library.transfer) }
+            Section("ライブラリと接続") {
+                HostConnectionSettings(transfer: library.transfer) { hostSetup = $0 }
+            }
             Section { AddMusicButton(library: library) }
-            if !library.transfer.hasLibrarySource {
+            if !library.transfer.hasLibrarySource, library.transfer.pairedName != nil {
                 Section("従来の接続") {
                     NavigationLink("従来の端末間転送") {
                         ScrollView { PhonePairingView(transfer: library.transfer).padding(20) }
@@ -564,6 +567,7 @@ struct PhoneRoot: View {
         .scrollContentBackground(.hidden)
         .background(PhoneStyle.graphite)
         .navigationTitle("設定")
+        .task { if library.transfer.hostConnection == nil { await library.transfer.restorePairing() } }
         .scrollDismissesKeyboard(.interactively)
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {

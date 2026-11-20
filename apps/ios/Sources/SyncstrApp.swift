@@ -31,7 +31,7 @@ struct SyncstrApp: App {
 
     var body: some Scene {
         WindowGroup {
-            PhoneRoot(library: library)
+            PhoneWindow(library: library)
                 .focusedSceneObject(library)
                 .modifier(AppAppearance())
                 .defaultAppStorage(appearanceDefaults)
@@ -54,5 +54,18 @@ struct SyncstrApp: App {
                 }
         }
         .commands { PlaybackCommands() }
+    }
+}
+
+private struct PhoneWindow: View {
+    @ObservedObject var library: Library
+    @State private var hostSetup: HostSetupRequest?
+
+    var body: some View {
+        PhoneRoot(library: library, hostSetup: $hostSetup)
+            .onOpenURL { url in
+                library.showingNowPlaying = false
+                hostSetup = HostSetupRequest(input: .link(url))
+            }
     }
 }

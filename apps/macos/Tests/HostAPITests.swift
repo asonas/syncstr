@@ -155,6 +155,77 @@ final class HostAPITests: XCTestCase {
         return HostLibraryInfo(library: libraryID, name: "Fixture", host: host, hosts: [host], role: "primary", marker: marker)
     }
 
+    private func informationReply(library: String) throws -> HostReply {
+        let host = ["id": node, "address": "https://advertised.example.test"]
+        let object: [String: Any] = ["library": library, "name": "Remote", "host": host, "hosts": [host],
+                                     "role": "primary", "marker": marker]
+        return try HostReply(data: JSONSerialization.data(withJSONObject: object))
+    }
+
+    func testAddressScanAndLinkOnlyReadInformationUntilConfirmed() async throws {
+        let link = try XCTUnwrap(URL(string: "syncstr://open?host=https%3A%2F%2Fmusic.example.test%3A8441&extra=1"))
+        let reply = try informationReply(library: libraryID)
+        let files = store()
+        let transfer = LocalTransfer(store: files, hostConfiguration: configuration { request in
+            XCTAssertEqual(request.url?.absoluteString, "https://music.example.test:8441/api/v1/library")
+            return reply
+        })
+        for input in [HostInput.text("music.example.test:8441"), .text(link.absoluteString), .link(link)] {
+            let flow = HostConnectionFlow()
+            await flow.read(input, using: transfer)
+            guard case .confirmation(let address, let info) = flow.phase else { return XCTFail("Expected confirmation") }
+            XCTAssertEqual(address.displayName, "music.example.test:8441")
+            XCTAssertEqual(info.name, "Remote")
+            XCTAssertNil(try files.database().hostConnection())
+        }
+        let invalid = try XCTUnwrap(URL(string: "syncstr://open?extra=1"))
+        let flow = HostConnectionFlow()
+        await flow.read(.link(invalid), using: transfer)
+        guard case .failure = flow.phase else { return XCTFail("Invalid link accepted") }
+    }
+
+    func testReplacementNeedsSeparateConsentForTheDisplayedCandidate() async throws {
+        let (catalog, _, _) = try fixture()
+        let files = store()
+        let address = try HostAddress("https://music.example.test:443")
+        let first = LocalTransfer(store: files, hostConfiguration: configuration { _ in catalog })
+        _ = try await first.confirmHost(address, information: hostInformation(address))
+        let nextID = UUID().uuidString.lowercased()
+        let info = try informationReply(library: nextID)
+        let data = try XCTUnwrap(String(data: catalog.data, encoding: .utf8)).replacingOccurrences(of: libraryID, with: nextID)
+        let etag = try XCTUnwrap(catalog.headers["ETag"]).replacingOccurrences(of: libraryID, with: nextID)
+        let transfer = LocalTransfer(store: files, hostConfiguration: configuration { request in
+            request.url?.lastPathComponent == "library" ? info : HostReply(headers: ["ETag": etag], data: Data(data.utf8))
+        })
+        let flow = HostConnectionFlow()
+        await flow.read(.text(address.origin.absoluteString), using: transfer)
+        await flow.confirm(using: transfer, replacing: true)
+        guard case .confirmation = flow.phase else { return XCTFail("Skipped first confirmation") }
+        await flow.confirm(using: transfer)
+        guard case .replacement(let candidate, let information) = flow.phase else { return XCTFail("Skipped replacement consent") }
+        XCTAssertEqual(candidate.displayName, "music.example.test")
+        XCTAssertEqual(information.library, nextID)
+        await flow.confirm(using: transfer)
+        XCTAssertEqual(try files.database().hostConnection()?.library, libraryID)
+        await flow.confirm(using: transfer, replacing: true)
+        guard case .connected = flow.phase else { return XCTFail("Replacement failed") }
+        XCTAssertEqual(try files.database().hostConnection()?.library, nextID)
+    }
+
+    func testCancelledReadDoesNotPresentConfirmationOrFailure() async throws {
+        let started = expectation(description: "information request")
+        let cancelled = expectation(description: "information request cancelled")
+        let gate = HostResponseGate(started: started, cancelled: cancelled)
+        let transfer = LocalTransfer(store: store(), hostConfiguration: configuration { _ in HostReply(gate: gate) })
+        let flow = HostConnectionFlow()
+        let read = Task { await flow.read(.text("music.example.test"), using: transfer) }
+        await fulfillment(of: [started], timeout: 3)
+        read.cancel()
+        await fulfillment(of: [cancelled], timeout: 3)
+        await read.value
+        guard case .reading = flow.phase else { return XCTFail("Cancelled read published a result") }
+    }
+
     func testStoppingDownloadingSourceCancelsHeldRequest() async throws {
         let (reply, _, _) = try fixture()
         let started = expectation(description: "audio GET started")

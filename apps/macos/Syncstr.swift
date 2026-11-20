@@ -34,7 +34,7 @@ struct StudioButton: ButtonStyle {
 struct LibraryView: View {
     @ObservedObject var library: Library
     @State private var importingAudio = false
-    @State private var showingPeerSetup = false
+    @State private var hostSetup: HostSetupRequest?
     @State private var showingUploadStatus = false
     @State private var showingClusterResults = false
     @State private var hoveredTrack: String?
@@ -64,8 +64,10 @@ struct LibraryView: View {
             } else {
                 VStack(spacing: 20) {
                     Text("自分の音楽を、どの端末でも").font(.title)
-                    Text("ライブラリに参加するか、この端末に音楽を追加して聴き始められます。")
-                    Button("既存のライブラリに参加") { showingPeerSetup = true }.buttonStyle(.borderedProminent)
+                    Text("このMacの音楽を聴くか、NASや別のMacのライブラリに接続できます。")
+                    Button(library.transfer.hostConnection == nil ? "ホストに接続" : "ライブラリと接続") {
+                        hostSetup = HostSetupRequest(showsSettings: library.transfer.hostConnection != nil)
+                    }.buttonStyle(.borderedProminent)
                     LocalFolderButton(library: library).buttonStyle(.borderedProminent)
                     AddMusicButton(library: library)
                     if library.hasSavedLocalLibrary {
@@ -112,14 +114,23 @@ struct LibraryView: View {
         }
         .modifier(OfflineSaveRemoval(library: library))
         .modifier(TrackMetadataEditing(library: library))
-        .sheet(isPresented: $showingPeerSetup) {
-            ScrollView { PeerSetupView(transfer: library.transfer).padding(24) }
-                .frame(width: 500, height: 600)
-                .toolbar { Button("閉じる") { showingPeerSetup = false } }
+        .onOpenURL { url in
+            showingClusterResults = false
+            hostSetup = HostSetupRequest(input: .link(url))
+        }
+        .sheet(item: $hostSetup) { request in
+            if request.showsSettings {
+                VStack(alignment: .leading, spacing: 16) {
+                    HostConnectionSettings(transfer: library.transfer) { hostSetup = $0 }
+                    Button("閉じる") { hostSetup = nil }
+                }.padding(24).frame(minWidth: 440)
+            } else {
+                HostConnectionView(transfer: library.transfer, request: request)
+            }
         }
         .sheet(isPresented: $showingClusterResults) { ClusterImportResults(transfer: library.transfer) }
         .onChange(of: library.transfer.busy) { _, busy in
-            if !busy && !showingPeerSetup && library.transfer.clusterResultsPending {
+            if !busy && hostSetup == nil && library.transfer.clusterResultsPending {
                 library.transfer.clusterResultsPending = false
                 showingClusterResults = true
             }

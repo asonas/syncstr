@@ -31,6 +31,7 @@ targets:
       - path: ../macos/ClusterDiscovery.swift
       - path: ../macos/ClusterTransport.swift
       - path: ../macos/LibrarySource.swift
+      - path: ../macos/HostConnectionFlow.swift
       - path: ../macos/HostAPIClient.swift
       - path: ../macos/HostLibrarySource.swift
       - path: ../macos/ClusterMutation.swift
@@ -40,6 +41,7 @@ targets:
       - path: ../macos/SharedTrackResolution.swift
       - path: ../macos/LocalTransfer.swift
       - path: ../macos/PeerTransfer.swift
+      - path: ../macos/HostConnectionView.swift
       - path: ../macos/PeerSetup.swift
       - path: ../macos/LocalSetup.swift
       - path: ../macos/Library.swift
@@ -82,6 +84,9 @@ targets:
       properties:
         CFBundleLocalizations: [ja, en]
         NSAppleMusicUsageDescription: "Musicライブラリから音源に対応するアートワークを読み込むために使用します。"
+        CFBundleURLTypes:
+          - CFBundleURLName: as.ason.syncstr.host
+            CFBundleURLSchemes: [syncstr]
         CFBundleDisplayName: Syncstr
         NSLocalNetworkUsageDescription: "MacとiPhoneの間で音楽を転送するために使用します。"
         NSBonjourServices: ["_syncstr-music._tcp", "_syncstr-cluster._udp"]
@@ -107,6 +112,7 @@ targets:
       - path: ../macos/ClusterDiscovery.swift
       - path: ../macos/ClusterTransport.swift
       - path: ../macos/LibrarySource.swift
+      - path: ../macos/HostConnectionFlow.swift
       - path: ../macos/HostAPIClient.swift
       - path: ../macos/HostLibrarySource.swift
       - path: ../macos/ClusterMutation.swift
@@ -116,6 +122,7 @@ targets:
       - path: ../macos/SharedTrackResolution.swift
       - path: ../macos/LocalTransfer.swift
       - path: ../macos/PeerTransfer.swift
+      - path: ../macos/HostConnectionView.swift
       - path: ../macos/PeerSetup.swift
       - path: ../macos/LocalSetup.swift
       - path: ../macos/Library.swift
@@ -143,13 +150,16 @@ targets:
     info:
       path: Info.plist
       properties:
+        CFBundleURLTypes:
+          - CFBundleURLName: as.ason.syncstr.host
+            CFBundleURLSchemes: [syncstr]
         CFBundleDisplayName: Syncstr
         NSLocalNetworkUsageDescription: "MacとiPhoneの間で音楽を転送するために使用します。"
         NSBonjourServices: ["_syncstr-music._tcp", "_syncstr-cluster._udp"]
         CFBundleShortVersionString: $(MARKETING_VERSION)
         CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         ITSAppUsesNonExemptEncryption: false
-        NSCameraUsageDescription: "接続先のペアリング用QRコードを読み取るために使用します。"
+        NSCameraUsageDescription: "ライブラリのあるMacやNASのQRコードを読み取るために使用します。"
         UILaunchScreen: {}
         UISupportedInterfaceOrientations:
           - UIInterfaceOrientationPortrait
@@ -245,6 +255,7 @@ targets:
       - path: ../macos/ClusterDiscovery.swift
       - path: ../macos/ClusterTransport.swift
       - path: ../macos/LibrarySource.swift
+      - path: ../macos/HostConnectionFlow.swift
       - path: ../macos/HostAPIClient.swift
       - path: ../macos/HostLibrarySource.swift
       - path: ../macos/ClusterMutation.swift

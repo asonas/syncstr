@@ -2,6 +2,7 @@ import SwiftUI
 
 struct SettingsView: View {
     @ObservedObject var library: Library
+    @State private var hostSetup: HostSetupRequest?
     @State private var showingLegacy = false
 
     var body: some View {
@@ -21,18 +22,18 @@ struct SettingsView: View {
             Divider()
             PlaybackDiagnosticSettings(recorder: library.diagnostics)
             Divider()
-            PeerSetupView(transfer: library.transfer)
-            Divider()
-            DisclosureGroup("従来の接続") {
-                Button("従来の端末間転送") { showingLegacy = true }
-                    .disabled(library.transfer.hasLibrarySource)
-                Text("音楽フォルダを使う旧方式です。共有ライブラリへの参加と日常の保存操作は上の設定から行えます。")
-                    .font(.caption).foregroundStyle(Studio.fog)
+            HostConnectionSettings(transfer: library.transfer) { hostSetup = $0 }
+            if !library.transfer.hasLibrarySource, library.transfer.pairedName != nil {
+                Divider()
+                DisclosureGroup("従来の接続") {
+                    Button("従来の端末間転送") { showingLegacy = true }
+                }
             }
         }.padding(24) }
         .frame(width: 520, height: 680)
         .background(Studio.graphite)
         .navigationTitle("設定")
+        .sheet(item: $hostSetup) { HostConnectionView(transfer: library.transfer, request: $0) }
         .sheet(isPresented: $showingLegacy) {
             VStack {
                 if library.hasLocalFolder {
