@@ -1,0 +1,155 @@
+import Foundation
+
+@MainActor
+final class HostAudioFiles {
+    private var active = Set<String>()
+    private var waiters: [String: [UUID: CheckedContinuation<Void, Error>]] = [:]
+    private var verified: [String: URL] = [:]
+
+    func download(_ entry: LocalEntry, into store: LocalMusicStore, recordReceipt: Bool, client: HostAPIClient,
+                  diagnostic: PlaybackDiagnosticContext?) async throws {
+        try Task.checkCancellation()
+        let hash = entry.sha256
+        while !active.insert(hash).inserted {
+            let id = UUID()
+            try await withTaskCancellationHandler {
+                try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+                    if Task.isCancelled { continuation.resume(throwing: CancellationError()) }
+                    else { waiters[hash, default: [:]][id] = continuation }
+                }
+            } onCancel: {
+                Task { @MainActor in
+                    self.waiters[hash]?.removeValue(forKey: id)?.resume(throwing: CancellationError())
+                }
+            }
+            try Task.checkCancellation()
+        }
+        defer {
+            active.remove(hash)
+            if let waiting = waiters.removeValue(forKey: hash) {
+                for continuation in waiting.values { continuation.resume() }
+            }
+        }
+        let previous = verified[hash]
+        let destination = store.fileURL(entry)
+        if let existing = try await CatalogStorage.shared.perform({
+            if let url = try store.verifiedFile(entry, host: recordReceipt) { return url }
+            guard let previous, FileManager.default.fileExists(atPath: previous.path) else { return nil as URL? }
+            let copy = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+            defer { try? FileManager.default.removeItem(at: copy) }
+            try FileManager.default.copyItem(at: previous, to: copy)
+            do { try store.importFile(copy, entry: entry, recordReceipt: recordReceipt, diagnostic: diagnostic) }
+            catch LocalMusicError.invalidData { return nil }
+            return destination
+        }) {
+            verified[hash] = existing
+            return
+        }
+        for attempt in 0...1 {
+            diagnostic?.record("request", "host_audio", fields: ["sha256": hash, "attempt": String(attempt + 1)])
+            let temporary = try await client.audio(sha256: hash)
+            defer { try? FileManager.default.removeItem(at: temporary) }
+            do {
+                try await CatalogStorage.shared.perform {
+                    try store.importFile(temporary, entry: entry, recordReceipt: recordReceipt, diagnostic: diagnostic)
+                }
+                verified[hash] = destination
+                return
+            } catch LocalMusicError.invalidData where attempt == 0 { continue }
+        }
+        throw LocalMusicError.invalidData
+    }
+}
+
+@MainActor
+final class HostLibrarySource: LibrarySource {
+    private let client: HostAPIClient
+    private let store: LocalMusicStore
+    private let files: HostAudioFiles
+    private let etag: String?
+    private var stopped = false
+    private var downloads: [UUID: Task<Void, Error>] = [:]
+    private var pending: ArraySlice<(String, @MainActor (String, URL) -> Void)> = []
+    private var queued = Set<String>()
+    private var retryAfter: [String: ContinuousClock.Instant] = [:]
+    private var fetching: [String: Task<Void, Never>] = [:]
+    private var failed = Set<String>()
+
+    init(host: HostConnection, configuration: URLSessionConfiguration, store: LocalMusicStore, files: HostAudioFiles,
+         switchObserved: @escaping @Sendable (String) -> Void) {
+        client = HostAPIClient(address: host.address, configuration: configuration, switchObserved: switchObserved)
+        self.store = store
+        self.files = files
+        etag = host.etag
+    }
+
+    func refreshCatalog() async throws -> CatalogRefresh {
+        try await client.catalog(etag: etag)
+    }
+
+    func download(_ entry: LocalEntry, cache: LocalMusicStore?, diagnostic: PlaybackDiagnosticContext?,
+                  progress: @escaping @MainActor (Double) -> Void) async throws {
+        guard !stopped else { throw CancellationError() }
+        progress(0)
+        let id = UUID()
+        let task = Task {
+            try await files.download(entry, into: cache ?? store, recordReceipt: cache == nil, client: client, diagnostic: diagnostic)
+            if cache == nil { try store.database().saveAudioPin(entry) }
+        }
+        downloads[id] = task
+        defer { downloads[id] = nil }
+        try await withTaskCancellationHandler { try await task.value } onCancel: { task.cancel() }
+        progress(1)
+    }
+
+    func retryArtwork() { failed.removeAll(); retryAfter.removeAll() }
+
+    func requestArtwork(_ id: String, received: @escaping @MainActor (String, URL) -> Void) {
+        guard !stopped, fetching[id] == nil, !failed.contains(id), ClusterIdentity.isLowercaseHex256(id) else { return }
+        guard retryAfter[id].map({ $0 <= .now }) ?? true, queued.insert(id).inserted else { return }
+        pending.append((id, received))
+        fillArtworkRequests()
+    }
+
+    private func fillArtworkRequests() {
+        while !stopped, fetching.count < 4, !pending.isEmpty {
+            let (id, received) = pending.removeFirst()
+            queued.remove(id)
+            fetching[id] = Task {
+                defer {
+                    fetching[id] = nil
+                    fillArtworkRequests()
+                }
+                do {
+                    let url = try await storedArtwork(id)
+                    try Task.checkCancellation()
+                    if !stopped { received(id, url) }
+                } catch LocalMusicError.invalidData {
+                    failed.insert(id)
+                } catch {
+                    retryAfter[id] = .now.advanced(by: .seconds(2))
+                }
+            }
+        }
+    }
+
+    func storedArtwork(_ id: String) async throws -> URL {
+        guard ClusterIdentity.isLowercaseHex256(id) else { throw LocalMusicError.invalidData }
+        let url = store.artworkURL(asset: id)
+        let existing = try await CatalogStorage.shared.perform { (try? LocalMusicStore.digest(file: url)) == id }
+        if !existing {
+            let data = try await client.artwork(id: id)
+            try await CatalogStorage.shared.perform { try data.write(to: url, options: .atomic) }
+        }
+        return url
+    }
+
+    func stop() {
+        stopped = true
+        pending.removeAll()
+        for task in downloads.values { task.cancel() }
+        for task in fetching.values { task.cancel() }
+        client.stop()
+    }
+}
+

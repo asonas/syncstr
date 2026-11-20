@@ -9,17 +9,22 @@ extension CatalogDatabase {
         })
     }
 
+    private func pinTrackID(_ entry: LocalEntry) throws -> String {
+        if entry.track.audioHash == nil { return entry.track.id }
+        return try sharedAudioSnapshot()?.catalog.addresses[entry.track.id] ?? entry.track.id
+    }
+
     func saveAudioPin(_ entry: LocalEntry) throws {
-        try execute("INSERT OR REPLACE INTO shared_audio_saves VALUES (?, ?)", [try sharedAudioSnapshot()?.catalog.addresses[entry.track.id] ?? entry.track.id, entry.sha256])
+        try execute("INSERT OR REPLACE INTO shared_audio_saves VALUES (?, ?)", [try pinTrackID(entry), entry.sha256])
     }
 
     func hasAudioPin(_ entry: LocalEntry) throws -> Bool {
-        try !rows("SELECT track FROM shared_audio_saves WHERE track = ? AND hash = ?", [try sharedAudioSnapshot()?.catalog.addresses[entry.track.id] ?? entry.track.id, entry.sha256]).isEmpty
+        try !rows("SELECT track FROM shared_audio_saves WHERE track = ? AND hash = ?", [try pinTrackID(entry), entry.sha256]).isEmpty
     }
 
     func removeAudioPin(_ entry: LocalEntry) throws -> Bool {
         try transaction {
-            try execute("DELETE FROM shared_audio_saves WHERE track = ? AND hash = ?", [try sharedAudioSnapshot()?.catalog.addresses[entry.track.id] ?? entry.track.id, entry.sha256])
+            try execute("DELETE FROM shared_audio_saves WHERE track = ? AND hash = ?", [try pinTrackID(entry), entry.sha256])
             return try !rows("SELECT track FROM shared_audio_saves WHERE hash = ?", [entry.sha256]).isEmpty
         }
     }
@@ -132,6 +137,15 @@ extension CatalogDatabase {
     }
 
     func playlistDocuments() throws -> (documents: [PlaylistDocument], conflicts: Set<String>) {
+        if try hostCatalogLibrary() != nil {
+            var documents: [PlaylistDocument] = []
+            var conflicts = Set<String>()
+            for row in try rows("SELECT id, payload, conflicted FROM host_playlists ORDER BY position") {
+                if let payload = row[1] { documents.append(try JSONDecoder().decode(PlaylistDocument.self, from: Data(payload.utf8))) }
+                if row[2] == "1", let id = row[0] { conflicts.insert(id) }
+            }
+            return (documents, conflicts)
+        }
         let membership: ClusterMembership
         let cluster: String
         if let registration = try clusterRegistration() {
@@ -555,9 +569,9 @@ final class CatalogDatabase {
         sqlite3_busy_timeout(connection, 5000)
         do {
             let version = try rows("PRAGMA user_version").first?.first ?? nil
-            guard ["0", "1", "2", "3", "4"].contains(version) else { throw LocalMusicError.invalidData }
-            if version == "4" {
-                let required: Set<String> = ["shared_audio_snapshot", "shared_audio_saves", "catalog", "entries", "received_files", "organization", "artwork_assets",
+            guard ["0", "1", "2", "3", "4", "5", "6"].contains(version) else { throw LocalMusicError.invalidData }
+            if version == "6" {
+                let required: Set<String> = ["retained_host_catalog", "host_connection", "host_entries", "host_playlists", "shared_audio_snapshot", "shared_audio_saves", "catalog", "entries", "received_files", "organization", "artwork_assets",
                     "cluster_schema", "cluster_identity", "cluster_peers", "cluster_objects", "cluster_locations",
                     "cluster_pending_changes", "cluster_jobs", "cluster_registration", "cluster_signed_changes",
                     "cluster_peer_cursors", "cluster_track_ids", "cluster_import_batches", "cluster_transfer_settings", "cluster_metadata_queue", "playlist_records", "playlist_cursors", "playlist_authorities"]
@@ -573,13 +587,25 @@ final class CatalogDatabase {
                 try execute("CREATE TABLE IF NOT EXISTS artwork_assets (id TEXT PRIMARY KEY, payload TEXT NOT NULL)")
                 try execute("CREATE TABLE IF NOT EXISTS shared_audio_snapshot (singleton INTEGER PRIMARY KEY CHECK(singleton = 1), payload TEXT NOT NULL)")
                 try execute("CREATE TABLE IF NOT EXISTS shared_audio_saves (track TEXT NOT NULL, hash TEXT NOT NULL, PRIMARY KEY(track, hash))")
-                if version != "4" { _ = try readSnapshot() }
+                if !["4", "5", "6"].contains(version) { _ = try readSnapshot() }
                 try migrateCluster()
                 try migrateClusterMembership()
                 try execute("CREATE TABLE IF NOT EXISTS playlist_records (id TEXT PRIMARY KEY, playlist_id TEXT NOT NULL, payload TEXT NOT NULL)")
                 try execute("CREATE TABLE IF NOT EXISTS playlist_cursors (peer TEXT PRIMARY KEY, sequence INTEGER NOT NULL)")
                 try execute("CREATE TABLE IF NOT EXISTS playlist_authorities (library_id TEXT PRIMARY KEY, peer TEXT NOT NULL, payload TEXT NOT NULL)")
-                try execute("PRAGMA user_version = 4")
+                try execute("CREATE TABLE IF NOT EXISTS host_connection (singleton INTEGER PRIMARY KEY CHECK(singleton = 1), address TEXT NOT NULL, library TEXT NOT NULL, name TEXT NOT NULL, hosts TEXT NOT NULL, etag TEXT, marker TEXT, header TEXT)")
+                try execute("CREATE TABLE IF NOT EXISTS host_entries (id TEXT PRIMARY KEY, position INTEGER NOT NULL, payload TEXT NOT NULL)")
+                try execute("CREATE TABLE IF NOT EXISTS host_playlists (id TEXT PRIMARY KEY, position INTEGER, payload TEXT, conflicted INTEGER NOT NULL)")
+                try execute("CREATE TABLE IF NOT EXISTS retained_host_catalog (library TEXT PRIMARY KEY, header TEXT NOT NULL)")
+                if try !rows("PRAGMA table_info(host_connection)").contains(where: { $0[1] == "host_switch" }) {
+                    try execute("ALTER TABLE host_connection ADD COLUMN host_switch TEXT")
+                    let store = LocalMusicStore(root: root)
+                    for row in try rows("SELECT payload FROM host_entries") {
+                        let entry = try JSONDecoder().decode(LocalEntry.self, from: Data((row[0] ?? "").utf8))
+                        if store.hasFile(entry) { try saveAudioPin(entry) }
+                    }
+                }
+                try execute("PRAGMA user_version = 6")
             }
         } catch {
             sqlite3_close(connection)
@@ -649,14 +675,97 @@ final class CatalogDatabase {
     }
 
     func snapshot() throws -> CatalogSnapshot? {
-        try transaction { try readSnapshot() }
+        try transaction {
+            guard try hostCatalogLibrary() != nil else { return try readSnapshot() }
+            guard let payload = try rows("SELECT header FROM host_connection UNION ALL SELECT header FROM retained_host_catalog").first?.first ?? nil else { return nil }
+            var catalog = try JSONDecoder().decode(LocalCatalog.self, from: Data(payload.utf8))
+            catalog.entries = try rows("SELECT payload FROM host_entries ORDER BY position").map {
+                try JSONDecoder().decode(LocalEntry.self, from: Data(($0[0] ?? "").utf8))
+            }
+            return CatalogSnapshot(catalog: catalog, sourceRoot: nil, sourcePaths: [:])
+        }
+    }
+
+    func retainedHostLibrary() throws -> String? {
+        try rows("SELECT library FROM retained_host_catalog").first?.first ?? nil
+    }
+
+    private func hostCatalogLibrary() throws -> String? {
+        try rows("SELECT library FROM host_connection UNION ALL SELECT library FROM retained_host_catalog").first?.first ?? nil
+    }
+
+    func updateHosts(_ hosts: [HostLibraryInfo.Host], for host: HostConnection) throws {
+        try transaction {
+            guard try hostConnection() == host else { throw CancellationError() }
+            try execute("UPDATE host_connection SET hosts = ?", [String(decoding: try JSONEncoder().encode(hosts), as: UTF8.self)])
+        }
+    }
+
+    func hostConnection() throws -> HostConnection? {
+        guard let row = try rows("SELECT address, library, name, hosts, etag, marker, host_switch FROM host_connection").first else { return nil }
+        guard let address = row[0], let library = row[1], let name = row[2], let hosts = row[3] else { throw LocalMusicError.invalidData }
+        return try HostConnection(address: HostAddress(address), library: library, name: name,
+                                  hosts: JSONDecoder().decode([HostLibraryInfo.Host].self, from: Data(hosts.utf8)), etag: row[4], marker: row[5], hostSwitch: row[6])
+    }
+
+    func rememberHostIfLibraryEmpty(_ host: HostConnection) throws -> Bool {
+        try transaction {
+            guard try hostConnection() == nil, try !containsCatalog() else { return false }
+            let hosts = String(decoding: try JSONEncoder().encode(host.hosts), as: UTF8.self)
+            try execute("INSERT INTO host_connection(singleton,address,library,name,hosts) VALUES(1,?,?,?,?)",
+                        [host.address.origin.absoluteString, host.library, host.name, hosts])
+            return true
+        }
+    }
+
+    func forgetHost() throws {
+        try transaction {
+            if try clusterRegistration() == nil {
+                try execute("INSERT OR REPLACE INTO retained_host_catalog SELECT library, header FROM host_connection WHERE header IS NOT NULL")
+            } else {
+                try execute("DELETE FROM host_playlists")
+                try execute("DELETE FROM host_entries")
+            }
+            try execute("DELETE FROM host_connection")
+        }
+    }
+
+    func saveHostCatalog(_ update: CatalogUpdate, connection: HostConnection, replacing previous: HostConnection?) throws {
+        try transaction {
+            guard try hostConnection() == previous, update.catalog.id == connection.library else { throw CancellationError() }
+            let hosts = String(decoding: try JSONEncoder().encode(connection.hosts), as: UTF8.self)
+            var header = update.catalog
+            header.entries = []
+            try execute("DELETE FROM retained_host_catalog")
+            try execute("INSERT OR REPLACE INTO host_connection(singleton,address,library,name,hosts,etag,marker,header,host_switch) VALUES(1,?,?,?,?,?,?,?,?)",
+                        [connection.address.origin.absoluteString, connection.library, header.name, hosts, update.etag, update.marker,
+                         String(decoding: try JSONEncoder().encode(header), as: UTF8.self), update.hostSwitch])
+            try execute("DELETE FROM host_entries")
+            for (index, entry) in update.catalog.entries.enumerated() {
+                try Task.checkCancellation()
+                try execute("INSERT INTO host_entries VALUES(?,?,?)", [entry.track.id, String(index), String(decoding: try JSONEncoder().encode(entry), as: UTF8.self)])
+            }
+            try execute("DELETE FROM host_playlists")
+            for (index, playlist) in update.playlists.enumerated() {
+                try execute("INSERT INTO host_playlists VALUES(?,?,?,0)", [playlist.id, String(index), String(decoding: try JSONEncoder().encode(playlist), as: UTF8.self)])
+            }
+            for id in update.conflicts {
+                try execute("INSERT INTO host_playlists(id,conflicted) VALUES(?,1) ON CONFLICT(id) DO UPDATE SET conflicted=1", [id])
+            }
+        }
     }
 
     func containsCatalog() throws -> Bool {
-        try rows("SELECT EXISTS(SELECT 1 FROM catalog WHERE singleton = 1) OR EXISTS(SELECT 1 FROM shared_audio_snapshot)").first?.first == "1"
+        try rows("SELECT CASE WHEN EXISTS(SELECT 1 FROM host_connection) THEN EXISTS(SELECT 1 FROM host_connection WHERE header IS NOT NULL) ELSE EXISTS(SELECT 1 FROM retained_host_catalog) OR EXISTS(SELECT 1 FROM catalog) OR EXISTS(SELECT 1 FROM shared_audio_snapshot) END").first?.first == "1"
     }
 
     func playbackEntry(_ id: String, hash: String? = nil) throws -> (library: String, entry: LocalEntry)? {
+        if let library = try hostCatalogLibrary() {
+            guard let payload = try rows("SELECT payload FROM host_entries WHERE id = ?", [id]).first?.first ?? nil else { return nil }
+            let entry = try JSONDecoder().decode(LocalEntry.self, from: Data(payload.utf8))
+            guard hash == nil || entry.sha256 == hash else { return nil }
+            return (library, entry)
+        }
         if let shared = try sharedAudioSnapshot() {
             let entry = try shared.catalog.entry(id, hash: hash)
             guard entry.track.unavailable != true, LocalMusicStore.valid(entry) else { throw LocalMusicError.clusterNeedsAttention }

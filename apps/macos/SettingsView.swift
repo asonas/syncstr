@@ -10,7 +10,7 @@ struct SettingsView: View {
             Divider()
             Text("音楽の追加").font(.headline)
             AddMusicButton(library: library)
-            if library.transfer.clusterRegistration == nil {
+            if !library.transfer.hasLibrarySource {
                 LocalFolderButton(library: library)
                 Text("登録せずにこの端末で再生できます。ライブラリホストには設定されません。")
                     .foregroundStyle(Studio.fog)
@@ -25,7 +25,7 @@ struct SettingsView: View {
             Divider()
             DisclosureGroup("従来の接続") {
                 Button("従来の端末間転送") { showingLegacy = true }
-                    .disabled(library.transfer.clusterRegistration != nil)
+                    .disabled(library.transfer.hasLibrarySource)
                 Text("音楽フォルダを使う旧方式です。共有ライブラリへの参加と日常の保存操作は上の設定から行えます。")
                     .font(.caption).foregroundStyle(Studio.fog)
             }

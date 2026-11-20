@@ -23,7 +23,8 @@ extension Library {
 }
 
 extension LocalEntry {
-    var saveIdentity: String { track.audioHash == nil ? sha256 : track.id + ":" + sha256 }
+    var trackSaveIdentity: String { track.id + ":" + sha256 }
+    var saveIdentity: String { track.audioHash == nil ? sha256 : trackSaveIdentity }
 }
 
 extension LocalTransfer {
@@ -89,16 +90,17 @@ extension LocalTransfer {
     }
 
     func cancelSaves(containing tracks: [Track]) throws {
-        let addresses = try store.database().sharedAudioSnapshot()?.catalog.addresses ?? [:]
+        let addresses = !usesHostCatalog ? try store.database().sharedAudioSnapshot()?.catalog.addresses ?? [:] : [:]
         let ids = Set(tracks.map { addresses[$0.id] ?? $0.id })
         var updated = saveRequests
         for index in updated.indices where updated[index].entries.contains(where: { ids.contains($0.track.id) }) {
+            if let library = hostConnection?.library ?? retainedHostLibrary, updated[index].library != library { continue }
             let remaining = updated[index].entries.filter { !ids.contains($0.track.id) }
             if remaining.isEmpty {
                 updated[index].state = .cancelled
             } else {
                 updated[index].entries = remaining
-                updated[index].completed.formIntersection(remaining.map(\.saveIdentity))
+                updated[index].completed.formIntersection(remaining.map { usesHostCatalog ? $0.trackSaveIdentity : $0.saveIdentity })
             }
         }
         try persistSaves(updated)
@@ -147,7 +149,7 @@ extension LocalTransfer {
     }
 
     func resumeSaves(explicit: String? = nil) {
-        guard !savesBackgrounded, saveWorker == nil,
+        guard !retainsHostCatalog, !savesBackgrounded, saveWorker == nil,
               saveRequests.contains(where: { [.waiting, .wifi, .saving].contains($0.state) }) else { return }
         saveRetry?.cancel()
         let token = saveGeneration
@@ -170,9 +172,11 @@ extension LocalTransfer {
             do {
                 try Task.checkCancellation()
                 guard saveGeneration == token else { return }
-                guard let catalog = try await store.snapshotInBackground()?.catalog else { return }
+                guard let catalog = try await store.snapshotInBackground()?.catalog,
+                      catalog.remoteArtwork == nil || hostConnection?.library == catalog.id else { return }
                 try Task.checkCancellation()
                 guard saveGeneration == token else { return }
+                func identity(_ entry: LocalEntry) -> String { catalog.remoteArtwork != nil ? entry.trackSaveIdentity : entry.saveIdentity }
                 for index in saveRequests.indices {
                     guard saveRequests[index].library == catalog.id,
                           [.waiting, .wifi, .saving].contains(saveRequests[index].state) else { continue }
@@ -181,21 +185,36 @@ extension LocalTransfer {
                     let automatic = request.id != explicit
                     var failure: String?
                     var waiting = false
-                    for entry in request.entries {
+                    for (position, requested) in request.entries.enumerated() {
+                        var entry = requested
                         try Task.checkCancellation()
                         guard saveGeneration == token else { return }
-                        saveRequests[index].completed.remove(entry.saveIdentity)
+                        saveRequests[index].completed.remove(identity(entry))
                         do {
-                            guard (catalog.logicalAudio == true ? (try store.database().playbackEntry(entry.track.id, hash: entry.sha256) != nil) : catalog.entries.contains(where: { $0.track.id == entry.track.id && $0.sha256 == entry.sha256 })) else {
-                                throw LocalMusicError.invalidData
+                            let current: LocalEntry?
+                            if catalog.logicalAudio == true {
+                                current = try store.database().playbackEntry(requested.track.id, hash: requested.sha256)?.entry
+                            } else {
+                                current = catalog.entries.first { $0.track.id == requested.track.id && $0.sha256 == requested.sha256 }
                             }
-                            if store.hasFile(entry), try LocalMusicStore.digest(file: store.fileURL(entry)) == entry.sha256 {
+                            guard let current else { throw LocalMusicError.invalidData }
+                            if hostConnection != nil {
+                                entry = current
+                                saveRequests[index].entries[position] = current
+                            }
+                            let saved = try await CatalogStorage.shared.perform { [files = store, entry, host = hostConnection != nil] in
+                                try files.verifiedFile(entry, host: host) != nil
+                            }
+                            guard saveGeneration == token else { return }
+                            if saved {
                                 if clusterRegistration != nil {
                                     try await makeLibrarySource().recoverDownloadedFile(entry)
                                 }
-                                if entry.track.audioHash != nil { try store.database().saveAudioPin(entry) }
-                                saveRequests[index].completed.insert(entry.saveIdentity)
+                                guard saveGeneration == token else { return }
+                                if hostConnection != nil || entry.track.audioHash != nil { try store.database().saveAudioPin(entry) }
+                                saveRequests[index].completed.insert(identity(entry))
                                 try persistSaves(saveRequests)
+                                if hostConnection != nil { onSaved?() }
                                 continue
                             }
                             if let cached = try playbackCache.file(entry) {
@@ -210,7 +229,7 @@ extension LocalTransfer {
                                 saveRequests[index].state = .saving
                                 saveRequests[index].error = nil
                                 try persistSaves(saveRequests)
-                                if clusterRegistration != nil {
+                                if hasLibrarySource {
                                     let source = makeLibrarySource()
                                     saveSource = source
                                     defer { source.stop(); if saveGeneration == token { saveSource = nil } }
@@ -228,14 +247,15 @@ extension LocalTransfer {
                             }
                             try Task.checkCancellation()
                             guard saveGeneration == token else { return }
-                            if entry.track.audioHash != nil { try store.database().saveAudioPin(entry) }
-                            saveRequests[index].completed.insert(entry.saveIdentity)
+                            if hostConnection != nil || entry.track.audioHash != nil { try store.database().saveAudioPin(entry) }
+                            saveRequests[index].completed.insert(identity(entry))
                             try persistSaves(saveRequests)
                             onSaved?()
                         } catch {
                             try Task.checkCancellation()
                             guard saveGeneration == token else { return }
                             if case LocalMusicError.clusterUnavailable = error { waiting = true }
+                            else if hostConnection != nil, error is URLError { waiting = true }
                             else if case LocalMusicError.disconnected = error { waiting = true }
                             else if (error as? CocoaError)?.code == .fileWriteOutOfSpace {
                                 failure = "この端末の空き容量が不足しているため保存できません。空き容量を増やして再試行してください。"
@@ -244,7 +264,7 @@ extension LocalTransfer {
                         }
                     }
                     guard saveGeneration == token else { return }
-                    let finished = request.entries.allSatisfy { self.saveRequests[index].completed.contains($0.saveIdentity) }
+                    let finished = saveRequests[index].entries.allSatisfy { self.saveRequests[index].completed.contains(identity($0)) }
                     saveRequests[index].state = finished ? .complete : failure != nil ? .failed : waiting ? (saveRequests[index].state == .wifi ? .wifi : .waiting) : .failed
                     if let failure { saveRequests[index].error = failure }
                     try persistSaves(saveRequests)

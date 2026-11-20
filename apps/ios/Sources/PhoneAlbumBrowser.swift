@@ -79,7 +79,7 @@ struct PhoneAlbumBrowser<Detail: View>: View {
             if selecting { toggle(album.id) } else { open(album) }
         } label: {
             VStack(alignment: .leading, spacing: 4) {
-                PhoneArtwork(url: album.coverArt.flatMap { library.artworkURLs[$0] })
+                PhoneArtwork(url: album.coverArt.flatMap { library.artworkURL(for: $0) })
                     .overlay(alignment: .topTrailing) {
                         if selecting {
                             Image(systemName: selected.contains(album.id) ? "checkmark.circle.fill" : "circle")

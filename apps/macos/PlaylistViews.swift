@@ -50,9 +50,14 @@ struct PlaylistBrowser: View {
     }
 
     @ViewBuilder private var actions: some View {
-        Button("XMLから移行") { importing = true }.disabled(!library.transfer.canSyncPlaylists)
-        Button("更新") { Task { await library.refreshPlaylists() } }
-            .disabled(library.refreshingPlaylists || !library.transfer.canSyncPlaylists)
+        if library.transfer.hostConnection == nil {
+            Button("XMLから移行") { importing = true }.disabled(!library.transfer.canSyncPlaylists)
+        }
+        Button("更新") {
+            if library.transfer.hostConnection != nil { library.transfer.refreshConnection() }
+            else { Task { await library.refreshPlaylists() } }
+        }
+            .disabled(library.refreshingPlaylists || (library.transfer.hostConnection == nil && !library.transfer.canSyncPlaylists))
     }
 
     private var content: some View {
@@ -97,15 +102,14 @@ private struct PlaylistArtwork: View {
     @ObservedObject var library: Library
     let document: PlaylistDocument
     private var covers: [URL] {
-        var seen: Set<URL> = []
-        var result: [URL] = []
+        var seen = Set<String>()
+        var ids: [String] = []
         for item in document.items {
-            if let url = library.playlistTrack(item)?.coverArt.flatMap({ library.artworkURLs[$0] }), seen.insert(url).inserted {
-                result.append(url)
-                if result.count == 4 { break }
-            }
+            guard let id = library.playlistTrack(item)?.coverArt, seen.insert(id).inserted else { continue }
+            ids.append(id)
+            if ids.count == 4 { break }
         }
-        return result
+        return ids.prefix(ids.count == 4 ? 4 : 1).compactMap { library.artworkURL(for: $0) }
     }
     var body: some View {
         GeometryReader { geometry in

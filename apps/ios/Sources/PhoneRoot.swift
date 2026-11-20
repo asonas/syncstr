@@ -175,7 +175,7 @@ struct PhoneRoot: View {
                         ForEach(library.albums(for: artist)) { album in
                             NavigationLink { AnyView(albumDetail(album)) } label: {
                                 HStack(spacing: 20) {
-                                    PhoneArtwork(url: album.coverArt.flatMap { library.artworkURLs[$0] })
+                                    PhoneArtwork(url: album.coverArt.flatMap { library.artworkURL(for: $0) })
                                         .frame(width: dynamicTypeSize.isAccessibilitySize ? 80 : 128)
                                     VStack(alignment: .leading, spacing: 4) {
                                         Text(album.title).font(.headline).foregroundStyle(AppearanceColors.primary)
@@ -314,7 +314,7 @@ struct PhoneRoot: View {
         ForEach(albums) { album in
             NavigationLink { albumDetail(album) } label: {
                 VStack(alignment: .leading, spacing: 4) {
-                    PhoneArtwork(url: album.coverArt.flatMap { library.artworkURLs[$0] })
+                    PhoneArtwork(url: album.coverArt.flatMap { library.artworkURL(for: $0) })
                     Text(album.title).font(.subheadline.bold()).foregroundStyle(AppearanceColors.primary)
                         .lineLimit(dynamicTypeSize.isAccessibilitySize ? nil : 2)
                     Text(album.artist).font(.subheadline).foregroundStyle(PhoneStyle.secondary)
@@ -340,7 +340,7 @@ struct PhoneRoot: View {
                 let layout = wide ? AnyLayout(HStackLayout(alignment: .top, spacing: 32)) : AnyLayout(VStackLayout(spacing: 20))
                 let artworkSize = max(0, min(geometry.size.width - 80, dynamicTypeSize.isAccessibilitySize ? 120 : 320))
                 layout {
-                    PhoneArtwork(url: album.coverArt.flatMap { library.artworkURLs[$0] })
+                    PhoneArtwork(url: album.coverArt.flatMap { library.artworkURL(for: $0) })
                         .frame(width: artworkSize)
                     VStack(alignment: wide ? .leading : .center, spacing: 20) {
                         VStack(alignment: wide ? .leading : .center, spacing: 4) {
@@ -544,7 +544,7 @@ struct PhoneRoot: View {
             Section { PlaybackStorageSettings(library: library) }
             Section("ライブラリと接続") { PeerSetupView(transfer: library.transfer) }
             Section { AddMusicButton(library: library) }
-            if library.transfer.clusterRegistration == nil {
+            if !library.transfer.hasLibrarySource {
                 Section("従来の接続") {
                     NavigationLink("従来の端末間転送") {
                         ScrollView { PhonePairingView(transfer: library.transfer).padding(20) }
@@ -554,7 +554,7 @@ struct PhoneRoot: View {
             }
             Section {
                 LabeledContent("曲数", value: "\(library.tracks.count)")
-                if library.connected && library.transfer.clusterRegistration == nil {
+                if library.connected && !library.transfer.hasLibrarySource {
                     Button("ライブラリを閉じる") { library.closeLibrary() }
                 } else if library.hasSavedLocalLibrary {
                     Button("保存した音楽を開く") { Task { await library.openSavedLocalLibrary() } }
@@ -573,7 +573,7 @@ struct PhoneRoot: View {
     }
 
     private func artwork(_ id: String?, size: CGFloat) -> some View {
-        PhoneArtwork(url: id.flatMap { library.artworkURLs[$0] })
+        PhoneArtwork(url: id.flatMap { library.artworkURL(for: $0) })
             .frame(width: size, height: size)
     }
 

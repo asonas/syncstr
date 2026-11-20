@@ -83,18 +83,12 @@ struct PreparedLocalCatalog {
         self.catalog = catalog
         tracks = catalog.displayTracks()
         albums = Library.preparedAlbums(tracks, organization: catalog.organization)
-        var artworkURLs = Dictionary(uniqueKeysWithValues: catalog.entries.compactMap { entry in
+        var artworkURLs = Dictionary(catalog.entries.compactMap { entry in
             entry.track.coverArt.map { ($0, store.artworkURL(entry)) }
-        })
+        }, uniquingKeysWith: { first, _ in first })
         for asset in catalog.organization?.artwork?.assets.keys.map({ $0 }) ?? [] { artworkURLs[asset] = store.artworkURL(asset: asset) }
         self.artworkURLs = artworkURLs
-        var files: [String: URL] = [:]
-        let pins = catalog.logicalAudio == true ? try store.database().savedAudioPins() : []
-        for entry in catalog.entries {
-            try Task.checkCancellation()
-            if store.hasFile(entry), catalog.logicalAudio != true || pins.contains(entry.saveIdentity) { files[entry.track.id] = store.fileURL(entry) }
-        }
-        self.files = files
+        self.files = try store.savedFiles(in: catalog)
     }
 }
 import UniformTypeIdentifiers
@@ -207,6 +201,7 @@ struct LocalCatalog: Codable {
     var entries: [LocalEntry]
     var organization: AlbumOrganization? = nil
     var logicalAudio: Bool? = nil
+    var remoteArtwork: Set<String>? = nil
 
     mutating func organize(folders: [String: String] = [:]) {
         guard logicalAudio != true else { return }
@@ -242,6 +237,8 @@ enum LocalMusicError: LocalizedError {
 }
 
 struct LocalMusicStore {
+    // Inventory refreshes revisit every pin. Playback still verifies the bytes before use.
+    private static let inventoryHashes = NSCache<NSString, NSString>()
     var root = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
         .appendingPathComponent("LocalMusic", isDirectory: true)
 
@@ -310,7 +307,7 @@ struct LocalMusicStore {
         try prepare()
         let database = try CatalogDatabase(root.appendingPathComponent("catalog.sqlite"))
         let legacy = root.appendingPathComponent("catalog.json")
-        if try !database.containsCatalog(), FileManager.default.fileExists(atPath: legacy.path) {
+        if FileManager.default.fileExists(atPath: legacy.path), try database.hostConnection() == nil, try !database.containsCatalog() {
             let catalog = try JSONDecoder().decode(LocalCatalog.self, from: Data(contentsOf: legacy))
             try writeArtwork(catalog)
             try database.save(catalog, received: catalog.entries.filter(hasFile))
@@ -367,6 +364,49 @@ struct LocalMusicStore {
 
     func fileURL(_ entry: LocalEntry) -> URL {
         root.appendingPathComponent(entry.sha256).appendingPathExtension(entry.track.audioHash == nil ? entry.track.suffix ?? "audio" : "audio")
+    }
+
+    func hostFileURLs(_ entry: LocalEntry) -> [URL] {
+        let current = fileURL(entry)
+        let legacy = root.appendingPathComponent(entry.sha256 + ".audio")
+        return legacy == current ? [current] : [current, legacy]
+    }
+
+    func verifiedFile(_ entry: LocalEntry, host: Bool, forInventory: Bool = false) throws -> URL? {
+        guard Self.valid(entry), entry.track.unavailable != true else { return nil }
+        for url in host ? hostFileURLs(entry) : [fileURL(entry)] {
+            guard let attributes = try? FileManager.default.attributesOfItem(atPath: url.path),
+                  let size = attributes[.size] as? NSNumber, size.uint64Value == entry.track.size else { continue }
+            var key: NSString?
+            if forInventory, let modified = attributes[.modificationDate] as? Date, let inode = attributes[.systemFileNumber] as? NSNumber {
+                key = "\(url.path):\(inode):\(size):\(modified.timeIntervalSinceReferenceDate)" as NSString
+            }
+            if let key, let digest = Self.inventoryHashes.object(forKey: key) {
+                if digest as String == entry.sha256 { return url }
+                continue
+            }
+            let digest = try Self.digest(file: url)
+            if let key { Self.inventoryHashes.setObject(digest as NSString, forKey: key) }
+            if digest == entry.sha256 { return url }
+        }
+        return nil
+    }
+
+    func savedFiles(in catalog: LocalCatalog) throws -> [String: URL] {
+        var files: [String: URL] = [:]
+        let host = catalog.remoteArtwork != nil
+        let pins = host || catalog.logicalAudio == true ? try database().savedAudioPins() : []
+        for entry in catalog.entries {
+            try Task.checkCancellation()
+            if host {
+                if pins.contains(entry.trackSaveIdentity) {
+                    files[entry.track.id] = try verifiedFile(entry, host: true, forInventory: true)
+                }
+            } else if hasFile(entry), catalog.logicalAudio != true || pins.contains(entry.saveIdentity) {
+                files[entry.track.id] = fileURL(entry)
+            }
+        }
+        return files
     }
 
     func artworkURL(_ entry: LocalEntry) -> URL {

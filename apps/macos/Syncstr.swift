@@ -107,6 +107,9 @@ struct LibraryView: View {
             selectedAlbums.formIntersection(ids)
         }
         .task { await library.restoreLibrary() }
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
+            if library.transfer.hostConnection != nil { library.transfer.refreshConnection() }
+        }
         .modifier(OfflineSaveRemoval(library: library))
         .modifier(TrackMetadataEditing(library: library))
         .sheet(isPresented: $showingPeerSetup) {
@@ -702,7 +705,7 @@ struct LibraryView: View {
     }
 
     private func artworkURL(_ id: String?) -> URL? {
-        id.flatMap { library.artworkURLs[$0] }
+        id.flatMap { library.artworkURL(for: $0) }
     }
 
     private var playbackBar: some View {

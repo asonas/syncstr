@@ -38,7 +38,7 @@ final class OfflineSaveTests: XCTestCase {
         var stopped = false
         var downloaded: [LocalEntry] = []
 
-        func refreshCatalog() async throws -> LocalCatalog { throw LocalMusicError.clusterUnavailable }
+        func refreshCatalog() async throws -> CatalogRefresh { throw LocalMusicError.clusterUnavailable }
 
         func download(_ entry: LocalEntry, cache: LocalMusicStore?, diagnostic: PlaybackDiagnosticContext?,
                       progress: @escaping @MainActor (Double) -> Void) async throws {

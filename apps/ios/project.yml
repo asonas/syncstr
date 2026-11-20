@@ -31,6 +31,8 @@ targets:
       - path: ../macos/ClusterDiscovery.swift
       - path: ../macos/ClusterTransport.swift
       - path: ../macos/LibrarySource.swift
+      - path: ../macos/HostAPIClient.swift
+      - path: ../macos/HostLibrarySource.swift
       - path: ../macos/ClusterMutation.swift
       - path: ../macos/ClusterMetadata.swift
       - path: ../macos/TrackMetadataEditor.swift
@@ -105,6 +107,8 @@ targets:
       - path: ../macos/ClusterDiscovery.swift
       - path: ../macos/ClusterTransport.swift
       - path: ../macos/LibrarySource.swift
+      - path: ../macos/HostAPIClient.swift
+      - path: ../macos/HostLibrarySource.swift
       - path: ../macos/ClusterMutation.swift
       - path: ../macos/ClusterMetadata.swift
       - path: ../macos/TrackMetadataEditor.swift
@@ -175,6 +179,7 @@ targets:
       - path: Tests
       - path: ../macos/Tests/PlayerInteractionTests.swift
       - path: ../macos/Tests/OfflineSaveTests.swift
+      - path: ../macos/Tests/HostAPITests.swift
       - path: ../macos/Tests/SharedAudioTests.swift
       - path: ../macos/Tests/ClusterMutationTests.swift
       - path: ../macos/Tests/PlaylistMutationTests.swift
@@ -240,6 +245,8 @@ targets:
       - path: ../macos/ClusterDiscovery.swift
       - path: ../macos/ClusterTransport.swift
       - path: ../macos/LibrarySource.swift
+      - path: ../macos/HostAPIClient.swift
+      - path: ../macos/HostLibrarySource.swift
       - path: ../macos/ClusterMutation.swift
       - path: ../macos/ClusterMetadata.swift
       - path: ../macos/TrackMetadataEditor.swift
@@ -278,6 +285,8 @@ targets:
       - path: ../macos/ClusterDiscovery.swift
       - path: ../macos/ClusterTransport.swift
       - path: ../macos/LibrarySource.swift
+      - path: ../macos/HostAPIClient.swift
+      - path: ../macos/HostLibrarySource.swift
       - path: ../macos/ClusterMutation.swift
       - path: ../macos/ClusterMetadata.swift
       - path: ../macos/TrackMetadataEditor.swift

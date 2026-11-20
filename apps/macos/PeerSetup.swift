@@ -27,7 +27,7 @@ struct ClusterImportResults: View {
                         Text(edit.entry.track.title)
                         Text(edit.mutationLabel).foregroundStyle(.secondary)
                         if let detail = edit.mutationDetail { Text(detail).font(.caption).foregroundStyle(.secondary) }
-                        if edit.canRetryMutation {
+                        if edit.canRetryMutation && transfer.hostConnection == nil {
                             Button(edit.mutationHost == nil ? "音源を送信" : "同じ保存先に再送") { transfer.connectCluster() }
                                 .disabled(transfer.busy)
                         }
@@ -252,7 +252,7 @@ struct PeerSetupView: View {
                 }
                 Text("この端末のID: \(transfer.peerID)").font(.system(.caption, design: .monospaced)).textSelection(.enabled)
                 }
-                Button("ライブラリを更新") { transfer.connectCluster() }.disabled(transfer.busy)
+                Button("ライブラリを更新") { transfer.refreshConnection() }.disabled(transfer.busy)
                 Button("接続設定を更新") {
                     name = registration.name
                     address = ""
@@ -371,6 +371,7 @@ struct PeerSetupView: View {
             }
             if let status = transfer.status { Text(status).font(.callout).foregroundStyle(.secondary) }
         }
+        .disabled(transfer.hostConnection != nil)
         .alert("この接続先を登録しますか？", isPresented: $confirming) {
             Button("キャンセル", role: .cancel) {}
             Button("登録して接続") {

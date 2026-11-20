@@ -47,7 +47,9 @@ struct SyncstrApp: App {
                         library.transfer.stopBrowsing()
                     } else if phase == .active {
                         library.setBackgrounded(false)
-                        if library.transfer.clusterRegistration != nil && !library.transfer.busy { library.transfer.connectCluster() }
+                        if library.transfer.hostConnection != nil || (library.transfer.hasLibrarySource && !library.transfer.busy) {
+                            library.transfer.refreshConnection()
+                        }
                     }
                 }
         }

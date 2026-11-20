@@ -71,15 +71,15 @@ struct AlbumArtwork: Codable, Equatable {
         for (key, asset) in incoming.preferred where preferred[key] == nil { preferred[key] = asset }
     }
 
-    func validate(tracks: Set<String>) throws {
-        guard assets.count <= 100000, candidates.count <= 200000,
+    func validate(tracks: Set<String>, remoteAssets: Set<String> = []) throws {
+        guard assets.count <= 100000, remoteAssets.count <= 100000, candidates.count <= 200000,
               Set(candidates.map(\.id)).count == candidates.count,
               assets.allSatisfy({ LocalMusicStore.digest($0.value) == $0.key && ArtworkImage.valid($0.value) }) else { throw LocalMusicError.invalidData }
         let records = Dictionary(uniqueKeysWithValues: candidates.map { ($0.id, $0) })
         var remaining: [String: Int] = [:]
         var children: [String: [String]] = [:]
         for candidate in candidates {
-            guard tracks.contains(candidate.track), assets[candidate.asset] != nil,
+            guard tracks.contains(candidate.track), assets[candidate.asset] != nil || remoteAssets.contains(candidate.asset),
                   candidate.id.utf8.count <= 128, candidate.context.utf8.count <= 4096,
                   ["embedded", "folder", "music", "legacy"].contains(candidate.source),
                   candidate.parents.count <= 10000, Set(candidate.parents).count == candidate.parents.count else { throw LocalMusicError.invalidData }
