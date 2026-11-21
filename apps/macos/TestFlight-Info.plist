@@ -42,12 +42,5 @@
 	<string>public.app-category.music</string>
 	<key>NSAppleMusicUsageDescription</key>
 	<string>Musicライブラリから音源に対応するアートワークを読み込むために使用します。</string>
-	<key>NSBonjourServices</key>
-	<array>
-		<string>_syncstr-music._tcp</string>
-		<string>_syncstr-cluster._udp</string>
-	</array>
-	<key>NSLocalNetworkUsageDescription</key>
-	<string>MacとiPhoneの間で音楽を転送するために使用します。</string>
 </dict>
 </plist>

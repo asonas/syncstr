@@ -1,18 +1,10 @@
 # Connect your phone to your host over Tailscale
 
-This guide puts a Syncstr host and your iPhone on one tailnet, so that the phone downloads music from the host at a host address such as `https://syncstr.example.ts.net`. It describes the planned setup of [ADR 0008](adr/0008-one-primary-host-over-a-private-network.md). The Tailscale steps work today. The Syncstr steps marked "Planned" do not exist yet. This guide authorizes no change to a running library.
-
-| Step | Today | Planned |
-| --- | --- | --- |
-| Put the host machine on your tailnet | Works | Same |
-| Publish the host with `tailscale serve` | Works with the `serve` command of [headless Syncstr](../headless/README.md) | The macOS app shows the `tailscale serve` command for you to copy and run, because the sandboxed app may be unable to run it ([the publish confirmation](onboarding-and-connection-states.md#the-publish-confirmation), ASO-163) |
-| Put the phone on your tailnet | Works | Same |
-| Open the host address from the phone | Verified from a Mac. The iPhone check is pending. | The macOS app checks the address after you run the command (ASO-163) |
-| Open the library in Syncstr | Pending in the Apple apps | ASO-165 reads the library. ASO-164 opens it by host address. The owner checks both through internal TestFlight. |
+This guide puts a Syncstr host and your iPhone on one tailnet, so that the phone downloads music from the host at a host address such as `https://syncstr.example.ts.net`. The host runs [headless Syncstr](../headless/README.md). The Mac and iPhone apps open the same HTTPS address and read the library over `/api/v1`. The [TestFlight checklist](validation/tailscale-testflight-qa.md) covers physical-device verification.
 
 ## What you need
 
-- A host machine, either a Mac that runs the macOS app or a NAS that runs the host in a container. It must be on and connected whenever the phone downloads.
+- A host machine, running headless Syncstr, such as a Mac or a NAS. It must be on and connected whenever the phone downloads.
 - An iPhone with the Syncstr app.
 - A tailnet. A free Tailscale Personal account is enough.
 
@@ -177,9 +169,8 @@ See [Tailscale Serve](https://tailscale.com/docs/reference/tailscale-cli/serve) 
 ## Open questions
 
 - Does the NAS sidecar rejoin after a reboot without a new login? The owner checks this during an approved restart (ASO-159).
-- Can the macOS app configure Serve with one confirmation, so that you copy no command? A prototype settles it, as open question 1 of [Onboarding and connection states](onboarding-and-connection-states.md#open-questions) describes. ASO-163.
 
-What the macOS app shows when Tailscale is missing or HTTPS is off is in [Onboarding and connection states](onboarding-and-connection-states.md#on-the-mac-as-a-host).
+For connection failures on a listening device, see [Onboarding and connection states](onboarding-and-connection-states.md#when-connecting-fails).
 
 ## Sources
 

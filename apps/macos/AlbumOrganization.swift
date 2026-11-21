@@ -74,10 +74,6 @@ struct AlbumOrganization: Codable, Equatable {
     // Derived links can be withdrawn when retained evidence changes. Listener choices are separate.
     var automaticAliases: [String: String]? = nil
     var artwork: AlbumArtwork? = nil
-    // A projected v5 value must not create or rewrite legacy signed choices.
-    var sharedAlbumVisibility: [String: Bool]? = nil
-    var sharedVisibilityHeads: [String: [String]]? = nil
-    var sharedVisibilityConflicts: Set<String>? = nil
 
     func canonicalTrack(_ id: String) -> String {
         var cursor = id
@@ -168,7 +164,7 @@ struct AlbumOrganization: Codable, Equatable {
     }
 
     func isHidden(_ album: String) -> Bool {
-        sharedAlbumVisibility?[canonical(album)] ?? heads(subject: album, kind: "visibility").contains { $0.value == "true" }
+        heads(subject: album, kind: "visibility").contains { $0.value == "true" }
     }
 
     func hasConflict(subject: String, kind: String) -> Bool {

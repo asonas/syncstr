@@ -66,7 +66,7 @@ Every endpoint of this contract requires `Authorization: Bearer <token>` over HT
 | `POST /v2/organization` | Merges bounded, validated organization JSON; retains competing explicit choices |
 | `GET /v2/tracks/{id}/audio` | Returns original bytes by opaque track ID; supports one HTTP byte range and a SHA-256 ETag |
 
-The entry contains `track`, `sha256`, and optional Base64 `artwork`. Track metadata uses the fields documented in the [local transfer contract](../docs/local-music-transfer.md). IDs and album grouping IDs from uploaders are not authoritative: the node assigns a track UUID and adjusts `coverArt` to that ID. Filesystem paths and multipart filenames are ignored. The node uses a separate HTTP transport; existing Bonjour/TLS-PSK clients cannot connect to it without a native client integration.
+The entry contains `track`, `sha256`, and optional Base64 `artwork`. Track metadata uses the fields documented in the [local entry fixture](fixtures/local-entry.json). IDs and album grouping IDs from uploaders are not authoritative: the node assigns a track UUID and adjusts `coverArt` to that ID. Filesystem paths and multipart filenames are ignored. The node uses a separate HTTP transport; existing Bonjour/TLS-PSK clients cannot connect to it without a native client integration.
 
 Limits are 1 MiB of encoded entry metadata, 512 KiB of decoded artwork, 20 GiB per audio file, and four simultaneous uploads. Accepted suffixes are MP3, M4A, AAC, FLAC, WAV, AIFF/AIF, and ALAC, expressed in lowercase. Size, digest, and suffix validation do not prove codec playability; clients remain responsible for decoding support. Originals are never transcoded or retagged.
 
@@ -180,8 +180,7 @@ To back up the node, stop it and copy both `data` and `identity`. To replace an 
 
 ## Verification
 
-The macOS legacy interoperability test uses explicit loopback endpoints rather
-than mDNS. `cluster-serve --peer-listen 127.0.0.1:0 --peer-address-out host.json
+To exercise cluster enrollment on explicit loopback endpoints, `cluster-serve --peer-listen 127.0.0.1:0 --peer-address-out host.json
 --no-discovery` publishes an atomic address file. `cluster-join --host-address
 host.json --peer-listen 127.0.0.1:0` pins enrollment to the host ID in the
 invitation. A second host uses `--no-discovery --peer-address ID=host.json` to
@@ -190,26 +189,7 @@ Without these options, cluster enrollment and discovery keep their LAN behavior.
 The legacy service advertises enrollment, cluster v3, and playlist protocols;
 `shared-audio-serve` supplies v5.
 
-`ClusterTransferTests`, `ClusterRemoteTests`, and `PeerTransferTests` use
-`SYNCSTR_HEADLESS_TEST_BINARY`, then `SYNCSTR_V5_TEST_BIN_DIR/syncstr-headless`,
-then `headless/target/debug/syncstr-headless`. A missing explicitly configured
-binary fails the test; a missing local default skips it only when neither
-variable is set. The macOS CI job
-already forwards `SYNCSTR_V5_TEST_BIN_DIR` to its test runner, covering legacy
-upload, conflict resolution, album titles, metadata, and visibility edits, as
-well as replication and download. `ClusterRemoteTests` uses a locally started
-loopback relay, with mDNS for initial enrollment and LAN recovery after the relay
-stops; it does not require a public relay. It runs only with
-`SYNCSTR_RUN_LAN_INTEROP=1` on a network permitting mDNS. On a GitHub-hosted macOS
-runner its initial mDNS discovery failed with `clusterUnavailable`, so it skips
-in PR CI.
-Broader multicast discovery checks remain in the separate LAN workflow below.
-
-`PeerTransferTests.testNativeClientUploadsAfterIdleSessionExpires` runs only with
-`SYNCSTR_RUN_SLOW_INTEROP=1` because it waits 125 seconds. It otherwise skips,
-keeping the idle wait out of the PR budget. Directory discovery and external
-upload-batch tests retain their separate `SYNCSTR_DIRECTORY_TEST_URL` and
-`SYNCSTR_UPLOAD_TEST_DIRECTORY` opt-ins.
+The Apple clients use the host read API. To exercise the optional macOS host interoperability test, set `SYNCSTR_HEADLESS_TEST_BINARY` to the headless executable in the test environment. The macOS CI job uses its protocol tests without building Rust fixture tools.
 
 The [Verification workflow](../.github/workflows/verification.yml) runs every
 P2P test target with `cargo test --locked --features p2p --tests`, followed by

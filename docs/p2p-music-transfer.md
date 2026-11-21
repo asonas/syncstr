@@ -1,8 +1,8 @@
 # P2P music transfer
 
-> [ADR 0008](adr/0008-one-primary-host-over-a-private-network.md), accepted on 2026-11-18, replaces the design that this document describes. This document stays as the record of the code that still implements that design. See [Syncstr on a private network](private-network-architecture.md).
+> [ADR 0008](adr/0008-one-primary-host-over-a-private-network.md), accepted on 2026-11-18, replaces the design that this document describes. This guide covers the optional headless transport. See [Syncstr on a private network](private-network-architecture.md).
 
-The macOS and iPhone apps can explicitly connect to a headless node over iroh QUIC, browse its catalog, save albums, and upload selected audio files. The HTTPS API and Bonjour transfer remain available. P2P is an opt-in headless build feature; enabling it does not migrate the database or change existing pairing credentials.
+The headless node can serve a catalog and transfer audio to compatible peers over iroh QUIC when built with the `p2p` feature. Current Apple apps read a host's `/api/v1` over HTTPS.
 
 ## Start a node
 
@@ -39,38 +39,18 @@ The IPv6 wildcard socket advertises available IPv6 interface addresses, includin
 
 The host and upstream router must allow inbound UDP on this port to the NAS's global IPv6 address. Keep HTTPS restricted to the LAN. A cellular client must have a usable IPv6 route; an IPv4-only client instead needs a public IPv4 address and UDP port forwarding. Announcing an address does not configure either firewall or forwarding. For IPv4 forwarding, use the existing `--peer-public-address` option to publish the external UDP address alongside the local candidates.
 
-Verify both LAN and an independent cellular network. Inspect the live address record and UDP sockets, then connect from the iPhone with Wi-Fi disabled, retrieve the catalog, and download a previously unsaved track. A local dual-stack test does not prove Internet reachability.
+Verify both LAN and an independent cellular network. Inspect the live address record and UDP sockets, then connect from a compatible peer on cellular, retrieve the catalog, and download a previously unsaved track. A local dual-stack test does not prove Internet reachability.
 
-## Register an app
+## Authorize a peer
 
-1. Open Settings → Library and connections. Cluster invitations use the main enrollment form; this section describes the legacy single-node flow, retained for existing users.
-2. Expand **Legacy P2P connection and device ID** and copy the app's device ID. On the node, explicitly authorize it:
-
-   ```sh
-   target/debug/syncstr-headless peer-pair --state peer --peer <device-public-id>
-   ```
-
-3. Export the current connection information on the node:
-
-   ```sh
-   target/debug/syncstr-headless peer-info --state peer --address address.json --ip 192.0.2.10
-   ```
-
-   Replace the fictional IP with a reachable node IP from the address record. The command preserves the current UDP port and verifies that the record belongs to the node's identity. Without `--ip`, it exports all recorded addresses and rejects records exceeding the app's 32-address limit. After restarting the node, export again because the UDP port may change.
-
-   For iPhone, add `--qr` to display a terminal QR code followed by the same JSON. Use a monospace terminal with light foreground on a dark background and keep the entire QR visible. In Docker, run `docker exec <container> syncstr-headless peer-info --state /data/peer --address /data/peer/address.json --ip 192.0.2.10 --qr`.
-
-   On macOS, paste the JSON into **Connection information**. On iPhone, paste it or select **Scan the connection QR code**. Both paths display the node ID and require confirmation before connecting. Compare that ID with the trusted node terminal or administrator's information. Scanning alone does not grant access or connect. Devices without the scanner or camera access can use JSON. The separate duplicate node-ID input is no longer needed; saved registrations still pin the approved identity.
-4. Open an album and save it. iPhone retains the existing album/track download controls; macOS provides an album save button and a track context-menu save action. Completed files remain playable offline. If the connection is lost or was never opened, pending saves show connection waiting and the app reconnects to the registered node by itself while it is active, under the communication policy. Failed attempts are spaced 15 seconds apart at first, doubling up to 5 minutes; reloading the library or the reconnect button in Settings connects immediately.
-5. Use **Add audio files to the connected device** to select files through the native file picker. If the node closed an idle connection, the app reconnects before uploading. Uploads preserve original bytes and read embedded title, artist, album, and duration; macOS also reads track/disc numbers and artwork through TagLib. Untagged files fall back to the filename. Re-uploading identical audio over P2P updates its metadata while retaining the node's track ID. After additions, the app automatically reconnects to refresh the catalog; already saved audio remains available with the refreshed metadata.
-
-The app stores its private device key and registered node record in separate Keychain services. Removing a P2P connection retains downloaded files, the app's device identity, and Bonjour pairing. Removing an app-side record does not revoke access at the node. Revoke explicitly:
+Use the peer's public ID to authorize it on the node, then export the node address for the peer. Compare the exported node ID with the trusted node identity.
 
 ```sh
-target/debug/syncstr-headless peer-pair --state peer --peer <device-public-id> --revoke
+target/debug/syncstr-headless peer-pair --state peer --peer <device-public-id>
+target/debug/syncstr-headless peer-info --state peer --address address.json --ip 192.0.2.10
 ```
 
-Every allowed device currently has catalog, download, and upload access. There is no read-only permission or automated enrollment. Keep the iPhone app in the foreground during transfer; backgrounding cancels it. Retry verifies completed downloads and skips them. An interrupted upload can be retried without creating a duplicate track. Playback and audio background operation retain their existing behavior.
+Each authorized peer has catalog, download, and upload access. Revoke access on the node with `peer-pair --state peer --peer <device-public-id> --revoke`.
 
 ## Docker and deployment
 
@@ -84,7 +64,7 @@ The normal Docker build remains HTTPS-only. A P2P deployment additionally needs 
 
 ALPN is `syncstr/music/1`. QUIC authenticates the remote Ed25519 endpoint ID and encrypts application data. The server checks its allowlist before accepting requests and during chunk transfers. A device shares the node's existing SQLite store with the HTTPS API in the same process.
 
-One bidirectional stream carries four-byte big-endian lengths and JSON `MusicMessage` frames, matching the native transfer fields. Frames use message version 2 and are capped at 2 MiB. Older message versions require upgrading both peers. Catalog and upload messages carry organization records using the [native organization framing](local-music-transfer.md#album-organization). The ALPN name remains unchanged; the first framed message enforces the organization-capable version. A `hello` receives `catalog`, `entry` frames, then `ready`. `get` takes an opaque track ID and returns `data` frames with Base64 chunks of at most 64 KiB, followed by `end`. `put` supplies an entry, waits for `accept`, sends `data` and `end`, and receives `saved` with the canonical node entry. There is no remote filesystem-path argument.
+One bidirectional stream carries four-byte big-endian lengths and JSON `MusicMessage` frames, matching the native transfer fields. Frames use message version 2 and are capped at 2 MiB. Older message versions require upgrading both peers. Catalog and upload messages carry organization records. The ALPN name remains unchanged; the first framed message enforces the organization-capable version. A `hello` receives `catalog`, `entry` frames, then `ready`. `get` takes an opaque track ID and returns `data` frames with Base64 chunks of at most 64 KiB, followed by `end`. `put` supplies an entry, waits for `accept`, sends `data` and `end`, and receives `saved` with the canonical node entry. There is no remote filesystem-path argument.
 
 Audio is staged and checked against the exact size and SHA-256 before publication. Metadata and audio limits match the HTTPS service. The node allows four P2P connections and applies handshake, frame-read, and session timeouts. Invalid, corrupt, partial, or revoked transfers cannot publish an incomplete object. Exact hash/suffix retries preserve the first node ID and refresh metadata from the newly uploaded record. Album membership and classification choices are retained and reconcile with catalog refreshes, including conflicts. Automatic collection, source-tag editing, deletion, and multi-library ownership remain deferred.
 
@@ -95,10 +75,4 @@ cargo test --manifest-path headless/Cargo.toml --locked --features p2p
 cargo clippy --manifest-path headless/Cargo.toml --locked --features p2p --all-targets -- -D warnings
 ```
 
-Build the Rust binary with `p2p` before running the macOS suite. `PeerTransferTests` runs the actual Rust executable with temporary identities and tests the native Swift client through upload, deduplication, reconnect, download, offline storage, and revocation. It skips explicitly if the executable is absent. Existing LAN tests protect prior pairing and saved music behavior. iPhone Simulator builds/tests, physical-device transfers, independent-network NAT traversal, and NAS deployment are separate checks.
-
-The app uses the official [iroh Swift bindings](https://github.com/n0-computer/iroh-ffi/tree/v1.1.0), pinned to 1.1.0. The node pins iroh 1.3.0; cross-version interoperability is covered by the macOS/Rust test. App dependency notices are bundled in each `Licenses/IrohLib.txt`. Regenerate them using a source checkout at the pinned Swift release:
-
-```sh
-mise exec -- python3 apps/macos/scripts/collect_iroh_notices.py ./iroh-ffi
-```
+The Rust suite exercises the optional headless transport. The Apple apps no longer use the iroh Swift bindings or run the former Swift/Rust P2P interoperability suite.

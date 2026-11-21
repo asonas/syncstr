@@ -62,6 +62,7 @@ final class Library: ObservableObject {
             guard generation == catalogGeneration else { return }
             playlists = saved.documents
             playlistConflicts = saved.conflicts
+            playlistMessage = nil
         } catch { if generation == catalogGeneration { playlistMessage = error.localizedDescription } }
     }
 
@@ -70,44 +71,14 @@ final class Library: ObservableObject {
         refreshingPlaylists = true
         defer { refreshingPlaylists = false }
         await loadPlaylists()
-        if transfer.usesHostCatalog { playlistMessage = nil; return }
-        guard transfer.canSyncPlaylists else {
-            playlistMessage = "設定でライブラリの接続先を登録してください。"
-            return
-        }
-        do {
-            try await transfer.synchronizePlaylists()
-            transfer.connectionEvent("playlist_sync", outcome: "succeeded")
-            playlistMessage = nil
-            await loadPlaylists()
-        } catch is CancellationError {
-            return
-        } catch {
-            transfer.connectionEvent("playlist_sync", outcome: "failed", error: error)
-            switch error {
-            case LocalMusicError.unauthorized:
-                playlistMessage = "プレイリストへのアクセスを確認できませんでした。設定の接続先を確認してください。"
-            case LocalMusicError.incompatiblePeer:
-                playlistMessage = "接続先をプレイリスト対応版に更新して、もう一度お試しください。"
-            default:
-                playlistMessage = "プレイリストを同期できませんでした。通信状態と接続先の更新状況を確認して、もう一度お試しください。"
-            }
-        }
     }
 
     func playlistTrack(_ item: PlaylistItem) -> Track? {
         guard let hash = item.sha256, let id = item.trackId, let catalog = localCatalog else { return nil }
-        if catalog.logicalAudio == true {
-            guard let shared = sharedAudioCatalog,
-                  let entry = try? shared.entry(id, hash: hash), entry.track.unavailable != true else { return nil }
-            return entry.track
-        }
         let canonical = catalog.organization?.canonicalTrack(id) ?? id
         return playlistTracksByIdentity[canonical + ":" + hash]
     }
     @Published var tracks: [Track] = [] { didSet { if !applyingPreparedCatalog { rebuildAlbums() } } }
-    private var sharedAudioCatalog: SharedAudioSnapshot.Catalog?
-    private var savedAudioPins: Set<String> = []
     private var playlistTracksByIdentity: [String: Track] = [:]
     private var applyingPreparedCatalog = false
     private(set) var albums: [Album] = []
@@ -129,13 +100,11 @@ final class Library: ObservableObject {
     @Published var loading = false
     @Published private(set) var playbackPreparation = PlaybackPreparation.checking
     var playbackLoadingLabel: String {
-        if playbackPreparation == .connecting, transfer.receivingCatalog { return PlaybackPreparation.synchronizing.label }
         return playbackPreparation.label
     }
     @Published var refreshing = false
     @Published var restoringSession = true
     @Published var message: String?
-    @Published private(set) var catalogNotice: String?
     @Published var position = 0.0
     @Published var duration = 0.0
     @Published var queue: [Track] = []
@@ -152,7 +121,6 @@ final class Library: ObservableObject {
     @Published var sidebarVisible = true
     @Published var showingNowPlaying = false
     @Published var localCopiesToRemove: [Track] = []
-    @Published var trackMetadataPresentation: TrackMetadataPresentation?
     @Published private(set) var pendingLocalCopyRemovals: [Track] = []
     private var removalLibraryID: String?
     @Published private(set) var artworkURLs: [String: URL] = [:]
@@ -165,7 +133,6 @@ final class Library: ObservableObject {
     private var removalChanges: AnyCancellable?
 #if os(macOS)
     private var localFolder: LocalFolder?
-    var hasLocalFolder: Bool { localFolder != nil }
     private var scopedFolder: URL?
 #endif
 #if os(iOS)
@@ -217,19 +184,16 @@ final class Library: ObservableObject {
     init(makePlayer: @escaping (URL) -> AVPlayer = { SharedAudioPlayback.player($0) },
          diagnostics: PlaybackDiagnostics? = nil,
          localStore: LocalMusicStore = LocalMusicStore(), hostConfiguration: URLSessionConfiguration = .ephemeral,
-         pairingSecrets: CredentialStore = CredentialStore(service: "as.ason.syncstr.local-pair"),
-         peerSecrets: CredentialStore = CredentialStore(service: "as.ason.syncstr.p2p.identity"),
-         peerPairing: CredentialStore = CredentialStore(service: "as.ason.syncstr.p2p.peer"),
          pathMonitor: NWPathMonitor? = NWPathMonitor()) {
         self.makePlayer = makePlayer
         self.diagnostics = diagnostics ?? PlaybackDiagnostics(root: localStore.root.appendingPathComponent("PlaybackDiagnostics"))
         self.localStore = localStore
-        self.transfer = LocalTransfer(store: localStore, secrets: pairingSecrets, peerSecrets: peerSecrets, peerPairing: peerPairing, diagnostics: self.diagnostics, hostConfiguration: hostConfiguration, pathMonitor: pathMonitor)
+        self.transfer = LocalTransfer(store: localStore, diagnostics: self.diagnostics, hostConfiguration: hostConfiguration, pathMonitor: pathMonitor)
         transfer.onCatalog = { [weak self] prepared in try self?.applyLocal(prepared) }
         transfer.onHostChange = { [weak self] host in
             guard let self else { return }
             inventoryTask?.cancel()
-            if let host, localCatalog?.remoteArtwork != nil, localCatalog?.id == host.library { refreshLocalFiles() }
+            if let host, localCatalog?.source == .host, localCatalog?.id == host.library { refreshLocalFiles() }
         }
         transfer.onHostPlaylists = { [weak self] documents, conflicts in
             self?.playlists = documents
@@ -240,10 +204,6 @@ final class Library: ObservableObject {
             guard let self else { return }
             if localStore.hasCatalog { await openSavedLocalLibrary(); await loadPlaylists() }
             else { closeLibrary() }
-        }
-        transfer.onOrganization = { [weak self] organization in
-            do { try self?.saveOrganization(organization) }
-            catch { self?.message = error.localizedDescription }
         }
         transfer.onSaved = { [weak self] in
             guard let self else { return }
@@ -335,56 +295,13 @@ final class Library: ObservableObject {
 
     func isAlbumHidden(_ id: String) -> Bool { localCatalog?.organization?.isHidden(id) ?? false }
 
-    var legacyMutationNotice: String? {
-        localCatalog?.logicalAudio == true || transfer.clusterMutationsUnavailable
-            ? LocalMusicError.legacyMutationsUnavailable.localizedDescription : nil
-    }
-
-    var audioAdditionNotice: String? {
-        (localCatalog?.logicalAudio == true || transfer.clusterMutationsUnavailable) && !transfer.clusterAudioAdditionAvailable
-            ? LocalMusicError.legacyMutationsUnavailable.localizedDescription : nil
-    }
-
-    private func albumVisibilityEdit(_ id: String) -> ClusterMetadataEdit? {
-        let canonical = localCatalog?.organization?.canonical(id) ?? id
-        return transfer.clusterMetadataEdits.last { $0.albumVisibility?.album == canonical }
-    }
-
-    func albumVisibilityNotice(_ id: String) -> String? {
-        guard localCatalog?.logicalAudio == true else { return legacyMutationNotice }
-        if let organization = localCatalog?.organization {
-            if let edit = albumVisibilityEdit(id), edit.mutationState == .accepted,
-               case .accepted? = edit.mutationReply,
-               (organization.sharedVisibilityHeads?["album-visibility:" + (edit.albumVisibility?.album ?? id)] ?? [])
-                == (edit.mutation?.expected["album-visibility:" + (edit.albumVisibility?.album ?? id)] ?? []),
-               organization.sharedAlbumVisibility?[edit.albumVisibility?.album ?? id] != edit.albumVisibility?.hidden {
-                return "表示変更は保存先で受理済みです。ライブラリを更新して反映を確認してください。"
-            }
-            return organization.albumVisibilityNotice(id, operations: transfer.clusterSupportedOperations)
-        }
-        return "アルバムの表示設定を読み込めません。ライブラリを更新してください。"
-    }
-
-    func albumsVisibilityNotice(_ ids: Set<String>) -> String? {
-        let notices = ids.sorted().compactMap(albumVisibilityNotice)
-        return notices.count == ids.count ? notices.first : nil
-    }
-
     func albumsVisibilityUnavailable(_ ids: Set<String>) -> Bool {
-        ids.isEmpty || ids.allSatisfy { albumVisibilityNotice($0) != nil || isSavingAlbumVisibility($0) }
+        ids.isEmpty || ids.allSatisfy(isSavingAlbumVisibility)
     }
 
-    func albumVisibilityStatus(_ id: String) -> String? {
-        guard let edit = albumVisibilityEdit(id), let visibility = edit.albumVisibility else { return nil }
-        let action = visibility.hidden ? "非表示" : "非表示の解除"
-        let state = edit.mutationState == .accepted ? "保存先で受理済み" : edit.mutationLabel
-        return "\(action)：\(state)" + (edit.mutationDetail.map { "。" + $0 } ?? "")
-    }
 
     func isSavingAlbumVisibility(_ id: String) -> Bool {
-        visibilityRequests[id, default: 0] > 0 || albumVisibilityEdit(id).map {
-            $0.canRetryMutation || $0.mutationState == .sending
-        } == true
+        visibilityRequests[id, default: 0] > 0
     }
 
     func albumVisibilityLabel(_ id: String) -> String {
@@ -399,14 +316,8 @@ final class Library: ObservableObject {
 
     @discardableResult
     func setAlbumsHidden(_ ids: Set<String>, hidden: Bool) -> Task<Void, Never> {
-        if localCatalog?.logicalAudio == true {
-            let result = transfer.queueAlbumVisibility(ids, hidden: hidden)
-            message = "\(ids.count)枚中\(result.saved)枚の表示変更をこの端末に保存しました。"
-                + (result.failures.first.map { " \(result.failures.count)枚は保存できませんでした。" + $0 } ?? "")
-            return Task {}
-        }
-        if let notice = legacyMutationNotice {
-            message = notice
+        if transfer.usesHostCatalog {
+            message = LocalMusicError.readOnlyCatalog.localizedDescription
             return Task {}
         }
         let previous = visibilityChange
@@ -424,15 +335,15 @@ final class Library: ObservableObject {
             }
             await previous?.value
             guard visibilityGeneration == generation, let libraryID, localCatalog?.id == libraryID else { return }
-            if let notice = legacyMutationNotice { message = notice; return }
+            if transfer.usesHostCatalog { message = LocalMusicError.readOnlyCatalog.localizedDescription; return }
             do {
                 let result = try await localStore.setAlbumsHidden(ids, hidden: hidden, libraryID: libraryID)
                 guard visibilityGeneration == generation, localCatalog?.id == libraryID,
                       var organization = localCatalog?.organization else { return }
                 // Apply visibility only so edits received during the save remain intact.
                 let existing = Set(organization.choices.map(\.id))
-                organization.choices += result.organization.choices.filter { $0.kind == "visibility" && !existing.contains($0.id) }
-                organization.preferred.merge(result.organization.preferred.filter { $0.key.hasPrefix("visibility:") }) { _, saved in saved }
+                organization.choices += result.choices.filter { $0.kind == "visibility" && !existing.contains($0.id) }
+                organization.preferred.merge(result.preferred.filter { $0.key.hasPrefix("visibility:") }) { _, saved in saved }
                 localCatalog?.organization = organization
                 objectWillChange.send()
                 rebuildVisibleCatalog()
@@ -441,10 +352,8 @@ final class Library: ObservableObject {
                 if var folder = localFolder, folder.catalog.id == libraryID, let catalog = localCatalog {
                     folder.catalog = catalog
                     localFolder = folder
-                    transfer.updateHostedCatalog(catalog)
                 }
 #endif
-                transfer.organizationChanged(pendingMetadata: result.pendingMetadata)
             } catch {
                 if visibilityGeneration == generation { message = error.localizedDescription }
             }
@@ -549,27 +458,12 @@ final class Library: ObservableObject {
         }
         // Local music must remain usable while Keychain or remote setup is unavailable.
         restoringSession = false
-#if os(macOS)
-        Task { [weak self] in
-            guard let self else { return }
-            await transfer.restorePairing()
-            if transfer.pairedName != nil { await startPairing(newPairing: false) }
-        }
-#endif
-        await transfer.restorePeer()
+        await transfer.restoreHost()
         if transfer.usesHostCatalog {
-            if localCatalog?.remoteArtwork == nil { await openSavedLocalLibrary() }
+            if localCatalog?.source != .host { await openSavedLocalLibrary() }
             await loadPlaylists()
         }
-#if DEBUG
-        // Isolated UI fixtures have no live host; discovery would disable actions until it times out.
-        if SharedAudioUIFixture.requested {
-            transfer.resumeSaves()
-            return
-        }
-#endif
-        if transfer.hasHostActivity || (transfer.hasLibrarySource && !transfer.busy) { transfer.refreshConnection() }
-        else { transfer.connectionEvent("startup_connect_skipped", fields: ["reason": transfer.busy ? "busy" : "no_in_memory_cluster_registration", "legacy_auto_connect": "not_requested"]) }
+        if transfer.hasHostActivity { transfer.refreshConnection() }
         transfer.resumeSaves()
     }
 
@@ -578,10 +472,10 @@ final class Library: ObservableObject {
         transfer.connectionEvent("library_reload_called")
         if transfer.hasLibrarySource { transfer.refreshConnection(); return }
 #if os(macOS)
-        if let folder = localFolder, folder.catalog.id == localCatalog?.id { transfer.connectionEvent("reload_connect_skipped", fields: ["reason": "local_folder_rescan"]); Task { await chooseFolder(folder.root) }; return }
+        if let folder = localFolder, folder.catalog.id == localCatalog?.id {
+            Task { await chooseFolder(folder.root) }
+        }
 #endif
-        if transfer.peerName != nil { Task { await transfer.reconnectPeer() } }
-        else { transfer.connectionEvent("reload_connect_skipped", fields: ["reason": "peer_name_unavailable"]) }
     }
 
     func openLocal(_ catalog: LocalCatalog) throws {
@@ -593,7 +487,7 @@ final class Library: ObservableObject {
 
     private func applyLocal(_ prepared: PreparedLocalCatalog) throws {
         // Host catalogs are restored from the database, including after disconnecting.
-        if prepared.catalog.remoteArtwork == nil {
+        if prepared.catalog.source != .host {
             try Data().write(to: localStore.root.appendingPathComponent("active"), options: .atomic)
         }
         inventoryTask?.cancel()
@@ -602,7 +496,6 @@ final class Library: ObservableObject {
         let sameLibrary = localCatalog?.id == catalog.id
         if !sameLibrary {
             pendingLocalPlaybackTrack = nil
-            savedAudioPins = []
             visibilityGeneration = UUID()
             visibilityRequests = [:]
             transfer.cancelSavePreparations()
@@ -613,11 +506,6 @@ final class Library: ObservableObject {
             orderedQueue = []
         }
         localCatalog = catalog
-        sharedAudioCatalog = catalog.remoteArtwork != nil ? nil : try localStore.database().sharedAudioSnapshot()?.catalog
-        catalogNotice = catalog.remoteArtwork != nil ? nil : try localStore.database().sharedAudioRefreshNotice()
-        if catalogNotice == nil, sharedAudioCatalog?.conflicts.isEmpty == false {
-            catalogNotice = "ライブラリに競合があります。影響のない曲は引き続き再生できます。"
-        }
         transfer.diagnosticLibraryID = catalog.id
         transfer.connectionEvent("library_selected")
         applyingPreparedCatalog = true
@@ -639,7 +527,7 @@ final class Library: ObservableObject {
         message = nil
         if !sameLibrary { navigate(.albums) }
         else if let selectedAlbum { self.selectedAlbum = catalog.organization?.canonical(selectedAlbum) }
-        if catalog.remoteArtwork != nil {
+        if catalog.source == .host {
             var retained: [String: URL] = [:]
             if sameLibrary {
                 for entry in catalog.entries {
@@ -652,8 +540,7 @@ final class Library: ObservableObject {
             refreshLocalFiles()
         } else { applyLocalFiles(prepared.files) }
         restorePlayback()
-        if let current, !tracks.contains(where: { $0.id == current.id }),
-           (try? sharedAudioCatalog?.entry(current.id, hash: current.audioHash))?.track.unavailable != false {
+        if let current, !tracks.contains(where: { $0.id == current.id }) {
             pause()
             playbackFailure = "この曲はライブラリから削除されているため再生できません。別の曲を選んでください。"
         }
@@ -674,14 +561,13 @@ final class Library: ObservableObject {
     }
 
     func saveOrganization(_ organization: AlbumOrganization) throws {
-        guard !transfer.usesHostCatalog, try localStore.database().sharedAudioSnapshot() == nil,
-              legacyMutationNotice == nil else { throw LocalMusicError.legacyMutationsUnavailable }
+        guard !transfer.usesHostCatalog else { throw LocalMusicError.readOnlyCatalog }
         guard var catalog = localCatalog else { throw LocalMusicError.invalidData }
         let selectedMembers = albums.first { $0.id == selectedAlbum }?.tracks.map(\.id) ?? []
         try organization.validate()
         catalog.organization = organization
         catalog.organize()
-        try localStore.save(catalog, clusterEdits: true)
+        try localStore.save(catalog)
         localCatalog = catalog
         tracks = catalog.displayTracks()
         for asset in catalog.organization?.artwork?.assets.keys.map({ $0 }) ?? [] { artworkURLs[asset] = localStore.artworkURL(asset: asset) }
@@ -695,7 +581,6 @@ final class Library: ObservableObject {
         if var folder = localFolder, folder.catalog.id == catalog.id {
             folder.catalog = catalog
             localFolder = folder
-            transfer.updateHostedCatalog(catalog)
         }
 #endif
     }
@@ -731,7 +616,6 @@ final class Library: ObservableObject {
         localCatalog = catalog
         tracks = catalog.displayTracks()
         refreshLocalFiles()
-        transfer.updateHostedCatalog(catalog)
     }
 
     func refreshLocalFiles() {
@@ -742,7 +626,7 @@ final class Library: ObservableObject {
             objectWillChange.send()
             applyLocalFiles(files)
         }
-        guard localCatalog.remoteArtwork != nil else {
+        guard localCatalog.source == .host else {
             if let files = try? localStore.savedLocalFiles(in: localCatalog) { publish(files) }
             return
         }
@@ -757,11 +641,10 @@ final class Library: ObservableObject {
     }
 
     private func applyLocalFiles(_ files: [String: URL], inventoryComplete: Bool = true) {
-        if sharedAudioCatalog != nil, let pins = try? localStore.database().savedAudioPins() { savedAudioPins = pins }
         managedTracks = Set(files.keys)
         localFiles = files
 #if os(macOS)
-        if localCatalog?.remoteArtwork == nil, let folder = localFolder, folder.catalog.id == localCatalog?.id {
+        if localCatalog?.source != .host, let folder = localFolder, folder.catalog.id == localCatalog?.id {
             localFiles.merge(folder.files) { _, original in original }
         }
 #endif
@@ -786,51 +669,18 @@ final class Library: ObservableObject {
             try Task.checkCancellation()
             guard catalogGeneration == generation else { return }
             if snapshot == nil, transfer.hostConnection != nil { return }
-            if snapshot?.catalog.remoteArtwork != nil, transfer.hostConnection == nil {
-                await transfer.restorePeer()
+            if snapshot?.catalog.source == .host, transfer.hostConnection == nil {
+                await transfer.restoreHost()
                 guard transfer.usesHostCatalog, catalogGeneration == generation else { return }
             }
 #if os(macOS)
-            let registered = snapshot?.catalog.remoteArtwork != nil ? true : try await CatalogStorage.shared.perform { try files.database().clusterRegistration() != nil }
-            guard catalogGeneration == generation else { return }
-            if let snapshot, registered {
-                let prepared = try await CatalogStorage.shared.perform { try PreparedLocalCatalog(snapshot.catalog, store: files) }
-                guard catalogGeneration == generation else { return }
-                try applyLocal(prepared)
-                let restoredGeneration = catalogGeneration
-                if snapshot.sourceRoot != nil {
-                    do {
-                        let data = try Data(contentsOf: localStore.root.appendingPathComponent("folder.bookmark"))
-                        var stale = false
-                        let url = try URL(resolvingBookmarkData: data, options: .withSecurityScope,
-                            relativeTo: nil, bookmarkDataIsStale: &stale)
-                        let scoped = url.startAccessingSecurityScopedResource()
-                        if let scopedFolder { scopedFolder.stopAccessingSecurityScopedResource() }
-                        scopedFolder = scoped ? url : nil
-                        let files = await Task.detached {
-                            var files: [String: URL] = [:]
-                            for entry in snapshot.catalog.entries {
-                                guard let path = snapshot.sourcePaths[entry.track.id] else { continue }
-                                let file = url.appendingPathComponent(path).resolvingSymlinksInPath()
-                                guard file.path.hasPrefix(url.resolvingSymlinksInPath().path + "/"),
-                                      (try? LocalMusicStore.digest(file: file)) == entry.sha256 else { continue }
-                                files[entry.track.id] = file
-                            }
-                            return files
-                        }.value
-                        guard catalogGeneration == restoredGeneration else { return }
-                        localFolder = LocalFolder(root: url, catalog: snapshot.catalog, files: files, skipped: [])
-                        refreshLocalFiles()
-                    } catch { message = "元の音楽フォルダを開けませんでした。ライブラリと保存済み音源は保持しています。設定からアクセスを確認してください。" }
-                }
-                return
-            }
-            if let snapshot, snapshot.sourceRoot == nil {
+            if let snapshot, snapshot.catalog.source == .host || snapshot.sourceRoot == nil {
                 let prepared = try await CatalogStorage.shared.perform { try PreparedLocalCatalog(snapshot.catalog, store: files) }
                 guard catalogGeneration == generation else { return }
                 try applyLocal(prepared)
                 return
             }
+            if snapshot == nil, !FileManager.default.fileExists(atPath: localStore.root.appendingPathComponent("folder.bookmark").path) { return }
             let data = try Data(contentsOf: localStore.root.appendingPathComponent("folder.bookmark"))
             var stale = false
             let url = try URL(resolvingBookmarkData: data, options: .withSecurityScope,
@@ -850,14 +700,14 @@ final class Library: ObservableObject {
 
 #if os(macOS)
     func chooseFolder(_ url: URL) async {
-        guard !transfer.usesHostCatalog, !refreshing || restoringSession else { return }
+        guard transfer.canChooseFolder, !refreshing || restoringSession else { return }
         var generation = catalogGeneration
         refreshing = true
         defer { if catalogGeneration == generation { refreshing = false } }
         let scoped = url.startAccessingSecurityScopedResource()
         var releaseScopeOnFailure = scoped
         do {
-            let previous = try localStore.snapshot()
+            let previous = try localStore.database().localSnapshot()
             let bookmarkURL = localStore.root.appendingPathComponent("folder.bookmark")
             var previousFolder = localFolder?.root
             if previousFolder == nil, let data = try? Data(contentsOf: bookmarkURL) {
@@ -868,7 +718,7 @@ final class Library: ObservableObject {
             let sameFolder = previousFolder?.standardizedFileURL.resolvingSymlinksInPath().path == url.standardizedFileURL.resolvingSymlinksInPath().path
             let id = sameFolder ? previous?.catalog.id ?? UUID().uuidString : UUID().uuidString
             var folder = try await Task.detached { try await LocalFolder.scan(url, id: id, previous: previous) }.value
-            guard generation == catalogGeneration, !transfer.usesHostCatalog else {
+            guard generation == catalogGeneration, transfer.canChooseFolder else {
                 if scoped { url.stopAccessingSecurityScopedResource() }
                 return
             }
@@ -879,6 +729,9 @@ final class Library: ObservableObject {
             try localStore.prepare()
             let bookmark = try url.bookmarkData(options: .withSecurityScope, includingResourceValuesForKeys: nil, relativeTo: nil)
             try localStore.save(folder)
+            transfer.didChooseFolder()
+            playlists = []
+            playlistConflicts = []
             try bookmark.write(to: localStore.root.appendingPathComponent("folder.bookmark"), options: .atomic)
             try openLocal(folder.catalog)
             generation = catalogGeneration
@@ -888,10 +741,9 @@ final class Library: ObservableObject {
             localFolder = folder
             refreshLocalFiles()
             if !folder.skipped.isEmpty { message = "読み込めなかった音源: " + folder.skipped.joined(separator: "、") }
-            if transfer.pairedName != nil { try await transfer.host(folder) }
         } catch {
             if releaseScopeOnFailure { url.stopAccessingSecurityScopedResource() }
-            guard generation == catalogGeneration, !transfer.usesHostCatalog else { return }
+            guard generation == catalogGeneration, transfer.canChooseFolder else { return }
             if localCatalog == nil, let saved = try? localStore.load() {
                 try? openLocal(saved)
             }
@@ -899,14 +751,6 @@ final class Library: ObservableObject {
         }
     }
 
-    func startPairing(newPairing: Bool = true) async {
-        guard let localFolder else { return }
-        do {
-            guard try localStore.database().retainedHostLibrary() == nil, try localStore.database().hostConnection() == nil, try localStore.database().clusterRegistration() == nil else { return }
-            try await transfer.host(localFolder, newPairing: newPairing)
-        }
-        catch { message = error.localizedDescription }
-    }
 #endif
 
     func startAlbum(_ tracks: [Track], shuffled: Bool = false) {
@@ -924,7 +768,7 @@ final class Library: ObservableObject {
             queue = shuffled ? [track] + tracks.filter { $0.id != track.id }.shuffled() : tracks
         }
         if !queue.contains(where: { $0.id == track.id }) { queue = [track]; orderedQueue = [track] }
-        if loading, current?.id == track.id, current?.audioHash == track.audioHash {
+        if loading, current?.id == track.id {
             diagnostic?.record("request", "reuse_acquisition", fields: ["reason": "same_track_selected"])
             persistPlayback()
             return
@@ -963,16 +807,14 @@ final class Library: ObservableObject {
                 sha256: entry?.sha256, library: localCatalog?.id, retryOf: retryOf)
             diagnostic?.record("environment", "runtime", fields: ["bundle_id": Bundle.main.bundleIdentifier ?? "unknown",
                 "app_path": Bundle.main.bundleURL.path, "settings_root": localStore.root.path,
-                "catalog_path": localStore.root.appendingPathComponent("catalog.sqlite").path,
-                "credential_storage": "keychain", "peer_credential_service": "as.ason.syncstr.p2p.peer"])
+                "catalog_path": localStore.root.appendingPathComponent("catalog.sqlite").path])
             diagnosticFailed = false
             diagnosticAdvanced = false
             diagnosticPosition = nil
         }
         let trace = diagnostic
         trace?.record("request", "resume", fields: ["already_playing": String(playing)])
-        guard tracks.contains(where: { $0.id == current.id }) ||
-                (current.audioHash != nil && (try? sharedAudioCatalog?.entry(current.id, hash: current.audioHash))?.track.unavailable == false) else {
+        guard tracks.contains(where: { $0.id == current.id }) else {
             trace?.record("request", "rejected", outcome: "failed", fields: ["reason": "track_removed"], terminal: true)
             diagnosticFailed = true
             failedDiagnosticID = trace?.id
@@ -1006,7 +848,7 @@ final class Library: ObservableObject {
             player.play()
             return
         }
-        if localCatalog?.remoteArtwork == nil, let url = localFiles[current.id], current.audioHash == nil || localCatalog?.entries.first(where: { $0.track.id == current.id })?.sha256 == current.audioHash {
+        if localCatalog?.source != .host, let url = localFiles[current.id] {
             var role = "saved_copy"
             #if os(macOS)
             if localFolder?.files[current.id] != nil { role = "original_folder" }
@@ -1300,11 +1142,11 @@ final class Library: ObservableObject {
             restoringPlayback = true
             defer { restoringPlayback = false }
             let latest = Dictionary(uniqueKeysWithValues: tracks.map { ($0.id, $0) })
-            queue = saved.queue.map { ($0.audioHash == nil ? latest[$0.id] : nil) ?? $0 }
-            orderedQueue = saved.orderedQueue.map { ($0.audioHash == nil ? latest[$0.id] : nil) ?? $0 }
+            queue = saved.queue.map { latest[$0.id] ?? $0 }
+            orderedQueue = saved.orderedQueue.map { latest[$0.id] ?? $0 }
             shuffled = saved.shuffled
             repeatMode = saved.repeatMode
-            current = (saved.current.audioHash == nil ? latest[saved.current.id] : nil) ?? saved.current
+            current = latest[saved.current.id] ?? saved.current
             queueSelection = saved.queueSelection
             duration = saved.duration
             position = saved.duration > 0 ? min(saved.position, saved.duration) : saved.position
@@ -1314,7 +1156,6 @@ final class Library: ObservableObject {
     func closeLibrary() {
         inventoryTask?.cancel()
         pendingLocalPlaybackTrack = nil
-        trackMetadataPresentation = nil
         pendingLocalCopyRemovals = []
         removalLibraryID = nil
         localCopiesToRemove = []
@@ -1329,7 +1170,6 @@ final class Library: ObservableObject {
         transfer.stopSaveWorker()
         transfer.cancel()
 #if os(macOS)
-        transfer.stopHosting()
         if let scopedFolder { scopedFolder.stopAccessingSecurityScopedResource() }
         scopedFolder = nil
         localFolder = nil
@@ -1348,7 +1188,6 @@ final class Library: ObservableObject {
         queue = []
         orderedQueue = []
         artworkURLs = [:]
-        catalogNotice = nil
         connected = false
         search = ""
         navigate(.albums)
@@ -1357,28 +1196,16 @@ final class Library: ObservableObject {
     }
 
     func hasManagedCopy(_ track: Track) -> Bool {
-        if let hash = track.audioHash {
-            guard let sharedAudioCatalog, let entry = try? sharedAudioCatalog.entry(track.id, hash: hash) else { return false }
-            let canonical = sharedAudioCatalog.addresses[track.id] ?? track.id
-            return savedAudioPins.contains(canonical + ":" + hash) && localStore.hasFile(entry)
-        }
         return managedTracks.contains(track.id)
     }
 
     func canRemoveLocalCopy(_ track: Track) -> Bool {
-        guard hasManagedCopy(track) else { return false }
-        if let registration = transfer.clusterRegistration {
-            return (try? registration.membership.chain(registration.localGrant)[0].host) == false
-        }
-        return true
+        hasManagedCopy(track)
     }
 
     func isLocalCopyRemovalPending(_ track: Track) -> Bool {
         guard localCatalog?.id == removalLibraryID else { return false }
-        let id = sharedAudioCatalog?.addresses[track.id] ?? track.id
-        return pendingLocalCopyRemovals.contains {
-            (sharedAudioCatalog?.addresses[$0.id] ?? $0.id) == id && $0.audioHash == track.audioHash
-        }
+        return pendingLocalCopyRemovals.contains { $0.id == track.id }
     }
 
     func removeLocalCopies(_ confirmedTracks: [Track]) {
@@ -1404,8 +1231,8 @@ final class Library: ObservableObject {
             try transfer.cancelSaves(containing: tracks)
             if let current, tracks.contains(where: { $0.id == current.id }) { stop() }
             for track in tracks {
-                guard let entry = try localStore.database().playbackEntry(track.id, hash: track.audioHash)?.entry else { throw LocalMusicError.invalidData }
-                try transfer.removeClusterCopy(entry)
+                guard let entry = try localStore.database().playbackEntry(track.id)?.entry else { throw LocalMusicError.invalidData }
+                try transfer.removeSavedCopy(entry)
             }
             refreshLocalFiles()
         } catch LocalMusicError.transferBusy {
@@ -1417,20 +1244,18 @@ final class Library: ObservableObject {
     }
 
     func addMusic(_ files: [URL]) async {
-        if let notice = audioAdditionNotice {
-            message = notice
-            return
-        }
-        if transfer.clusterRegistration != nil || transfer.peerConnected {
-            transfer.uploadPeer(files: files)
+        if transfer.usesHostCatalog {
+            message = LocalMusicError.readOnlyCatalog.localizedDescription
             return
         }
         guard !refreshing else { return }
         refreshing = true
         defer { refreshing = false }
         do {
+            let generation = catalogGeneration
             var catalog = localCatalog ?? LocalCatalog(id: UUID().uuidString, name: "マイライブラリ", entries: [])
             let prepared = try await UploadedMusic.prepare(files, organization: catalog.organization ?? AlbumOrganization(), sourceID: catalog.id)
+            guard !transfer.usesHostCatalog, generation == catalogGeneration else { return }
             catalog.organization = prepared.organization
             for (original, preparedEntry) in zip(files, prepared.entries) {
                 var entry = preparedEntry

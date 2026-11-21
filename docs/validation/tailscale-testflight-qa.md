@@ -27,7 +27,7 @@ All phone checks use ASO-165 (catalog and file reads) and ASO-164 (connection by
 - If the first track takes too long, revisit whole-file playback with the measured file size and network (ASO-165).
 - If the NAS needs manual sign-in after reboot, revise the sidecar setup (ASO-163).
 - If bytes move on cellular with cellular downloads disabled, revisit how ASO-166 enforces Wi-Fi-only saves. If On Demand needs manual reconnection, update the first-launch and recovery instructions (ASO-167).
-- Remove `NSLocalNetworkUsageDescription` only if a Q1 run that started without the permission showed no prompt and still loaded the catalog, artwork and audio by the Serve name and played.
+- Both Apple apps removed `NSLocalNetworkUsageDescription` on 2026-11-20. Start Q1 without a prior grant. Restore the usage description on an affected platform if the TestFlight check shows that reading or playing from the host over Tailscale requires local network permission.
 
 ## Results
 

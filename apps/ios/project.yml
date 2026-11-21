@@ -1,8 +1,5 @@
 name: Syncstr
 packages:
-  IrohLib:
-    url: https://github.com/n0-computer/iroh-ffi
-    exactVersion: 1.1.0
   AudioTags:
     path: ../macos/AudioTags
 options:
@@ -25,24 +22,13 @@ targets:
       - path: ../macos/Syncstr.swift
       - path: ../macos/LocalCatalog.swift
       - path: ../macos/CatalogDatabase.swift
-      - path: ../macos/ClusterPersistence.swift
-      - path: ../macos/ClusterMembership.swift
-      - path: ../macos/ClusterChanges.swift
-      - path: ../macos/ClusterDiscovery.swift
-      - path: ../macos/ClusterTransport.swift
       - path: ../macos/LibrarySource.swift
       - path: ../macos/HostConnectionFlow.swift
       - path: ../macos/HostAPIClient.swift
       - path: ../macos/HostLibrarySource.swift
-      - path: ../macos/ClusterMutation.swift
-      - path: ../macos/ClusterMetadata.swift
-      - path: ../macos/TrackMetadataEditor.swift
       - path: ../macos/SharedAudio.swift
-      - path: ../macos/SharedTrackResolution.swift
       - path: ../macos/LocalTransfer.swift
-      - path: ../macos/PeerTransfer.swift
       - path: ../macos/HostConnectionView.swift
-      - path: ../macos/PeerSetup.swift
       - path: ../macos/LocalSetup.swift
       - path: ../macos/Library.swift
       - path: ../macos/PlaybackCache.swift
@@ -55,7 +41,7 @@ targets:
       - path: ../macos/ArtworkAcquisition.swift
       - path: ../macos/Track.swift
       - path: ../macos/Playlists.swift
-      - path: ../macos/CredentialStore.swift
+      - path: ../macos/LegacyKeychainCleanup.swift
       - path: ../macos/Licenses
         buildPhase: resources
       - path: ../macos/SettingsView.swift
@@ -65,12 +51,10 @@ targets:
       - path: ../macos/Assets.xcassets
     dependencies:
       - sdk: iTunesLibrary.framework
-      - package: IrohLib
       - package: AudioTags
     settings:
       base:
         PRODUCT_NAME: Syncstr
-        ARCHS: arm64
         PRODUCT_BUNDLE_IDENTIFIER: as.ason.syncstr.ios
         TARGETED_DEVICE_FAMILY: ""
         ASSETCATALOG_COMPILER_APPICON_NAME: MacAppIcon
@@ -88,8 +72,6 @@ targets:
           - CFBundleURLName: as.ason.syncstr.host
             CFBundleURLSchemes: [syncstr]
         CFBundleDisplayName: Syncstr
-        NSLocalNetworkUsageDescription: "MacとiPhoneの間で音楽を転送するために使用します。"
-        NSBonjourServices: ["_syncstr-music._tcp", "_syncstr-cluster._udp"]
         CFBundleShortVersionString: $(MARKETING_VERSION)
         CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         ITSAppUsesNonExemptEncryption: false
@@ -106,24 +88,13 @@ targets:
         buildPhase: resources
       - path: ../macos/LocalCatalog.swift
       - path: ../macos/CatalogDatabase.swift
-      - path: ../macos/ClusterPersistence.swift
-      - path: ../macos/ClusterMembership.swift
-      - path: ../macos/ClusterChanges.swift
-      - path: ../macos/ClusterDiscovery.swift
-      - path: ../macos/ClusterTransport.swift
       - path: ../macos/LibrarySource.swift
       - path: ../macos/HostConnectionFlow.swift
       - path: ../macos/HostAPIClient.swift
       - path: ../macos/HostLibrarySource.swift
-      - path: ../macos/ClusterMutation.swift
-      - path: ../macos/ClusterMetadata.swift
-      - path: ../macos/TrackMetadataEditor.swift
       - path: ../macos/SharedAudio.swift
-      - path: ../macos/SharedTrackResolution.swift
       - path: ../macos/LocalTransfer.swift
-      - path: ../macos/PeerTransfer.swift
       - path: ../macos/HostConnectionView.swift
-      - path: ../macos/PeerSetup.swift
       - path: ../macos/LocalSetup.swift
       - path: ../macos/Library.swift
       - path: ../macos/PlaybackCache.swift
@@ -136,9 +107,8 @@ targets:
       - path: ../macos/ArtworkAcquisition.swift
       - path: ../macos/Track.swift
       - path: ../macos/Playlists.swift
-      - path: ../macos/CredentialStore.swift
+      - path: ../macos/LegacyKeychainCleanup.swift
     dependencies:
-      - package: IrohLib
       - package: AudioTags
     settings:
       base:
@@ -154,12 +124,10 @@ targets:
           - CFBundleURLName: as.ason.syncstr.host
             CFBundleURLSchemes: [syncstr]
         CFBundleDisplayName: Syncstr
-        NSLocalNetworkUsageDescription: "MacとiPhoneの間で音楽を転送するために使用します。"
-        NSBonjourServices: ["_syncstr-music._tcp", "_syncstr-cluster._udp"]
         CFBundleShortVersionString: $(MARKETING_VERSION)
         CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         ITSAppUsesNonExemptEncryption: false
-        NSCameraUsageDescription: "ライブラリのあるMacやNASのQRコードを読み取るために使用します。"
+        NSCameraUsageDescription: "NASのQRコードを読み取るために使用します。"
         UILaunchScreen: {}
         UISupportedInterfaceOrientations:
           - UIInterfaceOrientationPortrait
@@ -190,11 +158,6 @@ targets:
       - path: ../macos/Tests/PlayerInteractionTests.swift
       - path: ../macos/Tests/OfflineSaveTests.swift
       - path: ../macos/Tests/HostAPITests.swift
-      - path: ../macos/Tests/SharedAudioTests.swift
-      - path: ../macos/Tests/ClusterMutationTests.swift
-      - path: ../macos/Tests/PlaylistMutationTests.swift
-      - path: ../macos/Tests/ClusterMetadataTests.swift
-      - path: ../macos/Tests/SharedTrackResolutionTests.swift
       - path: ../macos/Tests/Fixtures
         buildPhase: resources
         excludes: [README.md]
@@ -203,10 +166,6 @@ targets:
       - path: ../macos/Tests/AlbumOrganizationTests.swift
       - path: ../macos/Tests/AlbumArtworkTests.swift
       - path: ../macos/Tests/CatalogMigrationTests.swift
-      - path: ../macos/Tests/ClusterPersistenceTests.swift
-      - path: ../macos/Tests/ClusterMembershipTests.swift
-      - path: ../../headless/fixtures/cluster-signed.json
-        buildPhase: resources
       - path: ../../headless/fixtures/compilation-membership.json
         buildPhase: resources
       - path: ../../headless/fixtures/album-artwork.json
@@ -214,8 +173,6 @@ targets:
       - path: ../../headless/fixtures/album-organization.json
         buildPhase: resources
       - path: ../../headless/fixtures/local-entry.json
-        buildPhase: resources
-      - path: ../../headless/fixtures/cluster-state.json
         buildPhase: resources
     settings:
       base:
@@ -235,8 +192,6 @@ targets:
       - path: ../macos/Tests/Fixtures
         buildPhase: resources
         excludes: [README.md]
-      - path: ../../headless/fixtures/cluster-signed.json
-        buildPhase: resources
       - path: ../../headless/fixtures/compilation-membership.json
         buildPhase: resources
       - path: ../../headless/fixtures/album-artwork.json
@@ -245,36 +200,23 @@ targets:
         buildPhase: resources
       - path: ../../headless/fixtures/local-entry.json
         buildPhase: resources
-      - path: ../../headless/fixtures/cluster-state.json
-        buildPhase: resources
       - path: ../macos/LocalCatalog.swift
       - path: ../macos/CatalogDatabase.swift
-      - path: ../macos/ClusterPersistence.swift
-      - path: ../macos/ClusterMembership.swift
-      - path: ../macos/ClusterChanges.swift
-      - path: ../macos/ClusterDiscovery.swift
-      - path: ../macos/ClusterTransport.swift
       - path: ../macos/LibrarySource.swift
       - path: ../macos/HostConnectionFlow.swift
       - path: ../macos/HostAPIClient.swift
       - path: ../macos/HostLibrarySource.swift
-      - path: ../macos/ClusterMutation.swift
-      - path: ../macos/ClusterMetadata.swift
-      - path: ../macos/TrackMetadataEditor.swift
       - path: ../macos/SharedAudio.swift
-      - path: ../macos/SharedTrackResolution.swift
       - path: ../macos/LocalTransfer.swift
-      - path: ../macos/PeerTransfer.swift
       - path: ../macos/AlbumOrganization.swift
       - path: ../macos/AlbumMembership.swift
       - path: ../macos/AlbumArtwork.swift
       - path: ../macos/ArtworkAcquisition.swift
       - path: ../macos/Track.swift
       - path: ../macos/Playlists.swift
-      - path: ../macos/CredentialStore.swift
+      - path: ../macos/LegacyKeychainCleanup.swift
     dependencies:
       - sdk: iTunesLibrary.framework
-      - package: IrohLib
       - package: AudioTags
     settings:
       base:
@@ -290,31 +232,20 @@ targets:
       - path: ../macos/OfflineSaves.swift
       - path: ../macos/LocalCatalog.swift
       - path: ../macos/CatalogDatabase.swift
-      - path: ../macos/ClusterPersistence.swift
-      - path: ../macos/ClusterMembership.swift
-      - path: ../macos/ClusterChanges.swift
-      - path: ../macos/ClusterDiscovery.swift
-      - path: ../macos/ClusterTransport.swift
       - path: ../macos/LibrarySource.swift
       - path: ../macos/HostAPIClient.swift
       - path: ../macos/HostLibrarySource.swift
-      - path: ../macos/ClusterMutation.swift
-      - path: ../macos/ClusterMetadata.swift
-      - path: ../macos/TrackMetadataEditor.swift
       - path: ../macos/SharedAudio.swift
-      - path: ../macos/SharedTrackResolution.swift
       - path: ../macos/LocalTransfer.swift
-      - path: ../macos/PeerTransfer.swift
       - path: ../macos/AlbumOrganization.swift
       - path: ../macos/AlbumMembership.swift
       - path: ../macos/AlbumArtwork.swift
       - path: ../macos/ArtworkAcquisition.swift
       - path: ../macos/Track.swift
       - path: ../macos/Playlists.swift
-      - path: ../macos/CredentialStore.swift
+      - path: ../macos/LegacyKeychainCleanup.swift
     dependencies:
       - sdk: iTunesLibrary.framework
-      - package: IrohLib
       - package: AudioTags
 schemes:
   LibraryCheck:

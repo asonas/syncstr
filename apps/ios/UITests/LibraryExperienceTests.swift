@@ -6,7 +6,7 @@ final class LibraryExperienceTests: XCTestCase {
         continueAfterFailure = false
         XCUIDevice.shared.orientation = .portrait
         let app = XCUIApplication()
-        app.launchArguments = ["--ui-fixture"]
+        app.launchArguments = ["--ui-fixture", "--retained-host"]
         app.launch()
         XCTAssertTrue(app.descendants(matching: .any)["最近追加した項目"].firstMatch.waitForExistence(timeout: 5))
         let albums = app.descendants(matching: .any)["アルバム"].firstMatch

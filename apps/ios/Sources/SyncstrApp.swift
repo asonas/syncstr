@@ -8,13 +8,10 @@ struct SyncstrApp: App {
     private let appearanceDefaults: UserDefaults
 
     init() {
+        LegacyKeychainCleanup.schedule()
         let library: Library
 #if DEBUG
-        if SharedAudioUIFixture.requested {
-            do { library = try SharedAudioUIFixture.library()! }
-            catch { fatalError("Cannot open isolated v5 fixture: \(error)") }
-            appearanceDefaults = UserDefaults(suiteName: "syncstr-v5-ui")!
-        } else if ProcessInfo.processInfo.arguments.contains("--ui-fixture") {
+        if ProcessInfo.processInfo.arguments.contains("--ui-fixture") {
             let defaults = UserDefaults(suiteName: "as.ason.syncstr.ui-fixture")!
             if ProcessInfo.processInfo.arguments.contains("--reset-appearance") { defaults.removeObject(forKey: "appearance") }
             appearanceDefaults = defaults
@@ -44,10 +41,9 @@ struct SyncstrApp: App {
                     if phase == .background {
                         library.setBackgrounded(true)
                         library.transfer.cancel()
-                        library.transfer.stopBrowsing()
                     } else if phase == .active {
                         library.setBackgrounded(false)
-                        if library.transfer.hasHostActivity || (library.transfer.hasLibrarySource && !library.transfer.busy) {
+                        if library.transfer.hasHostActivity {
                             library.transfer.refreshConnection()
                         }
                     }
@@ -81,7 +77,7 @@ private struct PhoneWindow: View {
                 guard let request = pendingLink else { return }
                 while !Task.isCancelled {
                     if let root = presentationAnchor.window?.rootViewController {
-                        if root.presentedViewController == nil, library.trackMetadataPresentation == nil,
+                        if root.presentedViewController == nil,
                            !library.showingNowPlaying {
                             hostSetup = request
                             pendingLink = nil

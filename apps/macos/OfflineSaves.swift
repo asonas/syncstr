@@ -9,9 +9,17 @@ struct OfflineSaveRequest: Codable, Identifiable {
     var completed: Set<String> = []
     var state: State = .waiting
     var error: String?
+
+    var isPending: Bool { [.waiting, .wifi, .saving].contains(state) }
+}
+
+extension LocalCatalog {
+    var supportsOfflineSaves: Bool { source == .host }
 }
 
 extension Library {
+    var showsOfflineSaveControls: Bool { localCatalog?.supportsOfflineSaves == true }
+
     func saveRequest(for tracks: [Track], scope: String) -> OfflineSaveRequest? {
         guard let catalog = localCatalog else { return nil }
         return transfer.saveRequests.first { $0.library == catalog.id && $0.id == scope }
@@ -24,7 +32,7 @@ extension Library {
 
 extension LocalEntry {
     var trackSaveIdentity: String { track.id + ":" + sha256 }
-    var saveIdentity: String { track.audioHash == nil ? sha256 : trackSaveIdentity }
+    var saveIdentity: String { sha256 }
 }
 
 extension LocalTransfer {
@@ -47,19 +55,11 @@ extension LocalTransfer {
                 preparation.cancel()
             }
             guard let catalog = snapshot?.catalog else { throw LocalMusicError.invalidData }
+            guard catalog.supportsOfflineSaves else { return }
             try Task.checkCancellation()
             guard preparingSaves[scope]?.token == token else { return }
-            let entries: [LocalEntry]
-            if catalog.logicalAudio == true {
-                let database = try store.database()
-                let addresses = try database.sharedAudioSnapshot()?.catalog.addresses ?? [:]
-                var included: Set<String> = []
-                entries = try tracks.map { track in
-                    guard let entry = try database.playbackEntry(addresses[track.id] ?? track.id, hash: track.audioHash)?.entry else { throw LocalMusicError.invalidData }
-                    return entry
-                }.filter { included.insert($0.saveIdentity).inserted }
-            } else { entries = catalog.entries.filter { ids.contains($0.track.id) } }
-            guard catalog.logicalAudio == true || entries.count == ids.count, !entries.isEmpty else { throw LocalMusicError.invalidData }
+            let entries = catalog.entries.filter { ids.contains($0.track.id) }
+            guard entries.count == ids.count, !entries.isEmpty else { throw LocalMusicError.invalidData }
             stopSaveWorker()
             var updated = saveRequests.filter { $0.library != catalog.id || $0.id != scope }
             updated.append(OfflineSaveRequest(id: scope, library: catalog.id, entries: entries))
@@ -90,8 +90,7 @@ extension LocalTransfer {
     }
 
     func cancelSaves(containing tracks: [Track]) throws {
-        let addresses = !usesHostCatalog ? try store.database().sharedAudioSnapshot()?.catalog.addresses ?? [:] : [:]
-        let ids = Set(tracks.map { addresses[$0.id] ?? $0.id })
+        let ids = Set(tracks.map(\.id))
         var updated = saveRequests
         for index in updated.indices where updated[index].entries.contains(where: { ids.contains($0.track.id) }) {
             if let library = hostConnection?.library ?? retainedHostLibrary, updated[index].library != library { continue }
@@ -116,10 +115,20 @@ extension LocalTransfer {
             let url = store.root.appendingPathComponent("offline-saves.json")
             guard FileManager.default.fileExists(atPath: url.path) else { return }
             var restored = try JSONDecoder().decode([OfflineSaveRequest].self, from: Data(contentsOf: url))
-            guard restored.allSatisfy({ !$0.entries.isEmpty && $0.entries.allSatisfy(LocalMusicStore.valid) }) else {
-                throw LocalMusicError.invalidData
+            for index in restored.indices {
+                let entries = restored[index].entries.filter(LocalMusicStore.valid)
+                if entries.count != restored[index].entries.count {
+                    restored[index].entries = entries
+                    restored[index].completed.formIntersection(entries.flatMap { [$0.saveIdentity, $0.trackSaveIdentity] })
+                    // The failure may have come from a dropped entry; let the worker check the rest again.
+                    if restored[index].state == .failed {
+                        restored[index].state = .waiting
+                        restored[index].error = nil
+                    }
+                }
+                if restored[index].state == .saving { restored[index].state = .waiting }
             }
-            for index in restored.indices where restored[index].state == .saving { restored[index].state = .waiting }
+            restored.removeAll { $0.entries.isEmpty }
             try persistSaves(restored)
         } catch { status = "保存待ちを読み込めませんでした。\(error.localizedDescription)" }
     }
@@ -144,30 +153,27 @@ extension LocalTransfer {
         savesBackgrounded = backgrounded
         if backgrounded {
             stopSaveWorker()
-            if saveReconnecting { cancel(reason: "saves_backgrounded") }
         } else { resumeSaves() }
     }
 
     func resumeSaves(explicit: String? = nil) {
         guard !retainsHostCatalog, !savesBackgrounded, saveWorker == nil,
-              saveRequests.contains(where: { (hostConnection == nil || $0.library == hostConnection?.library) && [.waiting, .wifi, .saving].contains($0.state) }) else { return }
+              saveRequests.contains(where: { (hostConnection == nil || $0.library == hostConnection?.library) && $0.isPending }) else { return }
         saveRetry?.cancel()
+        saveRetry = nil
         let token = saveGeneration
         saveWorker = Task { [weak self] in
             guard let self else { return }
             var snapshotReadFailed = false
             var processableLibrary: String?
-            var needsPeer = false
             defer {
                 if saveGeneration == token {
                     saveWorker = nil
-                    if saveRequests.contains(where: { (snapshotReadFailed || $0.library == processableLibrary) && [.waiting, .wifi, .saving].contains($0.state) }) {
+                    if saveRequests.contains(where: { (snapshotReadFailed || $0.library == processableLibrary) && $0.isPending }) {
                         let deadline = hostConnection.flatMap { self.hostAudioGate.deadline(for: $0.address.origin) }
                         let interval = saveRetryInterval
                         let gate = hostAudioGate
-                        saveRetry = Task { [weak self, needsPeer] in
-                            // A successful connection resumes saves itself and cancels this retry.
-                            if needsPeer { await self?.reconnectPeerForWaitingSaves() }
+                        saveRetry = Task { [weak self] in
                             let now = gate.now()
                             let retryAt = max(now + interval, deadline ?? now)
                             do { try await gate.sleepUntil(retryAt); try Task.checkCancellation() } catch { return }
@@ -180,14 +186,17 @@ extension LocalTransfer {
                 try Task.checkCancellation()
                 guard saveGeneration == token else { return }
                 guard let catalog = try await store.snapshotInBackground()?.catalog,
-                      catalog.remoteArtwork == nil || hostConnection?.library == catalog.id else { return }
+                      catalog.source != .host || hostConnection?.library == catalog.id else { return }
                 try Task.checkCancellation()
                 guard saveGeneration == token else { return }
                 processableLibrary = catalog.id
-                func identity(_ entry: LocalEntry) -> String { catalog.remoteArtwork != nil ? entry.trackSaveIdentity : entry.saveIdentity }
+                guard catalog.supportsOfflineSaves else {
+                    let kept = saveRequests.filter { $0.library != catalog.id || !$0.isPending }
+                    if kept.count != saveRequests.count { try persistSaves(kept) }
+                    return
+                }
                 for index in saveRequests.indices {
-                    guard saveRequests[index].library == catalog.id,
-                          [.waiting, .wifi, .saving].contains(saveRequests[index].state) else { continue }
+                    guard saveRequests[index].library == catalog.id, saveRequests[index].isPending else { continue }
                     try Task.checkCancellation()
                     let request = saveRequests[index]
                     let automatic = request.id != explicit
@@ -197,15 +206,11 @@ extension LocalTransfer {
                         var entry = requested
                         try Task.checkCancellation()
                         guard saveGeneration == token else { return }
-                        saveRequests[index].completed.remove(identity(entry))
+                        saveRequests[index].completed.remove(entry.trackSaveIdentity)
                         do {
-                            let current: LocalEntry?
-                            if catalog.logicalAudio == true {
-                                current = try store.database().playbackEntry(requested.track.id, hash: requested.sha256)?.entry
-                            } else {
-                                current = catalog.entries.first { $0.track.id == requested.track.id && $0.sha256 == requested.sha256 }
+                            guard let current = catalog.entries.first(where: { $0.track.id == requested.track.id && $0.sha256 == requested.sha256 }) else {
+                                throw LocalMusicError.invalidData
                             }
-                            guard let current else { throw LocalMusicError.invalidData }
                             if hostConnection != nil {
                                 entry = current
                                 saveRequests[index].entries[position] = current
@@ -215,12 +220,8 @@ extension LocalTransfer {
                             }
                             guard saveGeneration == token else { return }
                             if saved {
-                                if clusterRegistration != nil {
-                                    try await makeLibrarySource().recoverDownloadedFile(entry)
-                                }
-                                guard saveGeneration == token else { return }
-                                if hostConnection != nil || entry.track.audioHash != nil { try store.database().saveAudioPin(entry) }
-                                saveRequests[index].completed.insert(identity(entry))
+                                if hostConnection != nil { try store.database().saveAudioPin(entry) }
+                                saveRequests[index].completed.insert(entry.trackSaveIdentity)
                                 try persistSaves(saveRequests)
                                 if hostConnection != nil { onSaved?() }
                                 continue
@@ -247,36 +248,25 @@ extension LocalTransfer {
                                 saveRequests[index].state = .saving
                                 saveRequests[index].error = nil
                                 try persistSaves(saveRequests)
-                                if hasLibrarySource {
-                                    let source = makeLibrarySource()
+                                if let source = makeLibrarySource() {
                                     saveSource = source
                                     defer { source.stop(); if saveGeneration == token { saveSource = nil } }
                                     try await source.download(entry, cache: nil, diagnostic: nil) { _ in }
-                                } else if legacyChannelUsable && !busy {
-                                    let cached = try await playbackFile(entry.track)
-                                    try Task.checkCancellation()
-                                    guard try await protectCachedFile(cached, entry: entry) else {
-                                        waiting = true
-                                        continue
-                                    }
-                                    legacySaveCompleted()
                                 } else {
                                     waiting = true
-                                    needsPeer = true
                                     continue
                                 }
                             }
                             try Task.checkCancellation()
                             guard saveGeneration == token else { return }
-                            if hostConnection != nil || entry.track.audioHash != nil { try store.database().saveAudioPin(entry) }
-                            saveRequests[index].completed.insert(identity(entry))
+                            if hostConnection != nil { try store.database().saveAudioPin(entry) }
+                            saveRequests[index].completed.insert(entry.trackSaveIdentity)
                             try persistSaves(saveRequests)
                             onSaved?()
                         } catch {
                             try Task.checkCancellation()
                             guard saveGeneration == token else { return }
-                            if case LocalMusicError.clusterUnavailable = error { waiting = true }
-                            else if hostConnection != nil, error is URLError { waiting = true }
+                            if hostConnection != nil, error is URLError { waiting = true }
                             else if case HostAPIError.rateLimited = error { waiting = true }
                             else if case LocalMusicError.disconnected = error { waiting = true }
                             else if (error as? CocoaError)?.code == .fileWriteOutOfSpace {
@@ -286,7 +276,7 @@ extension LocalTransfer {
                         }
                     }
                     guard saveGeneration == token else { return }
-                    let finished = saveRequests[index].entries.allSatisfy { self.saveRequests[index].completed.contains(identity($0)) }
+                    let finished = saveRequests[index].entries.allSatisfy { self.saveRequests[index].completed.contains($0.trackSaveIdentity) }
                     saveRequests[index].state = finished ? .complete : failure != nil ? .failed : waiting ? (saveRequests[index].state == .wifi ? .wifi : .waiting) : .failed
                     if let failure { saveRequests[index].error = failure }
                     try persistSaves(saveRequests)
@@ -301,14 +291,9 @@ extension LocalTransfer {
     }
 
     private func protectCachedFile(_ url: URL, entry: LocalEntry) async throws -> Bool {
-        let imported = try await CatalogStorage.shared.perform { [store, host = hostConnection != nil] in
-            try store.importCachedFile(url, entry: entry, link: entry.track.audioHash != nil,
-                                       recordReceipt: entry.track.audioHash == nil, host: host)
+        try await CatalogStorage.shared.perform { [store, host = hostConnection != nil] in
+            try store.importCachedFile(url, entry: entry, host: host)
         }
-        if imported, clusterRegistration != nil {
-            try await makeLibrarySource().recoverDownloadedFile(entry)
-        }
-        return imported
     }
 }
 
@@ -328,7 +313,6 @@ struct OfflineSaveControls: View {
         if compact || iconOnly {
             Menu {
                 Text(saveStatus)
-                if tracks.count == 1, let track = tracks.first { TrackMetadataMenu(library: library, track: track) }
                 if !removalPending {
                     if let request, let error = request.error { Text(error) }
                     if pending, let request {

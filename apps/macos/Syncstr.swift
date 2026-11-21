@@ -36,7 +36,6 @@ struct LibraryView: View {
     @State private var importingAudio = false
     @State private var hostSetup: HostSetupRequest?
     @State private var showingUploadStatus = false
-    @State private var showingClusterResults = false
     @State private var hoveredTrack: String?
     @State private var selectedAlbums = Set<String>()
     @State private var albumScrollPosition = ScrollPosition(idType: String.self)
@@ -75,11 +74,6 @@ struct LibraryView: View {
                     }
                 }.padding(32).frame(maxWidth: .infinity, maxHeight: .infinity)
             }
-            if let notice = library.catalogNotice {
-                Text(notice).font(.callout).frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(16).background(Studio.graphite)
-                    .accessibilityIdentifier("library-status-notice")
-            }
             if let message = library.message ?? (showingUploadStatus ? library.transfer.status : nil) {
                 HStack(alignment: .top, spacing: 8) {
                     MacIcon("circle-alert").accessibilityHidden(true)
@@ -113,9 +107,7 @@ struct LibraryView: View {
             if library.transfer.hasHostActivity { library.transfer.refreshConnection() }
         }
         .modifier(OfflineSaveRemoval(library: library))
-        .modifier(TrackMetadataEditing(library: library))
         .onOpenURL { url in
-            showingClusterResults = false
             if let hostSetup, !hostSetup.showsSettings { hostSetup.input = .link(url) }
             else { hostSetup = HostSetupRequest(input: .link(url)) }
         }
@@ -127,13 +119,6 @@ struct LibraryView: View {
                 }.padding(24).frame(minWidth: 440)
             } else {
                 HostConnectionView(transfer: library.transfer, request: request)
-            }
-        }
-        .sheet(isPresented: $showingClusterResults) { ClusterImportResults(transfer: library.transfer) }
-        .onChange(of: library.transfer.busy) { _, busy in
-            if !busy && hostSetup == nil && library.transfer.clusterResultsPending {
-                library.transfer.clusterResultsPending = false
-                showingClusterResults = true
             }
         }
         .fileImporter(isPresented: $importingAudio, allowedContentTypes: [.audio], allowsMultipleSelection: true) { result in
@@ -175,14 +160,6 @@ struct LibraryView: View {
                     .frame(minWidth: 120, idealWidth: 240, maxWidth: 240)
                     .layoutPriority(-1)
             }
-            if library.transfer.showsLibraryEditControls, showingAlbumGrid, !selectedAlbums.isEmpty, let notice = library.albumsVisibilityNotice(selectedAlbums) {
-                Text(notice).font(.caption).foregroundStyle(.secondary)
-            }
-            if library.transfer.showsLibraryEditControls, showingAlbumGrid {
-                ForEach(selectedAlbums.sorted(), id: \.self) { id in
-                    if let status = library.albumVisibilityStatus(id) { Text(status).font(.caption).foregroundStyle(.secondary) }
-                }
-            }
         }
         .padding(.horizontal, 8).padding(.vertical, 8)
         .frame(minHeight: 52)
@@ -219,8 +196,8 @@ struct LibraryView: View {
                         .padding(.horizontal, 8)
                         .contentShape(Rectangle())
                 }
-                .buttonStyle(.plain).disabled(library.transfer.busy || library.audioAdditionNotice != nil)
-                .help(library.audioAdditionNotice ?? "ライブラリに音源を追加します。未登録の場合もこの端末で再生できます")
+                .buttonStyle(.plain).disabled(library.transfer.busy)
+                .help("ライブラリに音源を追加します。未登録の場合もこの端末で再生できます")
             }
             if showingUploadStatus && library.transfer.busy {
                 ProgressView(value: library.transfer.progress).padding(.horizontal, 8)
@@ -231,7 +208,7 @@ struct LibraryView: View {
                     .frame(maxWidth: .infinity, minHeight: 32, alignment: .leading)
                     .padding(.horizontal, 8).contentShape(Rectangle())
             }
-            .buttonStyle(.plain).disabled(library.refreshing)
+            .buttonStyle(.plain).disabled(library.refreshing || library.transfer.retainsHostCatalog)
             Spacer()
         }
         .padding(.horizontal, 8).padding(.top, 20)
@@ -350,10 +327,6 @@ struct LibraryView: View {
                     Button(saving ? "保存しています…" : targets.count > 1 ? "選択した\(targets.count)枚を\(action)" : action) {
                         changeAlbumVisibility(targets)
                     }.disabled(library.albumsVisibilityUnavailable(targets))
-                    if let notice = library.albumsVisibilityNotice(targets) { Text(notice) }
-                    ForEach(targets.sorted(), id: \.self) { id in
-                        if let status = library.albumVisibilityStatus(id) { Text(status) }
-                    }
                 }
                 Button("アルバムを開く") { openAlbum(album.id) }
             }
@@ -434,8 +407,10 @@ struct LibraryView: View {
                                 .buttonStyle(.plain).foregroundStyle(Studio.signal)
                                 .accessibilityLabel("アルバムをシャッフル再生")
                                 playButton(album.tracks)
-                                OfflineSaveControls(library: library, tracks: album.tracks,
-                                                    scope: "album:" + album.id, iconOnly: true)
+                                if library.showsOfflineSaveControls {
+                                    OfflineSaveControls(library: library, tracks: album.tracks,
+                                                        scope: "album:" + album.id, iconOnly: true)
+                                }
                             }
                         }.frame(minHeight: wide ? 272 : nil, alignment: .topLeading)
                         if wide { Spacer(minLength: 0) }
@@ -571,13 +546,10 @@ struct LibraryView: View {
         ForEach(Array(tracks.enumerated()), id: \.element.id) { index, track in
             trackRow(track, index: index, tracks: preservingQueue ? nil : tracks, showArtist: showArtist)
                 .contextMenu {
-                    TrackMetadataMenu(library: library, track: track)
                     if library.transfer.showsLibraryEditControls {
                         Button(library.albumVisibilityLabel(track.albumKey)) {
                             library.setAlbumHidden(track.albumKey, hidden: !library.isAlbumHidden(track.albumKey))
-                        }.disabled(library.albumVisibilityNotice(track.albumKey) != nil || library.isSavingAlbumVisibility(track.albumKey))
-                        if let notice = library.albumVisibilityNotice(track.albumKey) { Text(notice) }
-                        if let status = library.albumVisibilityStatus(track.albumKey) { Text(status) }
+                        }.disabled(library.isSavingAlbumVisibility(track.albumKey))
                     }
                 }
                 .overlay(alignment: .bottom) { rule }
@@ -618,7 +590,7 @@ struct LibraryView: View {
             }.buttonStyle(.plain)
                 .accessibilityLabel("\(track.title)、\(track.artist ?? "アーティスト不明")、\(time(track.duration ?? 0))")
                 .accessibilityAddTraits(library.current?.id == track.id ? .isSelected : [])
-            if let request = library.saveRequest(for: [track], scope: "track:" + track.id),
+            if library.showsOfflineSaveControls, let request = library.saveRequest(for: [track], scope: "track:" + track.id),
                request.state != .complete && !library.hasManagedCopy(track) {
                 Text(request.state == .wifi ? "Wi-Fi待ち" : request.state == .saving ? "保存中" : request.state == .failed ? "保存失敗" : request.state == .cancelled ? "保存中止" : "接続待ち")
                     .font(.caption).foregroundStyle(.secondary)
@@ -628,16 +600,18 @@ struct LibraryView: View {
             }
             Menu {
                 Button("再生") { library.play(track, in: tracks) }
-                if library.isLocalCopyRemovalPending(track) {
-                    Text("保存の解除待ち")
-                } else if let request = library.saveRequest(for: [track], scope: "track:" + track.id),
-                   [.waiting, .wifi, .saving].contains(request.state) {
-                    Button(request.entries.count > 1 ? "アルバム保存を中止" : "保存を中止") { library.transfer.cancelSave(request) }
-                } else if library.localFiles[track.id] == nil {
-                    Button("この端末に保存") { Task { await library.transfer.requestSave([track], scope: "track:" + track.id) } }
-                }
-                if library.canRemoveLocalCopy(track) && !library.isLocalCopyRemovalPending(track) {
-                    Button("この端末の保存を解除", role: .destructive) { library.localCopiesToRemove = [track] }.disabled(library.transfer.busy)
+                if library.showsOfflineSaveControls {
+                    if library.isLocalCopyRemovalPending(track) {
+                        Text("保存の解除待ち")
+                    } else if let request = library.saveRequest(for: [track], scope: "track:" + track.id),
+                       [.waiting, .wifi, .saving].contains(request.state) {
+                        Button(request.entries.count > 1 ? "アルバム保存を中止" : "保存を中止") { library.transfer.cancelSave(request) }
+                    } else if library.localFiles[track.id] == nil {
+                        Button("この端末に保存") { Task { await library.transfer.requestSave([track], scope: "track:" + track.id) } }
+                    }
+                    if library.canRemoveLocalCopy(track) && !library.isLocalCopyRemovalPending(track) {
+                        Button("この端末の保存を解除", role: .destructive) { library.localCopiesToRemove = [track] }.disabled(library.transfer.busy)
+                    }
                 }
                 Button("アルバムを表示") { library.selectedAlbum = track.albumKey; library.search = ""; library.showingNowPlaying = false }
                 Button("アーティストを表示") { self.showArtist(track.artist ?? "アーティスト不明") }
@@ -933,13 +907,8 @@ struct SyncstrApp: App {
     @StateObject private var playback: PhonePlayback
 
     init() {
-#if DEBUG
-        let library: Library
-        do { library = try SharedAudioUIFixture.library() ?? Library() }
-        catch { fatalError("Cannot open isolated v5 fixture: \(error)") }
-#else
+        LegacyKeychainCleanup.schedule()
         let library = Library()
-#endif
         _library = StateObject(wrappedValue: library)
         _playback = StateObject(wrappedValue: PhonePlayback(library: library))
     }

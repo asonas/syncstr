@@ -46,7 +46,7 @@ Whole-file download with hash verification stays the playback model, and [ADR 00
 | Part | Status | Documents |
 | --- | --- | --- |
 | Several writers: signed changes, membership grants, enrollment, epochs, profile floors, the activation journal, and retrying a change at another host | Replaced | [v5 completion design](../v5-completion-design.md), [v5 member mutation contract](../v5-member-mutation-contract.md), [v5 activation and recovery](../v5-activation-and-recovery.md), [v5 activation control protocol](../v5-activation-control-protocol.md), [cluster model](../cluster-model-design.md), [cluster implementation plan](../cluster-implementation-plan.md) and its milestone documents |
-| Connectivity built by Syncstr: mDNS discovery, peer-to-peer transfer, relays, and the rendezvous directory | Replaced | [peer rendezvous](../peer-rendezvous.md), [peer-to-peer transfer](../p2p-music-transfer.md), [local music transfer](../local-music-transfer.md), [cluster connectivity M0](../cluster-connectivity-m0.md) |
+| Connectivity built by Syncstr: mDNS discovery, peer-to-peer transfer, relays, and the rendezvous directory | Replaced | [peer rendezvous](../peer-rendezvous.md), [peer-to-peer transfer](../p2p-music-transfer.md), [local transfer milestone](../design-spec.md#trust-and-execution), [cluster connectivity M0](../cluster-connectivity-m0.md) |
 | Track identity, playlist references, and the playback cache and offline saves | Kept | ADR 0005, ADR 0006, ADR 0007, and the playback rules of the [cluster UI review](../cluster-ui-review.md) |
 | The code behind the replaced parts | May break or be removed during the rebuild | [Migration plan](../private-network-migration-plan.md) |
 

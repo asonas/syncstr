@@ -2,35 +2,26 @@
 
 A native macOS and iPhone player for a music library you manage yourself.
 
-## Planned direction
-
-Syncstr is being redesigned to stop building its own connectivity. A library will have one primary host that devices reach over Tailscale HTTPS from devices allowed by the tailnet policy, with optional mirrors for backup. Both the host and the phone join Tailscale. Opening the library requires no Syncstr pairing. [ADR 0008](docs/adr/0008-one-primary-host-over-a-private-network.md) records the decision, and [Syncstr on a private network](docs/private-network-architecture.md) explains the design and links to each part. None of it is implemented. The sections below describe what the code does today, including the cluster, peer-to-peer and v5 work that the redesign removes.
-
 ## Current implementation
 
-The [product-gap audit](docs/product-gap-audit-2026-11-06.md) and the [v5 completion design](docs/v5-completion-design.md) record the design backlog before ADR 0008. ADR 0008 replaces the v5 design, so the latter is history, not a plan. PR #15 merged the Apple v5 work into main on 2026-11-06. Physical-device audio output and the cross-platform acceptance in ASO-12 are not yet verified.
+The macOS and iPhone apps read a host's `/api/v1` over HTTPS. Enter the host address on each device and confirm the library. The tailnet policy controls access. See [ADR 0008](docs/adr/0008-one-primary-host-over-a-private-network.md) for the decision and the [private network design](docs/private-network-architecture.md) for planned mirror support.
 
-Both Apple apps can join an existing cluster library using an invitation, or import music for local playback without enrollment. macOS also supports a selected music folder. The retained catalog stays visible offline, and playback and explicit offline saves automatically select an authorized source. Track and album saves retain pending requests across restarts, report partial results, and resume under the communication policy while the app is active.
-
-Settings contains enrollment, hosts, connection diagnostics, conflicts, communication policy, storage limits, and legacy connections. The older Mac-to-iPhone pairing flow remains available under **Legacy device transfer** in Settings; see [the legacy transfer guide](docs/local-music-transfer.md) for its protocol and verification limits.
-
-An opt-in headless P2P node also supports catalog browsing, original-file uploads, and verified downloads from both native apps. See [P2P setup](docs/p2p-music-transfer.md); existing deployments must explicitly enable this transport.
-
-- **macOS:** album, artist, and track browsing; search; continuous playback; seeking; and folder selection.
-- **iPhone:** library browsing, search, local import, playback, track/album offline saves, background audio, and lock-screen controls. The saved library opens without a connection.
+- **macOS:** Browse albums, artists, tracks, and host playlists. Search, play, seek, or save music for offline listening. With no host connected, select a local Music folder and play its originals directly. The Mac app does not serve the folder to other devices.
+- **iPhone and iPad:** Browse and play the host library or import local audio. Playback supports background audio and lock-screen controls.
+- **Offline listening:** The last host catalog and saved audio remain available after disconnect. Pending saves survive restarts. The saving controls in Settings include the cellular preference for automatic transfers and the playback-cache limit.
 
 Start with the [macOS guide](apps/macos/README.md) or [iPhone guide](apps/ios/README.md) for build and verification steps. [Issue #11](https://github.com/asonas/syncstr/issues/11) records implementation milestones; the [Syncstr project in Linear](docs/agents/issue-tracker.md) tracks follow-up work. Record local builds, distribution, and device verification separately.
 
 ## Hidden albums
 
-Hide an album from its menu or detail page on macOS and iPhone, from its album
+In a local Apple library, hide an album from its menu or detail page, from its album
 group on Android, or with **Hide / Unhide album** after selecting a track on
 Windows. **Hidden albums** lists these albums and lets you restore them. Hidden
 albums are excluded from normal album, artist, and track browsing and search;
 original audio and the current playback queue are retained.
 
-Visibility is shared by members of the same cluster. Local changes survive
-restarts while awaiting synchronization. Apple apps retry while active; Android
+Apple apps display host album visibility read-only. On Android and Windows,
+visibility is shared by members of the same cluster. Android
 tries immediately, and **Refresh library** retries pending changes on Android
 and Windows. Update the headless hosts and all clients before using this feature:
 older versions do not recognize the new visibility records. Object conflicts
@@ -40,21 +31,21 @@ continue to use the existing conflict-resolution flow.
 
 | Task | Start here |
 |---|---|
-| One primary host over a private network | [Overview](docs/private-network-architecture.md), [ADR 0008](docs/adr/0008-one-primary-host-over-a-private-network.md), [host read API](docs/host-api-design.md), [mirrors and the primary switch](docs/mirrors-and-primary-switch.md), [onboarding and connection states](docs/onboarding-and-connection-states.md), [migration plan](docs/private-network-migration-plan.md), [Tailscale setup](docs/tailscale-setup.md), [TestFlight QA](docs/validation/tailscale-testflight-qa.md). The NAS serves the read API. Apple app support is pending. |
+| One primary host over a private network | [Overview](docs/private-network-architecture.md), [ADR 0008](docs/adr/0008-one-primary-host-over-a-private-network.md), [host read API](docs/host-api-design.md), [mirrors and the primary switch](docs/mirrors-and-primary-switch.md), [onboarding and connection states](docs/onboarding-and-connection-states.md), [migration plan](docs/private-network-migration-plan.md), [Tailscale setup](docs/tailscale-setup.md), [TestFlight QA](docs/validation/tailscale-testflight-qa.md). The NAS serves the read API. Both Apple apps read it. |
 | macOS UI and launch | [Syncstr.swift](apps/macos/Syncstr.swift), [macOS guide](apps/macos/README.md) |
-| Local catalog, pairing, and transfer | [LocalCatalog.swift](apps/macos/LocalCatalog.swift), [CatalogDatabase.swift](apps/macos/CatalogDatabase.swift), [LocalTransfer.swift](apps/macos/LocalTransfer.swift), [LocalSetup.swift](apps/macos/LocalSetup.swift), [protocol and setup](docs/local-music-transfer.md) |
+| Local catalog and host connections | [LocalCatalog.swift](apps/macos/LocalCatalog.swift), [CatalogDatabase.swift](apps/macos/CatalogDatabase.swift), [HostAPIClient.swift](apps/macos/HostAPIClient.swift), [connection controls](apps/macos/HostConnectionView.swift) |
 | Compilation album organization | [Retention policy](docs/compilation-data-design.md), [revised membership and artwork policy](docs/compilation-policy-review.md), [revision implementation plan](docs/compilation-revision-implementation-plan.md), [earlier implementation](docs/compilation-implementation-spec.md), [verification](docs/validation/compilation-albums.md), [glossary](GLOSSARY.md), [metadata preservation decision](docs/adr/0001-preserve-imported-metadata-and-user-choices.md) |
-| Shared playback and pairing credentials | [Library.swift](apps/macos/Library.swift), [Track.swift](apps/macos/Track.swift), [CredentialStore.swift](apps/macos/CredentialStore.swift). The iOS target compiles these same files |
-| Player behavior and retention | [Player specification](docs/player-interaction-spec.md), [cluster interaction specification](docs/cluster-ui-review.md), [verification](docs/validation/player-interactions.md), [playback cache](apps/macos/PlaybackCache.swift) |
+| Shared Apple playback | [Library.swift](apps/macos/Library.swift), [Track.swift](apps/macos/Track.swift), [host audio source](apps/macos/HostLibrarySource.swift) |
+| Player behavior and retention | [Player specification](docs/player-interaction-spec.md), [verification](docs/validation/player-interactions.md), [playback cache](apps/macos/PlaybackCache.swift) |
 | Playback failure diagnostics | [Specification](docs/playback-diagnostics-spec.md), [recorder and copy UI](apps/macos/PlaybackDiagnostics.swift), [validation and observation limits](docs/validation/playback-diagnostics.md) |
 | Connection and playback responsiveness | [Execution and cancellation design](docs/playback-responsiveness.md), [regression and app verification](docs/validation/playback-responsiveness.md) |
-| Offline-save lifecycle and Apple library entry | [Shared save queue and controls](apps/macos/OfflineSaves.swift), [cluster interaction validation](docs/validation/cluster-library-ui.md) |
+| Offline-save lifecycle and Apple library entry | [Shared save queue and controls](apps/macos/OfflineSaves.swift), [host API tests](apps/macos/Tests/HostAPITests.swift) |
 | iPhone UI and device features | [Sources](apps/ios/Sources/), [iPhone guide](apps/ios/README.md) |
 | Folder settings | [SettingsView.swift](apps/macos/SettingsView.swift) |
 | Headless NAS node and CLI | [Headless guide](headless/README.md), [HTTPS API](headless/src/api.rs), [node catalog](headless/src/store.rs) |
 | Music/iTunes owned-library migration | [Existing inventory/prepare/import/resume CLI](tools/music-migration/README.md), [Windows-to-NAS plan](docs/music-library-migration-plan.md), [source metadata precedence](docs/adr/0004-preserve-source-library-metadata-during-migration.md); v5 correspondence integration is replaced by ADR 0008, and ASO-41 rewrites it for the new store |
 | Read-only Windows playlist inspection | [Audit tool](tools/playlist-audit/README.md), [observations and verification gaps](docs/validation/windows-playlist-audit.md) |
-| Shared playlists and playlist XML migration | [Implementation plan](docs/playlist-implementation-plan.md), [updating imported playlists and verification](docs/playlist-reconciliation.md); full editing and smart-rule evaluation remain planned |
+| Apple host playlists | [Read-only playlist browser and save controls](apps/macos/PlaylistViews.swift) |
 | Source track identity and Windows evidence collection | [Shared-audio server design](docs/shared-audio-server-design.md), [implementation and verification](docs/shared-audio-server-implementation.md), [Inventory and correspondence commands](tools/playlist-audit/README.md#source-registration-inventory), [report format](tools/playlist-audit/inventory-format.md), [Windows validation](docs/validation/source-track-identity-windows.md), [Windows implementation handoff](docs/source-track-identity-windows-handoff.md), [identity boundary](docs/adr/0006-preserve-source-track-identity-independently-of-audio.md) |
 | Cluster enrollment and LAN replication | [Implementation plan](docs/cluster-implementation-plan.md), [M2 protocol and CLI](docs/cluster-lan-sync-m2.md), [membership](headless/src/enrollment.rs), [reconciliation](headless/src/cluster_sync.rs) |
 | Signed cluster-record compatibility | [Addition-time contract](docs/validation/signed-addition-time.md), [shared signed fixture](headless/fixtures/cluster-signed.json) |
@@ -68,7 +59,7 @@ continue to use the existing conflict-resolution flow.
 | Shared Rust client design | [Module ownership and migration design](docs/shared-rust-client-design.md), [accepted staged decisions](docs/native-client-merge-decisions.md); Apple adoption/measurements remain gated |
 | Shared Rust catalog | [Read-only v5 client API and verification](docs/shared-rust-catalog.md), [implementation](headless/src/catalog_client.rs); native app integration follows separately |
 | Shared Rust audio and offline saves | [Protected assets, durable jobs and Windows verification](docs/shared-rust-audio.md); native player/binding integration follows separately |
-| App-to-node P2P transfer | [P2P setup and protocol](docs/p2p-music-transfer.md), [Rust transport](headless/src/peer.rs), [native transport](apps/macos/PeerTransfer.swift), [setup controls](apps/macos/PeerSetup.swift) |
+| Optional headless P2P transport | [P2P setup and protocol](docs/p2p-music-transfer.md), [Rust transport](headless/src/peer.rs) |
 | Signed endpoint discovery | [Rendezvous setup and protocol](docs/peer-rendezvous.md), [Cloudflare directory](rendezvous/src/index.ts), [headless publisher](headless/src/rendezvous.rs) |
 | Device identity and direct/relay connectivity experiment | [Connectivity probe](headless/connectivity-probe/README.md). Isolated from deployed services; independent-network verification is pending |
 | Xcode Cloud and distribution for both platforms | [project.yml](apps/ios/project.yml), [ci_post_clone.sh](apps/ios/ci_scripts/ci_post_clone.sh). Generate the Xcode project from YAML |
@@ -87,7 +78,7 @@ Record the expected behavior before, during, and after the interaction, includin
 
 ## Long-term design and deferred work
 
-Cross-device playback-state synchronization remains deferred. Music XML migration and Windows/Android clients have partial implementations; see their guides for supported behavior and outstanding acceptance. Passkey authentication belongs to the superseded account-based design and is not a requirement for the current cluster product.
+Cross-device playback-state synchronization remains deferred. Music XML migration and Windows/Android clients have partial implementations; see their guides for supported behavior and outstanding acceptance. Passkey authentication belongs to the superseded account-based design and is not a requirement for opening a host library.
 
 The service specification preserves the local-transfer milestone. [ADR 0008](docs/adr/0008-one-primary-host-over-a-private-network.md), the identity ADRs and specific player/save/playlist contracts define subsequent direction. The [cluster model](docs/cluster-model-design.md) describes the design that ADR 0008 replaces. Historical plans do not reinstate NAS authority or account requirements. Use the app guides and source code for implemented behavior, and Linear issues for work status.
 

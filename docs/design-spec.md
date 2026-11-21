@@ -1,6 +1,6 @@
 # Syncstr product specification
 
-Scope note (2026-11-06): this document preserves the local-transfer milestone, including its original deferred list. Current apps also support cluster enrollment and other later work. Use the [cluster model](cluster-model-design.md), specific player/save/playlist contracts, and the [completion design](v5-completion-design.md) to interpret subsequent scope. The completion design is a draft; it does not claim v5 is implemented on main.
+Scope note (2026-11-06): this document preserves the local-transfer milestone, including its original deferred list. See the [current implementation](../README.md#current-implementation) for host access and local playback.
 
 Syncstr lets people listen to their own audio files with a consistent experience across devices and operating systems. The current implementation supports macOS and iPhone without a hosted service, server account, or Internet connection during playback.
 
@@ -20,11 +20,11 @@ No login or alternate server connection is part of onboarding. macOS Settings se
 
 - **Source folder:** A user-selected Mac directory, read through a security-scoped bookmark.
 - **Catalog:** A persisted library identity, track metadata, audio hashes, and artwork.
-- **Track:** One indexed audio file with a persisted opaque ID. Existing IDs survive catalog migration; newly indexed tracks receive UUIDs. SHA-256 identifies the exact file version, separately from track identity. See the [catalog storage contract](local-music-transfer.md#catalog-storage) for rescan matching.
+- **Track:** One indexed audio file with a persisted opaque ID. Existing IDs survive catalog migration; newly indexed tracks receive UUIDs. SHA-256 identifies the exact file version, separately from track identity. See the [local catalog implementation](../apps/macos/LocalCatalog.swift) for rescan matching.
 - **Pairing:** Explicit Mac approval of a phone with a shared key retained in each device's nonsynchronizing Keychain.
 - **Received audio:** A durable phone copy published only after exact size and SHA-256 verification. Partial staging files never count as available tracks.
 
-The Mac plays originals directly. The iPhone plays received files and restores its catalog without contacting the Mac. A source deletion or tag edit does not remove completed phone copies. The transfer protocol and format limits are defined in [local music transfer](local-music-transfer.md).
+The Mac plays originals directly. The iPhone plays received files and restores its catalog without contacting the Mac. A source deletion or tag edit does not remove completed phone copies. The [trust and execution section](#trust-and-execution) describes this milestone’s transfer protocol.
 
 ## Playback and interface
 

@@ -5,7 +5,7 @@ import XCTest
 
 final class LocalLibraryTests: XCTestCase {
     @MainActor
-    func testFirstLaunchIsReadyForPairingAndUnsavedAudioCannotPlay() async throws {
+    func testFirstLaunchHasNoLibraryAndUnsavedAudioCannotPlay() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }
         let files = LocalMusicStore(root: root)

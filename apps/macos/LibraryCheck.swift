@@ -81,38 +81,30 @@ struct LibraryCheck {
             sha256: try LocalMusicStore.digest(file: folder.appendingPathComponent("First.wav")), artwork: nil)
         try audio.write(to: savedStore.fileURL(saved))
         try savedStore.save(LocalCatalog(id: "offline-library", name: "Offline", entries: [saved]))
-        var legacy: OpaquePointer?
-        try require(sqlite3_open(savedStore.root.appendingPathComponent("catalog.sqlite").path, &legacy) == SQLITE_OK)
-        let removed = sqlite3_exec(legacy, "DROP TABLE cluster_locations; DROP TABLE cluster_objects; DROP TABLE cluster_peers; DROP TABLE cluster_identity; DROP TABLE cluster_pending_changes; DROP TABLE cluster_jobs; DROP TABLE cluster_schema;", nil, nil, nil)
-        sqlite3_close(legacy)
-        try require(removed == SQLITE_OK)
         let migrated = try savedStore.load()!
         let offline = Library(makePlayer: { url in
             let player = AVPlayer(url: url)
             player.isMuted = true
             return player
-        }, localStore: savedStore, pairingSecrets: CredentialStore(service: "syncstr-offline-check-" + UUID().uuidString))
+        }, localStore: savedStore)
         try offline.openLocal(migrated)
         offline.togglePlayback(in: offline.tracks)
         try await wait("Migrated saved music did not play offline") { offline.playing && offline.position > 0 }
         offline.closeLibrary()
-        print("PASS: saved audio plays offline after cluster migration without a peer or source folder")
+        print("PASS: saved audio plays offline without the source folder")
         var mediaPlayers: [AVPlayer] = []
-        let secrets = CredentialStore(service: "syncstr-library-check-" + UUID().uuidString)
-        let peerSecrets = CredentialStore(service: "syncstr-library-check-identity-" + UUID().uuidString)
-        let peerPairing = CredentialStore(service: "syncstr-library-check-peer-" + UUID().uuidString)
         let localFiles = LocalMusicStore(root: folder.appendingPathComponent("local"))
         let library = Library(makePlayer: { url in
             let player = AVPlayer(url: url)
             player.isMuted = true
             mediaPlayers.append(player)
             return player
-        }, localStore: localFiles, pairingSecrets: secrets, peerSecrets: peerSecrets, peerPairing: peerPairing)
+        }, localStore: localFiles)
         await library.restoreLibrary()
         try require(!library.connected && !library.restoringSession)
         await library.chooseFolder(folder)
         try require(library.connected && library.tracks.count == 3 && library.message == nil)
-        let reopened = Library(localStore: localFiles, pairingSecrets: secrets, peerSecrets: peerSecrets, peerPairing: peerPairing)
+        let reopened = Library(localStore: localFiles)
         await reopened.restoreLibrary()
         try require(reopened.connected && reopened.tracks.count == 3 && !reopened.restoringSession)
         reopened.closeLibrary()
@@ -247,7 +239,5 @@ struct LibraryCheck {
         try require(mediaPlayers.allSatisfy { $0.rate == 0 })
         try require(localFiles.load()?.entries.count == 3)
         print("PASS: real AVPlayer advances, stops, restarts, and releases playback on library closure")
-        try await peerSecrets.remove()
-        try await peerPairing.remove()
     }
 }

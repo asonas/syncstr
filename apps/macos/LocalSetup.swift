@@ -1,8 +1,6 @@
 import SwiftUI
 import UniformTypeIdentifiers
-#if os(macOS)
-import CoreImage.CIFilterBuiltins
-#else
+#if os(iOS)
 import AVFoundation
 import VisionKit
 #endif
@@ -10,23 +8,18 @@ import VisionKit
 struct AddMusicButton: View {
     @ObservedObject var library: Library
     @State private var importing = false
-    private var unavailable: Bool { library.audioAdditionNotice != nil }
 
     var body: some View {
         if library.transfer.showsLibraryEditControls {
             VStack(alignment: .leading, spacing: 4) {
                 Button("音楽ファイルを追加") { importing = true }
-                    .disabled(library.refreshing || library.transfer.busy || unavailable)
+                    .disabled(library.refreshing || library.transfer.busy)
                     .fileImporter(isPresented: $importing, allowedContentTypes: [.audio], allowsMultipleSelection: true) { result in
                         switch result {
                         case .success(let files): Task { await library.addMusic(files) }
                         case .failure(let error): library.message = error.localizedDescription
                         }
                     }
-                if let notice = library.audioAdditionNotice {
-                    Text(notice)
-                        .font(.caption).foregroundStyle(.secondary)
-                }
             }
         }
     }
@@ -64,155 +57,11 @@ struct LocalFolderButton: View {
                 guard response == .OK, let url = panel.url else { return }
                 Task { await library.chooseFolder(url) }
             }
-        }.disabled(library.refreshing)
+        }.disabled(library.refreshing || !library.transfer.canChooseFolder)
     }
 }
 
-struct MacPairingView: View {
-    @ObservedObject var transfer: LocalTransfer
-    var newPairing: () -> Void
-    @Environment(\.dismiss) private var dismiss
-
-    var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 20) {
-                Text("iPhoneに音楽を持ち出す").font(.title2)
-                Text("同じWi-FiでiPhoneのSyncstrを開き、このMacを選んでください。転送中は両方のアプリを開いてください。")
-                if let name = transfer.pairedName {
-                    LabeledContent("ペアリング済み", value: name)
-                    Button("ペアリングを解除", role: .destructive) { Task { await transfer.forget() } }
-                } else if !transfer.code.isEmpty {
-                    if let qr = qrImage {
-                        Image(nsImage: qr).interpolation(.none).resizable().frame(width: 200, height: 200)
-                            .padding(16).background(.white)
-                            .accessibilityLabel("iPhoneで読み取るペアリング用QRコード")
-                    }
-                    Text("QRコードを読み取るか、次のコードをiPhoneに入力してください。")
-                    Text(transfer.code).font(.system(.body, design: .monospaced)).textSelection(.enabled)
-                    Button("コードをコピー") {
-                        NSPasteboard.general.clearContents()
-                        NSPasteboard.general.setString(transfer.code, forType: .string)
-                    }
-                    Button("ペアリングをキャンセル") { Task { await transfer.forget() } }
-                } else { Button("新しい端末をペアリング", action: newPairing) }
-                if let name = transfer.pendingName {
-                    Text("「\(name)」に音楽へのアクセスを許可しますか？")
-                    HStack {
-                        Button("許可する") { transfer.approve(true) }.buttonStyle(.borderedProminent)
-                        Button("拒否する", role: .cancel) { transfer.approve(false) }
-                    }
-                }
-                if let status = transfer.status { Text(status).foregroundStyle(.secondary) }
-                Button("閉じる") { dismiss() }.keyboardShortcut(.cancelAction)
-            }.padding(24)
-        }.frame(width: 480, height: 600)
-    }
-
-    private var qrImage: NSImage? {
-        guard let payload = transfer.pairingPayload else { return nil }
-        let filter = CIFilter.qrCodeGenerator()
-        filter.message = Data(payload.utf8)
-        guard let image = filter.outputImage,
-              let cg = CIContext().createCGImage(image, from: image.extent) else { return nil }
-        return NSImage(cgImage: cg, size: NSSize(width: 200, height: 200))
-    }
-}
 #else
-struct PhonePairingView: View {
-    @ObservedObject var transfer: LocalTransfer
-    @State private var selected: String?
-    @State private var code = ""
-    @State private var scanning = false
-    @FocusState private var enteringCode: Bool
-    @Environment(\.scenePhase) private var scenePhase
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            Text("Macから音楽を持ち出す").font(.title2.bold())
-            Text("Macで音楽フォルダを選び、同じWi-Fiで設定の「従来の端末間転送」を開いてください。")
-            if transfer.nearby.isEmpty {
-                Text("Macを探しています。見つからない場合は、両方のアプリとローカルネットワークの許可を確認してください。")
-                    .foregroundStyle(.secondary)
-                Button("もう一度探す") { transfer.stopBrowsing(); transfer.browse() }
-            }
-            ForEach(transfer.nearby) { device in
-                Button { enteringCode = false; selected = device.id; code = "" } label: {
-                    HStack {
-                        Text(device.name).lineLimit(2)
-                        Spacer()
-                        if selected == device.id { Image(systemName: "checkmark") }
-                    }.frame(minHeight: 44).contentShape(Rectangle())
-                }
-                .accessibilityAddTraits(selected == device.id ? .isSelected : [])
-            }
-            if let selected, let device = transfer.nearby.first(where: { $0.id == selected }) {
-                TextField("初回はMacのコードを入力", text: $code)
-                    .textInputAutocapitalization(.never).autocorrectionDisabled().textFieldStyle(.roundedBorder)
-                    .focused($enteringCode)
-                    .submitLabel(.done)
-                    .onSubmit { enteringCode = false }
-                if DataScannerViewController.isSupported {
-                    Button("MacのQRコードを読み取る") {
-                        enteringCode = false
-                        Task {
-                            if await AVCaptureDevice.requestAccess(for: .video) { scanning = true }
-                            else { transfer.status = "カメラが許可されていません。コードを入力するか、設定からカメラを許可してください。" }
-                        }
-                    }
-                }
-                Button("接続する") {
-                    enteringCode = false
-                    transfer.connect(device, code: code, name: UIDevice.current.name)
-                }
-                    .buttonStyle(.borderedProminent).disabled(transfer.busy)
-                Text("ペアリング済みの場合は、コードを入力せずに接続できます。")
-                    .font(.caption).foregroundStyle(.secondary)
-            }
-            if let status = transfer.status { Text(status).font(.callout).accessibilityIdentifier("transfer-status") }
-            if transfer.busy {
-                ProgressView(value: transfer.progress)
-                Button("中断する") { transfer.cancel() }
-            }
-            if transfer.pairedName != nil || transfer.connected {
-                Button("ペアリングを解除", role: .destructive) { Task { await transfer.forget() } }
-            }
-        }
-        .task { await transfer.restorePairing(); if !Task.isCancelled { transfer.browse() } }
-        .onDisappear { enteringCode = false; transfer.stopBrowsing() }
-        .toolbar {
-            ToolbarItemGroup(placement: .keyboard) {
-                if enteringCode {
-                    Spacer()
-                    Button("完了") { enteringCode = false }
-                }
-            }
-        }
-        .onChange(of: scenePhase) { _, phase in
-            if phase == .background { transfer.cancel(); transfer.stopBrowsing() }
-            else if phase == .active { transfer.browse() }
-        }
-        .sheet(isPresented: $scanning) {
-            NavigationStack {
-                PairingScanner(onFailure: {
-                    scanning = false
-                    transfer.status = "カメラを起動できませんでした。"
-                }) { value in
-                    let parts = value.split(separator: ":", omittingEmptySubsequences: false)
-                    guard parts.count == 3, parts[0] == "syncstr-pair", "Syncstr-" + parts[1] == selected else {
-                        transfer.status = "選択したMacのQRコードを読み取ってください。"
-                        scanning = false
-                        return
-                    }
-                    code = String(parts[2])
-                    scanning = false
-                }
-                .navigationTitle("MacのQRコードを読み取る")
-                .toolbar { Button("キャンセル") { scanning = false } }
-            }
-        }
-    }
-}
-
 struct PairingScanner: UIViewControllerRepresentable {
     var onFailure: () -> Void
     var onCode: (String) -> Void

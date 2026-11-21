@@ -52,16 +52,10 @@ struct PhoneRoot: View {
     @State private var tabletSection: TabletSection? = .recent
     @FocusState private var searchFocused: Bool
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
-    @Environment(\.scenePhase) private var scenePhase
     @Environment(\.verticalSizeClass) private var verticalSizeClass
 
     var body: some View {
         VStack(spacing: 0) {
-            if let notice = library.catalogNotice {
-                Text(notice).font(.callout).frame(maxWidth: .infinity, alignment: .leading)
-                    .padding().background(PhoneStyle.carbon)
-                    .accessibilityIdentifier("library-status-notice")
-            }
             if library.restoringSession {
                 VStack(spacing: 16) {
                     ProgressView()
@@ -88,11 +82,7 @@ struct PhoneRoot: View {
             }
         }
         .background(PhoneStyle.graphite)
-        .onChange(of: scenePhase) { _, phase in
-            if phase == .background, library.transfer.peerConnected { library.transfer.cancel() }
-        }
         .modifier(OfflineSaveRemoval(library: library, enabled: !library.showingNowPlaying))
-        .modifier(TrackMetadataEditing(library: library, enabled: !library.showingNowPlaying))
         .sheet(item: $hostSetup) { HostConnectionView(transfer: library.transfer, request: $0) }
         .sheet(isPresented: $library.showingNowPlaying) {
             PhoneNowPlaying(library: library)
@@ -264,7 +254,7 @@ struct PhoneRoot: View {
             AddMusicButton(library: library)
         }
         .toolbarTitleDisplayMode(.inlineLarge)
-        .refreshable { library.reload() }
+        .modifier(LibraryRefresh(library: library))
     }
 
     private func categoryLabel(_ title: String, icon: String) -> some View {
@@ -328,9 +318,7 @@ struct PhoneRoot: View {
                 if library.transfer.showsLibraryEditControls {
                     Button(library.albumVisibilityLabel(album.id)) {
                         library.setAlbumHidden(album.id, hidden: !library.isAlbumHidden(album.id))
-                    }.disabled(library.albumVisibilityNotice(album.id) != nil || library.isSavingAlbumVisibility(album.id))
-                    if let notice = library.albumVisibilityNotice(album.id) { Text(notice) }
-                    if let status = library.albumVisibilityStatus(album.id) { Text(status) }
+                    }.disabled(library.isSavingAlbumVisibility(album.id))
                 }
             }
         }
@@ -379,12 +367,16 @@ struct PhoneRoot: View {
                             .disabled(album.tracks.isEmpty)
                             .accessibilityLabel("再生")
                             .accessibilityIdentifier("album-play")
-                            OfflineSaveControls(library: library, tracks: album.tracks, scope: "album:" + album.id, iconOnly: true)
-                                .foregroundStyle(PhoneStyle.signal)
-                                .accessibilityIdentifier("album-save")
+                            if library.showsOfflineSaveControls {
+                                OfflineSaveControls(library: library, tracks: album.tracks, scope: "album:" + album.id, iconOnly: true)
+                                    .foregroundStyle(PhoneStyle.signal)
+                                    .accessibilityIdentifier("album-save")
+                            } else if !wide {
+                                Spacer().frame(width: 44)
+                            }
                         }
                         .overlay(alignment: .bottom) {
-                            if let request = library.saveRequest(for: album.tracks, scope: "album:" + album.id),
+                            if library.showsOfflineSaveControls, let request = library.saveRequest(for: album.tracks, scope: "album:" + album.id),
                                [.waiting, .wifi, .saving].contains(request.state) {
                                 Text("\(album.tracks.filter { library.localFiles[$0.id] != nil }.count)/\(album.tracks.count)曲を保存済み")
                                     .font(.caption).foregroundStyle(.secondary).offset(y: 20)
@@ -492,16 +484,18 @@ struct PhoneRoot: View {
                 .buttonStyle(.plain)
                 .accessibilityIdentifier("track-\(track.id)")
                 .accessibilityValue(library.current?.id == track.id ? (library.loading ? library.playbackLoadingLabel : library.playing ? "再生中" : "選択中") : "")
-                OfflineSaveControls(library: library, tracks: [track], scope: "track:" + track.id, compact: true)
-                    .buttonStyle(.borderless)
-                    .foregroundStyle(accented ? Color.white : PhoneStyle.signal)
-                    .tint(accented ? .white : PhoneStyle.signal)
+                if library.showsOfflineSaveControls {
+                    OfflineSaveControls(library: library, tracks: [track], scope: "track:" + track.id, compact: true)
+                        .buttonStyle(.borderless)
+                        .foregroundStyle(accented ? Color.white : PhoneStyle.signal)
+                        .tint(accented ? .white : PhoneStyle.signal)
+                }
             }
         }
         .contextMenu {
-            if library.isLocalCopyRemovalPending(track) {
+            if library.showsOfflineSaveControls && library.isLocalCopyRemovalPending(track) {
                 Text("保存の解除待ち")
-            } else if library.canRemoveLocalCopy(track) {
+            } else if library.showsOfflineSaveControls && library.canRemoveLocalCopy(track) {
                 Button("この端末の保存を解除", role: .destructive) { library.localCopiesToRemove = [track] }.disabled(library.transfer.busy)
             }
         }
@@ -549,14 +543,6 @@ struct PhoneRoot: View {
                 HostConnectionSettings(transfer: library.transfer) { hostSetup = $0 }
             }
             if library.transfer.showsLibraryEditControls { Section { AddMusicButton(library: library) } }
-            if !library.transfer.hasLibrarySource, !library.transfer.usesHostCatalog, library.transfer.pairedName != nil {
-                Section("従来の接続") {
-                    NavigationLink("従来の端末間転送") {
-                        ScrollView { PhonePairingView(transfer: library.transfer).padding(20) }
-                            .navigationTitle("従来の端末間転送")
-                    }
-                }
-            }
             Section {
                 LabeledContent("曲数", value: "\(library.tracks.count)")
                 if library.connected && !library.transfer.hasLibrarySource {
@@ -571,7 +557,6 @@ struct PhoneRoot: View {
         .scrollContentBackground(.hidden)
         .background(PhoneStyle.graphite)
         .navigationTitle("設定")
-        .task { if library.transfer.hostConnection == nil { await library.transfer.restorePairing() } }
         .scrollDismissesKeyboard(.interactively)
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
@@ -594,5 +579,14 @@ struct PhoneRoot: View {
         guard seconds.isFinite else { return "0:00" }
         let value = Int(max(0, seconds))
         return "\(value / 60):\(String(format: "%02d", value % 60))"
+    }
+}
+
+private struct LibraryRefresh: ViewModifier {
+    @ObservedObject var library: Library
+
+    @ViewBuilder func body(content: Content) -> some View {
+        if library.transfer.retainsHostCatalog { content }
+        else { content.refreshable { library.reload() } }
     }
 }

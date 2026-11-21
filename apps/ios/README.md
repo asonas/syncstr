@@ -1,14 +1,14 @@
 # syncstr for iPhone and iPad
 
-A SwiftUI player for a cluster library or locally imported music, targeting iOS 27 or later. The target compiles the shared library, local catalog, save queue, transfer, track, and credential components from `apps/macos/`.
+A SwiftUI player for a host library or locally imported music, targeting iOS 27 or later. Both Apple targets share the catalog, host API client, playback, and offline-save code in `apps/macos/`.
 
 ## Library entry and offline saves
 
-The library screen offers **Join an existing library** and **Add music files**. An invitation registers the existing library; local file import needs no enrollment and does not assign the library-host role. Previously received catalogs stay visible without a connection.
+Choose **Connect to host**, enter its address or scan its address QR code, and confirm the library. The app reads the host's `/api/v1`. For a local library, choose **Add music files** instead. After disconnecting, you can still browse the last host catalog and play saved audio.
 
 Save tracks or albums near playback controls. Requests and completed results survive restart. The app shows connection waiting, Wi-Fi waiting, progress, partial results, retry, and cancellation. Automatic resumption runs while the app is active and follows the cellular policy. Cancellation keeps successful tracks; album additions require another explicit Save. Save removal frees managed audio and its cache copy, preserves originals and shared items, and confirms playback interruption. Host copies are excluded.
 
-Settings groups enrollment, hosts, diagnostics, conflicts, cellular policy, and storage. Existing paired users can open **Legacy device transfer** there. On the Mac, select a folder and open the same Settings entry, then scan its QR code or enter its pairing code and approve the phone. Keep both apps open during transfer. Removing pairing retains received files. See [the legacy transfer guide](../../docs/local-music-transfer.md).
+Settings includes host connection controls, playback diagnostics, and storage. The saving section includes the cellular preference for automatic transfers.
 
 ## Player behavior
 
@@ -21,7 +21,7 @@ The album browser provides title/artist sorting, ascending/descending order, and
 selection mode for batch hide/restore. Command-click also toggles selection with
 a hardware keyboard. A normal tap opens details, and returning centers the opened
 album. The context menu acts on the selection when invoked on a selected album.
-Visibility remains synchronized through the existing library metadata.
+Visibility editing is available for local libraries. The host catalog is read-only.
 
 Playback failures offer **Copy Diagnostics** in the player; Settings also lists
 recent attempts. JSONL exports preserve retry ancestry and redaction. Logs retain
@@ -34,10 +34,6 @@ Previous restarts the track at three seconds or later, otherwise moves back. Pau
 
 Unsaved audio is acquired and verified before playback. Preparation has a cancellation action; failures require manual retry. The playback cache is separate from explicit offline saves, has a configurable 10 GB default limit, and never evicts original or explicitly saved audio. Background playback and remote controls follow the same transport rules; physical interruption, output-route, and cellular behavior require device verification.
 
-## P2P node connection
-
-Settings also provides explicit headless P2P registration, catalog access, audio uploads, and downloads. See [P2P music transfer](../../docs/p2p-music-transfer.md). The app bundles the pinned official IrohLib package and its dependency notices; existing Bonjour pairing is retained.
-
 ## Build and run
 
 Use Xcode and an iOS Simulator. [project.yml](project.yml) is the XcodeGen source of truth.
@@ -47,7 +43,7 @@ mise exec -- xcodegen generate --spec apps/ios/project.yml
 open apps/ios/Syncstr.xcodeproj
 ```
 
-Choose the `Syncstr` scheme and an iPhone Simulator, then run. Connect to a Mac on the same local network using the pairing screen. Approved pairing keys are stored in the device or simulator Keychain.
+Choose the `Syncstr` scheme and an iPhone Simulator, then run. Open the address of a reachable host and confirm the library.
 
 For a physical device, set the signing team and bundle ID in `project.yml` to match your Apple Developer registration, regenerate the project, and select the connected iPhone. Keep credentials and signing private keys outside the repository.
 
@@ -83,18 +79,17 @@ The same YAML defines the `SyncstrMac` scheme. See the [macOS distribution guide
 ## Implemented behavior
 
 - The library combines artist, album, and track navigation with an adaptive album grid. Album details place artwork and metadata above or beside Play and the ordered track list. Accessibility text sizes use a single album column.
-- The library landing page and **Recently Added** show albums in shared addition order. A newly added member track moves its album forward; metadata edits, downloads, and restores preserve the original track addition time. Undated legacy albums follow dated additions in stable album-ID order. The accepting host assigns shared Unix-millisecond dates. Update participating Rust hosts and clients before importing dated records; historical signed records remain valid.
+- The library landing page and **Recently Added** show albums in shared addition order. A newly added member track moves its album forward; metadata edits, downloads, and restores preserve the original track addition time. Undated legacy albums follow dated additions in stable album-ID order.
 - Album Shuffle starts a shuffled album queue; Play starts the album in disc/track order. Artist names with a catalog destination open artist albums, centered on the originating album.
 - Search covers tracks, albums, and artists.
 - Selecting a track plays the originating list in order. The native glass mini-player opens Now Playing as a sheet, with pause/resume, previous/next, seeking, and a track save menu.
 - Track save actions use a fixed-width menu: dots for unsaved tracks, progress for pending saves, a check for saved tracks, and an alert for failure. The menu exposes waiting reasons, retry, removal, and explicitly named album-wide cancellation. Tap the title to play. Playback preparation has a separate spinner next to the title.
 - On iPhone, downward scrolling minimizes the native tab bar and moves the mini-player into the bottom row. Upward scrolling restores it. iPad retains its floating player.
-- Playback uses verified received files. The catalog and audio survive restarts without a network. Choosing another Mac or removing a pairing retains audio files.
+- Playback uses verified received files. The catalog and audio survive restarts without a network. Disconnecting retains saved audio files.
 - Lock-screen and Control Center integration expose artwork, track information, playback position, pause/resume, previous/next, and seeking. Artwork loads asynchronously and is cleared when the selected track has no artwork.
-- Settings provide pairing controls and Mac selection. Received audio remains on the phone when changing connections.
 - Playback activates the audio session's playback category. Background audio is declared; screen locking, audio-route changes, and interruptions require physical-device verification.
 
-Queue editing, playlists, and favorites are outside the current scope.
+Host playlists support browsing, playback, and offline saves.
 
 ## Assets
 
@@ -131,10 +126,10 @@ DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer \
 ```
 
 Each run creates its own Simulator, reboots it after initial data migration,
-and deletes it on success or failure. Before each test phase and fixture install,
+and deletes it on success or failure. Before each test phase,
 the runner checks readiness and boots the same owned device again if Xcode left
 it shut down. Readiness checks retain their 180-second timeout. Boot/restart
-preparation failures and install exit 149 are classified as Simulator infrastructure
+preparation failures are classified as Simulator infrastructure
 failures; after cleanup, verification retries once with a fresh device. Actual
 test failures rerun once with `-retry-tests-on-failure -test-iterations 2`, with
 both test iterations in the same result bundle. Preparation attempts keep separate logs, timings, and
@@ -193,6 +188,6 @@ collection as CI.
 
 Audio fixtures cover offline catalog restoration, received-file availability, AVPlayer local playback, and Now Playing updates. Tests use temporary storage and do not use production credentials.
 
-Manually verify pairing, album browsing, your own sample tracks, audible playback, seeking, and offline startup after restart. Record Simulator results separately from physical-device playback.
+Manually verify connecting by host address, album browsing, your own sample tracks, audible playback, seeking, and offline startup after restart. Record Simulator results separately from physical-device playback.
 
-Through TestFlight, verify album transfers, saved-state indicators, playback after locking the screen, and lock-screen controls. After loading the library, disconnect the network and verify playback of saved tracks.
+Through TestFlight, verify album saves from the host, saved-state indicators, playback after locking the screen, and lock-screen controls. After loading the library, disconnect the network and verify playback of saved tracks.

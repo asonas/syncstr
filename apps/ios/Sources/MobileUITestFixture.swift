@@ -5,12 +5,7 @@
     enum MobileUITestFixture {
         static func makeLibrary() throws -> Library {
             let root = FileManager.default.temporaryDirectory.appendingPathComponent("ui-fixture-" + UUID().uuidString)
-            let service = "as.ason.syncstr.ui-test." + UUID().uuidString
-            let library = Library(
-                localStore: LocalMusicStore(root: root),
-                pairingSecrets: CredentialStore(service: service + ".pairing"),
-                peerSecrets: CredentialStore(service: service + ".identity"),
-                peerPairing: CredentialStore(service: service + ".peer"))
+            let library = Library(localStore: LocalMusicStore(root: root))
             let entries = (0..<281).map { index in
                 LocalEntry(
                     track: Track(
@@ -20,7 +15,18 @@
                         addedAt: 1_700_000_000_000 - Int64(index)),
                     sha256: String(repeating: "a", count: 64), artwork: nil)
             }
-            try library.openLocal(LocalCatalog(id: "ui-fixture", name: "UI Fixture", entries: entries))
+            var catalog = LocalCatalog(id: "ui-fixture", name: "UI Fixture", entries: entries)
+            if ProcessInfo.processInfo.arguments.contains("--retained-host") {
+                catalog.source = .host
+                catalog.organize()
+                let database = try library.localStore.database()
+                let host = try HostConnection(address: HostAddress("https://music.example.test"), library: catalog.id,
+                                              name: catalog.name, hosts: [])
+                try database.saveHostCatalog(CatalogUpdate(catalog: catalog, etag: "fixture"), connection: host, replacing: nil)
+                _ = try database.forgetHost()
+            } else {
+                try library.openLocal(catalog)
+            }
             return library
         }
     }

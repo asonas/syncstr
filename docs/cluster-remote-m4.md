@@ -113,7 +113,7 @@ deploying the supplied Caddy frontend. The Caddy configuration passed validation
 but the complete Caddy Compose deployment was not exercised. Direct WAN traversal
 across independent networks and physical transfer interruption remain unverified;
 remote reachability was demonstrated through encrypted relay fallback. Preserve
-the [M3 manual checks](cluster-apple-m3.md) in TestFlight validation.
+the [M3 manual checks](cluster-implementation-plan.md#m3-apple-application-integration) in TestFlight validation.
 
 The shared registration screen shows the configured relay and the most recent
 observed transfer path. Both Apple targets compile; visual inspection of these
