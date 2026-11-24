@@ -224,7 +224,13 @@ final class OfflineSaveTests: XCTestCase {
         let transfer = try await hostTransfer(store)
         // Occupying the catalog queue holds the save's catalog read until the removal has started.
         let hold = DispatchSemaphore(value: 0)
-        let blocker = Task.detached { try await CatalogStorage.shared.perform { hold.wait() } }
+        // Released on every exit, so a failure cannot leave the shared catalog queue blocked for later tests.
+        defer { hold.signal() }
+        let entered = DispatchSemaphore(value: 0)
+        let blocker = Task.detached { try await CatalogStorage.shared.perform { entered.signal(); hold.wait() } }
+        // The save starts only once the queue is held; otherwise its read can finish before the removal.
+        let holding = await Task.detached { entered.wait(timeout: .now() + 15) }.value
+        XCTAssertEqual(holding, .success)
         let save = Task { await transfer.requestSave([entries[0].track], scope: "track:track-1") }
         try await waitFor { !transfer.preparingSaves.isEmpty }
         let removal = Task { try await transfer.removeAllSavedAudio() }
@@ -248,20 +254,26 @@ final class OfflineSaveTests: XCTestCase {
     }
 
     func testFileThatCannotBeDeletedKeepsItsPinAndRequestForAnotherTry() async throws {
-        let (store, entries) = try fixture()
+        let (fixtureStore, entries) = try fixture()
+        var store = fixtureStore
         try Data(repeating: 1, count: 1024).write(to: store.fileURL(entries[0]))
         try store.database().saveAudioPin(entries[0])
+        let undeletable = store.fileURL(entries[0])
+        store.removeFile = { url in
+            if url.lastPathComponent == undeletable.lastPathComponent { throw CocoaError(.fileWriteNoPermission) }
+            try FileManager.default.removeItem(at: url)
+        }
         let transfer = try await hostTransfer(store)
         let library = try XCTUnwrap(transfer.hostConnection?.library)
         transfer.saveRequests = [OfflineSaveRequest(id: "track:track-1", library: library, entries: [entries[0]],
                                                     completed: [entries[0].trackSaveIdentity], state: .complete)]
         let pin = SavedAudioPin(track: entries[0].track.id, hash: entries[0].sha256)
-        try FileManager.default.setAttributes([.posixPermissions: 0o555], ofItemAtPath: store.root.path)
         do {
             try await transfer.removeAllSavedAudio()
             XCTFail("Reported success while the file remained")
         } catch LocalMusicError.removalIncomplete {}
-        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: store.root.path)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: undeletable.path))
+        transfer.store.removeFile = { try FileManager.default.removeItem(at: $0) }
         XCTAssertEqual(try store.database().savedAudioPinList(), [pin])
         XCTAssertEqual(transfer.savedAudio.pins, [pin])
         XCTAssertEqual(transfer.saveRequests.map(\.id), ["track:track-1"])

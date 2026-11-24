@@ -368,7 +368,7 @@ extension LocalTransfer {
         for (hash, urls) in files {
             for url in urls {
                 if protected.contains(url.resolvingSymlinksInPath().path) { failed.insert(hash); continue }
-                do { try FileManager.default.removeItem(at: url) }
+                do { try store.removeFile(url) }
                 catch CocoaError.fileNoSuchFile {}
                 catch { failed.insert(hash) }
             }

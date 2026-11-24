@@ -151,6 +151,9 @@ enum SHA256Hex {
 
 struct LocalMusicStore {
     var inventoryDigest: @Sendable (URL) throws -> String = { try LocalMusicStore.digest(file: $0) }
+    /// Tests make a removal fail through this. Folder permissions cannot: on iOS a read-only folder also
+    /// fails the database's own setup before any removal is tried.
+    var removeFile: @Sendable (URL) throws -> Void = { try FileManager.default.removeItem(at: $0) }
     var root = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
         .appendingPathComponent("LocalMusic", isDirectory: true)
 
