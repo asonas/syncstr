@@ -11,9 +11,9 @@ struct MobilePlaybackDiagnosticsTests {
         let library = Library(diagnostics: recorder, localStore: LocalMusicStore(root: root.appendingPathComponent("music")))
         defer { library.closeLibrary() }
         let track = Track(id: "missing", title: "Fixture", artist: "Artist", suffix: "wav", size: 44)
-        try library.openLocal(LocalCatalog(id: "fixture", name: "Fixture", entries: [
+        try showHostCatalog(LocalCatalog(id: "fixture", name: "Fixture", entries: [
             LocalEntry(track: track, sha256: String(repeating: "a", count: 64), artwork: nil)
-        ]))
+        ]), in: library)
         library.play(track)
         for _ in 0..<200 where library.loading { try await Task.sleep(for: .milliseconds(10)) }
         #expect(!library.loading)

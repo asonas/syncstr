@@ -2,8 +2,6 @@ import Foundation
 import XCTest
 #if os(iOS)
 @testable import Syncstr
-#else
-import AudioTags
 #endif
 
 final class AlbumOrganizationTests: XCTestCase {
@@ -127,22 +125,6 @@ final class AlbumOrganizationTests: XCTestCase {
         let merged = local
         try local.merge(incoming)
         XCTAssertEqual(local, merged)
-    }
-
-    func testRepairPersistsAcrossDatabaseReopenWithoutInventingCacheContext() throws {
-        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
-        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
-        defer { try? FileManager.default.removeItem(at: root) }
-        let entries = [entry("one", artist: "A", compilation: ["1"]), entry("two", artist: "B")]
-        let catalog = LocalCatalog(id: "source", name: "Collection", entries: entries)
-        let url = root.appendingPathComponent("catalog.sqlite")
-        try CatalogDatabase(url).save(catalog)
-        let unavailable = try XCTUnwrap(CatalogDatabase(url).snapshot()?.catalog.organization)
-        XCTAssertNotEqual(unavailable.albumID(for: "one"), unavailable.albumID(for: "two"))
-        try CatalogDatabase(url).save(catalog, sourceRoot: root.appendingPathComponent("source"), sourcePaths: ["one": "Collection/one.mp3", "two": "Collection/two.mp3"])
-        let repaired = try XCTUnwrap(CatalogDatabase(url).snapshot()?.catalog.organization)
-        XCTAssertEqual(repaired.albumID(for: "one"), repaired.albumID(for: "two"))
-        XCTAssertEqual(try CatalogDatabase(url).snapshot()?.catalog.organization, repaired)
     }
 
     func testLocalCompilationRepairsExistingSplitWithoutCreatingManualChoices() throws {
@@ -302,51 +284,4 @@ final class AlbumOrganizationTests: XCTestCase {
         XCTAssertTrue(local.hasConflict(subject: "two", kind: "membership"))
         XCTAssertEqual(local.heads(subject: "two", kind: "membership").count, 2)
     }
-
-    func testStoredOrganizationKeepsUnavailableChoicesAndIDsAcrossReopening() throws {
-        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
-        defer { try? FileManager.default.removeItem(at: root) }
-        let store = LocalMusicStore(root: root)
-        var catalog = LocalCatalog(id: "fixture-library", name: "Collection", entries: [entry("one", artist: "A")])
-        catalog.organize()
-        let album = try XCTUnwrap(catalog.organization?.albumID(for: "one"))
-        catalog.organization?.set(subject: album, kind: "classification", value: "false")
-        try store.save(catalog)
-        catalog.entries = []
-        try store.save(catalog)
-        let reopened = try XCTUnwrap(LocalMusicStore(root: root).load())
-        XCTAssertTrue(reopened.entries.isEmpty)
-        XCTAssertEqual(reopened.organization?.albumID(for: "one"), album)
-        XCTAssertEqual(reopened.organization?.choice(subject: album, kind: "classification")?.value, "false")
-        catalog.entries = [entry("one", artist: "Updated credit")]
-        try store.save(catalog)
-        XCTAssertEqual(try store.load()?.organization?.tracks[0].imported.artist, "Updated credit")
-        XCTAssertEqual(try store.load()?.organization?.albumID(for: "one"), album)
-    }
-
-#if os(macOS)
-    func testPinnedTagReaderRetainsCompilationAlbumArtistAndEditionAcrossFormats() throws {
-        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
-        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
-        defer { try? FileManager.default.removeItem(at: root) }
-        let fixtureRoot = URL(fileURLWithPath: #filePath).deletingLastPathComponent().appendingPathComponent("Fixtures")
-        for suffix in ["mp3", "flac", "m4a"] {
-            let source = fixtureRoot.appendingPathComponent("untagged." + suffix)
-            let copy = root.appendingPathComponent("tagged." + suffix)
-            try FileManager.default.copyItem(at: source, to: copy)
-            let original = try Data(contentsOf: source)
-            try AudioTags.writeFile(copy, fields: ["ALBUM": "Collection", "ARTIST": "Artist A",
-                "ALBUMARTIST": "Various Artists", "COMPILATION": "1",
-                "MUSICBRAINZ_ALBUMID": "d72058b8-9814-4d5e-aee3-64de34d49c08"],
-                artwork: nil, mimeType: nil, changeArtwork: false)
-            let tags = try AudioTags.readFile(copy)
-            XCTAssertEqual(tags["COMPILATION"] as? [String], ["1"], suffix)
-            let imported = ImportedAlbumMetadata.read(tags)
-            XCTAssertEqual(imported.albumArtist, "Various Artists", suffix)
-            XCTAssertEqual(imported.compilation, true, suffix)
-            XCTAssertEqual(imported.release?.value, "d72058b8-9814-4d5e-aee3-64de34d49c08", suffix)
-            XCTAssertEqual(try Data(contentsOf: source), original)
-        }
-    }
-#endif
 }

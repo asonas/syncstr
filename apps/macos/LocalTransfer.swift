@@ -94,7 +94,6 @@ final class LocalTransfer: ObservableObject {
     @Published private(set) var changedHostLibrary: String?
     @Published private(set) var retainedHostLibrary: String?
     @Published private(set) var hostRefreshedAt: Date?
-    var showsLibraryEditControls: Bool { !usesHostCatalog }
     var retainsHostCatalog: Bool { retainedHostLibrary != nil }
     var usesHostCatalog: Bool { hostConnection != nil || retainsHostCatalog }
     private var hostPlaybackSources: [UUID: any LibrarySource] = [:]
@@ -108,9 +107,7 @@ final class LocalTransfer: ObservableObject {
     func makeLibrarySource() -> HostLibrarySource? { hostConnection.map(hostSource) }
 
     var hasLibrarySource: Bool { hostConnection != nil }
-    var canChooseFolder: Bool { !hasHostActivity }
-    func didChooseFolder() { retainedHostLibrary = nil }
-    var connectionMode: String { hostConnection != nil ? "host" : retainsHostCatalog ? "offline" : "local" }
+    var connectionMode: String { hostConnection != nil ? "host" : retainsHostCatalog ? "offline" : "none" }
     var onHostPlaylists: (([PlaylistDocument], Set<String>) -> Void)?
     var onHostDisconnected: (() async -> Void)?
     var onHostChange: ((HostConnection?) -> Void)?
@@ -479,27 +476,18 @@ final class LocalTransfer: ObservableObject {
         guard readyForLocalCopyRemoval else { throw LocalMusicError.transferBusy }
         guard LocalMusicStore.valid(entry) else { throw LocalMusicError.invalidData }
         let database = try store.database()
-        if usesHostCatalog {
-            let referenced = try database.otherCatalogFiles(for: entry.sha256)
-            let retained = try database.removeAudioPin(entry)
-            let otherSave = saveRequests.contains { request in
-                request.state != .cancelled && request.entries.contains { $0.track.id != entry.track.id && $0.sha256 == entry.sha256 }
-            }
-            if !retained && !otherSave {
-                for url in Set(store.hostFileURLs(entry) + playbackCache.store.hostFileURLs(entry))
-                    where !referenced.contains(url) && url != playbackCache.protectedURL && FileManager.default.fileExists(atPath: url.path) {
-                    try FileManager.default.removeItem(at: url)
-                }
-                if !referenced.contains(store.fileURL(entry)) { try database.forgetReceived(entry) }
-            }
-            onSaved?()
-            return
+        let referenced = try database.otherCatalogFiles(for: entry.sha256)
+        let retained = try database.removeAudioPin(entry)
+        let otherSave = saveRequests.contains { request in
+            request.state != .cancelled && request.entries.contains { $0.track.id != entry.track.id && $0.sha256 == entry.sha256 }
         }
-        let file = store.fileURL(entry)
-        if FileManager.default.fileExists(atPath: file.path) { try FileManager.default.removeItem(at: file) }
-        let cached = playbackCache.store.fileURL(entry)
-        if FileManager.default.fileExists(atPath: cached.path) { try FileManager.default.removeItem(at: cached) }
-        try database.forgetReceived(entry)
+        if !retained && !otherSave {
+            for url in Set(store.hostFileURLs(entry) + playbackCache.store.hostFileURLs(entry))
+                where !referenced.contains(url) && url != playbackCache.protectedURL && FileManager.default.fileExists(atPath: url.path) {
+                try FileManager.default.removeItem(at: url)
+            }
+            if !referenced.contains(store.fileURL(entry)) { try database.forgetReceived(entry) }
+        }
         onSaved?()
     }
 

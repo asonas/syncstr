@@ -37,8 +37,6 @@ extension CatalogDatabase {
 
 struct CatalogSnapshot {
     var catalog: LocalCatalog
-    var sourceRoot: URL?
-    var sourcePaths: [String: String]
 }
 
 extension CatalogDatabase {
@@ -99,7 +97,6 @@ final class CatalogDatabase {
                 try execute("CREATE TABLE IF NOT EXISTS organization (singleton INTEGER PRIMARY KEY CHECK(singleton = 1), payload TEXT NOT NULL)")
                 try execute("CREATE TABLE IF NOT EXISTS artwork_assets (id TEXT PRIMARY KEY, payload TEXT NOT NULL)")
                 try execute("CREATE TABLE IF NOT EXISTS shared_audio_saves (track TEXT NOT NULL, hash TEXT NOT NULL, PRIMARY KEY(track, hash))")
-                if number < 4 { _ = try readSnapshot() }
                 try execute("CREATE TABLE IF NOT EXISTS device_transfer_settings (singleton INTEGER PRIMARY KEY CHECK(singleton = 1), cellular INTEGER NOT NULL CHECK(cellular IN (0, 1)))")
                 if try !rows("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'cluster_transfer_settings'").isEmpty {
                     try execute("INSERT OR IGNORE INTO device_transfer_settings(singleton, cellular) SELECT singleton, cellular FROM cluster_transfer_settings")
@@ -200,14 +197,14 @@ final class CatalogDatabase {
 
     func snapshot() throws -> CatalogSnapshot? {
         try transaction {
-            guard try hostCatalogLibrary() != nil else { return try readSnapshot() }
+            guard try hostCatalogLibrary() != nil else { return nil }
             guard let payload = try rows("SELECT header FROM host_connection UNION ALL SELECT header FROM retained_host_catalog").first?.first ?? nil else { return nil }
             var catalog = try JSONDecoder().decode(LocalCatalog.self, from: Data(payload.utf8))
             catalog.source = .host
             catalog.entries = try rows("SELECT payload FROM host_entries ORDER BY position").map {
                 try JSONDecoder().decode(LocalEntry.self, from: Data(($0[0] ?? "").utf8))
             }
-            return CatalogSnapshot(catalog: catalog, sourceRoot: nil, sourcePaths: [:])
+            return CatalogSnapshot(catalog: catalog)
         }
     }
 
@@ -292,7 +289,7 @@ final class CatalogDatabase {
     }
 
     func containsCatalog() throws -> Bool {
-        try rows("SELECT CASE WHEN EXISTS(SELECT 1 FROM host_connection) THEN EXISTS(SELECT 1 FROM host_connection WHERE header IS NOT NULL) ELSE EXISTS(SELECT 1 FROM retained_host_catalog) OR EXISTS(SELECT 1 FROM catalog) END").first?.first == "1"
+        try rows("SELECT CASE WHEN EXISTS(SELECT 1 FROM host_connection) THEN EXISTS(SELECT 1 FROM host_connection WHERE header IS NOT NULL) ELSE EXISTS(SELECT 1 FROM retained_host_catalog) END").first?.first == "1"
     }
 
     func playbackEntry(_ id: String, hash: String? = nil) throws -> (library: String, entry: LocalEntry)? {
@@ -302,98 +299,9 @@ final class CatalogDatabase {
             guard hash == nil || entry.sha256 == hash else { return nil }
             return (library, entry)
         }
-        guard let row = try rows("SELECT catalog.id, entries.payload FROM catalog JOIN entries ON entries.id = ? WHERE catalog.singleton = 1", [id]).first,
-              let library = row[0], let payload = row[1] else { return nil }
-        let entry = try JSONDecoder().decode(LocalEntry.self, from: Data(payload.utf8))
-        guard entry.track.id == id, LocalMusicStore.valid(entry) else { throw LocalMusicError.invalidData }
-        return (library, entry)
+        return nil
     }
 
-
-    func localSnapshot() throws -> CatalogSnapshot? { try transaction { try readSnapshot() } }
-
-    private func readSnapshot() throws -> CatalogSnapshot? {
-        guard let header = try rows("SELECT id, name, source_root FROM catalog WHERE singleton = 1").first,
-              let id = header[0], let name = header[1] else { return nil }
-        var entries: [LocalEntry] = []
-        var paths: [String: String] = [:]
-        for row in try rows("SELECT id, payload, source_path FROM entries ORDER BY position") {
-            try Task.checkCancellation()
-            guard let trackID = row[0], let payload = row[1] else { throw LocalMusicError.invalidData }
-            let entry = try JSONDecoder().decode(LocalEntry.self, from: Data(payload.utf8))
-            guard LocalMusicStore.valid(entry), entry.track.id == trackID else { throw LocalMusicError.invalidData }
-            entries.append(entry)
-            paths[trackID] = row[2]
-        }
-        var catalog = LocalCatalog(id: id, name: name, entries: entries)
-        if let payload = try rows("SELECT payload FROM organization WHERE singleton = 1").first?.first ?? nil {
-            catalog.organization = try JSONDecoder().decode(AlbumOrganization.self, from: Data(payload.utf8))
-            if catalog.organization?.artwork != nil {
-                for row in try rows("SELECT id, payload FROM artwork_assets") {
-                    try Task.checkCancellation()
-                    guard let id = row[0], let payload = row[1], let data = Data(base64Encoded: payload) else { throw LocalMusicError.invalidData }
-                    if catalog.organization?.artwork?.assets[id] != nil { catalog.organization?.artwork?.assets[id] = data }
-                }
-            }
-            try catalog.organization?.validate()
-        }
-        let previous = catalog.organization
-        catalog.organize(folders: header[2] == nil ? [:] : paths.mapValues { ($0 as NSString).deletingLastPathComponent })
-        try catalog.organization?.validate()
-        if previous != catalog.organization {
-            try writeOrganization(catalog.organization!)
-        }
-        return CatalogSnapshot(catalog: catalog,
-            sourceRoot: header[2].map { URL(fileURLWithPath: $0, isDirectory: true) }, sourcePaths: paths)
-    }
-
-    func save(_ catalog: LocalCatalog, sourceRoot: URL? = nil, sourcePaths: [String: String]? = nil,
-              received: [LocalEntry] = []) throws {
-        guard Set(catalog.entries.map { $0.track.id }).count == catalog.entries.count,
-              catalog.entries.allSatisfy(LocalMusicStore.valid) else { throw LocalMusicError.invalidData }
-        try transaction {
-            let previous = try readSnapshot()
-            let sameLibrary = previous?.catalog.id == catalog.id
-            let root = sourceRoot ?? (sameLibrary ? previous?.sourceRoot : nil)
-            let paths = sourcePaths ?? (sameLibrary ? previous?.sourcePaths ?? [:] : [:])
-            var organized = catalog
-            if organized.organization == nil, sameLibrary { organized.organization = previous?.catalog.organization }
-            organized.organize(folders: root == nil ? [:] : paths.mapValues { ($0 as NSString).deletingLastPathComponent })
-            try organized.organization?.validate()
-            try writeOrganization(organized.organization!)
-            if sourceRoot != nil {
-                guard try hostConnection() == nil else { throw CancellationError() }
-                try execute("DELETE FROM retained_host_catalog")
-                try execute("DELETE FROM host_entries")
-                try execute("DELETE FROM host_playlists")
-            }
-            try execute("DELETE FROM entries")
-            try execute("INSERT OR REPLACE INTO catalog VALUES (1, ?, ?, ?)", [catalog.id, catalog.name, root?.path])
-            for (position, entry) in catalog.entries.enumerated() {
-                let payload = String(decoding: try JSONEncoder().encode(entry), as: UTF8.self)
-                try execute("INSERT INTO entries VALUES (?, ?, ?, ?, ?)",
-                    [entry.track.id, String(position), entry.sha256, payload, paths[entry.track.id]])
-            }
-            for entry in received { try recordReceived(entry) }
-        }
-    }
-
-    func setAlbumHidden(_ id: String, hidden: Bool, libraryID: String) throws -> AlbumOrganization {
-        try setAlbumsHidden([id], hidden: hidden, libraryID: libraryID)
-    }
-
-    func setAlbumsHidden(_ ids: Set<String>, hidden: Bool, libraryID: String) throws -> AlbumOrganization {
-        try transaction {
-            guard try hostCatalogLibrary() == nil else { throw LocalMusicError.readOnlyCatalog }
-            guard let catalog = try readSnapshot()?.catalog, catalog.id == libraryID,
-                  var organization = catalog.organization else { throw LocalMusicError.invalidData }
-            for id in ids.sorted() {
-                organization.set(subject: id, kind: "visibility", value: hidden ? "true" : "false")
-            }
-            try writeOrganization(organization)
-            return organization
-        }
-    }
 
     func recordReceived(_ entry: LocalEntry) throws {
         try execute("INSERT OR REPLACE INTO received_files VALUES (?, ?)",
@@ -405,13 +313,4 @@ final class CatalogDatabase {
             [entry.sha256 + "." + (entry.track.suffix ?? "audio"), entry.sha256])
     }
 
-    private func writeOrganization(_ organization: AlbumOrganization) throws {
-        try organization.validate()
-        for (id, data) in organization.artwork?.assets ?? [:] {
-            try execute("INSERT OR IGNORE INTO artwork_assets VALUES (?, ?)", [id, data.base64EncodedString()])
-        }
-        var metadata = organization
-        metadata.artwork?.assets = organization.artwork?.assets.mapValues { _ in Data() } ?? [:]
-        try execute("INSERT OR REPLACE INTO organization VALUES (1, ?)", [String(decoding: try JSONEncoder().encode(metadata), as: UTF8.self)])
-    }
 }

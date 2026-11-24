@@ -80,7 +80,7 @@ final class AppearanceFlowTests: XCTestCase {
     @MainActor
     private func showAlbum(_ app: XCUIApplication) {
         app.buttons["ライブラリへ戻る"].tap()
-        if !app.buttons["選択"].exists { app.buttons["アルバム"].firstMatch.tap() }
+        if !app.buttons["並び替え"].exists { app.buttons["アルバム"].firstMatch.tap() }
         let album = app.buttons.containing(.staticText, identifier: "Album 1").firstMatch
         XCTAssertTrue(album.waitForExistence(timeout: 5))
         album.tap()

@@ -1,8 +1,5 @@
 import AVFoundation
 import Foundation
-import ImageIO
-import AudioTags
-import SQLite3
 
 struct CheckFailure: Error {
     let message: String
@@ -23,13 +20,39 @@ struct LibraryCheck {
         throw CheckFailure(message: description)
     }
 
-    static func silence(at url: URL) throws {
+    static func silence(at url: URL, frames: AVAudioFrameCount) throws {
         let format = AVAudioFormat(standardFormatWithSampleRate: 8000, channels: 1)!
-        let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 32000)!
-        buffer.frameLength = 32000
-        buffer.floatChannelData!.pointee.initialize(repeating: 0, count: 32000)
+        let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frames)!
+        buffer.frameLength = frames
+        buffer.floatChannelData!.pointee.initialize(repeating: 0, count: Int(frames))
         let file = try AVAudioFile(forWriting: url, settings: format.settings)
         try file.write(from: buffer)
+    }
+
+    /// Saves a disconnected host's catalog with every track pinned, as a device keeps it for offline playback.
+    static func saveRetainedHostLibrary(in store: LocalMusicStore, audio folder: URL) throws {
+        try store.prepare()
+        let tracks = [
+            Track(id: "first", title: "First", artist: "Artist A", album: "Album A", albumId: "album-a", track: 1, suffix: "wav"),
+            Track(id: "second", title: "Second", artist: "Artist A", album: "Album A", albumId: "album-a", track: 2, suffix: "wav"),
+            Track(id: "third", title: "Third", artist: "Artist B", album: "Album B", albumId: "album-b", track: 1, suffix: "wav")
+        ]
+        var entries: [LocalEntry] = []
+        for (index, var track) in tracks.enumerated() {
+            // Distinct lengths keep the content hashes, and so the saved files, apart.
+            let source = folder.appendingPathComponent(track.title + ".wav")
+            try silence(at: source, frames: 32000 + AVAudioFrameCount(index) * 800)
+            track.size = UInt64(try Data(contentsOf: source).count)
+            let entry = LocalEntry(track: track, sha256: try LocalMusicStore.digest(file: source), artwork: nil)
+            try FileManager.default.copyItem(at: source, to: store.fileURL(entry))
+            entries.append(entry)
+        }
+        let database = try store.database()
+        let catalog = LocalCatalog(id: "check-library", name: "Check", entries: entries, source: .host)
+        let host = try HostConnection(address: HostAddress("https://music.example.test"), library: catalog.id, name: catalog.name, hosts: [])
+        try database.saveHostCatalog(CatalogUpdate(catalog: catalog, etag: "check"), connection: host, replacing: nil)
+        for entry in entries { try database.saveAudioPin(entry) }
+        _ = try database.forgetHost()
     }
 
     @MainActor
@@ -69,31 +92,9 @@ struct LibraryCheck {
         let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: folder) }
-        for name in ["First", "Second", "Third"] { try silence(at: folder.appendingPathComponent(name + ".wav")) }
-        try AudioTags.writeFile(folder.appendingPathComponent("First.wav"), fields: ["TITLE": "First", "ARTIST": "Artist A", "ALBUM": "Album A", "TRACKNUMBER": "1"], artwork: nil, mimeType: nil, changeArtwork: false)
-        try AudioTags.writeFile(folder.appendingPathComponent("Second.wav"), fields: ["TITLE": "Second", "ARTIST": "Artist A", "ALBUM": "Album A", "TRACKNUMBER": "2"], artwork: nil, mimeType: nil, changeArtwork: false)
-        try AudioTags.writeFile(folder.appendingPathComponent("Third.wav"), fields: ["TITLE": "Third", "ARTIST": "Artist B", "ALBUM": "Album B", "TRACKNUMBER": "1"], artwork: nil, mimeType: nil, changeArtwork: false)
-        let savedStore = LocalMusicStore(root: FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString))
-        defer { try? FileManager.default.removeItem(at: savedStore.root) }
-        try savedStore.prepare()
-        let audio = try Data(contentsOf: folder.appendingPathComponent("First.wav"))
-        let saved = LocalEntry(track: Track(id: "offline-fixture", title: "Offline fixture", artist: "Fixture", suffix: "wav", size: UInt64(audio.count)),
-            sha256: try LocalMusicStore.digest(file: folder.appendingPathComponent("First.wav")), artwork: nil)
-        try audio.write(to: savedStore.fileURL(saved))
-        try savedStore.save(LocalCatalog(id: "offline-library", name: "Offline", entries: [saved]))
-        let migrated = try savedStore.load()!
-        let offline = Library(makePlayer: { url in
-            let player = AVPlayer(url: url)
-            player.isMuted = true
-            return player
-        }, localStore: savedStore)
-        try offline.openLocal(migrated)
-        offline.togglePlayback(in: offline.tracks)
-        try await wait("Migrated saved music did not play offline") { offline.playing && offline.position > 0 }
-        offline.closeLibrary()
-        print("PASS: saved audio plays offline without the source folder")
         var mediaPlayers: [AVPlayer] = []
         let localFiles = LocalMusicStore(root: folder.appendingPathComponent("local"))
+        try saveRetainedHostLibrary(in: localFiles, audio: folder)
         let library = Library(makePlayer: { url in
             let player = AVPlayer(url: url)
             player.isMuted = true
@@ -101,15 +102,9 @@ struct LibraryCheck {
             return player
         }, localStore: localFiles)
         await library.restoreLibrary()
-        try require(!library.connected && !library.restoringSession)
-        await library.chooseFolder(folder)
-        try require(library.connected && library.tracks.count == 3 && library.message == nil)
-        let reopened = Library(localStore: localFiles)
-        await reopened.restoreLibrary()
-        try require(reopened.connected && reopened.tracks.count == 3 && !reopened.restoringSession)
-        reopened.closeLibrary()
-        await library.chooseFolder(folder)
-        print("PASS: selected folder and catalog restore without a server account")
+        try require(library.connected && library.tracks.count == 3 && library.message == nil && !library.restoringSession)
+        try require(library.transfer.retainsHostCatalog)
+        print("PASS: a saved host catalog restores without a connection")
 
         try require(library.destination == .albums)
         try require(library.albums.map(\.title) == ["Album A", "Album B"])
@@ -134,47 +129,7 @@ struct LibraryCheck {
         try await wait("Other album did not play") { library.playing }
         library.togglePlayback(in: albumTracks)
         try await wait("First track did not play") { library.playing && library.position > 0 }
-        let playingID = library.current?.id
-        let activeQueue = library.queue.map(\.id)
-        let playerCount = mediaPlayers.count
-        var organization = try localFiles.load()!.organization!
-        organization.set(subject: library.albums[0].id, kind: "classification", value: "true")
-        try library.saveOrganization(organization)
-        try require(library.playing && library.current?.id == playingID && library.queue.map(\.id) == activeQueue)
-        try require(mediaPlayers.count == playerCount)
-        print("PASS: album organization changes preserve active playback and queue")
-        let imageContext = CGContext(data: nil, width: 16, height: 16, bitsPerComponent: 8, bytesPerRow: 64, space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue)!
-        imageContext.setFillColor(red: 0.1, green: 0.2, blue: 0.8, alpha: 1)
-        imageContext.fill(CGRect(x: 0, y: 0, width: 16, height: 16))
-        let imageData = NSMutableData()
-        let destination = CGImageDestinationCreateWithData(imageData, "public.jpeg" as CFString, 1, nil)!
-        CGImageDestinationAddImage(destination, imageContext.makeImage()!, nil)
-        try require(CGImageDestinationFinalize(destination))
-        var imageDraft = organization
-        try imageDraft.chooseArtwork(imageData as Data, album: library.albums[0].id)
-        try require(library.localCatalog?.organization == organization)
-        try library.saveOrganization(imageDraft)
-        try require(library.playing && library.current?.id == playingID && library.queue.map(\.id) == activeQueue && mediaPlayers.count == playerCount)
-        try require(library.albums[0].coverArt != nil)
-        imageDraft.set(subject: library.albums[0].id, kind: "artwork", value: nil)
-        try library.saveOrganization(imageDraft)
-        try require(library.playing && library.current?.id == playingID && library.queue.map(\.id) == activeQueue && mediaPlayers.count == playerCount)
-        print("PASS: image draft, save and clear preserve active player and queue")
-        let beforeRepair = try localFiles.load()!
-        var repair = beforeRepair
-        let former = library.albums[1].id
-        library.selectedAlbum = former
-        for index in repair.entries.indices {
-            repair.entries[index].importedAlbum?.title = "Album A"
-            repair.entries[index].importedAlbum?.compilationValues = ["1"]
-        }
-        try library.openLocal(repair)
-        try require(library.albums.count == 1 && library.selectedAlbum == library.albums[0].id)
-        try require(library.playing && library.current?.id == playingID && library.queue.map(\.id) == activeQueue)
-        try require(mediaPlayers.count == playerCount)
-        try library.openLocal(beforeRepair)
-        try require(library.albums.count == 2)
-        print("PASS: automatic membership repair preserves player, queue and former selection")
+        print("PASS: saved host audio plays offline")
         try require(library.canGoPrevious && library.canGoNext)
         library.navigate(.artists)
         library.next()

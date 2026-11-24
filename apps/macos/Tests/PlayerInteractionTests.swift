@@ -18,7 +18,7 @@ final class PlayerInteractionTests: XCTestCase {
             LocalEntry(track: Track(id: "track-\(number)", title: "Track \(number)", artist: "Artist",
                 duration: 20, suffix: "wav", size: 4), sha256: String(repeating: String(number), count: 64), artwork: nil)
         }
-        try library.openLocal(LocalCatalog(id: "fixture-library", name: "Fixture", entries: entries))
+        try showHostCatalog(LocalCatalog(id: "fixture-library", name: "Fixture", entries: entries), in: library)
         return library
     }
 
@@ -154,7 +154,7 @@ final class PlayerInteractionTests: XCTestCase {
         library.pause()
         var catalog = try XCTUnwrap(library.localCatalog)
         catalog.entries.removeAll { $0.track.id == selected.id }
-        try library.openLocal(catalog)
+        try showHostCatalog(catalog, in: library)
         XCTAssertEqual(library.current?.id, selected.id)
         XCTAssertNotNil(library.playbackFailure)
         library.resumePlayback()

@@ -211,11 +211,8 @@ final class HostAPITests: XCTestCase {
         let files = store()
         let address = try HostAddress("https://music.example.test:443")
         let first = makeTransfer(store: files, hostConfiguration: configuration { _ in catalog })
-        XCTAssertTrue(first.showsLibraryEditControls)
         _ = try await first.confirmHost(address, information: hostInformation(address))
-        XCTAssertFalse(first.showsLibraryEditControls)
         try await first.disconnectHost()
-        XCTAssertFalse(first.showsLibraryEditControls)
         let nextID = UUID().uuidString.lowercased()
         let info = try informationReply(library: nextID)
         let data = try XCTUnwrap(String(data: catalog.data, encoding: .utf8)).replacingOccurrences(of: libraryID, with: nextID)
@@ -324,7 +321,6 @@ final class HostAPITests: XCTestCase {
         let result = try await transfer.confirmHost(address, information: info)
         XCTAssertEqual(result, .updated)
         XCTAssertEqual(transfer.connectionMode, "host")
-        XCTAssertFalse(transfer.canChooseFolder)
         XCTAssertEqual(library.playlists.map(\.id), ["xml:list"])
         XCTAssertEqual(library.playlistConflicts, ["xml:list"])
         XCTAssertEqual(library.localCatalog?.organization?.artwork?.assets.count, 0)
@@ -492,37 +488,6 @@ final class HostAPITests: XCTestCase {
         }
     }
 
-    #if os(macOS)
-    func testFolderSelectionReplacesOnlyADisconnectedHostCatalog() async throws {
-        let (reply, _, _) = try fixture()
-        let files = store()
-        let source = files.root.appendingPathComponent("Music", isDirectory: true)
-        try FileManager.default.createDirectory(at: source, withIntermediateDirectories: true)
-        let song = try XCTUnwrap(Bundle(for: Self.self).url(forResource: "untagged", withExtension: "m4a"))
-        try FileManager.default.copyItem(at: song, to: source.appendingPathComponent("Song.m4a"))
-        let library = makeLibrary(localStore: files, hostConfiguration: configuration { _ in reply })
-        let address = try HostAddress("https://host.example.test")
-        _ = try await library.transfer.confirmHost(address, information: hostInformation(address))
-        XCTAssertFalse(library.transfer.canChooseFolder)
-        await library.chooseFolder(source)
-        XCTAssertEqual(library.localCatalog?.id, libraryID)
-        try await library.transfer.disconnectHost()
-        XCTAssertTrue(library.transfer.canChooseFolder)
-        XCTAssertEqual(library.localCatalog?.source, .host)
-        await library.chooseFolder(source)
-        XCTAssertFalse(library.transfer.usesHostCatalog)
-        XCTAssertEqual(library.tracks.count, 1)
-        XCTAssertTrue(library.playlists.isEmpty)
-        let snapshot = try XCTUnwrap(files.snapshot())
-        XCTAssertEqual(snapshot.catalog.id, library.localCatalog?.id)
-        XCTAssertNotEqual(snapshot.catalog.id, libraryID)
-        XCTAssertNotNil(snapshot.sourceRoot)
-        let reopened = makeLibrary(localStore: files)
-        await reopened.openSavedLocalLibrary()
-        XCTAssertEqual(reopened.tracks, library.tracks)
-    }
-    #endif
-
     func testRestoreKeepsHostSaveAlongsideSuffixlessV5Request() throws {
         let files = store()
         try files.prepare()
@@ -629,7 +594,6 @@ final class HostAPITests: XCTestCase {
         library.transfer.setSavesBackgrounded(true)
         var waiting = entries[1]
         waiting.track.addedAt = 1
-        try files.save(LocalCatalog(id: libraryID, name: "Fixture", entries: [waiting]))
         let legacyRequests = [OfflineSaveRequest(id: "waiting", library: libraryID, entries: [waiting])]
         try JSONEncoder().encode(legacyRequests).write(to: files.root.appendingPathComponent("offline-saves.json"))
         library.transfer.restoreSaves()
@@ -679,7 +643,6 @@ final class HostAPITests: XCTestCase {
         await reopened.openSavedLocalLibrary()
         for current in [library, reopened] {
             XCTAssertEqual(current.localCatalog?.id, libraryID)
-            XCTAssertTrue(current.transfer.canChooseFolder)
             XCTAssertTrue(current.transfer.retainsHostCatalog)
             current.transfer.refreshConnection()
             XCTAssertFalse(current.transfer.busy)
@@ -948,41 +911,6 @@ final class HostAPITests: XCTestCase {
         await fulfillment(of: [cancelled], timeout: 3)
         task.cancel()
         do { _ = try await task.value; XCTFail("Played old host's response") } catch {}
-    }
-
-    func testUnsaveKeepsUnpinnedLegacyFileAndReceipt() async throws {
-        let (reply, _, _) = try fixture()
-        let files = store()
-        let legacy = LocalEntry(track: Track(id: "legacy-track", title: "Legacy", artist: "Fixture", suffix: "wav", size: 3),
-                                sha256: audioSHA256)
-        try files.save(LocalCatalog(id: "legacy", name: "Legacy", entries: [legacy]))
-        let database = try files.database()
-        try Data("abc".utf8).write(to: files.fileURL(legacy))
-        try database.recordReceived(legacy)
-        XCTAssertFalse(try database.hasAudioPin(legacy))
-        let address = try HostAddress("https://music.example.test")
-        let library = makeLibrary(localStore: files, hostConfiguration: configuration { request in
-            XCTAssertEqual(request.url?.lastPathComponent, "catalog")
-            return reply
-        })
-        _ = try await library.transfer.confirmHost(address, information: hostInformation(address))
-        let track = try XCTUnwrap(library.localCatalog?.entries.first?.track)
-        await library.transfer.requestSave([track], scope: "test")
-        try await waitFor { library.transfer.saveRequests.first?.state == .complete }
-        try await waitFor { library.hasManagedCopy(track) }
-        XCTAssertTrue(library.hasManagedCopy(track))
-        library.removeLocalCopies([track])
-        try await waitFor { !library.hasManagedCopy(track) }
-        XCTAssertFalse(library.hasManagedCopy(track))
-        XCTAssertEqual(try Data(contentsOf: files.fileURL(legacy)), Data("abc".utf8))
-        var connection: OpaquePointer?
-        XCTAssertEqual(sqlite3_open_v2(files.root.appendingPathComponent("catalog.sqlite").path, &connection, SQLITE_OPEN_READONLY, nil), SQLITE_OK)
-        defer { sqlite3_close(connection) }
-        var statement: OpaquePointer?
-        XCTAssertEqual(sqlite3_prepare_v2(connection, "SELECT relative_path FROM received_files", -1, &statement, nil), SQLITE_OK)
-        defer { sqlite3_finalize(statement) }
-        guard sqlite3_step(statement) == SQLITE_ROW else { return XCTFail("Lost legacy file receipt") }
-        XCTAssertEqual(String(cString: sqlite3_column_text(statement, 0)), files.fileURL(legacy).lastPathComponent)
     }
 
     func testLibraryHeaderTriggersRefreshAfterFailedStartupRefresh() async throws {

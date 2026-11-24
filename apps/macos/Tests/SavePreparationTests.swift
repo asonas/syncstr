@@ -8,16 +8,12 @@ import AVFoundation
 
 @MainActor
 struct SavePreparationTests {
-    private func fixture(root: URL, host: Bool = false) throws -> (LocalMusicStore, LocalEntry) {
+    private func fixture(root: URL) throws -> (LocalMusicStore, LocalEntry) {
         let store = LocalMusicStore(root: root)
         let data = Data(repeating: 7, count: 1024)
         let entry = LocalEntry(track: Track(id: "track", title: "Track", artist: nil, suffix: "wav", size: 1024),
             sha256: LocalMusicStore.digest(data), artwork: nil)
-        if host {
-            try saveHostFixture([entry], in: store)
-        } else {
-            try store.save(LocalCatalog(id: "fixture", name: "Fixture", entries: [entry]))
-        }
+        try saveHostFixture([entry], in: store)
         return (store, entry)
     }
 
@@ -40,7 +36,7 @@ struct SavePreparationTests {
         var playerInput: URL?
         let library = Library(makePlayer: { playerInput = $0; return AVPlayer() }, localStore: store)
         defer { library.closeLibrary() }
-        try library.openLocal(try #require(try store.load()))
+        await library.openSavedLocalLibrary()
         let cache = library.transfer.playbackCache.store
         try cache.prepare()
         try Data(repeating: 7, count: 1024).write(to: cache.fileURL(entry))
@@ -59,7 +55,7 @@ struct SavePreparationTests {
         defer { try? FileManager.default.removeItem(at: root) }
         let (store, entry) = try fixture(root: root)
         let library = Library(localStore: store)
-        try library.openLocal(try #require(try store.load()))
+        await library.openSavedLocalLibrary()
         let writer = try lockCatalog(store)
         defer { sqlite3_close(writer); library.closeLibrary() }
         let started = ContinuousClock.now
@@ -81,7 +77,7 @@ struct SavePreparationTests {
     func closingLibraryWhilePreparingSaveDoesNotRestartSaving() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }
-        let (store, entry) = try fixture(root: root, host: true)
+        let (store, entry) = try fixture(root: root)
         let library = Library(localStore: store)
         defer { library.closeLibrary() }
         await library.openSavedLocalLibrary()
@@ -105,7 +101,7 @@ struct SavePreparationTests {
     func repeatedSaveWhilePreparingDoesNotWaitForAnotherCatalogRead() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }
-        let (store, entry) = try fixture(root: root, host: true)
+        let (store, entry) = try fixture(root: root)
         let transfer = LocalTransfer(store: store)
         defer { transfer.stopSaveWorker() }
         transfer.setSavesBackgrounded(true)

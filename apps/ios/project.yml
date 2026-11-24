@@ -1,7 +1,4 @@
 name: Syncstr
-packages:
-  AudioTags:
-    path: ../macos/AudioTags
 options:
   bundleIdPrefix: as.ason.syncstr
   deploymentTarget:
@@ -38,7 +35,6 @@ targets:
       - path: ../macos/AlbumOrganization.swift
       - path: ../macos/AlbumMembership.swift
       - path: ../macos/AlbumArtwork.swift
-      - path: ../macos/ArtworkAcquisition.swift
       - path: ../macos/Track.swift
       - path: ../macos/Playlists.swift
       - path: ../macos/LegacyKeychainCleanup.swift
@@ -50,9 +46,6 @@ targets:
       - path: ../macos/Appearance.swift
       - path: ../macos/Appearance.xcassets
       - path: ../macos/Assets.xcassets
-    dependencies:
-      - sdk: iTunesLibrary.framework
-      - package: AudioTags
     settings:
       base:
         PRODUCT_NAME: Syncstr
@@ -68,7 +61,6 @@ targets:
       path: ../macos/TestFlight-Info.plist
       properties:
         CFBundleLocalizations: [ja, en]
-        NSAppleMusicUsageDescription: "Musicライブラリから音源に対応するアートワークを読み込むために使用します。"
         CFBundleURLTypes:
           - CFBundleURLName: as.ason.syncstr.host
             CFBundleURLSchemes: [syncstr]
@@ -106,12 +98,9 @@ targets:
       - path: ../macos/AlbumOrganization.swift
       - path: ../macos/AlbumMembership.swift
       - path: ../macos/AlbumArtwork.swift
-      - path: ../macos/ArtworkAcquisition.swift
       - path: ../macos/Track.swift
       - path: ../macos/Playlists.swift
       - path: ../macos/LegacyKeychainCleanup.swift
-    dependencies:
-      - package: AudioTags
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: as.ason.syncstr.ios
@@ -213,13 +202,9 @@ targets:
       - path: ../macos/AlbumOrganization.swift
       - path: ../macos/AlbumMembership.swift
       - path: ../macos/AlbumArtwork.swift
-      - path: ../macos/ArtworkAcquisition.swift
       - path: ../macos/Track.swift
       - path: ../macos/Playlists.swift
       - path: ../macos/LegacyKeychainCleanup.swift
-    dependencies:
-      - sdk: iTunesLibrary.framework
-      - package: AudioTags
     settings:
       base:
         GENERATE_INFOPLIST_FILE: YES
@@ -242,13 +227,9 @@ targets:
       - path: ../macos/AlbumOrganization.swift
       - path: ../macos/AlbumMembership.swift
       - path: ../macos/AlbumArtwork.swift
-      - path: ../macos/ArtworkAcquisition.swift
       - path: ../macos/Track.swift
       - path: ../macos/Playlists.swift
       - path: ../macos/LegacyKeychainCleanup.swift
-    dependencies:
-      - sdk: iTunesLibrary.framework
-      - package: AudioTags
 schemes:
   LibraryCheck:
     build:

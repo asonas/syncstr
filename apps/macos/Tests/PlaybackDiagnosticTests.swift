@@ -98,7 +98,7 @@ struct PlaybackDiagnosticTests {
         let library = Library(diagnostics: recorder, localStore: LocalMusicStore(root: directory.appendingPathComponent("music")))
         let entry = LocalEntry(track: Track(id: "track-one", title: "Fixture", artist: "Artist", duration: 20, suffix: "wav", size: 4),
             sha256: String(repeating: "a", count: 64), artwork: nil)
-        try library.openLocal(LocalCatalog(id: "fixture-library", name: "Fixture", entries: [entry]))
+        try showHostCatalog(LocalCatalog(id: "fixture-library", name: "Fixture", entries: [entry]), in: library)
         library.play(entry.track)
         for _ in 0..<1000 where library.loading { await Task.yield() }
         #expect(!library.loading)

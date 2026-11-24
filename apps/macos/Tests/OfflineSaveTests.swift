@@ -81,6 +81,26 @@ func saveHostFixture(_ entries: [LocalEntry], in store: LocalMusicStore) throws 
                                  replacing: database.hostConnection())
 }
 
+/// Stores the catalog as a host's and shows it without contacting the host, for tests about browsing and playback state.
+@MainActor
+func showHostCatalog(_ catalog: LocalCatalog, in library: Library) throws {
+    var catalog = catalog
+    catalog.source = .host
+    catalog.organize()
+    let database = try library.localStore.database()
+    let host = try HostConnection(address: HostAddress("https://music.example.test"), library: catalog.id,
+                                  name: catalog.name, hosts: [])
+    try database.saveHostCatalog(CatalogUpdate(catalog: catalog, etag: "fixture"), connection: host,
+                                 replacing: database.hostConnection())
+    try showStoredCatalog(in: library)
+}
+
+@MainActor
+func showStoredCatalog(in library: Library) throws {
+    guard let snapshot = try library.localStore.snapshot() else { throw LocalMusicError.invalidData }
+    try library.transfer.onCatalog?(PreparedLocalCatalog(snapshot.catalog, store: library.localStore))
+}
+
 @MainActor
 final class OfflineSaveTests: XCTestCase {
     private var root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
@@ -156,11 +176,7 @@ final class OfflineSaveTests: XCTestCase {
             return LocalEntry(track: Track(id: "track-\(number)", title: "Track \(number)", artist: "Artist", album: "Album",
                 suffix: "wav", size: UInt64(bytes.count)), sha256: LocalMusicStore.digest(bytes), artwork: nil)
         }
-        if host {
-            try saveHostFixture(entries, in: store)
-        } else {
-            try store.save(LocalCatalog(id: "fixture", name: "Library", entries: entries))
-        }
+        if host { try saveHostFixture(entries, in: store) } else { try store.prepare() }
         return (store, entries)
     }
 
@@ -175,8 +191,6 @@ final class OfflineSaveTests: XCTestCase {
     func testSaveControlsFollowDisplayedCatalogSource() async throws {
         let (store, entries) = try fixture(host: false)
         let library = makeLibrary(localStore: store)
-        XCTAssertFalse(library.showsOfflineSaveControls)
-        try library.openLocal(try XCTUnwrap(store.load()))
         XCTAssertFalse(library.showsOfflineSaveControls)
         try saveHostFixture(entries, in: store)
         try Data(repeating: 1, count: 1024).write(to: store.fileURL(entries[0]))
@@ -194,35 +208,16 @@ final class OfflineSaveTests: XCTestCase {
         await library.inventoryTask?.value
         XCTAssertFalse(library.canRemoveLocalCopy(entries[0].track))
         XCTAssertFalse(try store.database().hasAudioPin(entries[0]))
-        XCTAssertTrue(store.hasFile(entries[0]), "The local catalog still references this file")
+        XCTAssertFalse(store.hasFile(entries[0]))
     }
 
-    func testRequestSaveRefusesLocalCatalog() async throws {
+    func testRequestSaveRefusesWithoutHostCatalog() async throws {
         let (store, entries) = try fixture(host: false)
         let transfer = makeTransfer(store: store)
         transfer.setSavesBackgrounded(true)
         await transfer.requestSave([entries[0].track], scope: "track:track-1")
         XCTAssertTrue(transfer.saveRequests.isEmpty)
         XCTAssertTrue(makeTransfer(store: store).saveRequests.isEmpty)
-    }
-
-    func testRestoredLocalSavesAreDroppedWithoutSchedulingRetry() async throws {
-        let (store, entries) = try fixture(host: false)
-        let states: [OfflineSaveRequest.State] = [.waiting, .wifi, .saving, .complete]
-        let requests = states.map {
-            OfflineSaveRequest(id: $0.rawValue, library: "fixture", entries: entries, state: $0)
-        } + [OfflineSaveRequest(id: "waiting", library: "other-host", entries: entries)]
-        let url = store.root.appendingPathComponent("offline-saves.json")
-        try JSONEncoder().encode(requests).write(to: url)
-        let transfer = makeTransfer(store: store)
-        transfer.resumeSaves()
-        try await settled(transfer)
-
-        XCTAssertNil(transfer.saveRetry)
-        XCTAssertEqual(transfer.saveRequests.map(\.library), ["fixture", "other-host"])
-        let persisted = try JSONDecoder().decode([OfflineSaveRequest].self, from: Data(contentsOf: url))
-        XCTAssertEqual(persisted.map(\.library), ["fixture", "other-host"])
-        XCTAssertEqual(persisted.map(\.state), [.complete, .waiting])
     }
 
     func testRestoredHostSaveKeepsWaitingForRetry() async throws {
@@ -424,7 +419,7 @@ final class OfflineSaveTests: XCTestCase {
         var other = entries[0]
         other.track.id = "other-registration"
         let registrations = [entries[0], other, entries[1]]
-        try store.save(LocalCatalog(id: "fixture", name: "Library", entries: registrations))
+        try saveHostFixture(registrations, in: store)
         try Data(repeating: 1, count: 1024).write(to: store.fileURL(other))
         let legacyQueue = [OfflineSaveRequest(id: "album:fixture", library: "fixture", entries: registrations,
                                               completed: [other.sha256])]
@@ -522,38 +517,4 @@ final class OfflineSaveTests: XCTestCase {
         XCTAssertEqual(library.saveRequest(for: [entries[1].track], scope: "track:track-2")?.state, .complete)
         XCTAssertEqual(try store.load()?.entries.map(\.track.id), entries.map(\.track.id))
     }
-
-#if os(macOS)
-    func testFolderRestorationRetainsImportedManagedFilesWithoutImplicitHosting() async throws {
-        let store = LocalMusicStore(root: root.appendingPathComponent("library"))
-        let source = root.appendingPathComponent("source")
-        try FileManager.default.createDirectory(at: source, withIntermediateDirectories: true)
-        let fixtures = URL(fileURLWithPath: #filePath).deletingLastPathComponent().appendingPathComponent("Fixtures")
-        try FileManager.default.copyItem(at: fixtures.appendingPathComponent("untagged.m4a"), to: source.appendingPathComponent("source.m4a"))
-        let library = makeLibrary(localStore: store)
-        await library.chooseFolder(source)
-        await library.addMusic([fixtures.appendingPathComponent("untagged.mp3")])
-        XCTAssertEqual(library.tracks.count, 2)
-        let restored = makeLibrary(localStore: store)
-        await restored.openSavedLocalLibrary()
-        XCTAssertEqual(Set(restored.tracks.map(\.id)), Set(library.tracks.map(\.id)))
-        XCTAssertTrue(restored.tracks.allSatisfy { restored.localFiles[$0.id] != nil })
-    }
-
-    func testFreshFileImportNeedsNeitherEnrollmentNorLegacyHosting() async throws {
-        let store = LocalMusicStore(root: root.appendingPathComponent("library"))
-        let library = makeLibrary(localStore: store)
-        let source = URL(fileURLWithPath: #filePath).deletingLastPathComponent().appendingPathComponent("Fixtures/untagged.m4a")
-        let bytes = try Data(contentsOf: source)
-        await library.addMusic([source])
-        XCTAssertTrue(library.connected, library.message ?? "")
-        XCTAssertEqual(library.tracks.count, 1)
-        XCTAssertTrue(library.hasManagedCopy(try XCTUnwrap(library.tracks.first)))
-        XCTAssertEqual(try Data(contentsOf: source), bytes)
-        let restored = makeLibrary(localStore: store)
-        await restored.openSavedLocalLibrary()
-        XCTAssertEqual(restored.tracks.map(\.id), library.tracks.map(\.id))
-        restored.closeLibrary()
-    }
-#endif
 }
