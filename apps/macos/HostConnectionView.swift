@@ -129,23 +129,29 @@ struct HostConnectionView: View {
 }
 
 struct HostConnectionSettings: View {
-    @ObservedObject var transfer: LocalTransfer
+    @ObservedObject var library: Library
     let open: (HostSetupRequest) -> Void
     @State private var disconnecting = false
     @State private var message: String?
 
+    private var transfer: LocalTransfer { library.transfer }
+
     var body: some View {
         if let host = transfer.hostConnection {
-            LabeledContent("ライブラリ", value: host.name)
-            LabeledContent("ホスト", value: host.address.displayName)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(host.name)
+                Text(host.address.displayName).font(.callout).foregroundStyle(.secondary)
+            }
+            .accessibilityElement(children: .combine)
+            LabeledContent("曲数") { Text(library.tracks.count, format: .number) }
+            if let refreshed = transfer.hostRefreshedAt {
+                LabeledContent("最終更新") { Text(refreshed, format: .relative(presentation: .named)) }
+            }
             Button("ライブラリを更新") {
                 message = nil
                 Task {
-                    do {
-                        let result = try await transfer.refreshHost()
-                        if case .differentLibrary = result { return }
-                        message = "ライブラリを更新しました。"
-                    } catch {
+                    do { _ = try await transfer.refreshHost() }
+                    catch {
                         if !isHostCancellation(error) { message = HostConnectionFlow.message(for: error) }
                     }
                 }

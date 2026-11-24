@@ -93,6 +93,7 @@ final class LocalTransfer: ObservableObject {
     }
     @Published private(set) var changedHostLibrary: String?
     @Published private(set) var retainedHostLibrary: String?
+    @Published private(set) var hostRefreshedAt: Date?
     var showsLibraryEditControls: Bool { !usesHostCatalog }
     var retainsHostCatalog: Bool { retainedHostLibrary != nil }
     var usesHostCatalog: Bool { hostConnection != nil || retainsHostCatalog }
@@ -230,6 +231,7 @@ final class LocalTransfer: ObservableObject {
         stopSaveWorker()
         stopHostPlayback()
         hostConnection = nil
+        hostRefreshedAt = nil
         hostAudio = HostAudioFiles()
         observedSwitch = nil
         catalog = nil
@@ -331,6 +333,9 @@ final class LocalTransfer: ObservableObject {
                 status = nil
                 connected = true
                 changedHostLibrary = nil
+                let refreshed = Date.now
+                try? await CatalogStorage.shared.commit { try files.database().markHostRefreshed(host, at: refreshed) }
+                if generation == attempt { hostRefreshedAt = refreshed }
                 connectionEvent("refresh_host", outcome: "succeeded", fields: ["result": "unchanged", "remote_catalog_id": host.library])
                 return .unchanged
             case .updated(let update):
@@ -368,6 +373,7 @@ final class LocalTransfer: ObservableObject {
             activateHost(host)
         } else { hostConnection = host }
         changedHostLibrary = nil
+        hostRefreshedAt = .now
         status = nil
         catalog = update.catalog
         onHostPlaylists?(update.playlists, update.conflicts)
@@ -444,8 +450,10 @@ final class LocalTransfer: ObservableObject {
         do {
             automaticCellular = try await CatalogStorage.shared.perform { try files.database().automaticCellular() }
             if let host = try await CatalogStorage.shared.perform({ try files.database().hostConnection() }) {
+                let refreshed = try await CatalogStorage.shared.perform { try files.database().hostRefreshedAt() }
                 guard generation == attempt else { return false }
                 try await adoptStoredHost(host, attempt: attempt)
+                hostRefreshedAt = refreshed
             } else {
                 let retained = try await CatalogStorage.shared.perform { try files.database().retainedHostLibrary() }
                 guard generation == attempt else { return false }

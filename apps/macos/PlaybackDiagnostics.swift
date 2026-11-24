@@ -317,12 +317,13 @@ import UIKit
 struct PlaybackDiagnosticCopyButton: View {
     let attemptID: String
     let recorder: PlaybackDiagnostics
+    var title = "診断ログをコピー"
     @State private var result: String?
     @State private var copying = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
-            Button("診断ログをコピー") {
+            Button(title) {
                 copying = true
                 let selected = attemptID
                 Task {
@@ -342,51 +343,59 @@ struct PlaybackDiagnosticCopyButton: View {
     }
 }
 
-struct PlaybackDiagnosticSettings: View {
+
+struct PlaybackDiagnosticList: View {
     let recorder: PlaybackDiagnostics
     @State private var traces: [PlaybackDiagnosticTrace] = []
-    @State private var selected: String?
     @State private var persistenceFailed = false
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack {
-                Text("再生診断").font(.headline)
-                Spacer()
-                Button("更新") { Task {
-                    traces = await recorder.recent()
-                    persistenceFailed = await recorder.hasPersistenceFailure()
-                } }
-            }
-            if persistenceFailed {
-                Text("診断ログを保存できませんでした。コピーできる記録が一部に限られる場合があります。")
-                    .font(.caption).foregroundStyle(.secondary)
-            }
-            if traces.isEmpty {
-                Text("再生の記録はまだありません。").foregroundStyle(.secondary)
-            } else {
-                Picker("再生の試行", selection: $selected) {
-                    Text("試行を選択").tag(String?.none)
-                    ForEach(traces) { trace in
-                        Text("\(trace.started) — \(trace.title)").tag(Optional(trace.id))
+        Form {
+            Section {
+                if traces.isEmpty {
+                    Text("再生の記録はまだありません。").foregroundStyle(.secondary)
+                }
+                ForEach(traces) { trace in
+                    HStack(alignment: .firstTextBaseline, spacing: 12) {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(trace.title).lineLimit(2)
+                            HStack(spacing: 0) {
+                                Text(Self.started(trace)).foregroundStyle(.secondary)
+                                Text("・")
+                                Text(Self.outcome(trace.outcome))
+                                    .foregroundStyle(trace.outcome == "failed" ? Color.red : .secondary)
+                            }.font(.callout)
+                        }
+                        Spacer(minLength: 0)
+                        PlaybackDiagnosticCopyButton(attemptID: trace.id, recorder: recorder, title: "コピー")
                     }
                 }
-                if let trace = traces.first(where: { $0.id == selected }) {
-                    Text("\(outcome(trace.outcome))・\(trace.lastStage)").font(.caption)
-                    if trace.omitted > 0 { Text("一部の記録がありません（\(trace.omitted)件）。").font(.caption) }
-                    PlaybackDiagnosticCopyButton(attemptID: trace.id, recorder: recorder).id(trace.id)
-                }
+            } footer: {
+                VStack(alignment: .leading, spacing: 4) {
+                    if persistenceFailed { Text("診断ログを保存できませんでした。コピーできる記録が一部に限られる場合があります。") }
+                    Text("コピーした記録には曲名と端末の識別情報が含まれます。")
+                }.foregroundStyle(.secondary)
             }
-            Text("直近20試行・最大5 MBをこの端末に保存します。コピーには曲名と端末の識別情報が含まれます。")
-                .font(.caption).foregroundStyle(.secondary)
-        }.task {
-            traces = await recorder.recent()
-            selected = traces.first?.id
-            persistenceFailed = await recorder.hasPersistenceFailure()
         }
+        .formStyle(.grouped)
+        .task { await load() }
+#if os(iOS)
+        .navigationTitle("再生診断")
+        .refreshable { await load() }
+#endif
     }
 
-    private func outcome(_ value: String) -> String {
+    private func load() async {
+        traces = await recorder.recent()
+        persistenceFailed = await recorder.hasPersistenceFailure()
+    }
+
+    private static func started(_ trace: PlaybackDiagnosticTrace) -> String {
+        guard let date = ISO8601DateFormatter().date(from: trace.started) else { return trace.started }
+        return date.formatted(date: Calendar.current.isDateInToday(date) ? .omitted : .abbreviated, time: .shortened)
+    }
+
+    private static func outcome(_ value: String) -> String {
         switch value {
         case "active": "再生中・取得中"
         case "failed": "失敗"

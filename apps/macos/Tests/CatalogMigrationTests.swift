@@ -76,7 +76,7 @@ final class CatalogMigrationTests: XCTestCase {
             var statement: OpaquePointer?
             XCTAssertEqual(sqlite3_prepare_v2(connection, "PRAGMA user_version", -1, &statement, nil), SQLITE_OK)
             XCTAssertEqual(sqlite3_step(statement), SQLITE_ROW)
-            XCTAssertEqual(sqlite3_column_int(statement, 0), 8)
+            XCTAssertEqual(sqlite3_column_int(statement, 0), 9)
             sqlite3_finalize(statement)
             XCTAssertEqual(sqlite3_prepare_v2(connection, "SELECT name FROM sqlite_master WHERE type = 'table'", -1, &statement, nil), SQLITE_OK)
             var tables = Set<String>()

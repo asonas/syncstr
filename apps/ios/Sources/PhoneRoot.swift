@@ -536,28 +536,18 @@ struct PhoneRoot: View {
 
     private var settings: some View {
         Form {
+            LibrarySettingsSection(library: library) { hostSetup = $0 }
+            SavedMusicSettingsSection(library: library)
+            PlaybackCacheSettingsSection(library: library)
             Section { AppearanceSettings() }
-            Section { PlaybackDiagnosticSettings(recorder: library.diagnostics) }
-            Section { PlaybackStorageSettings(library: library) }
-            Section("ライブラリと接続") {
-                HostConnectionSettings(transfer: library.transfer) { hostSetup = $0 }
-            }
-            if library.transfer.showsLibraryEditControls { Section { AddMusicButton(library: library) } }
             Section {
-                LabeledContent("曲数", value: "\(library.tracks.count)")
-                if library.connected && !library.transfer.hasLibrarySource {
-                    if !library.transfer.usesHostCatalog {
-                        Button("ライブラリを閉じる") { library.closeLibrary() }
-                    }
-                } else if library.hasSavedLocalLibrary {
-                    Button("保存した音楽を開く") { Task { await library.openSavedLocalLibrary() } }
-                }
-            } header: { Text("ライブラリ") } footer: { Text("保存した音楽は接続がなくても聴けます。") }
+                NavigationLink("再生診断") { PlaybackDiagnosticList(recorder: library.diagnostics) }
+                AppVersionRow()
+            }
         }
         .scrollContentBackground(.hidden)
         .background(PhoneStyle.graphite)
         .navigationTitle("設定")
-        .scrollDismissesKeyboard(.interactively)
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
                 Button("ライブラリへ戻る") { tab = .library; tabletSection = .albums }

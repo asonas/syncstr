@@ -1,5 +1,4 @@
 import Foundation
-import SwiftUI
 
 @MainActor
 class PlaybackCache {
@@ -109,6 +108,11 @@ class PlaybackCache {
         try Self.trimFiles(store: store, incoming: incoming, limitGB: limitGB, protectedURL: protectedURL)
     }
 
+    /// Keeps the file that is playing now. Saved music lives in a different store and is not touched.
+    func clear() throws {
+        try Self.trimFiles(store: store, incoming: 0, limitGB: 0, protectedURL: protectedURL)
+    }
+
     nonisolated private static func trimFiles(store: LocalMusicStore, incoming: UInt64, limitGB: Int, protectedURL: URL?) throws {
         try Task.checkCancellation()
         let directory = store.root
@@ -129,27 +133,6 @@ class PlaybackCache {
             guard url.resolvingSymlinksInPath().path != protectedURL?.resolvingSymlinksInPath().path else { continue }
             try FileManager.default.removeItem(at: url)
             total -= size
-        }
-    }
-}
-
-struct PlaybackStorageSettings: View {
-    @ObservedObject var library: Library
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Toggle("モバイル通信でも自動転送する", isOn: Binding(get: { library.transfer.automaticCellular }, set: library.transfer.setAutomaticCellular))
-            Stepper("再生キャッシュの上限: \(library.transfer.playbackCache.limitGB) GB", value: Binding(
-                get: { library.transfer.playbackCache.limitGB },
-                set: { value in
-                    do { try library.transfer.playbackCache.setLimit(value); library.objectWillChange.send() }
-                    catch { library.message = "キャッシュ容量を変更できませんでした。\(error.localizedDescription)" }
-                }
-            ), in: 1...1000)
-            Text("明示的に保存した音楽は、この上限と自動削除の対象外です。")
-                .font(.caption).foregroundStyle(.secondary)
-            LabeledContent("再生キャッシュ", value: ByteCountFormatter.string(fromByteCount: library.transfer.playbackCache.usedBytes, countStyle: .decimal))
-            LabeledContent("保存済み音源", value: ByteCountFormatter.string(fromByteCount: library.savedAudioBytes, countStyle: .decimal))
         }
     }
 }

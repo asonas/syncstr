@@ -113,10 +113,11 @@ struct LibraryView: View {
         }
         .sheet(item: $hostSetup) { request in
             if request.showsSettings {
-                VStack(alignment: .leading, spacing: 16) {
-                    HostConnectionSettings(transfer: library.transfer) { hostSetup = $0 }
-                    Button("閉じる") { hostSetup = nil }
-                }.padding(24).frame(minWidth: 440)
+                NavigationStack {
+                    Form { LibrarySettingsSection(library: library) { hostSetup = $0 } }
+                        .formStyle(.grouped)
+                        .toolbar { ToolbarItem(placement: .cancellationAction) { Button("閉じる") { hostSetup = nil } } }
+                }.frame(minWidth: 440, minHeight: 360)
             } else {
                 HostConnectionView(transfer: library.transfer, request: request)
             }

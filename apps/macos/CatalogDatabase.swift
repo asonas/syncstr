@@ -82,8 +82,8 @@ final class CatalogDatabase {
         sqlite3_busy_timeout(connection, 5000)
         do {
             let version = try rows("PRAGMA user_version").first?.first ?? nil
-            guard let version, let number = Int(version), (0...8).contains(number) else { throw LocalMusicError.invalidData }
-            if number == 8 {
+            guard let version, let number = Int(version), (0...9).contains(number) else { throw LocalMusicError.invalidData }
+            if number == 9 {
                 let required: Set<String> = ["device_transfer_settings", "verified_audio_files", "retained_host_catalog",
                     "host_connection", "host_entries", "host_playlists", "shared_audio_saves", "catalog", "entries",
                     "received_files", "organization", "artwork_assets"]
@@ -119,6 +119,9 @@ final class CatalogDatabase {
                 if try !rows("PRAGMA table_info(retained_host_catalog)").contains(where: { $0[1] == "address" }) {
                     try execute("ALTER TABLE retained_host_catalog ADD COLUMN address TEXT")
                 }
+                if try !rows("PRAGMA table_info(host_connection)").contains(where: { $0[1] == "refreshed_at" }) {
+                    try execute("ALTER TABLE host_connection ADD COLUMN refreshed_at REAL")
+                }
                 for table in ["cluster_schema", "cluster_identity", "cluster_peers", "cluster_objects", "cluster_locations",
                               "cluster_pending_changes", "cluster_jobs", "cluster_registration", "cluster_signed_changes",
                               "cluster_peer_cursors", "cluster_track_ids", "cluster_import_batches", "cluster_metadata_queue",
@@ -126,7 +129,7 @@ final class CatalogDatabase {
                               "playlist_records", "playlist_cursors", "playlist_authorities"] {
                     try execute("DROP TABLE IF EXISTS \(table)")
                 }
-                try execute("PRAGMA user_version = 8")
+                try execute("PRAGMA user_version = 9")
             }
         } catch {
             sqlite3_close(connection)
@@ -242,6 +245,18 @@ final class CatalogDatabase {
                                   hosts: JSONDecoder().decode([HostLibraryInfo.Host].self, from: Data(hosts.utf8)), etag: row[4], marker: row[5], hostSwitch: row[6])
     }
 
+    func hostRefreshedAt() throws -> Date? {
+        guard let value = try rows("SELECT refreshed_at FROM host_connection").first?.first ?? nil else { return nil }
+        return Double(value).map(Date.init(timeIntervalSince1970:))
+    }
+
+    func markHostRefreshed(_ host: HostConnection, at date: Date) throws {
+        try transaction {
+            guard try hostConnection() == host else { throw CancellationError() }
+            try execute("UPDATE host_connection SET refreshed_at = ?", [String(date.timeIntervalSince1970)])
+        }
+    }
+
     func forgetHost() throws -> String? {
         try transaction {
             try execute("INSERT OR REPLACE INTO retained_host_catalog(library,header,address) SELECT library,header,address FROM host_connection WHERE header IS NOT NULL")
@@ -250,16 +265,16 @@ final class CatalogDatabase {
         }
     }
 
-    func saveHostCatalog(_ update: CatalogUpdate, connection: HostConnection, replacing previous: HostConnection?) throws {
+    func saveHostCatalog(_ update: CatalogUpdate, connection: HostConnection, replacing previous: HostConnection?, refreshedAt: Date = .now) throws {
         try transaction {
             guard try hostConnection() == previous, update.catalog.id == connection.library else { throw CancellationError() }
             let hosts = String(decoding: try JSONEncoder().encode(connection.hosts), as: UTF8.self)
             var header = update.catalog
             header.entries = []
             try execute("DELETE FROM retained_host_catalog")
-            try execute("INSERT OR REPLACE INTO host_connection(singleton,address,library,name,hosts,etag,marker,header,host_switch) VALUES(1,?,?,?,?,?,?,?,?)",
+            try execute("INSERT OR REPLACE INTO host_connection(singleton,address,library,name,hosts,etag,marker,header,host_switch,refreshed_at) VALUES(1,?,?,?,?,?,?,?,?,?)",
                         [connection.address.origin.absoluteString, connection.library, header.name, hosts, update.etag, update.marker,
-                         String(decoding: try JSONEncoder().encode(header), as: UTF8.self), update.hostSwitch])
+                         String(decoding: try JSONEncoder().encode(header), as: UTF8.self), update.hostSwitch, String(refreshedAt.timeIntervalSince1970)])
             try execute("DELETE FROM host_entries")
             for (index, entry) in update.catalog.entries.enumerated() {
                 try Task.checkCancellation()

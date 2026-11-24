@@ -420,6 +420,28 @@ final class HostAPITests: XCTestCase {
         }
     }
 
+    func testLastRefreshSurvivesRelaunchAndEndsWithTheConnection() async throws {
+        let (reply, _, _) = try fixture()
+        let files = store()
+        let address = try HostAddress("https://confirmed.example.test")
+        let initial = makeTransfer(store: files, hostConfiguration: configuration { _ in reply })
+        _ = try await initial.confirmHost(address, information: hostInformation(address))
+        let confirmed = try XCTUnwrap(initial.hostRefreshedAt)
+
+        let reopened = makeTransfer(store: files, hostConfiguration: configuration { _ in HostReply(status: 304) })
+        await reopened.restoreHost()
+        XCTAssertEqual(try XCTUnwrap(reopened.hostRefreshedAt).timeIntervalSince1970, confirmed.timeIntervalSince1970, accuracy: 1)
+        let result = try await reopened.refreshHost()
+        XCTAssertEqual(result, .unchanged)
+        let refreshed = try XCTUnwrap(reopened.hostRefreshedAt)
+        XCTAssertGreaterThanOrEqual(refreshed, confirmed)
+        XCTAssertEqual(try XCTUnwrap(files.database().hostRefreshedAt()).timeIntervalSince1970, refreshed.timeIntervalSince1970, accuracy: 0.001)
+
+        try await reopened.disconnectHost()
+        XCTAssertNil(reopened.hostRefreshedAt)
+        XCTAssertNil(try files.database().hostRefreshedAt())
+    }
+
     func testCommittedSwitchIsPublishedBeforeConditionalRefresh() async throws {
         let (reply, _, _) = try fixture()
         let a = try HostAddress("https://first.example.test")
