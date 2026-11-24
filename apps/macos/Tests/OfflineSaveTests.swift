@@ -144,7 +144,7 @@ final class OfflineSaveTests: XCTestCase {
                                completed: Set(entries[1...2].map(\.trackSaveIdentity)), state: .complete)
         ]
         await transfer.refreshSavedAudio()
-        XCTAssertEqual(transfer.savedAudio.bytes, 3 * 1024)
+        XCTAssertEqual(transfer.savedAudio.bytes, 3 * 1024 + 512)
 
         try await transfer.removeAllSavedAudio()
 
@@ -441,6 +441,7 @@ final class OfflineSaveTests: XCTestCase {
         await transfer.refreshSavedAudio()
         XCTAssertTrue(transfer.savedAudio.pins.isEmpty)
         XCTAssertEqual(transfer.savedAudio.unpinnedFiles, 1)
+        XCTAssertEqual(transfer.savedAudio.bytes, 256)
         let library = try XCTUnwrap(transfer.hostConnection?.library)
         transfer.saveRequests = [OfflineSaveRequest(id: "track:track-1", library: library, entries: [entries[0]], state: .wifi)]
 

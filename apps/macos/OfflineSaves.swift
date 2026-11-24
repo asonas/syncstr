@@ -332,7 +332,7 @@ extension LocalMusicStore {
         let pins = try database().savedAudioPinList()
         let pinned = Set(pins.map(\.hash))
         let all = try audioFiles()
-        let bytes = all.filter { pinned.contains($0.key) }.values.joined().reduce(Int64(0)) { total, url in
+        let bytes = all.values.joined().reduce(Int64(0)) { total, url in
             total + Int64((try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0)
         }
         return SavedAudioSummary(pins: pins, bytes: bytes, unpinnedFiles: all.keys.filter { !pinned.contains($0) }.count)

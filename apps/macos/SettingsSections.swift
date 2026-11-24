@@ -31,8 +31,8 @@ struct SavedMusicSettingsSection: View {
                     Button("キャンセル", role: .cancel) {}
                     Button("すべて削除", role: .destructive) { Task { await library.removeAllSavedMusic() } }
                 } message: {
-                    Text(saved.pins.isEmpty ? "保存待ちと、この端末に残っている音声を削除します。再生中の曲は停止します。ホストのライブラリには残ります。"
-                         : "\(saved.pins.count)曲をこの端末から削除します。再生中の曲は停止します。ホストのライブラリには残ります。")
+                    Text((saved.pins.isEmpty ? "保存待ちと、この端末に残っている保存データを削除します。" : "\(saved.pins.count)曲をこの端末から削除します。")
+                         + "保存した曲を再生中の場合は停止します。ホストのライブラリには残ります。")
                 }
         }
         .task { await library.transfer.refreshSavedAudio() }
