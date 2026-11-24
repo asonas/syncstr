@@ -95,6 +95,8 @@ final class HostLibrarySource: LibrarySource {
         let id = UUID()
         let task = Task {
             try await files.download(entry, into: cache ?? store, recordReceipt: cache == nil, client: client, diagnostic: diagnostic)
+            // A cancelled save, for example one whose music was just deleted, must not pin the file.
+            try Task.checkCancellation()
             if cache == nil { try store.database().saveAudioPin(entry) }
         }
         downloads[id] = task

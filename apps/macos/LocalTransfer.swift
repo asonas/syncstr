@@ -81,6 +81,9 @@ final class LocalTransfer: ObservableObject {
     var saveSource: (any LibrarySource)?
     var saveGeneration = UUID()
     var savesBackgrounded = false
+    var discardingSaves = false
+    var runningExplicitSave: String?
+    var discardedDuringPreparation: [UUID: Set<String>] = [:]
     var savePathIsCellular: Bool { savePath?.currentPath.usesInterfaceType(.cellular) == true }
     var permitsAutomaticSaveAudio: Bool { permitsAutomaticAudio }
     private let savePath: NWPathMonitor?
@@ -402,7 +405,7 @@ final class LocalTransfer: ObservableObject {
     }
 
     lazy var playbackCache = PlaybackCache(root: store.root.appendingPathComponent("playback-cache"))
-    private var operation: Task<Void, Never>?
+    private(set) var operation: Task<Void, Never>?
     private var catalog: LocalCatalog?
     private var generation = UUID()
     var store: LocalMusicStore
@@ -476,18 +479,13 @@ final class LocalTransfer: ObservableObject {
     func removeSavedCopy(_ entry: LocalEntry) throws {
         guard readyForLocalCopyRemoval else { throw LocalMusicError.transferBusy }
         guard LocalMusicStore.valid(entry) else { throw LocalMusicError.invalidData }
-        let database = try store.database()
-        let retained = try database.removeAudioPin(entry)
         // The caller cancels this library's request first. Any request still holding the hash, including
         // one for the same track in another library, can reuse the file.
-        let otherSave = saveRequests.contains { request in
-            request.state != .cancelled && request.entries.contains { $0.sha256 == entry.sha256 }
-        }
-        if !retained && !otherSave {
-            try Self.discardAudio([entry.sha256], store: store, cache: playbackCache.store,
-                                  protectedURL: playbackCache.protectedURL, database: database)
-        }
+        let kept = try Self.discard([SavedAudioPin(track: entry.track.id, hash: entry.sha256)], keeping: requestedAudio,
+                                    store: store, cache: playbackCache.store, protected: playbackCache.protectedPaths,
+                                    database: store.database())
         onSaved?()
+        if !kept.isEmpty { throw LocalMusicError.removalIncomplete }
     }
 
     func cancel() { cancel(reason: "cancel_requested") }
@@ -573,7 +571,10 @@ final class LocalTransfer: ObservableObject {
             }
             try Task.checkCancellation()
             guard let result = try await playbackCache.fileInBackground(entry, diagnostic: diagnostic) else { throw LocalMusicError.invalidData }
-            guard hostConnection?.address == selectedHost?.address, hostConnection?.library == selectedHost?.library else { throw CancellationError() }
+            guard hostConnection?.address == selectedHost?.address, hostConnection?.library == selectedHost?.library else {
+                playbackCache.release(result)
+                throw CancellationError()
+            }
             return result
         } onCancel: {
             Task { @MainActor in source.stop() }
@@ -630,6 +631,7 @@ final class LocalTransfer: ObservableObject {
                         try files.verifiedFile(entry, host: true, inventory: files.database(), requireHash: true) != nil
                     }
                     if !savedLocally, let cached = try await playbackCache.fileInBackground(entry) {
+                        defer { playbackCache.release(cached) }
                         savedLocally = try await CatalogStorage.shared.perform {
                             try files.importCachedFile(cached, entry: entry, host: true)
                         }

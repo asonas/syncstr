@@ -47,7 +47,11 @@ extension LocalTransfer {
         let store = store
         let preparation = Task { try await store.snapshotInBackground() }
         preparingSaves[scope] = (token, ids, preparation)
-        defer { if preparingSaves[scope]?.token == token { preparingSaves.removeValue(forKey: scope) } }
+        discardedDuringPreparation[token] = []
+        defer {
+            if preparingSaves[scope]?.token == token { preparingSaves.removeValue(forKey: scope) }
+            discardedDuringPreparation.removeValue(forKey: token)
+        }
         do {
             let snapshot = try await withTaskCancellationHandler {
                 try await preparation.value
@@ -58,8 +62,12 @@ extension LocalTransfer {
             guard catalog.supportsOfflineSaves else { return }
             try Task.checkCancellation()
             guard preparingSaves[scope]?.token == token else { return }
-            let entries = catalog.entries.filter { ids.contains($0.track.id) }
+            var entries = catalog.entries.filter { ids.contains($0.track.id) }
             guard entries.count == ids.count, !entries.isEmpty else { throw LocalMusicError.invalidData }
+            // Saved music deleted while the catalog was read is not saved again by this older request.
+            let discarded = discardedDuringPreparation[token] ?? []
+            entries.removeAll { discarded.contains($0.trackSaveIdentity) }
+            guard !entries.isEmpty else { return }
             stopSaveWorker()
             var updated = saveRequests.filter { $0.library != catalog.id || $0.id != scope }
             updated.append(OfflineSaveRequest(id: scope, library: catalog.id, entries: entries))
@@ -157,11 +165,12 @@ extension LocalTransfer {
     }
 
     func resumeSaves(explicit: String? = nil) {
-        guard !retainsHostCatalog, !savesBackgrounded, saveWorker == nil,
+        guard !retainsHostCatalog, !savesBackgrounded, !discardingSaves, saveWorker == nil,
               saveRequests.contains(where: { (hostConnection == nil || $0.library == hostConnection?.library) && $0.isPending }) else { return }
         saveRetry?.cancel()
         saveRetry = nil
         let token = saveGeneration
+        runningExplicitSave = explicit
         saveWorker = Task { [weak self] in
             guard let self else { return }
             var snapshotReadFailed = false
@@ -169,6 +178,7 @@ extension LocalTransfer {
             defer {
                 if saveGeneration == token {
                     saveWorker = nil
+                    runningExplicitSave = nil
                     if saveRequests.contains(where: { (snapshotReadFailed || $0.library == processableLibrary) && $0.isPending }) {
                         let deadline = hostConnection.flatMap { self.hostAudioGate.deadline(for: $0.address.origin) }
                         let interval = saveRetryInterval
@@ -230,7 +240,10 @@ extension LocalTransfer {
                             try Task.checkCancellation()
                             guard saveGeneration == token else { return }
                             var savedFromCache = false
-                            if let cached { savedFromCache = try await protectCachedFile(cached, entry: entry) }
+                            if let cached {
+                                defer { playbackCache.release(cached) }
+                                savedFromCache = try await protectCachedFile(cached, entry: entry)
+                            }
                             if !savedFromCache {
                                 try Task.checkCancellation()
                                 guard saveGeneration == token else { return }
@@ -319,24 +332,37 @@ extension LocalMusicStore {
     func savedAudioSummary() throws -> SavedAudioSummary {
         let pins = try database().savedAudioPinList()
         let files = audioFiles(for: Set(pins.map(\.hash)))
-        let bytes = files.values.reduce(Int64(0)) { total, urls in
-            total + (urls.compactMap { try? $0.resourceValues(forKeys: [.fileSizeKey]).fileSize }.max().map(Int64.init) ?? 0)
+        let bytes = files.values.joined().reduce(Int64(0)) { total, url in
+            total + Int64((try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0)
         }
         return SavedAudioSummary(pins: pins, bytes: bytes)
     }
 }
 
 extension LocalTransfer {
-    nonisolated static func discardAudio(_ hashes: Set<String>, store: LocalMusicStore, cache: LocalMusicStore,
-                                         protectedURL: URL?, database: CatalogDatabase) throws {
-        let protected = protectedURL?.resolvingSymlinksInPath().path
-        for urls in Array(store.audioFiles(for: hashes).values) + Array(cache.audioFiles(for: hashes).values) {
-            for url in urls where url.resolvingSymlinksInPath().path != protected {
+    /// Removes the files before the pins. A pin whose file could not be removed stays, so the saved music
+    /// keeps showing as saved and a later delete can try again. Returns those pins.
+    nonisolated static func discard(_ pins: Set<SavedAudioPin>, keeping requested: Set<String>, store: LocalMusicStore,
+                                    cache: LocalMusicStore, protected: Set<String>, database: CatalogDatabase) throws -> Set<SavedAudioPin> {
+        let held = Set(try database.savedAudioPinList().subtracting(pins).map(\.hash)).union(requested)
+        let unused = Set(pins.map(\.hash)).subtracting(held)
+        var failed = Set<String>()
+        for (hash, urls) in store.audioFiles(for: unused).merging(cache.audioFiles(for: unused), uniquingKeysWith: +) {
+            for url in urls where !protected.contains(url.resolvingSymlinksInPath().path) {
                 do { try FileManager.default.removeItem(at: url) }
                 catch CocoaError.fileNoSuchFile {}
+                catch { failed.insert(hash) }
             }
         }
-        for hash in hashes { try database.forgetAudio(hash: hash) }
+        let kept = pins.filter { failed.contains($0.hash) }
+        _ = try database.removeAudioPins(pins.subtracting(kept))
+        for hash in unused.subtracting(failed) { try database.forgetAudio(hash: hash) }
+        return kept
+    }
+
+    /// Hashes that a save still in the queue can reuse.
+    var requestedAudio: Set<String> {
+        Set(saveRequests.filter { $0.state != .cancelled }.flatMap { $0.entries.map(\.sha256) })
     }
 
     func refreshSavedAudio() async {
@@ -346,31 +372,47 @@ extension LocalTransfer {
 
     /// Removes the pins captured when the person confirmed. Pins saved later, for example by a library
     /// opened in another window, are not part of the target and stay.
-    func removeSavedAudio(_ pins: Set<SavedAudioPin>) async throws {
+    /// `beforeRemoving` runs once no save can pin the targets any more and before any file is removed.
+    func removeSavedAudio(_ pins: Set<SavedAudioPin>, beforeRemoving: () -> Void = {}) async throws {
         guard !pins.isEmpty else { return }
-        try cancelSaves(covering: Set(pins.map(\.identity)))
-        try await waitForIdle(until: .now.advanced(by: .seconds(15)))
-        let requested = Set(saveRequests.filter { $0.state != .cancelled }.flatMap { $0.entries.map(\.sha256) })
-        let files = store
-        let cache = playbackCache.store
-        let protectedURL = playbackCache.protectedURL
-        try await CatalogStorage.shared.commit {
-            let database = try files.database()
-            let pinned = try database.removeAudioPins(pins)
-            let unused = Set(pins.map(\.hash)).subtracting(pinned).subtracting(requested)
-            try Self.discardAudio(unused, store: files, cache: cache, protectedURL: protectedURL, database: database)
-        }
+        let identities = Set(pins.map(\.identity))
+        let explicit = runningExplicitSave
+        discardingSaves = true
+        var failure: Error?
+        do {
+            for token in discardedDuringPreparation.keys { discardedDuringPreparation[token]?.formUnion(identities) }
+            let worker = saveWorker
+            if try dropSaves(covering: identities) {
+                // Waiting for the worker itself, not a flag, so a download that finishes now cannot pin afterwards.
+                stopSaveWorker()
+                await worker?.value
+            }
+            await operation?.value
+            beforeRemoving()
+            let requested = requestedAudio
+            let files = store
+            let cache = playbackCache.store
+            let protected = playbackCache.protectedPaths
+            let kept = try await CatalogStorage.shared.commit {
+                try Self.discard(pins, keeping: requested, store: files, cache: cache, protected: protected, database: files.database())
+            }
+            if !kept.isEmpty { failure = LocalMusicError.removalIncomplete }
+        } catch { failure = error }
+        discardingSaves = false
         onSaved?()
         await refreshSavedAudio()
-        resumeSaves()
+        resumeSaves(explicit: explicit)
+        if let failure { throw failure }
     }
 
-    /// Cancels save work for the given track and hash pairs in every library.
-    func cancelSaves(covering identities: Set<String>) throws {
+    /// Takes the given track and hash pairs out of every library's requests, including finished ones, so their
+    /// hashes no longer count as requested. Other items in the same request stay. Returns whether a pending
+    /// request changed, which means the running worker may be saving one of them.
+    func dropSaves(covering identities: Set<String>) throws -> Bool {
         var updated = saveRequests
-        var tracks = Set<String>()
+        var pendingChanged = false
         for index in updated.indices where updated[index].entries.contains(where: { identities.contains($0.trackSaveIdentity) }) {
-            tracks.formUnion(updated[index].entries.filter { identities.contains($0.trackSaveIdentity) }.map(\.track.id))
+            if updated[index].isPending { pendingChanged = true }
             let remaining = updated[index].entries.filter { !identities.contains($0.trackSaveIdentity) }
             if remaining.isEmpty {
                 updated[index].state = .cancelled
@@ -379,12 +421,8 @@ extension LocalTransfer {
                 updated[index].completed.formIntersection(remaining.map(\.trackSaveIdentity))
             }
         }
-        try persistSaves(updated)
-        for (scope, preparation) in preparingSaves where !preparation.tracks.isDisjoint(with: tracks) {
-            preparation.task.cancel()
-            preparingSaves.removeValue(forKey: scope)
-        }
-        stopSaveWorker()
+        if pendingChanged || updated.map(\.entries) != saveRequests.map(\.entries) { try persistSaves(updated) }
+        return pendingChanged
     }
 }
 

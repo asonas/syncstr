@@ -8,21 +8,44 @@ class PlaybackCache {
     private(set) var limitGB: Int
     private(set) var maintenance: Task<Void, Never>?
     private var maintenanceID = UUID()
+    /// Files between the start of their verification and the moment the player or a save protects them.
+    private var leases: [String: Int] = [:]
 
-    /// Every trim, including clearing, goes through this chain so two passes never walk the folder at once.
+    /// The playing file and every leased file. Trims and removals skip these paths.
+    var protectedPaths: Set<String> {
+        var paths = Set(leases.keys)
+        if let protectedURL { paths.insert(protectedURL.resolvingSymlinksInPath().path) }
+        return paths
+    }
+
+    func release(_ url: URL) {
+        let path = url.resolvingSymlinksInPath().path
+        guard let count = leases[path] else { return }
+        leases[path] = count > 1 ? count - 1 : nil
+    }
+
+    private func lease(_ url: URL) {
+        leases[url.resolvingSymlinksInPath().path, default: 0] += 1
+    }
+
+    /// Every trim, including clearing and making room for a download, goes through this chain so two passes
+    /// never walk the folder at once. The protected paths are read when the pass starts.
     @discardableResult
-    func requestTrim(after acquisition: Task<Void, Never>?, emptying: Bool = false,
+    func requestTrim(after acquisition: Task<Void, Never>?, emptying: Bool = false, incoming: UInt64? = nil,
                      onError: @escaping (Error) -> Void) -> Task<Void, Never> {
         let previous = maintenance
         let token = UUID()
-        maintenanceID = token
+        // Clearing and making room report to their own caller; a routine trim reports only if it is the latest.
+        let reportsOwnError = emptying || incoming != nil
+        if !reportsOwnError { maintenanceID = token }
         let task = Task { [weak self] in
             await previous?.value
             await acquisition?.value
             guard let self else { return }
-            do { try await Self.makeRoom(store: store, incoming: 0, limitGB: emptying ? 0 : limitGB, protectedURL: protectedURL) }
-            catch {
-                if maintenanceID == token || emptying { onError(error) }
+            do {
+                try await Self.makeRoom(store: store, incoming: incoming ?? 0, limitGB: emptying ? 0 : limitGB, protected: protectedPaths)
+            } catch {
+                if maintenanceID == token || reportsOwnError { onError(error) }
             }
         }
         maintenance = task
@@ -53,12 +76,25 @@ class PlaybackCache {
         try Self.verifiedFile(entry, store: store, diagnostic: diagnostic)
     }
 
+    /// A returned file stays leased until the caller passes it to `release(_:)`, so a trim cannot remove it
+    /// between verification and the player or save taking it over.
     func fileInBackground(_ entry: LocalEntry, diagnostic: PlaybackDiagnosticContext? = nil) async throws -> URL? {
         // A trim scheduled by stop() may be waiting for this acquisition.
         try Task.checkCancellation()
-        await maintenance?.value
-        try Task.checkCancellation()
-        return try await Self.verifyInBackground(entry, store: store, diagnostic: diagnostic)
+        let url = store.fileURL(entry)
+        lease(url)
+        do {
+            await maintenance?.value
+            try Task.checkCancellation()
+            guard let verified = try await Self.verifyInBackground(entry, store: store, diagnostic: diagnostic) else {
+                release(url)
+                return nil
+            }
+            return verified
+        } catch {
+            release(url)
+            throw error
+        }
     }
 
     @concurrent
@@ -103,21 +139,23 @@ class PlaybackCache {
     }
 
     func makeRoomInBackground(for entry: LocalEntry) async throws {
+        // Checked before joining the chain: stop() cancels the acquisition and then queues a trim that waits for it.
         try Task.checkCancellation()
-        await maintenance?.value
+        var failure: Error?
+        await requestTrim(after: nil, incoming: entry.track.size ?? 0) { failure = $0 }.value
         try Task.checkCancellation()
-        try await Self.makeRoom(store: store, incoming: entry.track.size ?? 0, limitGB: limitGB, protectedURL: protectedURL)
+        if let failure { throw failure }
     }
 
     @concurrent
-    private static func makeRoom(store: LocalMusicStore, incoming: UInt64, limitGB: Int, protectedURL: URL?) async throws {
+    private static func makeRoom(store: LocalMusicStore, incoming: UInt64, limitGB: Int, protected: Set<String>) async throws {
         try Task.checkCancellation()
         if incoming > 0 { try store.prepare() }
-        try trimFiles(store: store, incoming: incoming, limitGB: limitGB, protectedURL: protectedURL)
+        try trimFiles(store: store, incoming: incoming, limitGB: limitGB, protected: protected)
     }
 
     func trim(incoming: UInt64 = 0) throws {
-        try Self.trimFiles(store: store, incoming: incoming, limitGB: limitGB, protectedURL: protectedURL)
+        try Self.trimFiles(store: store, incoming: incoming, limitGB: limitGB, protected: protectedPaths)
     }
 
     /// Keeps the file that is playing now. Saved music lives in a different store and is not touched.
@@ -127,7 +165,7 @@ class PlaybackCache {
         if let failure { throw failure }
     }
 
-    nonisolated private static func trimFiles(store: LocalMusicStore, incoming: UInt64, limitGB: Int, protectedURL: URL?) throws {
+    nonisolated private static func trimFiles(store: LocalMusicStore, incoming: UInt64, limitGB: Int, protected: Set<String>) throws {
         try Task.checkCancellation()
         let directory = store.root
         guard FileManager.default.fileExists(atPath: directory.path) else { return }
@@ -145,7 +183,7 @@ class PlaybackCache {
         let budget = UInt64(limitGB) * 1_000_000_000
         for (url, size, _) in entries where total + incoming > budget {
             try Task.checkCancellation()
-            guard url.resolvingSymlinksInPath().path != protectedURL?.resolvingSymlinksInPath().path else { continue }
+            guard !protected.contains(url.resolvingSymlinksInPath().path) else { continue }
             do { try FileManager.default.removeItem(at: url) }
             catch CocoaError.fileNoSuchFile {}
             total -= size

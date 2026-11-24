@@ -21,15 +21,17 @@ struct LibraryCheck {
     }
 
     /// The fixture tracks are about 4 seconds long, so a wrap could come from playing to the end.
-    /// Pause first and require the player itself to reach the target, so a seek that does nothing fails.
+    /// Pause first and require the same player to reach the target, so a seek that does nothing fails.
+    /// pause() and resumePlayback() are explicit because togglePlayback() pauses while playback is only wanted.
     @MainActor
     static func seekNearEnd(_ library: Library, player: () -> AVPlayer) async throws {
         try await wait("Track was not ready to seek") { library.canSeek }
-        if library.playing { library.togglePlayback() }
+        library.pause()
         try await wait("Pause before seeking failed") { !library.playing }
+        let seeking = player()
         library.seek(to: 3.5)
-        try await wait("Seek did not reach the target") { abs(player().currentTime().seconds - 3.5) < 0.2 }
-        library.togglePlayback()
+        try await wait("Seek did not reach the target") { player() === seeking && abs(seeking.currentTime().seconds - 3.5) < 0.2 }
+        library.resumePlayback()
         try await wait("Playback did not resume after seeking") { library.playing }
     }
 

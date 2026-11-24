@@ -227,7 +227,13 @@ final class PlaybackDiagnostics: @unchecked Sendable {
         }
     }
 
-    func export(_ id: String) async -> String {
+    func export(_ id: String) async -> String { await export(id, requireRetained: false) ?? "" }
+
+    /// Returns nil when the selected attempt has already been dropped, so a copy does not report success
+    /// for a log that holds only the header.
+    func exportRetained(_ id: String) async -> String? { await export(id, requireRetained: true) }
+
+    private func export(_ id: String, requireRetained: Bool) async -> String? {
         await withCheckedContinuation { continuation in
             writer.async { [self] in
                 lock.lock(); let snapshot = traces; let failed = persistenceFailed; lock.unlock()
@@ -238,6 +244,10 @@ final class PlaybackDiagnostics: @unchecked Sendable {
                 while let current = next, visited.insert(current).inserted {
                     guard let trace = snapshot.first(where: { $0.id == current }) else { missing.append(current); break }
                     chain.append(trace); next = trace.retryOf
+                }
+                if requireRetained && chain.isEmpty {
+                    continuation.resume(returning: nil)
+                    return
                 }
                 let encoder = JSONEncoder()
                 encoder.outputFormatting = [.sortedKeys]
@@ -324,6 +334,7 @@ struct PlaybackDiagnosticCopyButton: View {
     let attemptID: String
     let recorder: PlaybackDiagnostics
     var title = "診断ログをコピー"
+    var onMissing: () -> Void = {}
     @State private var result: String?
     @State private var copying = false
 
@@ -333,7 +344,12 @@ struct PlaybackDiagnosticCopyButton: View {
                 copying = true
                 let selected = attemptID
                 Task {
-                    let json = await recorder.export(selected)
+                    guard let json = await recorder.exportRetained(selected) else {
+                        result = "この記録はもう残っていません"
+                        copying = false
+                        onMissing()
+                        return
+                    }
 #if os(macOS)
                     NSPasteboard.general.clearContents()
                     result = NSPasteboard.general.setString(json, forType: .string) ? "コピーしました" : "コピーできませんでした"
@@ -377,7 +393,7 @@ struct PlaybackDiagnosticList: View {
                             }
                         }
                         Spacer(minLength: 0)
-                        PlaybackDiagnosticCopyButton(attemptID: trace.id, recorder: recorder, title: "コピー")
+                        PlaybackDiagnosticCopyButton(attemptID: trace.id, recorder: recorder, title: "コピー") { Task { await load() } }
                             .accessibilityLabel("\(trace.title)の診断ログをコピー")
                     }
                 }

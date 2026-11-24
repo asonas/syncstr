@@ -142,7 +142,7 @@ final class Library: ObservableObject {
     private var playbackErrorObserver: NSObjectProtocol?
     private var seeking: UUID?
     private var restoredLibrary = false
-    private var restoringLibrary = false
+    private var restoreTask: Task<Void, Never>?
     private var restoreRequested = false
     private var catalogGeneration = UUID()
     private(set) var inventoryTask: Task<Void, Never>?
@@ -370,18 +370,26 @@ final class Library: ObservableObject {
 
     /// Going to the background cancels a running restore. A call that arrives while one runs is
     /// remembered, so a restore that ends unfinished runs again instead of waiting for the next call.
+    /// The restore runs in a task the library owns, so the view task that started it can end without
+    /// cancelling the retry.
     func restoreLibrary() async {
         transfer.connectionEvent("startup_restore_called")
-        if restoringLibrary {
+        if let restoreTask {
             restoreRequested = true
+            await restoreTask.value
             return
         }
         guard !restoredLibrary else {
             transfer.connectionEvent("startup_connect_skipped", fields: ["reason": "already_restored"])
             return
         }
-        restoringLibrary = true
-        defer { restoringLibrary = false }
+        let task = Task { [weak self] in _ = await self?.runRestore() }
+        restoreTask = task
+        await task.value
+    }
+
+    private func runRestore() async {
+        defer { restoreTask = nil }
         repeat {
             restoreRequested = false
             restoringSession = false
@@ -626,6 +634,8 @@ final class Library: ObservableObject {
                     guard let self, self.playbackRequest == request, self.wantsPlayback else { return }
                     self.playbackPreparation = phase
                 }
+                // A cached file stays leased until preparePlayer makes it the protected one.
+                defer { transfer.playbackCache.release(url) }
                 try Task.checkCancellation()
                 guard playbackRequest == request, wantsPlayback else { return }
                 preparePlayer(url, at: duration > 0 && position >= duration ? 0 : position)
@@ -957,9 +967,15 @@ final class Library: ObservableObject {
     }
 
     func removeAllSavedMusic(_ pins: Set<SavedAudioPin>) async {
-        if let current, pins.contains(where: { $0.track == current.id }) { stop() }
-        do { try await transfer.removeSavedAudio(pins) }
-        catch { message = error.localizedDescription }
+        do {
+            try await transfer.removeSavedAudio(pins) { [weak self] in
+                // Another library can play the same track ID with different audio; only the confirmed audio stops.
+                guard let self, let current,
+                      let hash = localCatalog?.entries.first(where: { $0.track.id == current.id })?.sha256,
+                      pins.contains(SavedAudioPin(track: current.id, hash: hash)) else { return }
+                stop()
+            }
+        } catch { message = error.localizedDescription }
     }
 
     func removeLocalCopies(_ confirmedTracks: [Track]) {
@@ -984,11 +1000,18 @@ final class Library: ObservableObject {
             let tracks = pendingLocalCopyRemovals.filter(canRemoveLocalCopy)
             try transfer.cancelSaves(containing: tracks)
             if let current, tracks.contains(where: { $0.id == current.id }) { stop() }
+            // One file that cannot be removed does not stop the others; its pin stays so it still shows as saved.
+            var failure: Error?
             for track in tracks {
-                guard let entry = try localStore.database().playbackEntry(track.id)?.entry else { throw LocalMusicError.invalidData }
-                try transfer.removeSavedCopy(entry)
+                do {
+                    guard let entry = try localStore.database().playbackEntry(track.id)?.entry else { throw LocalMusicError.invalidData }
+                    try transfer.removeSavedCopy(entry)
+                } catch LocalMusicError.transferBusy {
+                    throw LocalMusicError.transferBusy
+                } catch { failure = failure ?? error }
             }
             refreshLocalFiles()
+            if let failure { message = failure.localizedDescription }
         } catch LocalMusicError.transferBusy {
             return
         } catch { message = error.localizedDescription }

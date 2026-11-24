@@ -167,6 +167,127 @@ final class OfflineSaveTests: XCTestCase {
         XCTAssertEqual(library.tracks.count, entries.count)
     }
 
+    func testDeletingAllSavedMusicWaitsForASaveThatPinsAfterCancellation() async throws {
+        let (store, entries) = try fixture()
+        let transfer = try await hostTransfer(store)
+        let library = try XCTUnwrap(transfer.hostConnection?.library)
+        transfer.saveRequests = [OfflineSaveRequest(id: "track:track-1", library: library, entries: [entries[0]], state: .saving)]
+        // A download that has already written its file pins it even though the save was just cancelled.
+        transfer.saveWorker = Task {
+            await withCheckedContinuation { continuation in
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { continuation.resume() }
+            }
+            try? Data(repeating: 1, count: 1024).write(to: store.fileURL(entries[0]))
+            try? store.database().saveAudioPin(entries[0])
+        }
+        let pinning = transfer.saveWorker
+        try await transfer.removeSavedAudio([SavedAudioPin(track: entries[0].track.id, hash: entries[0].sha256)])
+        await pinning?.value
+        XCTAssertTrue(try store.database().savedAudioPinList().isEmpty)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: store.fileURL(entries[0]).path))
+    }
+
+    func testFileThatCannotBeDeletedKeepsItsPinForAnotherTry() async throws {
+        let (store, entries) = try fixture()
+        try Data(repeating: 1, count: 1024).write(to: store.fileURL(entries[0]))
+        try store.database().saveAudioPin(entries[0])
+        let transfer = try await hostTransfer(store)
+        let pin = SavedAudioPin(track: entries[0].track.id, hash: entries[0].sha256)
+        try FileManager.default.setAttributes([.posixPermissions: 0o555], ofItemAtPath: store.root.path)
+        do {
+            try await transfer.removeSavedAudio([pin])
+            XCTFail("Reported success while the file remained")
+        } catch LocalMusicError.removalIncomplete {}
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: store.root.path)
+        XCTAssertEqual(try store.database().savedAudioPinList(), [pin])
+        XCTAssertEqual(transfer.savedAudio.pins, [pin])
+        try await transfer.removeSavedAudio(transfer.savedAudio.pins)
+        XCTAssertTrue(try store.database().savedAudioPinList().isEmpty)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: store.fileURL(entries[0]).path))
+    }
+
+    func testDeletingAllSavedMusicKeepsOtherAlbumItemsAndTheManualSave() async throws {
+        let (store, entries) = try fixture()
+        try Data(repeating: 1, count: 1024).write(to: store.fileURL(entries[0]))
+        try store.database().saveAudioPin(entries[0])
+        let transfer = try await hostTransfer(store)
+        let library = try XCTUnwrap(transfer.hostConnection?.library)
+        try JSONEncoder().encode([OfflineSaveRequest(id: "album:a", library: library, entries: [entries[0], entries[1]])])
+            .write(to: store.root.appendingPathComponent("offline-saves.json"))
+        transfer.restoreSaves()
+        transfer.resumeSaves(explicit: "album:a")
+        XCTAssertEqual(transfer.runningExplicitSave, "album:a")
+        try await transfer.removeSavedAudio([SavedAudioPin(track: entries[0].track.id, hash: entries[0].sha256)])
+        XCTAssertEqual(transfer.saveRequests.first?.entries.map(\.track.id), [entries[1].track.id])
+        XCTAssertNotEqual(transfer.saveRequests.first?.state, .cancelled)
+        XCTAssertEqual(transfer.runningExplicitSave, "album:a", "The restarted save must stay a manual one")
+    }
+
+    func testSavePreparedDuringDeletionDoesNotSaveTheDeletedMusicAgain() async throws {
+        let (store, entries) = try fixture()
+        let transfer = try await hostTransfer(store)
+        let save = Task { await transfer.requestSave([entries[0].track], scope: "track:track-1") }
+        await Task.yield()
+        try await transfer.removeSavedAudio([SavedAudioPin(track: entries[0].track.id, hash: entries[0].sha256)])
+        await save.value
+        XCTAssertFalse(transfer.saveRequests.contains { $0.entries.contains { $0.track.id == entries[0].track.id } })
+        // A save requested after the deletion is a new request and goes ahead.
+        await transfer.requestSave([entries[0].track], scope: "track:track-1")
+        XCTAssertTrue(transfer.saveRequests.contains { $0.entries.contains { $0.track.id == entries[0].track.id } })
+    }
+
+    func testDeletingAllSavedMusicDoesNotWaitForAHostRefresh() async throws {
+        let (store, entries) = try fixture()
+        try Data(repeating: 1, count: 1024).write(to: store.fileURL(entries[0]))
+        try store.database().saveAudioPin(entries[0])
+        let transfer = try await hostTransfer(store)
+        transfer.busy = true
+        defer { transfer.busy = false }
+        try await transfer.removeSavedAudio([SavedAudioPin(track: entries[0].track.id, hash: entries[0].sha256)])
+        XCTAssertTrue(try store.database().savedAudioPinList().isEmpty)
+    }
+
+    func testDeletingSavedMusicStopsPlaybackOnlyForTheConfirmedAudio() async throws {
+        let (store, entries) = try fixture()
+        try Data(repeating: 1, count: 1024).write(to: store.fileURL(entries[0]))
+        try store.database().saveAudioPin(entries[0])
+        let library = makeLibrary(localStore: store)
+        await library.openSavedLocalLibrary()
+        library.current = library.tracks.first { $0.id == entries[0].track.id }
+        library.playing = true
+        // The same track ID with other audio, as another library might have.
+        await library.removeAllSavedMusic([SavedAudioPin(track: entries[0].track.id, hash: String(repeating: "f", count: 64))])
+        XCTAssertTrue(library.playing)
+        await library.removeAllSavedMusic([SavedAudioPin(track: entries[0].track.id, hash: entries[0].sha256)])
+        XCTAssertFalse(library.playing)
+    }
+
+    func testRestoreRetriesAfterTheTaskThatStartedItIsCancelled() async throws {
+        let (store, entries) = try fixture()
+        _ = try store.database().forgetHost()
+        let library = makeLibrary(localStore: store)
+        let first = Task { await library.restoreLibrary() }
+        await Task.yield()
+        library.transfer.cancel()
+        // The window task that started the restore ends; a later call must still finish the restore.
+        first.cancel()
+        await library.restoreLibrary()
+        await first.value
+        XCTAssertEqual(library.localCatalog?.source, .host)
+        XCTAssertEqual(library.tracks.count, entries.count)
+    }
+
+    func testUsageCountsEveryFileOfTheSameAudio() async throws {
+        let (store, entries) = try fixture()
+        let bytes = Data(repeating: 1, count: 1024)
+        try bytes.write(to: store.fileURL(entries[0]))
+        try bytes.write(to: store.root.appendingPathComponent(entries[0].sha256 + ".audio"))
+        try store.database().saveAudioPin(entries[0])
+        let transfer = try await hostTransfer(store)
+        await transfer.refreshSavedAudio()
+        XCTAssertEqual(transfer.savedAudio.bytes, 2048)
+    }
+
     func testBusyTransferReportsRemovalBusyInsteadOfInvalidData() throws {
         let (store, entries) = try fixture(host: false)
         let transfer = makeTransfer(store: store)

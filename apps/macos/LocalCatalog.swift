@@ -130,11 +130,13 @@ enum LocalMusicError: LocalizedError {
     case invalidData, disconnected
     case backgroundAcquisition
     case transferBusy
+    case removalIncomplete
 
     var errorDescription: String? {
         switch self {
         case .invalidData: "音楽の情報を確認できませんでした。もう一度転送してください。"
         case .transferBusy: "転送中のため保存を解除できません。転送が終わってからもう一度お試しください。"
+        case .removalIncomplete: "一部の保存を削除できませんでした。もう一度お試しください。"
         case .disconnected: "接続が切れました。保存済みの音楽は引き続き聴けます。接続を確認して再試行してください。"
         case .backgroundAcquisition: "バックグラウンドでは次の音源を取得できません。アプリを開いて再試行してください。"
         }

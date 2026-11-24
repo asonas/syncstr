@@ -9,6 +9,15 @@ private final class CyclicDiagnosticError: NSError, @unchecked Sendable {
 struct PlaybackDiagnosticTests {
     private func root() -> URL { FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString) }
 
+    @Test func copyingAnAttemptThatWasDroppedReportsNothingToCopy() async throws {
+        let directory = root()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let recorder = PlaybackDiagnostics(root: directory.appendingPathComponent("diagnostics"))
+        let attempt = recorder.begin(title: "Fixture", track: "one", sha256: nil, library: nil)
+        #expect(await recorder.exportRetained(attempt.id) != nil)
+        #expect(await recorder.exportRetained("dropped-attempt") == nil)
+    }
+
     @Test func databaseContentionExportsOperationWithoutSQLOrPaths() async throws {
         let directory = root()
         defer { try? FileManager.default.removeItem(at: directory) }

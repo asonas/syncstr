@@ -216,6 +216,23 @@ final class PlayerInteractionTests: XCTestCase {
         XCTAssertEqual(cache.limitGB, 10)
     }
 
+    func testVerifiedCacheFileSurvivesTrimsUntilReleased() async throws {
+        let cache = PlaybackCache(root: root.appendingPathComponent("cache"))
+        try cache.store.prepare()
+        let bytes = Data(repeating: 7, count: 6)
+        let entry = LocalEntry(track: Track(id: "cached", title: "Cached", artist: "Artist", suffix: "wav", size: UInt64(bytes.count)),
+                               sha256: LocalMusicStore.digest(bytes), artwork: nil)
+        try bytes.write(to: cache.store.fileURL(entry))
+        let verified = try await cache.fileInBackground(entry)
+        let url = try XCTUnwrap(verified)
+        // The player has not protected the file yet.
+        try await cache.clear()
+        XCTAssertTrue(FileManager.default.fileExists(atPath: url.path))
+        cache.release(url)
+        try await cache.clear()
+        XCTAssertFalse(FileManager.default.fileExists(atPath: url.path))
+    }
+
     func testBackgroundAcquisitionStopsUntilExplicitForegroundRetry() async throws {
         let library = try library()
         library.play(library.tracks[0], in: library.tracks)
