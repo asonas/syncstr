@@ -60,7 +60,6 @@ extension CatalogDatabase {
 struct SavedAudioPin: Hashable, Sendable {
     let track: String
     let hash: String
-    var identity: String { track + ":" + hash }
 }
 
 struct CatalogSnapshot {

@@ -81,9 +81,9 @@ final class LocalTransfer: ObservableObject {
     var saveSource: (any LibrarySource)?
     var saveGeneration = UUID()
     var savesBackgrounded = false
-    var discardingSaves = false
-    var runningExplicitSave: String?
-    var discardedDuringPreparation: [UUID: Set<String>] = [:]
+    var removingAllSaves: Task<Void, Error>?
+    /// Tests pause here to hold a restore before its first storage read.
+    var beforeRestoringHost: (@MainActor () async -> Void)?
     var savePathIsCellular: Bool { savePath?.currentPath.usesInterfaceType(.cellular) == true }
     var permitsAutomaticSaveAudio: Bool { permitsAutomaticAudio }
     private let savePath: NWPathMonitor?
@@ -447,6 +447,7 @@ final class LocalTransfer: ObservableObject {
     @discardableResult
     func restoreHost() async -> Bool {
         let attempt = generation
+        await beforeRestoringHost?()
         let files = store
         do {
             automaticCellular = try await CatalogStorage.shared.perform { try files.database().automaticCellular() }
@@ -554,6 +555,11 @@ final class LocalTransfer: ObservableObject {
             throw LocalMusicError.backgroundAcquisition
         }
         diagnostic?.record("local", "acquisition_required", fields: ["reason": "no_usable_local_file"])
+        // Held from before the download until the caller takes the verified file, so a trim cannot remove
+        // the file between its placement and the lease that fileInBackground takes.
+        let destination = playbackCache.store.fileURL(entry)
+        playbackCache.lease(destination)
+        defer { playbackCache.release(destination) }
         do { try await playbackCache.makeRoomInBackground(for: entry) }
         catch { diagnostic?.failure("cache_capacity", error); throw error }
         guard hostConnection?.address == selectedHost?.address, selectedHost?.library == libraryID,

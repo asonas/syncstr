@@ -966,14 +966,13 @@ final class Library: ObservableObject {
         return pendingLocalCopyRemovals.contains { $0.id == track.id }
     }
 
-    func removeAllSavedMusic(_ pins: Set<SavedAudioPin>) async {
+    func removeAllSavedMusic() async {
         do {
-            try await transfer.removeSavedAudio(pins) { [weak self] in
-                // Another library can play the same track ID with different audio; only the confirmed audio stops.
-                guard let self, let current,
-                      let hash = localCatalog?.entries.first(where: { $0.track.id == current.id })?.sha256,
-                      pins.contains(SavedAudioPin(track: current.id, hash: hash)) else { return }
-                stop()
+            try await transfer.removeAllSavedAudio { [weak self] in
+                guard let self else { return }
+                // A track being prepared may be reading from the saved folder too.
+                let folder = transfer.playbackCache.protectedURL?.deletingLastPathComponent().resolvingSymlinksInPath()
+                if loading || folder == localStore.root.resolvingSymlinksInPath() { stop() }
             }
         } catch { message = error.localizedDescription }
     }
@@ -999,16 +998,22 @@ final class Library: ObservableObject {
         do {
             let tracks = pendingLocalCopyRemovals.filter(canRemoveLocalCopy)
             try transfer.cancelSaves(containing: tracks)
-            if let current, tracks.contains(where: { $0.id == current.id }) { stop() }
-            // One file that cannot be removed does not stop the others; its pin stays so it still shows as saved.
             var failure: Error?
+            var entries: [LocalEntry] = []
             for track in tracks {
                 do {
                     guard let entry = try localStore.database().playbackEntry(track.id)?.entry else { throw LocalMusicError.invalidData }
-                    try transfer.removeSavedCopy(entry)
-                } catch LocalMusicError.transferBusy {
-                    throw LocalMusicError.transferBusy
+                    entries.append(entry)
                 } catch { failure = failure ?? error }
+            }
+            // The player may still hold audio from before a catalog update, so compare the file it plays.
+            let playing = transfer.playbackCache.protectedURL?.deletingPathExtension().lastPathComponent
+            if entries.contains(where: { $0.sha256 == playing }) || (loading && tracks.contains { $0.id == current?.id }) { stop() }
+            // One file that cannot be removed does not stop the others; its pin stays so it still shows as saved.
+            for entry in entries {
+                do { try transfer.removeSavedCopy(entry) }
+                catch LocalMusicError.transferBusy { throw LocalMusicError.transferBusy }
+                catch { failure = failure ?? error }
             }
             refreshLocalFiles()
             if let failure { message = failure.localizedDescription }

@@ -687,6 +687,30 @@ final class HostAPITests: XCTestCase {
         XCTAssertEqual(try Data(contentsOf: file), Data("abc".utf8))
     }
 
+    func testDownloadDestinationStaysReservedUntilPlaybackTakesTheFile() async throws {
+        let (catalog, _, _) = try fixture()
+        let started = expectation(description: "audio request held")
+        let gate = HostResponseGate(started: started)
+        let files = store()
+        let transfer = makeTransfer(store: files, hostConfiguration: configuration { request in
+            request.url?.lastPathComponent == "catalog" ? catalog : HostReply(data: Data("abc".utf8), gate: gate)
+        })
+        let address = try HostAddress("https://first.example.test")
+        _ = try await transfer.confirmHost(address, information: hostInformation(address))
+        let entry = try XCTUnwrap(files.load()?.entries.first)
+        let playback = Task { try await transfer.playbackFile(entry.track) }
+        await fulfillment(of: [started], timeout: 3)
+        defer { gate.release() }
+        let destination = transfer.playbackCache.store.fileURL(entry).resolvingSymlinksInPath().path
+        XCTAssertTrue(transfer.playbackCache.protectedPaths.contains(destination))
+        gate.release()
+        let file = try await playback.value
+        // Only the lease handed to the caller remains.
+        XCTAssertEqual(transfer.playbackCache.protectedPaths, [file.resolvingSymlinksInPath().path])
+        transfer.playbackCache.release(file)
+        XCTAssertTrue(transfer.playbackCache.protectedPaths.isEmpty)
+    }
+
     func testFirstConfirmationRejectsMismatchedCatalogWithoutRememberingHost() async throws {
         let (catalog, _, _) = try fixture()
         let files = store()

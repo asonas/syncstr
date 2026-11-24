@@ -24,7 +24,7 @@ class PlaybackCache {
         leases[path] = count > 1 ? count - 1 : nil
     }
 
-    private func lease(_ url: URL) {
+    func lease(_ url: URL) {
         leases[url.resolvingSymlinksInPath().path, default: 0] += 1
     }
 

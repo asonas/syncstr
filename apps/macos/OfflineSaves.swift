@@ -47,11 +47,7 @@ extension LocalTransfer {
         let store = store
         let preparation = Task { try await store.snapshotInBackground() }
         preparingSaves[scope] = (token, ids, preparation)
-        discardedDuringPreparation[token] = []
-        defer {
-            if preparingSaves[scope]?.token == token { preparingSaves.removeValue(forKey: scope) }
-            discardedDuringPreparation.removeValue(forKey: token)
-        }
+        defer { if preparingSaves[scope]?.token == token { preparingSaves.removeValue(forKey: scope) } }
         do {
             let snapshot = try await withTaskCancellationHandler {
                 try await preparation.value
@@ -62,12 +58,14 @@ extension LocalTransfer {
             guard catalog.supportsOfflineSaves else { return }
             try Task.checkCancellation()
             guard preparingSaves[scope]?.token == token else { return }
-            var entries = catalog.entries.filter { ids.contains($0.track.id) }
+            let entries = catalog.entries.filter { ids.contains($0.track.id) }
             guard entries.count == ids.count, !entries.isEmpty else { throw LocalMusicError.invalidData }
-            // Saved music deleted while the catalog was read is not saved again by this older request.
-            let discarded = discardedDuringPreparation[token] ?? []
-            entries.removeAll { discarded.contains($0.trackSaveIdentity) }
-            guard !entries.isEmpty else { return }
+            // A save asked for while everything is being removed is queued after the removal.
+            if let removal = removingAllSaves {
+                _ = await removal.result
+                try Task.checkCancellation()
+                guard preparingSaves[scope]?.token == token else { return }
+            }
             stopSaveWorker()
             var updated = saveRequests.filter { $0.library != catalog.id || $0.id != scope }
             updated.append(OfflineSaveRequest(id: scope, library: catalog.id, entries: entries))
@@ -165,12 +163,11 @@ extension LocalTransfer {
     }
 
     func resumeSaves(explicit: String? = nil) {
-        guard !retainsHostCatalog, !savesBackgrounded, !discardingSaves, saveWorker == nil,
+        guard !retainsHostCatalog, !savesBackgrounded, removingAllSaves == nil, saveWorker == nil,
               saveRequests.contains(where: { (hostConnection == nil || $0.library == hostConnection?.library) && $0.isPending }) else { return }
         saveRetry?.cancel()
         saveRetry = nil
         let token = saveGeneration
-        runningExplicitSave = explicit
         saveWorker = Task { [weak self] in
             guard let self else { return }
             var snapshotReadFailed = false
@@ -178,7 +175,6 @@ extension LocalTransfer {
             defer {
                 if saveGeneration == token {
                     saveWorker = nil
-                    runningExplicitSave = nil
                     if saveRequests.contains(where: { (snapshotReadFailed || $0.library == processableLibrary) && $0.isPending }) {
                         let deadline = hostConnection.flatMap { self.hostAudioGate.deadline(for: $0.address.origin) }
                         let interval = saveRetryInterval
@@ -237,13 +233,12 @@ extension LocalTransfer {
                                 continue
                             }
                             let cached = try await playbackCache.fileInBackground(entry)
+                            // Released on every exit from this entry, including cancellation just below.
+                            defer { if let cached { playbackCache.release(cached) } }
                             try Task.checkCancellation()
                             guard saveGeneration == token else { return }
                             var savedFromCache = false
-                            if let cached {
-                                defer { playbackCache.release(cached) }
-                                savedFromCache = try await protectCachedFile(cached, entry: entry)
-                            }
+                            if let cached { savedFromCache = try await protectCachedFile(cached, entry: entry) }
                             if !savedFromCache {
                                 try Task.checkCancellation()
                                 guard saveGeneration == token else { return }
@@ -318,20 +313,26 @@ struct SavedAudioSummary: Equatable, Sendable {
 extension LocalMusicStore {
     static let audioExtensions: Set<String> = ["mp3", "m4a", "aac", "flac", "wav", "aiff", "aif", "alac", "audio"]
 
-    func audioFiles(for hashes: Set<String>) -> [String: [URL]] {
-        guard !hashes.isEmpty else { return [:] }
-        let urls = (try? FileManager.default.contentsOfDirectory(at: root, includingPropertiesForKeys: [.fileSizeKey])) ?? []
+    /// Every audio file in the folder by hash, or only those of `hashes`. A missing folder holds no files;
+    /// any other listing failure throws, so a caller never mistakes an unreadable folder for an empty one.
+    func audioFiles(for hashes: Set<String>? = nil) throws -> [String: [URL]] {
+        if hashes?.isEmpty == true { return [:] }
+        let urls: [URL]
+        do { urls = try FileManager.default.contentsOfDirectory(at: root, includingPropertiesForKeys: [.fileSizeKey]) }
+        catch CocoaError.fileReadNoSuchFile { return [:] }
+        catch CocoaError.fileNoSuchFile { return [:] }
         var files: [String: [URL]] = [:]
         for url in urls where Self.audioExtensions.contains(url.pathExtension) {
             let hash = url.deletingPathExtension().lastPathComponent
-            if hashes.contains(hash) { files[hash, default: []].append(url) }
+            guard SHA256Hex.isValid(hash), hashes?.contains(hash) ?? true else { continue }
+            files[hash, default: []].append(url)
         }
         return files
     }
 
     func savedAudioSummary() throws -> SavedAudioSummary {
         let pins = try database().savedAudioPinList()
-        let files = audioFiles(for: Set(pins.map(\.hash)))
+        let files = try audioFiles(for: Set(pins.map(\.hash)))
         let bytes = files.values.joined().reduce(Int64(0)) { total, url in
             total + Int64((try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0)
         }
@@ -341,13 +342,13 @@ extension LocalMusicStore {
 
 extension LocalTransfer {
     /// Removes the files before the pins. A pin whose file could not be removed stays, so the saved music
-    /// keeps showing as saved and a later delete can try again. Returns those pins.
+    /// keeps showing as saved and a later removal can try again. Returns those pins.
     nonisolated static func discard(_ pins: Set<SavedAudioPin>, keeping requested: Set<String>, store: LocalMusicStore,
                                     cache: LocalMusicStore, protected: Set<String>, database: CatalogDatabase) throws -> Set<SavedAudioPin> {
         let held = Set(try database.savedAudioPinList().subtracting(pins).map(\.hash)).union(requested)
         let unused = Set(pins.map(\.hash)).subtracting(held)
         var failed = Set<String>()
-        for (hash, urls) in store.audioFiles(for: unused).merging(cache.audioFiles(for: unused), uniquingKeysWith: +) {
+        for (hash, urls) in try store.audioFiles(for: unused).merging(try cache.audioFiles(for: unused), uniquingKeysWith: +) {
             for url in urls where !protected.contains(url.resolvingSymlinksInPath().path) {
                 do { try FileManager.default.removeItem(at: url) }
                 catch CocoaError.fileNoSuchFile {}
@@ -360,6 +361,24 @@ extension LocalTransfer {
         return kept
     }
 
+    /// Removes every saved audio file in the saved folder, then the pins of the files that are gone.
+    /// Returns the hashes whose files stayed. The playback cache and artwork are not touched.
+    nonisolated static func discardAll(store: LocalMusicStore, protected: Set<String>, database: CatalogDatabase) throws -> Set<String> {
+        let files = try store.audioFiles()
+        var failed = Set<String>()
+        for (hash, urls) in files {
+            for url in urls {
+                if protected.contains(url.resolvingSymlinksInPath().path) { failed.insert(hash); continue }
+                do { try FileManager.default.removeItem(at: url) }
+                catch CocoaError.fileNoSuchFile {}
+                catch { failed.insert(hash) }
+            }
+        }
+        _ = try database.removeAudioPins(try database.savedAudioPinList().filter { !failed.contains($0.hash) })
+        for hash in Set(files.keys).subtracting(failed) { try database.forgetAudio(hash: hash) }
+        return failed
+    }
+
     /// Hashes that a save still in the queue can reuse.
     var requestedAudio: Set<String> {
         Set(saveRequests.filter { $0.state != .cancelled }.flatMap { $0.entries.map(\.sha256) })
@@ -370,59 +389,45 @@ extension LocalTransfer {
         if let summary = try? await CatalogStorage.shared.perform({ try files.savedAudioSummary() }) { savedAudio = summary }
     }
 
-    /// Removes the pins captured when the person confirmed. Pins saved later, for example by a library
-    /// opened in another window, are not part of the target and stay.
-    /// `beforeRemoving` runs once no save can pin the targets any more and before any file is removed.
-    func removeSavedAudio(_ pins: Set<SavedAudioPin>, beforeRemoving: () -> Void = {}) async throws {
-        guard !pins.isEmpty else { return }
-        let identities = Set(pins.map(\.identity))
-        let explicit = runningExplicitSave
-        discardingSaves = true
-        var failure: Error?
-        do {
-            for token in discardedDuringPreparation.keys { discardedDuringPreparation[token]?.formUnion(identities) }
-            let worker = saveWorker
-            if try dropSaves(covering: identities) {
-                // Waiting for the worker itself, not a flag, so a download that finishes now cannot pin afterwards.
-                stopSaveWorker()
-                await worker?.value
-            }
-            await operation?.value
-            beforeRemoving()
-            let requested = requestedAudio
-            let files = store
-            let cache = playbackCache.store
-            let protected = playbackCache.protectedPaths
-            let kept = try await CatalogStorage.shared.commit {
-                try Self.discard(pins, keeping: requested, store: files, cache: cache, protected: protected, database: files.database())
-            }
-            if !kept.isEmpty { failure = LocalMusicError.removalIncomplete }
-        } catch { failure = error }
-        discardingSaves = false
+    /// Removes every save on this device: the queue, the pins and the saved files.
+    /// A second call while one runs waits for it, so no save can start between them.
+    /// `beforeRemoving` runs once no save is running and before any file is removed.
+    func removeAllSavedAudio(beforeRemoving: @escaping @MainActor () -> Void = {}) async throws {
+        if let running = removingAllSaves { return try await running.value }
+        let task = Task { @MainActor in try await self.discardAllSaves(beforeRemoving: beforeRemoving) }
+        removingAllSaves = task
+        let result = await task.result
+        removingAllSaves = nil
         onSaved?()
         await refreshSavedAudio()
-        resumeSaves(explicit: explicit)
-        if let failure { throw failure }
+        resumeSaves()
+        try result.get()
     }
 
-    /// Takes the given track and hash pairs out of every library's requests, including finished ones, so their
-    /// hashes no longer count as requested. Other items in the same request stay. Returns whether a pending
-    /// request changed, which means the running worker may be saving one of them.
-    func dropSaves(covering identities: Set<String>) throws -> Bool {
-        var updated = saveRequests
-        var pendingChanged = false
-        for index in updated.indices where updated[index].entries.contains(where: { identities.contains($0.trackSaveIdentity) }) {
-            if updated[index].isPending { pendingChanged = true }
-            let remaining = updated[index].entries.filter { !identities.contains($0.trackSaveIdentity) }
-            if remaining.isEmpty {
-                updated[index].state = .cancelled
-            } else {
-                updated[index].entries = remaining
-                updated[index].completed.formIntersection(remaining.map(\.trackSaveIdentity))
-            }
+    private func discardAllSaves(beforeRemoving: @MainActor () -> Void) async throws {
+        cancelSavePreparations()
+        let worker = saveWorker
+        stopSaveWorker()
+        // Waiting for the worker itself, not a flag: a download finishing now pins its file before the removal.
+        await worker?.value
+        await operation?.value
+        beforeRemoving()
+        let files = store
+        let protected = playbackCache.protectedPaths
+        let failed = try await CatalogStorage.shared.commit {
+            try Self.discardAll(store: files, protected: protected, database: files.database())
         }
-        if pendingChanged || updated.map(\.entries) != saveRequests.map(\.entries) { try persistSaves(updated) }
-        return pendingChanged
+        // A request stays only for files that could not be removed, so they can be removed again later.
+        let kept = saveRequests.compactMap { request -> OfflineSaveRequest? in
+            var request = request
+            request.entries = request.entries.filter { failed.contains($0.sha256) }
+            guard !request.entries.isEmpty else { return nil }
+            request.completed.formIntersection(request.entries.map(\.trackSaveIdentity))
+            return request
+        }
+        // The queue file sits in the same folder; when nothing could be removed, writing it would fail the same way.
+        if kept.map(\.entries) != saveRequests.map(\.entries) { try persistSaves(kept) }
+        if !failed.isEmpty { throw LocalMusicError.removalIncomplete }
     }
 }
 

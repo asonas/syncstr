@@ -370,10 +370,13 @@ struct PlaybackDiagnosticList: View {
     let recorder: PlaybackDiagnostics
     @State private var traces: [PlaybackDiagnosticTrace] = []
     @State private var persistenceFailed = false
+    /// Kept here because the row that reported it leaves the list when the list reloads.
+    @State private var missing: String?
 
     var body: some View {
         Form {
             Section {
+                if let missing { Text(missing).foregroundStyle(.secondary) }
                 if traces.isEmpty {
                     Text("再生の記録はまだありません。").foregroundStyle(.secondary)
                 }
@@ -393,7 +396,10 @@ struct PlaybackDiagnosticList: View {
                             }
                         }
                         Spacer(minLength: 0)
-                        PlaybackDiagnosticCopyButton(attemptID: trace.id, recorder: recorder, title: "コピー") { Task { await load() } }
+                        PlaybackDiagnosticCopyButton(attemptID: trace.id, recorder: recorder, title: "コピー") {
+                            missing = "「\(trace.title)」の記録はもう残っていません"
+                            Task { await load() }
+                        }
                             .accessibilityLabel("\(trace.title)の診断ログをコピー")
                     }
                 }

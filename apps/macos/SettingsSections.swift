@@ -11,7 +11,7 @@ struct LibrarySettingsSection: View {
 
 struct SavedMusicSettingsSection: View {
     @ObservedObject var library: Library
-    @State private var removal: Set<SavedAudioPin>?
+    @State private var confirming = false
 
     private var saved: SavedAudioSummary { library.transfer.savedAudio }
 
@@ -22,16 +22,13 @@ struct SavedMusicSettingsSection: View {
                                                        set: library.transfer.setAutomaticCellular))
 #endif
             LabeledContent("使用量", value: ByteCountFormatter.string(fromByteCount: saved.bytes, countStyle: .decimal))
-            // The target is fixed here, so a library switched while the alert is open cannot change it.
-            Button("保存した音楽をすべて削除", role: .destructive) { removal = saved.pins }
+            Button("保存した音楽をすべて削除", role: .destructive) { confirming = true }
                 .disabled(saved.pins.isEmpty)
-                .alert("保存した音楽をすべて削除しますか？", isPresented: Binding(
-                    get: { removal != nil }, set: { if !$0 { removal = nil } }
-                ), presenting: removal) { pins in
+                .alert("保存した音楽をすべて削除しますか？", isPresented: $confirming) {
                     Button("キャンセル", role: .cancel) {}
-                    Button("すべて削除", role: .destructive) { Task { await library.removeAllSavedMusic(pins) } }
-                } message: { pins in
-                    Text("\(pins.count)曲をこの端末から削除します。再生中の曲は停止します。ホストのライブラリには残ります。")
+                    Button("すべて削除", role: .destructive) { Task { await library.removeAllSavedMusic() } }
+                } message: {
+                    Text("\(saved.pins.count)曲をこの端末から削除します。再生中の曲は停止します。ホストのライブラリには残ります。")
                 }
         }
         .task { await library.transfer.refreshSavedAudio() }
