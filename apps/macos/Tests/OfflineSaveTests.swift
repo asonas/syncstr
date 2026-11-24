@@ -230,11 +230,12 @@ final class OfflineSaveTests: XCTestCase {
         let blocker = Task.detached { try await CatalogStorage.shared.perform { entered.signal(); hold.wait() } }
         // The save starts only once the queue is held; otherwise its read can finish before the removal.
         let holding = await Task.detached { entered.wait(timeout: .now() + 15) }.value
-        XCTAssertEqual(holding, .success)
+        guard holding == .success else { return XCTFail("The catalog queue was not held") }
         let save = Task { await transfer.requestSave([entries[0].track], scope: "track:track-1") }
         try await waitFor { !transfer.preparingSaves.isEmpty }
         let removal = Task { try await transfer.removeAllSavedAudio() }
-        try await Task.sleep(for: .milliseconds(100))
+        // The queue stays held until the removal has dropped the preparation, so a later request cannot hide a missing cancel.
+        try await waitFor { transfer.preparingSaves.isEmpty }
         hold.signal()
         try await blocker.value
         try await removal.value
