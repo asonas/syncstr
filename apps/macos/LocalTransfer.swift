@@ -36,9 +36,6 @@ final class LocalTransfer: ObservableObject {
         }
     }
     private var idleWaiters: [UUID: CheckedContinuation<Void, Error>] = [:]
-    @Published var completed = 0
-    @Published var total = 0
-    @Published var progress = 0.0
     @Published var connected = false {
         didSet {
             if oldValue && !connected {
@@ -46,7 +43,6 @@ final class LocalTransfer: ObservableObject {
             }
         }
     }
-    @Published private(set) var activeTrack: String?
     var onCatalog: ((PreparedLocalCatalog) throws -> Void)?
     var onSaved: (() -> Void)?
     private let diagnostics: PlaybackDiagnostics?
@@ -405,7 +401,6 @@ final class LocalTransfer: ObservableObject {
     }
 
     lazy var playbackCache = PlaybackCache(root: store.root.appendingPathComponent("playback-cache"))
-    private(set) var operation: Task<Void, Never>?
     private var catalog: LocalCatalog?
     private var generation = UUID()
     var store: LocalMusicStore
@@ -495,7 +490,6 @@ final class LocalTransfer: ObservableObject {
         let worker = saveWorker
         let retry = saveRetry
         let refresh = hostOperation?.task
-        let active = operation
         let artwork = artworkSource
         setSavesBackgrounded(true)
         cancelSavePreparations()
@@ -504,7 +498,6 @@ final class LocalTransfer: ObservableObject {
         await worker?.value
         await retry?.value
         _ = await refresh?.result
-        await active?.value
         await artwork?.waitForArtwork()
     }
 
@@ -517,12 +510,9 @@ final class LocalTransfer: ObservableObject {
     private func cancelActiveConnection(reason: String) {
         connectionEvent("cancel", outcome: connected ? "disconnected" : "observed", fields: ["reason": reason])
         generation = UUID()
-        operation?.cancel()
-        operation = nil
         if hostConnection != nil { artworkSource?.stop(); artworkSource = nil }
         connected = false
         busy = false
-        activeTrack = nil
     }
 
     func playbackFile(_ track: Track, diagnostic: PlaybackDiagnosticContext? = nil,
@@ -613,59 +603,4 @@ final class LocalTransfer: ObservableObject {
             guard generation == attempt else { throw CancellationError() }
         }
     }
-
-    func copy(_ tracks: [Track]) { copyFromLibrarySource(tracks) }
-
-    private func copyFromLibrarySource(_ tracks: [Track]) {
-        guard !busy else { return }
-        let attempt = generation
-        guard let source = makeLibrarySource() else { return }
-
-        busy = true; completed = 0; total = tracks.count; progress = 0
-        operation = Task {
-            defer {
-                source.stop()
-                if generation == attempt { busy = false; activeTrack = nil }
-            }
-            do {
-                let saved = try store.load()
-                for track in tracks {
-                    try Task.checkCancellation()
-                    guard let entry = saved?.entries.first(where: { $0.track.id == track.id }) else { throw LocalMusicError.invalidData }
-                    let files = store
-                    var savedLocally = try await CatalogStorage.shared.perform {
-                        try files.verifiedFile(entry, host: true, inventory: files.database(), requireHash: true) != nil
-                    }
-                    if !savedLocally, let cached = try await playbackCache.fileInBackground(entry) {
-                        defer { playbackCache.release(cached) }
-                        savedLocally = try await CatalogStorage.shared.perform {
-                            try files.importCachedFile(cached, entry: entry, host: true)
-                        }
-                    }
-                    try Task.checkCancellation()
-                    guard generation == attempt else { return }
-                    if savedLocally {
-                        try files.database().saveAudioPin(entry)
-                        onSaved?()
-                        completed += 1
-                        continue
-                    }
-                    activeTrack = track.id
-                    status = "「\(track.title)」を保存中…"
-                    try await source.download(entry, cache: nil, diagnostic: nil) { fraction in
-                        self.progress = (Double(self.completed) + fraction) / Double(max(1, self.total))
-                    }
-                    try Task.checkCancellation()
-                    guard generation == attempt else { return }
-                    completed += 1
-                    onSaved?()
-                }
-                progress = 1
-                status = "\(completed)曲を保存しました。オフラインでも聴けます。"
-            } catch {
-                if generation == attempt { status = error.localizedDescription }
-            }
-        }
-    }
-
 }

@@ -410,7 +410,6 @@ extension LocalTransfer {
         stopSaveWorker()
         // Waiting for the worker itself, not a flag: a download finishing now pins its file before the removal.
         await worker?.value
-        await operation?.value
         beforeRemoving()
         let files = store
         let protected = playbackCache.protectedPaths
