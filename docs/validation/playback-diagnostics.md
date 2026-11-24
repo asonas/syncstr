@@ -2,7 +2,7 @@
 
 ## Delivery scope
 
-The macOS source implements local playback-attempt recording and JSONL copying beside playback errors and in Settings > Playback Diagnostics. Both Debug and TestFlight use the same source; recording has no Debug-only compilation gate. This does not establish TestFlight distribution or reproduction of the reported tracks.
+The macOS source implements local playback-attempt recording and JSONL copying beside playback errors and in Settings > Playback Diagnostics. Settings lists recent attempts, newest first, each with its own copy action. Both Debug and TestFlight use the same source; recording has no Debug-only compilation gate. This does not establish TestFlight distribution or reproduction of the reported tracks.
 
 The recorder persists beneath the local music store in `PlaybackDiagnostics/attempts.json`. It retains up to 20 attempts and 5 MB, with a 200 KB per-attempt event budget to bound a noisy attempt. Truncation retains outcome, last stage, omitted count and omitted counts by stage. Serial background persistence coalesces updates; failed persistence leaves bounded in-memory evidence and appears in Settings and exports. Copies include retained retry ancestors and explicitly identify missing ancestors.
 
@@ -44,6 +44,6 @@ Computer-use validation of the signed debug build confirmed same-track acquisiti
 
 ## Remaining device checks
 
-With the target build identified, reproduce a failed playback and copy its JSONL beside the error. Retry and verify the prior attempt is included. In Settings, select an older attempt and verify that changing the current track does not alter the selected copy. Inspect empty, failed, active, truncated and persistence-failure states, including a narrow window and long track names. Confirm clipboard success feedback and valid JSONL.
+With the target build identified, reproduce a failed playback and copy its JSONL beside the error. Retry and verify the prior attempt is included. In Settings, copy an older attempt from the list and verify that changing the current track does not alter that copy. Inspect empty, failed, active, truncated and persistence-failure states, including a narrow window and long track names. Confirm clipboard success feedback and valid JSONL.
 
 On actual devices, exercise cluster acquisition, multiple failing hosts, a failed host followed by a successful host, local playback, a later player error, pause/resume and app relaunch. Check that diagnostics identify the actual path and do not change the audible playback/retry behavior. Repeat the reported tracks in a distributed TestFlight build; attaching the resulting trace is separate from successful compilation or unit tests.

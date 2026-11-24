@@ -6,21 +6,21 @@ A native macOS and iPhone player for a music library you manage yourself.
 
 The macOS and iPhone apps read a host's `/api/v1` over HTTPS. Enter the host address on each device and confirm the library. The tailnet policy controls access. See [ADR 0008](docs/adr/0008-one-primary-host-over-a-private-network.md) for the decision and the [private network design](docs/private-network-architecture.md) for planned mirror support.
 
-- **macOS:** Browse albums, artists, tracks, and host playlists. Search, play, seek, or save music for offline listening. With no host connected, select a local Music folder and play its originals directly. The Mac app does not serve the folder to other devices.
-- **iPhone and iPad:** Browse and play the host library or import local audio. Playback supports background audio and lock-screen controls.
-- **Offline listening:** The last host catalog and saved audio remain available after disconnect. Pending saves survive restarts. The saving controls in Settings include the cellular preference for automatic transfers and the playback-cache limit.
+- **macOS:** Browse albums, artists, tracks, and host playlists. Search, play, seek, or save music for offline listening.
+- **iPhone and iPad:** Browse and play the host library. Playback supports background audio and lock-screen controls.
+- **Offline listening:** The last host catalog and saved audio remain available after disconnect. Pending saves survive restarts. Settings groups the library connection, saved music, and the playback cache; see [Settings](DESIGN.md#settings).
+- **Earlier local libraries:** The apps no longer play a local folder or imported files. On the first launch after updating, they remove that catalog and any imported audio that no host entry or saved track shares.
 
 Start with the [macOS guide](apps/macos/README.md) or [iPhone guide](apps/ios/README.md) for build and verification steps. [Issue #11](https://github.com/asonas/syncstr/issues/11) records implementation milestones; the [Syncstr project in Linear](docs/agents/issue-tracker.md) tracks follow-up work. Record local builds, distribution, and device verification separately.
 
 ## Hidden albums
 
-In a local Apple library, hide an album from its menu or detail page, from its album
-group on Android, or with **Hide / Unhide album** after selecting a track on
-Windows. **Hidden albums** lists these albums and lets you restore them. Hidden
-albums are excluded from normal album, artist, and track browsing and search;
-original audio and the current playback queue are retained.
+Hide an album from its album group on Android, or with **Hide / Unhide album**
+after selecting a track on Windows. **Hidden albums** lists these albums and lets
+you restore them. Hidden albums are excluded from normal album, artist, and track
+browsing and search; original audio and the current playback queue are retained.
 
-Apple apps display host album visibility read-only. On Android and Windows,
+Apple apps list the host's hidden albums read-only and cannot hide or restore them. On Android and Windows,
 visibility is shared by members of the same cluster. Android
 tries immediately, and **Refresh library** retries pending changes on Android
 and Windows. Update the headless hosts and all clients before using this feature:
@@ -41,7 +41,7 @@ continue to use the existing conflict-resolution flow.
 | Connection and playback responsiveness | [Execution and cancellation design](docs/playback-responsiveness.md), [regression and app verification](docs/validation/playback-responsiveness.md) |
 | Offline-save lifecycle and Apple library entry | [Shared save queue and controls](apps/macos/OfflineSaves.swift), [host API tests](apps/macos/Tests/HostAPITests.swift) |
 | iPhone UI and device features | [Sources](apps/ios/Sources/), [iPhone guide](apps/ios/README.md) |
-| Folder settings | [SettingsView.swift](apps/macos/SettingsView.swift) |
+| Settings | [Mac window](apps/macos/SettingsView.swift), [shared sections](apps/macos/SettingsSections.swift), [design](DESIGN.md#settings) |
 | Headless NAS node and CLI | [Headless guide](headless/README.md), [HTTPS API](headless/src/api.rs), [node catalog](headless/src/store.rs) |
 | Music/iTunes owned-library migration | [Existing inventory/prepare/import/resume CLI](tools/music-migration/README.md), [Windows-to-NAS plan](docs/music-library-migration-plan.md), [source metadata precedence](docs/adr/0004-preserve-source-library-metadata-during-migration.md); v5 correspondence integration is replaced by ADR 0008, and ASO-41 rewrites it for the new store |
 | Read-only Windows playlist inspection | [Audit tool](tools/playlist-audit/README.md), [observations and verification gaps](docs/validation/windows-playlist-audit.md) |

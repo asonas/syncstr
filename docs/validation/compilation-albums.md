@@ -5,7 +5,7 @@ This record covers the local implementation of the [approved specification](../c
 ## Automated checks
 
 - Shared native model tests exercise edition grouping, imported classification disagreements, concrete artist credits, reversible membership and classification choices, concurrent revisions, former album references, unavailable tracks, exact-content recovery, and long revision histories. Invalid reference cycles are rejected.
-- MP3, FLAC, and M4A fixtures exercise the pinned AudioTags dependency with album artist, compilation, and MusicBrainz release fields. Fixture copies are modified; originals remain unchanged.
+- MP3, FLAC, and M4A fixtures exercised the pinned AudioTags dependency with album artist, compilation, and MusicBrainz release fields. Fixture copies were modified; originals remained unchanged. AudioTags and these tag-reading tests were removed with local import on 2026-11-24.
 - Native catalog and transfer tests exercise legacy migration, persistence, real TLS transfer, retained audio with refreshed organization, conflicting peer choices, unavailable source recovery, and idle-session retry.
 - Swift-to-Rust transfer tests exercise upload, retry, download, and restart with the shared organization wire representation.
 - Rust tests exercise the shared fixture, transactional persistence, invalid-update rollback, exact-content identity aliases, edition reconciliation, and concurrent choices. `cargo test` and `cargo clippy --all-targets -- -D warnings` pass.

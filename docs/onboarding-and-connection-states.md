@@ -23,21 +23,19 @@ The words of the old design leave the interface: 参加, 招待, ペアリング
 
 ## First launch on the Mac
 
-The [library window](../apps/macos/Syncstr.swift) offers **ホストに接続** ("Connect to host"), **音楽フォルダを選ぶ** ("Select Music Folder"), and **音楽ファイルを追加** ("Add music files"). If a saved local library is available, the listener can reopen it.
+The [library window](../apps/macos/Syncstr.swift) offers **ホストに接続** ("Connect to host").
 
 For a host library, enter its address (for example, `music.example.ts.net`) or open its Syncstr link. The [connection sheet](../apps/macos/HostConnectionView.swift) reads the library information and asks for confirmation. The Mac then reads the catalog, playlists, artwork, and audio from the host's `/api/v1`, just like the iPhone.
 
-For local playback, choose a folder. The app indexes it and plays the original files on this Mac. Folder selection is disabled while a host is connected. Disconnect in Settings to choose a local folder again.
-
-On a Mac previously registered with a cluster, if the bookmark to the original Music folder cannot be resolved after upgrade, the local library stays empty until the listener chooses that folder again.
+Earlier versions could also play a local Music folder or imported files. The first launch after updating removes that catalog, its `active` and `folder.bookmark` markers, and any imported audio that no host entry or saved track shares (catalog schema version 10). Music saved from a host stays playable offline.
 
 ## Connect another device
 
-Open the same host address on the other device and confirm the library there. The headless host serves both devices. Importing a folder into the Mac app makes its music available for local playback only.
+Open the same host address on the other device and confirm the library there. The headless host serves both devices.
 
 ## First launch on the iPhone
 
-In the [empty library](../apps/ios/Sources/PhoneRoot.swift), choose **ホストに接続** to enter the address or scan a host QR code on a supported device. Opening a Syncstr link also starts confirmation. The sheet identifies the host and library before the listener connects. **音楽ファイルを追加** imports local files, and **保存した音楽を開く** opens a saved library when available.
+In the [empty library](../apps/ios/Sources/PhoneRoot.swift), choose **ホストに接続** to enter the address or scan a host QR code on a supported device. Opening a Syncstr link also starts confirmation. The sheet identifies the host and library before the listener connects.
 
 ### When connecting fails
 
@@ -76,7 +74,7 @@ A device is in exactly one of three states. "Through a mirror" qualifies the con
 
 Through a mirror, the device keeps its own catalog when that is newer than the mirror's, as the mirrors design requires. A track whose file no reachable host has uses the secondary text color, as in the unreachable state, and tapping it gives the reason.
 
-After a disconnect, the device keeps the last host catalog until the next host connection or, on the Mac, until the listener chooses a local music folder. That catalog still indexes saved tracks. The device remembers the catalog's address and library ID so it can ask before replacing the library at that address. Choosing a local folder replaces the retained host catalog with the folder catalog and clears the remembered host address.
+After a disconnect, the device keeps the last host catalog until the next host connection. That catalog still indexes saved tracks. The device remembers the catalog's address and library ID so it can ask before replacing the library at that address.
 
 The upgrade drops the v5 shared-audio catalog (`shared_audio_snapshot`). A device whose only library was that catalog returns to the first-launch screen. Its save pins and `<hash>.audio` files remain on the device. Once it connects to a host serving the same track IDs and audio hashes, those tracks can play from the saved files again.
 
@@ -89,7 +87,7 @@ The state changes by these rules:
 - The device enters "host unreachable" only after a probe or a request fails. A network change alone does not change the state.
 - The device probes when the app becomes active, when the network path changes, when the listener taps **再試行**, and at intervals while a save waits for the host. A probe gives up after the 15 seconds that [Host API design](host-api-design.md) sets for an interactive request, unless iPhone measurements show a better value.
 - The first success returns the device to "connected" and removes the line, with no action from the listener.
-- A local-only device shows no state.
+- A device that was never connected shows no state.
 
 The Mac follows the same device connection states as the iPhone. When it has only the retained host catalog, local saves remain playable and library refresh is unavailable. A listener can reconnect in Settings.
 
@@ -111,7 +109,6 @@ The whole library is new, as the switch **ライブラリ全体をこの端末�
 
 The whole library is a standing switch, unlike an album save. A listener who keeps everything expects new albums to follow, and a one-time request would turn every later addition into a partial save.
 
-On the Mac, local-folder tracks play from their originals.
 
 ### Show progress per album and overall
 
@@ -154,9 +151,9 @@ The listener removes one album or playlist from its save menu, as today, or from
 
 ## Settings after the change
 
-On both platforms, Settings shows the host and library names and offers refresh, change host, and disconnect actions. Disconnecting retains the last catalog and saved audio. Host catalogs are read-only, including a retained host catalog after disconnect. Local libraries support file import and album visibility changes.
+On both platforms, the Library section of Settings shows the library name, host address, track count, and last refresh time, and offers refresh, change host, and disconnect actions. Disconnecting retains the last catalog and saved audio. Host catalogs are read-only, including a retained host catalog after disconnect.
 
-The saving section includes the automatic cellular transfer toggle, playback-cache limit, cache usage, and saved audio size. Appearance and playback diagnostics are also available. On the Mac, the folder chooser becomes available after disconnect. See [Mac Settings](../apps/macos/SettingsView.swift), [iPhone Settings](../apps/ios/Sources/PhoneRoot.swift), and the [shared saving controls](../apps/macos/PlaybackCache.swift).
+Saved Music shows the saved audio size and deletes all saved music after confirmation; on iPhone and iPad it also holds the automatic cellular transfer toggle. Playback Cache shows the limit stepper and usage, and clears the cache while keeping the playing file. Appearance, playback diagnostics, and the version follow. The Mac splits these into General, Library, Storage, and Advanced tabs. See [Settings](../DESIGN.md#settings), [Mac Settings](../apps/macos/SettingsView.swift), [iPhone Settings](../apps/ios/Sources/PhoneRoot.swift), and the [shared sections](../apps/macos/SettingsSections.swift).
 
 ## Rules carried over
 

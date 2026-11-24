@@ -1,14 +1,14 @@
 # syncstr for iPhone and iPad
 
-A SwiftUI player for a host library or locally imported music, targeting iOS 27 or later. Both Apple targets share the catalog, host API client, playback, and offline-save code in `apps/macos/`.
+A SwiftUI player for a host library, targeting iOS 27 or later. Both Apple targets share the catalog, host API client, playback, and offline-save code in `apps/macos/`.
 
 ## Library entry and offline saves
 
-Choose **Connect to host**, enter its address or scan its address QR code, and confirm the library. The app reads the host's `/api/v1`. For a local library, choose **Add music files** instead. After disconnecting, you can still browse the last host catalog and play saved audio.
+Choose **Connect to host**, enter its address or scan its address QR code, and confirm the library. The app reads the host's `/api/v1`. After disconnecting, you can still browse the last host catalog and play saved audio.
 
-Save tracks or albums near playback controls. Requests and completed results survive restart. The app shows connection waiting, Wi-Fi waiting, progress, partial results, retry, and cancellation. Automatic resumption runs while the app is active and follows the cellular policy. Cancellation keeps successful tracks; album additions require another explicit Save. Save removal frees managed audio and its cache copy, preserves originals and shared items, and confirms playback interruption. Host copies are excluded.
+Save tracks or albums near playback controls. Requests and completed results survive restart. The app shows connection waiting, Wi-Fi waiting, progress, partial results, retry, and cancellation. Automatic resumption runs while the app is active and follows the cellular policy. Cancellation keeps successful tracks; album additions require another explicit Save. Save removal frees managed audio and its cache copy, keeps the host library entry, and confirms playback interruption. Earlier versions could import local files; the first launch after updating removes that catalog and any imported audio that no host entry or saved track shares.
 
-Settings includes host connection controls, playback diagnostics, and storage. The saving section includes the cellular preference for automatic transfers.
+Settings groups Library, Saved Music, Playback Cache, Appearance, and Playback Diagnostics with the version. Saved Music includes the cellular preference for automatic transfers and deleting all saved music; Playback Cache sets the limit and clears the cache. See [Settings](../../DESIGN.md#settings).
 
 ## Player behavior
 
@@ -17,14 +17,12 @@ collapses to one-column navigation in narrow windows. Album grids adapt to the
 available width, with one column at accessibility text sizes. Details place
 artwork beside metadata in wide layouts and above it in compact layouts.
 
-The album browser provides title/artist sorting, ascending/descending order, and
-selection mode for batch hide/restore. Command-click also toggles selection with
-a hardware keyboard. A normal tap opens details, and returning centers the opened
-album. The context menu acts on the selection when invoked on a selected album.
-Visibility editing is available for local libraries. The host catalog is read-only.
+The album browser provides title/artist sorting and ascending/descending order.
+A tap opens details, and returning centers the opened album. The host catalog is
+read-only: hidden albums come from the host and are listed, not edited.
 
 Playback failures offer **Copy Diagnostics** in the player; Settings also lists
-recent attempts. JSONL exports preserve retry ancestry and redaction. Logs retain
+recent attempts, each with its own copy action. JSONL exports preserve retry ancestry and redaction. Logs retain
 up to 20 attempts and 5 MB on the device. A loading player keeps its Play control
 disabled while reporting preparation progress.
 
@@ -176,17 +174,18 @@ The runner's process-boundary tests are:
 python3 -m unittest discover -s apps/ios/scripts/tests -v
 ```
 
-The `SyncstrUITests` scheme checks album sorting, batch visibility, restoration,
-search and keyboard focus, and failure-log copying on iPhone and iPad Simulators.
-It launches a Debug-only fictional catalog in a temporary directory via
-`--ui-fixture`; ordinary launches never select this fixture. TestFlight and
+The `SyncstrUITests` scheme checks album sorting, search and keyboard focus,
+appearance, and failure-log copying on iPhone and iPad Simulators. It launches a
+Debug-only fictional catalog in a temporary directory via `--ui-fixture`. The
+fixture is a host catalog retained after disconnecting, so the app shows it
+without a connection. Ordinary launches never select this fixture. TestFlight and
 Release builds do not include the fixture.
 
 For interactive debugging, select `Syncstr` for unit tests or `SyncstrUITests`
 for UI tests in Xcode. Use the runner above for the same isolation and result
 collection as CI.
 
-Audio fixtures cover offline catalog restoration, received-file availability, AVPlayer local playback, and Now Playing updates. Tests use temporary storage and do not use production credentials.
+Audio fixtures cover offline restoration of a disconnected host catalog, saved-audio availability, AVPlayer playback, and Now Playing updates. Tests use temporary storage and do not use production credentials.
 
 Manually verify connecting by host address, album browsing, your own sample tracks, audible playback, seeking, and offline startup after restart. Record Simulator results separately from physical-device playback.
 
