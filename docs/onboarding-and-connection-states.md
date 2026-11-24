@@ -27,7 +27,7 @@ The [library window](../apps/macos/Syncstr.swift) offers **ホストに接続** 
 
 For a host library, enter its address (for example, `music.example.ts.net`) or open its Syncstr link. The [connection sheet](../apps/macos/HostConnectionView.swift) reads the library information and asks for confirmation. The Mac then reads the catalog, playlists, artwork, and audio from the host's `/api/v1`, just like the iPhone.
 
-Earlier versions could also play a local Music folder or imported files. The first launch after updating removes that catalog, its `active` and `folder.bookmark` markers, and any imported audio that no host entry or saved track shares (catalog schema version 10). Music saved from a host stays playable offline. An install that still kept its catalog only in the `catalog.json` that predates the SQLite catalog loses that file, but its imported audio files stay on disk, because nothing records which files they are. They cannot be played, and **Delete all saved music** in Settings removes them with the saved audio.
+Earlier versions could also play a local Music folder or imported files. The first launch after updating removes that catalog, its `active` and `folder.bookmark` markers, and any imported audio that no host entry or saved track shares (catalog schema version 10). Music saved from a host stays playable offline. An install that still kept its catalog only in the `catalog.json` that predates the SQLite catalog loses that file, but its imported audio files stay on disk, because nothing records which files they are. They cannot be played. **Delete all saved music** in Settings removes them along with saved audio; it is available once at least one track is saved.
 
 ## Connect another device
 

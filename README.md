@@ -9,7 +9,7 @@ The macOS and iPhone apps read a host's `/api/v1` over HTTPS. Enter the host add
 - **macOS:** Browse albums, artists, tracks, and host playlists. Search, play, seek, or save music for offline listening.
 - **iPhone and iPad:** Browse and play the host library. Playback supports background audio and lock-screen controls.
 - **Offline listening:** The last host catalog and saved audio remain available after disconnect. Pending saves survive restarts. Settings groups the library connection, saved music, and the playback cache; see [Settings](DESIGN.md#settings).
-- **Earlier local libraries:** The apps no longer play a local folder or imported files. On the first launch after updating, they remove that catalog and any imported audio that no host entry or saved track shares. Installs that still kept only the older `catalog.json` keep their imported audio files until **Delete all saved music** in Settings removes them.
+- **Earlier local libraries:** The apps no longer play a local folder or imported files. On the first launch after updating, they remove that catalog and any imported audio that no host entry or saved track shares. Installs that still kept only the older `catalog.json` keep their imported audio files. **Delete all saved music** in Settings removes them along with saved music; it is available once at least one track is saved.
 
 Start with the [macOS guide](apps/macos/README.md) or [iPhone guide](apps/ios/README.md) for build and verification steps. [Issue #11](https://github.com/asonas/syncstr/issues/11) records implementation milestones; the [Syncstr project in Linear](docs/agents/issue-tracker.md) tracks follow-up work. Record local builds, distribution, and device verification separately.
 
