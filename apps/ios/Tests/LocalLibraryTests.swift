@@ -19,9 +19,9 @@ final class LocalLibraryTests: XCTestCase {
         XCTAssertFalse(library.restoringSession)
         XCTAssertNil(library.message)
         let track = Track(id: "unsaved", title: "Not Copied", artist: "Fixture Artist", suffix: "wav", size: 3)
-        try library.openLocal(LocalCatalog(id: UUID().uuidString, name: "Fixture Music", entries: [
+        try showHostCatalog(LocalCatalog(id: UUID().uuidString, name: "Fixture Music", entries: [
             LocalEntry(track: track, sha256: String(repeating: "a", count: 64), artwork: nil)
-        ]))
+        ]), in: library)
         library.play(track)
         XCTAssertFalse(createdPlayer)
         XCTAssertTrue(library.downloaded.isEmpty)
@@ -33,7 +33,7 @@ final class LocalLibraryTests: XCTestCase {
     }
 
     @MainActor
-    func testColdLaunchMigratesLegacyCatalogAndPlaysReceivedAudio() async throws {
+    func testColdLaunchRestoresDisconnectedHostCatalogAndPlaysSavedAudio() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }
         let files = LocalMusicStore(root: root)
@@ -52,10 +52,10 @@ final class LocalLibraryTests: XCTestCase {
         let track = Track(id: "local-fixture", title: "First", artist: "Fixture Artist", album: "Fixture Album",
             duration: 1, track: 1, suffix: "wav", size: UInt64(audio.count))
         let entry = LocalEntry(track: track, sha256: hash, artwork: nil)
-        try files.importFile(temporary, entry: entry)
-        let catalog = LocalCatalog(id: UUID().uuidString, name: "Fixture Music", entries: [entry])
-        try JSONEncoder().encode(catalog).write(to: root.appendingPathComponent("catalog.json"))
-        try Data().write(to: root.appendingPathComponent("active"))
+        try files.importFile(temporary, entry: entry, host: true)
+        try saveHostFixture([entry], in: files)
+        try files.database().saveAudioPin(entry)
+        _ = try files.database().forgetHost()
 
         var playbackURL: URL?
         var player: AVPlayer?
@@ -67,10 +67,13 @@ final class LocalLibraryTests: XCTestCase {
         }, localStore: files)
         await restored.restoreLibrary()
         XCTAssertTrue(restored.connected)
+        XCTAssertTrue(restored.transfer.retainsHostCatalog)
         XCTAssertEqual(restored.albums.first?.title, "Fixture Album")
+        await restored.inventoryTask?.value
         XCTAssertEqual(restored.downloaded, [track.id])
         restored.setVolume(0.4)
         restored.play(restored.tracks[0])
+        for _ in 0..<100 where playbackURL == nil { try await Task.sleep(for: .milliseconds(20)) }
         XCTAssertEqual(playbackURL, files.fileURL(entry))
         for _ in 0..<100 where player?.currentItem?.status == .unknown {
             try await Task.sleep(for: .milliseconds(20))

@@ -33,13 +33,9 @@ struct StudioButton: ButtonStyle {
 
 struct LibraryView: View {
     @ObservedObject var library: Library
-    @State private var importingAudio = false
     @State private var hostSetup: HostSetupRequest?
-    @State private var showingUploadStatus = false
     @State private var hoveredTrack: String?
-    @State private var selectedAlbums = Set<String>()
     @State private var albumScrollPosition = ScrollPosition(idType: String.self)
-    @FocusState private var albumGridFocused: Bool
 
     var body: some View {
         VStack(spacing: 0) {
@@ -63,18 +59,13 @@ struct LibraryView: View {
             } else {
                 VStack(spacing: 20) {
                     Text("自分の音楽を、どの端末でも").font(.title)
-                    Text("このMacの音楽を聴くか、NASや別のMacのライブラリに接続できます。")
+                    Text("NASなどのホストにあるライブラリに接続します。")
                     Button(library.transfer.hostConnection == nil ? "ホストに接続" : "ライブラリと接続") {
                         hostSetup = HostSetupRequest(showsSettings: library.transfer.hostConnection != nil)
                     }.buttonStyle(.borderedProminent)
-                    LocalFolderButton(library: library).buttonStyle(.borderedProminent)
-                    AddMusicButton(library: library)
-                    if library.hasSavedLocalLibrary {
-                        Button("保存したライブラリを開く") { Task { await library.openSavedLocalLibrary() } }
-                    }
                 }.padding(32).frame(maxWidth: .infinity, maxHeight: .infinity)
             }
-            if let message = library.message ?? (showingUploadStatus ? library.transfer.status : nil) {
+            if let message = library.message {
                 HStack(alignment: .top, spacing: 8) {
                     MacIcon("circle-alert").accessibilityHidden(true)
                     Text(message).textSelection(.enabled)
@@ -95,15 +86,9 @@ struct LibraryView: View {
         .navigationTitle("")
         .focusedSceneObject(library)
         .toolbarBackground(.hidden, for: .windowToolbar)
-        .onChange(of: library.destination) { _, _ in selectedAlbums.removeAll() }
-        .onChange(of: showingAlbumGrid) { _, showing in
-            if !showing { selectedAlbums.removeAll() }
-        }
-        .onChange(of: library.visibleAlbums.map(\.id)) { _, ids in
-            selectedAlbums.formIntersection(ids)
-        }
         .task { await library.restoreLibrary() }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
+            Task { await library.restoreLibrary() }
             if library.transfer.hasHostActivity { library.transfer.refreshConnection() }
         }
         .modifier(OfflineSaveRemoval(library: library))
@@ -113,20 +98,13 @@ struct LibraryView: View {
         }
         .sheet(item: $hostSetup) { request in
             if request.showsSettings {
-                VStack(alignment: .leading, spacing: 16) {
-                    HostConnectionSettings(transfer: library.transfer) { hostSetup = $0 }
-                    Button("閉じる") { hostSetup = nil }
-                }.padding(24).frame(minWidth: 440)
+                NavigationStack {
+                    Form { LibrarySettingsSection(library: library) { hostSetup = $0 } }
+                        .formStyle(.grouped)
+                        .toolbar { ToolbarItem(placement: .cancellationAction) { Button("閉じる") { hostSetup = nil } } }
+                }.frame(minWidth: 440, minHeight: 360)
             } else {
                 HostConnectionView(transfer: library.transfer, request: request)
-            }
-        }
-        .fileImporter(isPresented: $importingAudio, allowedContentTypes: [.audio], allowsMultipleSelection: true) { result in
-            switch result {
-            case .success(let files):
-                showingUploadStatus = true
-                Task { await library.addMusic(files) }
-            case .failure(let error): library.message = error.localizedDescription
             }
         }
     }
@@ -149,11 +127,6 @@ struct LibraryView: View {
                 }
                 Spacer(minLength: 0)
                 if showingAlbumGrid {
-                    if library.transfer.showsLibraryEditControls, !selectedAlbums.isEmpty {
-                        Text("\(selectedAlbums.count)枚を選択中").foregroundStyle(.secondary)
-                        Button(albumVisibilityLabel) { changeAlbumVisibility(selectedAlbums) }
-                            .disabled(library.albumsVisibilityUnavailable(selectedAlbums))
-                    }
                     if library.destination != .recentlyAdded { albumSortMenu }
                 }
                 LibrarySearchField(text: $library.search, placeholder: "\(library.destination.rawValue)を検索")
@@ -187,22 +160,6 @@ struct LibraryView: View {
                 .accessibilityAddTraits(library.destination == destination && !library.showingNowPlaying ? .isSelected : [])
             }
             rule.padding(.vertical, 16)
-            if library.transfer.showsLibraryEditControls {
-                Button {
-                    importingAudio = true
-                } label: {
-                    HStack(spacing: 8) { MacIcon("cloud-upload"); Text("音源ファイルを追加") }
-                        .frame(maxWidth: .infinity, minHeight: 32, alignment: .leading)
-                        .padding(.horizontal, 8)
-                        .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain).disabled(library.transfer.busy)
-                .help("ライブラリに音源を追加します。未登録の場合もこの端末で再生できます")
-            }
-            if showingUploadStatus && library.transfer.busy {
-                ProgressView(value: library.transfer.progress).padding(.horizontal, 8)
-                Button("中断する") { library.transfer.cancel() }.buttonStyle(.plain).padding(.horizontal, 8)
-            }
             Button(action: library.reload) {
                 HStack(spacing: 8) { MacIcon("refresh"); Text(library.refreshing ? "更新中…" : "ライブラリを更新") }
                     .frame(maxWidth: .infinity, minHeight: 32, alignment: .leading)
@@ -271,31 +228,13 @@ struct LibraryView: View {
             }
         }
         .scrollPosition($albumScrollPosition)
-        .focusable()
-        .focused($albumGridFocused)
-        .focusEffectDisabled()
-        .onKeyPress(.escape) {
-            guard !selectedAlbums.isEmpty else { return .ignored }
-            selectedAlbums.removeAll()
-            return .handled
-        }
-        .onKeyPress(.return) {
-            guard selectedAlbums.count == 1, let id = selectedAlbums.first else { return .ignored }
-            openAlbum(id)
-            return .handled
-        }
         .safeAreaPadding(.bottom, 120)
     }
 
     private func albumGridItems(_ albums: [Album]) -> some View {
         ForEach(albums) { album in
             Button {
-                if (NSApp.currentEvent?.modifierFlags ?? NSEvent.modifierFlags).contains(.command) {
-                    if !selectedAlbums.insert(album.id).inserted { selectedAlbums.remove(album.id) }
-                    albumGridFocused = true
-                } else {
-                    openAlbum(album.id)
-                }
+                openAlbum(album.id)
             } label: {
                 VStack(alignment: .leading, spacing: 8) {
                     Artwork(url: artworkURL(album.coverArt))
@@ -305,29 +244,14 @@ struct LibraryView: View {
                     }
                     .frame(maxWidth: .infinity, minHeight: 60, alignment: .topLeading)
                 }
-                .background(selectedAlbums.contains(album.id) ? Studio.control : Color.clear,
-                            in: RoundedRectangle(cornerRadius: 8))
-                .overlay {
-                    RoundedRectangle(cornerRadius: 8)
-                        .strokeBorder(selectedAlbums.contains(album.id) ? Studio.signal : Color.clear, lineWidth: 3)
-                }
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
             .id(album.id)
             .help("\(album.title)\n\(album.artist)")
             .accessibilityLabel("\(album.title)、\(album.artist)")
-            .accessibilityAddTraits(selectedAlbums.contains(album.id) ? .isSelected : [])
             .accessibilityAction(named: Text("アルバムを開く")) { openAlbum(album.id) }
             .contextMenu {
-                if library.transfer.showsLibraryEditControls {
-                    let targets: Set<String> = selectedAlbums.contains(album.id) ? selectedAlbums : [album.id]
-                    let saving = targets.contains(where: library.isSavingAlbumVisibility)
-                    let action = library.destination == .hiddenAlbums ? "非表示を解除する" : "非表示にする"
-                    Button(saving ? "保存しています…" : targets.count > 1 ? "選択した\(targets.count)枚を\(action)" : action) {
-                        changeAlbumVisibility(targets)
-                    }.disabled(library.albumsVisibilityUnavailable(targets))
-                }
                 Button("アルバムを開く") { openAlbum(album.id) }
             }
         }
@@ -338,19 +262,9 @@ struct LibraryView: View {
             && (library.selectedAlbum == nil || !library.search.isEmpty)
     }
 
-    private var albumVisibilityLabel: String {
-        selectedAlbums.contains(where: library.isSavingAlbumVisibility) ? "保存しています…"
-            : library.destination == .hiddenAlbums ? "非表示を解除する" : "非表示にする"
-    }
-
-    private func changeAlbumVisibility(_ ids: Set<String>) {
-        library.setAlbumsHidden(ids, hidden: library.destination != .hiddenAlbums)
-    }
-
     private func openAlbum(_ id: String) {
         library.search = ""
         library.selectedAlbum = id
-        selectedAlbums.removeAll()
     }
 
     private var albumSortMenu: some View {
@@ -545,13 +459,6 @@ struct LibraryView: View {
     private func trackRowContents(_ tracks: [Track], showArtist: Bool, preservingQueue: Bool = false) -> some View {
         ForEach(Array(tracks.enumerated()), id: \.element.id) { index, track in
             trackRow(track, index: index, tracks: preservingQueue ? nil : tracks, showArtist: showArtist)
-                .contextMenu {
-                    if library.transfer.showsLibraryEditControls {
-                        Button(library.albumVisibilityLabel(track.albumKey)) {
-                            library.setAlbumHidden(track.albumKey, hidden: !library.isAlbumHidden(track.albumKey))
-                        }.disabled(library.isSavingAlbumVisibility(track.albumKey))
-                    }
-                }
                 .overlay(alignment: .bottom) { rule }
         }
     }

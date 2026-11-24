@@ -36,9 +36,6 @@ final class LocalTransfer: ObservableObject {
         }
     }
     private var idleWaiters: [UUID: CheckedContinuation<Void, Error>] = [:]
-    @Published var completed = 0
-    @Published var total = 0
-    @Published var progress = 0.0
     @Published var connected = false {
         didSet {
             if oldValue && !connected {
@@ -46,7 +43,6 @@ final class LocalTransfer: ObservableObject {
             }
         }
     }
-    @Published private(set) var activeTrack: String?
     var onCatalog: ((PreparedLocalCatalog) throws -> Void)?
     var onSaved: (() -> Void)?
     private let diagnostics: PlaybackDiagnostics?
@@ -81,6 +77,9 @@ final class LocalTransfer: ObservableObject {
     var saveSource: (any LibrarySource)?
     var saveGeneration = UUID()
     var savesBackgrounded = false
+    var removingAllSaves: Task<Void, Error>?
+    /// Tests pause here to hold a restore before its first storage read.
+    var beforeRestoringHost: (@MainActor () async -> Void)?
     var savePathIsCellular: Bool { savePath?.currentPath.usesInterfaceType(.cellular) == true }
     var permitsAutomaticSaveAudio: Bool { permitsAutomaticAudio }
     private let savePath: NWPathMonitor?
@@ -93,7 +92,8 @@ final class LocalTransfer: ObservableObject {
     }
     @Published private(set) var changedHostLibrary: String?
     @Published private(set) var retainedHostLibrary: String?
-    var showsLibraryEditControls: Bool { !usesHostCatalog }
+    @Published private(set) var hostRefreshedAt: Date?
+    @Published var savedAudio = SavedAudioSummary()
     var retainsHostCatalog: Bool { retainedHostLibrary != nil }
     var usesHostCatalog: Bool { hostConnection != nil || retainsHostCatalog }
     private var hostPlaybackSources: [UUID: any LibrarySource] = [:]
@@ -107,9 +107,7 @@ final class LocalTransfer: ObservableObject {
     func makeLibrarySource() -> HostLibrarySource? { hostConnection.map(hostSource) }
 
     var hasLibrarySource: Bool { hostConnection != nil }
-    var canChooseFolder: Bool { !hasHostActivity }
-    func didChooseFolder() { retainedHostLibrary = nil }
-    var connectionMode: String { hostConnection != nil ? "host" : retainsHostCatalog ? "offline" : "local" }
+    var connectionMode: String { hostConnection != nil ? "host" : retainsHostCatalog ? "offline" : "none" }
     var onHostPlaylists: (([PlaylistDocument], Set<String>) -> Void)?
     var onHostDisconnected: (() async -> Void)?
     var onHostChange: ((HostConnection?) -> Void)?
@@ -192,10 +190,11 @@ final class LocalTransfer: ObservableObject {
             try Task.checkCancellation()
             guard startingGeneration == generation else { throw CancellationError() }
             guard update.catalog.id == information.library else { return .differentLibrary(update.catalog.id) }
+            let refreshed = Date.now
             let prepared = try await CatalogStorage.shared.commitHostCatalog(update, host: host, replacing: saved,
-                store: files, didCommit: didCommit)
+                refreshedAt: refreshed, store: files, didCommit: didCommit)
             cancelActiveConnection(reason: "changing_library_host")
-            try publishHost(update, prepared: prepared, host: host, changingHost: true)
+            try publishHost(update, prepared: prepared, host: host, refreshedAt: refreshed, changingHost: true)
             resumeSaves()
             return .updated
         }
@@ -230,6 +229,7 @@ final class LocalTransfer: ObservableObject {
         stopSaveWorker()
         stopHostPlayback()
         hostConnection = nil
+        hostRefreshedAt = nil
         hostAudio = HostAudioFiles()
         observedSwitch = nil
         catalog = nil
@@ -331,6 +331,9 @@ final class LocalTransfer: ObservableObject {
                 status = nil
                 connected = true
                 changedHostLibrary = nil
+                let refreshed = Date.now
+                if (try? await CatalogStorage.shared.commit({ try files.database().markHostRefreshed(host, at: refreshed) })) != nil,
+                   generation == attempt { hostRefreshedAt = refreshed }
                 connectionEvent("refresh_host", outcome: "succeeded", fields: ["result": "unchanged", "remote_catalog_id": host.library])
                 return .unchanged
             case .updated(let update):
@@ -342,9 +345,10 @@ final class LocalTransfer: ObservableObject {
                     connectionEvent("refresh_host", outcome: "different_library", fields: ["connection_mode": "host", "remote_catalog_id": update.catalog.id])
                     return .differentLibrary(update.catalog.id)
                 }
+                let refreshed = Date.now
                 let prepared = try await CatalogStorage.shared.commitHostCatalog(update, host: host, replacing: host,
-                    store: files, didCommit: didCommit)
-                try publishHost(update, prepared: prepared, host: host, changingHost: false)
+                    refreshedAt: refreshed, store: files, didCommit: didCommit)
+                try publishHost(update, prepared: prepared, host: host, refreshedAt: refreshed, changingHost: false)
                 connectionEvent("refresh_host", outcome: "succeeded", fields: ["result": "updated", "remote_catalog_id": host.library])
                 return .updated
             }
@@ -357,7 +361,8 @@ final class LocalTransfer: ObservableObject {
         }
     }
 
-    private func publishHost(_ update: CatalogUpdate, prepared: PreparedLocalCatalog, host: HostConnection, changingHost: Bool) throws {
+    private func publishHost(_ update: CatalogUpdate, prepared: PreparedLocalCatalog, host: HostConnection,
+                             refreshedAt: Date, changingHost: Bool) throws {
         var host = host
         host.etag = update.etag
         host.hostSwitch = update.hostSwitch
@@ -368,6 +373,7 @@ final class LocalTransfer: ObservableObject {
             activateHost(host)
         } else { hostConnection = host }
         changedHostLibrary = nil
+        hostRefreshedAt = refreshedAt
         status = nil
         catalog = update.catalog
         onHostPlaylists?(update.playlists, update.conflicts)
@@ -398,7 +404,6 @@ final class LocalTransfer: ObservableObject {
     }
 
     lazy var playbackCache = PlaybackCache(root: store.root.appendingPathComponent("playback-cache"))
-    private var operation: Task<Void, Never>?
     private var catalog: LocalCatalog?
     private var generation = UUID()
     var store: LocalMusicStore
@@ -440,12 +445,15 @@ final class LocalTransfer: ObservableObject {
     @discardableResult
     func restoreHost() async -> Bool {
         let attempt = generation
+        await beforeRestoringHost?()
         let files = store
         do {
             automaticCellular = try await CatalogStorage.shared.perform { try files.database().automaticCellular() }
             if let host = try await CatalogStorage.shared.perform({ try files.database().hostConnection() }) {
+                let refreshed = try await CatalogStorage.shared.perform { try files.database().hostRefreshedAt() }
                 guard generation == attempt else { return false }
                 try await adoptStoredHost(host, attempt: attempt)
+                hostRefreshedAt = refreshed
             } else {
                 let retained = try await CatalogStorage.shared.perform { try files.database().retainedHostLibrary() }
                 guard generation == attempt else { return false }
@@ -470,29 +478,13 @@ final class LocalTransfer: ObservableObject {
     func removeSavedCopy(_ entry: LocalEntry) throws {
         guard readyForLocalCopyRemoval else { throw LocalMusicError.transferBusy }
         guard LocalMusicStore.valid(entry) else { throw LocalMusicError.invalidData }
-        let database = try store.database()
-        if usesHostCatalog {
-            let referenced = try database.otherCatalogFiles(for: entry.sha256)
-            let retained = try database.removeAudioPin(entry)
-            let otherSave = saveRequests.contains { request in
-                request.state != .cancelled && request.entries.contains { $0.track.id != entry.track.id && $0.sha256 == entry.sha256 }
-            }
-            if !retained && !otherSave {
-                for url in Set(store.hostFileURLs(entry) + playbackCache.store.hostFileURLs(entry))
-                    where !referenced.contains(url) && url != playbackCache.protectedURL && FileManager.default.fileExists(atPath: url.path) {
-                    try FileManager.default.removeItem(at: url)
-                }
-                if !referenced.contains(store.fileURL(entry)) { try database.forgetReceived(entry) }
-            }
-            onSaved?()
-            return
-        }
-        let file = store.fileURL(entry)
-        if FileManager.default.fileExists(atPath: file.path) { try FileManager.default.removeItem(at: file) }
-        let cached = playbackCache.store.fileURL(entry)
-        if FileManager.default.fileExists(atPath: cached.path) { try FileManager.default.removeItem(at: cached) }
-        try database.forgetReceived(entry)
+        // The caller cancels this library's request first. Any request still holding the hash, including
+        // one for the same track in another library, can reuse the file.
+        let kept = try Self.discard([SavedAudioPin(track: entry.track.id, hash: entry.sha256)], keeping: requestedAudio,
+                                    store: store, cache: playbackCache.store, protected: playbackCache.protectedPaths,
+                                    database: store.database())
         onSaved?()
+        if !kept.isEmpty { throw LocalMusicError.removalIncomplete }
     }
 
     func cancel() { cancel(reason: "cancel_requested") }
@@ -501,7 +493,6 @@ final class LocalTransfer: ObservableObject {
         let worker = saveWorker
         let retry = saveRetry
         let refresh = hostOperation?.task
-        let active = operation
         let artwork = artworkSource
         setSavesBackgrounded(true)
         cancelSavePreparations()
@@ -510,7 +501,6 @@ final class LocalTransfer: ObservableObject {
         await worker?.value
         await retry?.value
         _ = await refresh?.result
-        await active?.value
         await artwork?.waitForArtwork()
     }
 
@@ -523,12 +513,9 @@ final class LocalTransfer: ObservableObject {
     private func cancelActiveConnection(reason: String) {
         connectionEvent("cancel", outcome: connected ? "disconnected" : "observed", fields: ["reason": reason])
         generation = UUID()
-        operation?.cancel()
-        operation = nil
         if hostConnection != nil { artworkSource?.stop(); artworkSource = nil }
         connected = false
         busy = false
-        activeTrack = nil
     }
 
     func playbackFile(_ track: Track, diagnostic: PlaybackDiagnosticContext? = nil,
@@ -561,6 +548,11 @@ final class LocalTransfer: ObservableObject {
             throw LocalMusicError.backgroundAcquisition
         }
         diagnostic?.record("local", "acquisition_required", fields: ["reason": "no_usable_local_file"])
+        // Held from before the download until the caller takes the verified file, so a trim cannot remove
+        // the file between its placement and the lease that fileInBackground takes.
+        let destination = playbackCache.store.fileURL(entry)
+        playbackCache.lease(destination)
+        defer { playbackCache.release(destination) }
         do { try await playbackCache.makeRoomInBackground(for: entry) }
         catch { diagnostic?.failure("cache_capacity", error); throw error }
         guard hostConnection?.address == selectedHost?.address, selectedHost?.library == libraryID,
@@ -578,14 +570,17 @@ final class LocalTransfer: ObservableObject {
             }
             try Task.checkCancellation()
             guard let result = try await playbackCache.fileInBackground(entry, diagnostic: diagnostic) else { throw LocalMusicError.invalidData }
-            guard hostConnection?.address == selectedHost?.address, hostConnection?.library == selectedHost?.library else { throw CancellationError() }
+            guard hostConnection?.address == selectedHost?.address, hostConnection?.library == selectedHost?.library else {
+                playbackCache.release(result)
+                throw CancellationError()
+            }
             return result
         } onCancel: {
             Task { @MainActor in source.stop() }
         }
     }
 
-    private func waitForIdle(until deadline: ContinuousClock.Instant? = nil) async throws {
+    func waitForIdle(until deadline: ContinuousClock.Instant? = nil) async throws {
         let attempt = generation
         while busy {
             try Task.checkCancellation()
@@ -611,58 +606,4 @@ final class LocalTransfer: ObservableObject {
             guard generation == attempt else { throw CancellationError() }
         }
     }
-
-    func copy(_ tracks: [Track]) { copyFromLibrarySource(tracks) }
-
-    private func copyFromLibrarySource(_ tracks: [Track]) {
-        guard !busy else { return }
-        let attempt = generation
-        guard let source = makeLibrarySource() else { return }
-
-        busy = true; completed = 0; total = tracks.count; progress = 0
-        operation = Task {
-            defer {
-                source.stop()
-                if generation == attempt { busy = false; activeTrack = nil }
-            }
-            do {
-                let saved = try store.load()
-                for track in tracks {
-                    try Task.checkCancellation()
-                    guard let entry = saved?.entries.first(where: { $0.track.id == track.id }) else { throw LocalMusicError.invalidData }
-                    let files = store
-                    var savedLocally = try await CatalogStorage.shared.perform {
-                        try files.verifiedFile(entry, host: true, inventory: files.database(), requireHash: true) != nil
-                    }
-                    if !savedLocally, let cached = try await playbackCache.fileInBackground(entry) {
-                        savedLocally = try await CatalogStorage.shared.perform {
-                            try files.importCachedFile(cached, entry: entry, host: true)
-                        }
-                    }
-                    try Task.checkCancellation()
-                    guard generation == attempt else { return }
-                    if savedLocally {
-                        try files.database().saveAudioPin(entry)
-                        onSaved?()
-                        completed += 1
-                        continue
-                    }
-                    activeTrack = track.id
-                    status = "「\(track.title)」を保存中…"
-                    try await source.download(entry, cache: nil, diagnostic: nil) { fraction in
-                        self.progress = (Double(self.completed) + fraction) / Double(max(1, self.total))
-                    }
-                    try Task.checkCancellation()
-                    guard generation == attempt else { return }
-                    completed += 1
-                    onSaved?()
-                }
-                progress = 1
-                status = "\(completed)曲を保存しました。オフラインでも聴けます。"
-            } catch {
-                if generation == attempt { status = error.localizedDescription }
-            }
-        }
-    }
-
 }

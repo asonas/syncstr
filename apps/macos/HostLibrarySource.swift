@@ -93,8 +93,21 @@ final class HostLibrarySource: LibrarySource {
         guard !stopped else { throw CancellationError() }
         progress(0)
         let id = UUID()
-        let task = Task {
-            try await files.download(entry, into: cache ?? store, recordReceipt: cache == nil, client: client, diagnostic: diagnostic)
+        let task = Task { [store] in
+            do {
+                try await files.download(entry, into: cache ?? store, recordReceipt: cache == nil, client: client, diagnostic: diagnostic)
+            } catch {
+                // A cancellation can land after the file is in place. Pin it so the saved size and removal
+                // still account for it; removing everything waits for this task to end. This runs detached
+                // because hashing and opening the database both stop in a cancelled task.
+                if cache == nil {
+                    await Task.detached {
+                        guard (try? store.verifiedFile(entry, host: true)) != nil else { return }
+                        try? store.database().saveAudioPin(entry)
+                    }.value
+                }
+                throw error
+            }
             if cache == nil { try store.database().saveAudioPin(entry) }
         }
         downloads[id] = task

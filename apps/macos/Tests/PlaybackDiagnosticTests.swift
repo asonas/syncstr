@@ -9,6 +9,15 @@ private final class CyclicDiagnosticError: NSError, @unchecked Sendable {
 struct PlaybackDiagnosticTests {
     private func root() -> URL { FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString) }
 
+    @Test func copyingAnAttemptThatWasDroppedReportsNothingToCopy() async throws {
+        let directory = root()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let recorder = PlaybackDiagnostics(root: directory.appendingPathComponent("diagnostics"))
+        let attempt = recorder.begin(title: "Fixture", track: "one", sha256: nil, library: nil)
+        #expect(await recorder.exportRetained(attempt.id) != nil)
+        #expect(await recorder.exportRetained("dropped-attempt") == nil)
+    }
+
     @Test func databaseContentionExportsOperationWithoutSQLOrPaths() async throws {
         let directory = root()
         defer { try? FileManager.default.removeItem(at: directory) }
@@ -61,6 +70,33 @@ struct PlaybackDiagnosticTests {
         #expect(json.contains("connection-one") && json.contains("connection-two"))
     }
 
+    @Test func listAndExportAgreeOnIncompleteAttempts() async throws {
+        var trace = PlaybackDiagnosticTrace(id: "attempt", retryOf: nil, title: "Track", started: "2026-01-01T00:00:00Z")
+        trace.outcome = "completed"
+        #expect(trace.isComplete(persistenceFailed: false))
+        #expect(!trace.isComplete(persistenceFailed: true))
+        var history = trace
+        history.events = [PlaybackDiagnosticEvent(timestamp: "2026-01-01T00:00:00Z", elapsedMS: 0, attemptID: "attempt", sequence: 0,
+            stage: "connection_history", event: "summary", outcome: "observed", fields: ["history_omitted": "3"])]
+        #expect(!history.isComplete(persistenceFailed: false))
+        var omitted = trace
+        omitted.omitted = 1
+        #expect(!omitted.isComplete(persistenceFailed: false))
+        var interrupted = trace
+        interrupted.outcome = "interrupted"
+        #expect(!interrupted.isComplete(persistenceFailed: false))
+
+        let directory = root()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        try JSONEncoder().encode([history]).write(to: directory.appendingPathComponent("attempts.json"))
+        let recorder = PlaybackDiagnostics(root: directory)
+        let listed = try #require(await recorder.recent().first)
+        let exported = await recorder.export("attempt")
+        #expect(!listed.isComplete(persistenceFailed: await recorder.hasPersistenceFailure()))
+        #expect(exported.contains("\"complete\":\"false\""))
+    }
+
     @Test func readsPreviousArchiveWithoutDroppingPlaybackEvidence() async throws {
         let directory = root()
         defer { try? FileManager.default.removeItem(at: directory) }
@@ -98,7 +134,7 @@ struct PlaybackDiagnosticTests {
         let library = Library(diagnostics: recorder, localStore: LocalMusicStore(root: directory.appendingPathComponent("music")))
         let entry = LocalEntry(track: Track(id: "track-one", title: "Fixture", artist: "Artist", duration: 20, suffix: "wav", size: 4),
             sha256: String(repeating: "a", count: 64), artwork: nil)
-        try library.openLocal(LocalCatalog(id: "fixture-library", name: "Fixture", entries: [entry]))
+        try showHostCatalog(LocalCatalog(id: "fixture-library", name: "Fixture", entries: [entry]), in: library)
         library.play(entry.track)
         for _ in 0..<1000 where library.loading { await Task.yield() }
         #expect(!library.loading)

@@ -18,10 +18,9 @@ final class NowPlayingArtworkTests: XCTestCase {
                                sha256: String(repeating: "b", count: 64), artwork: nil)
         let store = LocalMusicStore(root: root)
         let catalog = LocalCatalog(id: "fixture", name: "Fixture", entries: [entry, plain])
-        try store.save(catalog)
         let library = Library(localStore: store)
         defer { library.closeLibrary() }
-        try library.openLocal(catalog)
+        try showHostCatalog(catalog, in: library)
         let playback = PhonePlayback(library: library)
         library.play(try XCTUnwrap(library.tracks.first(where: { $0.id == "art" })), in: library.tracks)
         for _ in 0..<100 {

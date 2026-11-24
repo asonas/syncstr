@@ -5,28 +5,37 @@ struct SettingsView: View {
     @State private var hostSetup: HostSetupRequest?
 
     var body: some View {
-        ScrollView { VStack(alignment: .leading, spacing: 16) {
-            AppearanceSettings()
-            if library.transfer.showsLibraryEditControls {
-                Divider()
-                Text("音楽の追加").font(.headline)
-                AddMusicButton(library: library)
+        TabView {
+            Tab("一般", systemImage: "gearshape") {
+                settingsForm {
+                    Section { AppearanceSettings() }
+                    Section { AppVersionRow() }
+                }
             }
-            LocalFolderButton(library: library)
-            Text("登録せずにこの端末で再生できます。ライブラリホストには設定されません。")
-                .foregroundStyle(Studio.fog)
-
-            if let message = library.message { Text(message).textSelection(.enabled) }
-            Divider()
-            PlaybackStorageSettings(library: library)
-            Divider()
-            PlaybackDiagnosticSettings(recorder: library.diagnostics)
-            Divider()
-            HostConnectionSettings(transfer: library.transfer) { hostSetup = $0 }
-        }.padding(24) }
-        .frame(width: 520, height: 680)
-        .background(Studio.graphite)
+            Tab("ライブラリ", systemImage: "music.note.house") {
+                settingsForm { LibrarySettingsSection(library: library) { hostSetup = $0 } }
+            }
+            Tab("保存と容量", systemImage: "internaldrive") {
+                settingsForm {
+                    SavedMusicSettingsSection(library: library)
+                    PlaybackCacheSettingsSection(library: library)
+                }
+            }
+            Tab("詳細", systemImage: "stethoscope") {
+                PlaybackDiagnosticList(recorder: library.diagnostics)
+            }
+        }
+        .frame(width: 520)
+        .frame(minHeight: 360)
         .navigationTitle("設定")
         .sheet(item: $hostSetup) { HostConnectionView(transfer: library.transfer, request: $0) }
+    }
+
+    private func settingsForm<Content: View>(@ViewBuilder _ content: () -> Content) -> some View {
+        Form {
+            content()
+            if let message = library.message { Section { Text(message).textSelection(.enabled) } }
+        }
+        .formStyle(.grouped)
     }
 }

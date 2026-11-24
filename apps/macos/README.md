@@ -1,18 +1,18 @@
 # syncstr for macOS
 
-The Mac app reads a host library over HTTPS or plays music stored on the Mac.
+The Mac app reads a host library over HTTPS.
 
 ## Library entry and offline saves
 
-On first launch, choose **Connect to host**, enter the host address, and confirm the library. The Mac reads the catalog, playlists, artwork, and audio from the host's `/api/v1`. To play local originals, choose **Select Music Folder**. Syncstr remembers folder access with a security-scoped bookmark. Folder selection is disabled while a host is connected. Disconnect in Settings to choose a folder again. Local libraries also support adding individual audio files.
+On first launch, choose **Connect to host**, enter the host address, and confirm the library. The Mac reads the catalog, playlists, artwork, and audio from the host's `/api/v1`. Earlier versions could also play a local Music folder or imported files. The first launch after updating removes that catalog and any imported audio that no host entry or saved track shares. Installs that still kept only the older `catalog.json` keep their imported audio files. **Delete all saved music** in Settings removes them along with saved music; it is available once at least one track is saved.
 
-Track and album actions save audio on this device without host selection. Pending requests and successful tracks survive restart. Unreachable sources show connection waiting; automatic resumption obeys the cellular setting. Retry fetches unfinished items, and cancellation keeps successful saves. Album requests snapshot their tracks; later additions need another Save. Removing a save deletes its managed audio and cache copy, preserves originals and shared-library entries, and confirms interruption of an affected player. Host copies cannot be removed through this action.
+Track and album actions save audio on this device without host selection. Pending requests and successful tracks survive restart. Unreachable sources show connection waiting; automatic resumption obeys the cellular setting. Retry fetches unfinished items, and cancellation keeps successful saves. Album requests snapshot their tracks; later additions need another Save. Removing a save deletes its managed audio and cache copy, keeps the host library entry, and confirms interruption of an affected player.
 
-Settings includes the host connection, playback diagnostics, and saving controls. The cellular preference applies to automatic saves.
+The Settings window has General, Library, Storage, and Advanced tabs. Storage shows saved music and the playback cache, with actions to delete all saved music and clear the cache. Advanced lists recent playback attempts with a copy action for each. See [Settings](../../DESIGN.md#settings).
 
 ## Build and run
 
-Use Xcode's Swift compiler, macOS SDK, and XcodeGen. The build fetches TagLib 2.3.0 through Swift Package Manager. Find your development signing identity with `security find-identity -v -p codesigning` and supply it through `CODE_SIGN_IDENTITY`. Keep the same certificate and bundle ID across rebuilds to preserve Keychain access permissions. Switching from an ad-hoc build may require approving Keychain access once.
+Use Xcode's Swift compiler, macOS SDK, and XcodeGen. The project has no Swift package dependencies. Find your development signing identity with `security find-identity -v -p codesigning` and supply it through `CODE_SIGN_IDENTITY`. Keep the same certificate and bundle ID across rebuilds to preserve Keychain access permissions. Switching from an ad-hoc build may require approving Keychain access once.
 
 Local macOS builds use `as.ason.syncstr.macos` across worktrees. TestFlight and App Store builds use `as.ason.syncstr.ios`. The Keychain service names stay the same; switching from the former local bundle ID may require approving access again on the first launch.
 
@@ -44,7 +44,7 @@ an album and returning centers it in the list. The title-bar search filters the
 current section. Open an album and select a track to play it; the mini-player
 opens the Now Playing view in the same window.
 
-Click an album to select it, Command-click to add or remove albums from the selection, and double-click or press Return to open a selected album. Escape clears the selection. The toolbar and album context menu can hide selected albums together; **Hidden Albums** offers the corresponding batch restore action. These actions are available for local libraries. Host catalogs are read-only.
+Click an album to open it. **Hidden Albums** lists the albums the host hides. Host catalogs are read-only, so the app cannot hide or restore albums.
 
 The three-line menu beside search sorts albums by title or artist in ascending or descending natural order. The other field breaks ties. Sorting also applies to search results and hidden albums and does not change the playback queue.
 
@@ -54,9 +54,9 @@ Album Play always starts a new album queue from its first track. Player controls
 
 The current track, position, decided queue order, shuffle, and repeat restore paused after relaunch. Opening Now Playing preserves the library search and scroll position. The mini-player appears only after selecting a track, and the queue can be inspected in Now Playing.
 
-Playing an unsaved host track downloads and verifies its audio before playback. You can cancel preparation or retry a failed download. The playback cache defaults to 10 GB. Change its limit in Settings. Eviction preserves explicit saves and local originals.
+Playing an unsaved host track downloads and verifies its audio before playback. You can cancel preparation or retry a failed download. The playback cache defaults to 10 GB. Change its limit or clear it in Settings. Eviction and clearing preserve explicit saves and the playing file.
 
-Select a track again after a playback failure and check folder access. Playlist editing, playback history synchronization, and editing source files' metadata are not implemented. Local-folder audio plays directly from the selected folder.
+Select a track again after a playback failure and check the host connection. Playlist editing, playback history synchronization, and editing source files' metadata are not implemented.
 
 The screen structure follows the [Apple MVP operation model decision](https://github.com/asonas/syncstr/issues/5#issuecomment-5472974010).
 
@@ -87,22 +87,22 @@ Configure Xcode Cloud with:
 
 [ci_post_clone.sh](../ios/ci_scripts/ci_post_clone.sh) generates both platforms' projects and schemes after cloning. The workflow project path is the generated `.xcodeproj`, not `apps/macos` or `project.yml`.
 
-Distribution builds enable App Sandbox, outgoing network access, and read access to user-selected files. Their bundle ID and container differ from the manual `build.sh` build, so select the music folder or configure the host address in that distribution variant. Check Archive success and TestFlight delivery separately in App Store Connect.
+Distribution builds enable App Sandbox and outgoing network access. Their bundle ID and container differ from the manual `build.sh` build, so configure the host address in that distribution variant. Check Archive success and TestFlight delivery separately in App Store Connect.
 
 ## Verification
 
 Run the launcher fixtures with `mise exec -- python3 apps/macos/Tests/test_run.py`. They replace process-listing, termination, and launch commands in a temporary environment; they do not operate on running apps.
 
-Verify source indexing, Japanese tags, artwork, and preservation of original files and audio:
+Run the unit tests:
 
 ```sh
 mise exec -- xcodegen generate --spec apps/ios/project.yml
 env DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer xcodebuild -project apps/ios/Syncstr.xcodeproj -scheme SyncstrMac -destination 'platform=macOS' CODE_SIGNING_ALLOWED=NO test
 ```
 
-The [host API tests](Tests/HostAPITests.swift) cover catalog reads, interrupted downloads, and rejection of corrupt audio and artwork.
+The [host API tests](Tests/HostAPITests.swift) cover catalog reads, interrupted downloads, and rejection of corrupt audio and artwork. The [catalog migration tests](Tests/CatalogMigrationTests.swift) cover removal of the earlier local library.
 
-Verify continuous playback, end-of-queue behavior, seeking, and folder restoration with the real AVPlayer and a short silent audio fixture. Run this as a standalone executable with access to macOS audio services. It uses temporary files:
+Verify offline restoration of a saved host catalog, continuous playback, end-of-queue behavior, and seeking with the real AVPlayer and a short silent audio fixture. Run this as a standalone executable with access to macOS audio services. It uses temporary files:
 
 ```sh
 mise exec -- xcodegen generate --spec apps/ios/project.yml
@@ -110,4 +110,4 @@ env DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer xcodebuild -project
 apps/macos/.build/Checks/Build/Products/Debug/LibraryCheck
 ```
 
-Manually verify folder selection, your own sample tracks, audible playback, pause/resume, track changes, seeking, folder restoration after restart, and playback from the configured host. A passing build does not establish audible playback.
+Manually verify playback from the configured host, audible playback, pause/resume, track changes, seeking, and offline playback of saved music after restart. A passing build does not establish audible playback.

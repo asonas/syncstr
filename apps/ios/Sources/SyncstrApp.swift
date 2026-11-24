@@ -43,6 +43,7 @@ struct SyncstrApp: App {
                         library.transfer.cancel()
                     } else if phase == .active {
                         library.setBackgrounded(false)
+                        Task { await library.restoreLibrary() }
                         if library.transfer.hasHostActivity {
                             library.transfer.refreshConnection()
                         }

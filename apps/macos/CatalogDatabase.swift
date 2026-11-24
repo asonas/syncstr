@@ -26,19 +26,37 @@ extension CatalogDatabase {
         try !rows("SELECT track FROM shared_audio_saves WHERE track = ? AND hash = ?", [entry.track.id, entry.sha256]).isEmpty
     }
 
-    func removeAudioPin(_ entry: LocalEntry) throws -> Bool {
+    func savedAudioPinList() throws -> Set<SavedAudioPin> {
+        Set(try rows("SELECT track, hash FROM shared_audio_saves").compactMap { row in
+            guard let track = row[0], let hash = row[1] else { return nil }
+            return SavedAudioPin(track: track, hash: hash)
+        })
+    }
+
+    /// Returns the hashes that other pins still hold.
+    func removeAudioPins(_ pins: Set<SavedAudioPin>) throws -> Set<String> {
         try transaction {
-            try execute("DELETE FROM shared_audio_saves WHERE track = ? AND hash = ?", [entry.track.id, entry.sha256])
-            return try !rows("SELECT track FROM shared_audio_saves WHERE hash = ?", [entry.sha256]).isEmpty
+            for pin in pins {
+                try execute("DELETE FROM shared_audio_saves WHERE track = ? AND hash = ?", [pin.track, pin.hash])
+            }
+            return Set(try rows("SELECT DISTINCT hash FROM shared_audio_saves").compactMap { $0[0] })
         }
+    }
+
+    func forgetAudio(hash: String) throws {
+        try execute("DELETE FROM received_files WHERE sha256 = ?", [hash])
+        try execute("DELETE FROM verified_audio_files WHERE hash = ?", [hash])
     }
 
 }
 
+struct SavedAudioPin: Hashable, Sendable {
+    let track: String
+    let hash: String
+}
+
 struct CatalogSnapshot {
     var catalog: LocalCatalog
-    var sourceRoot: URL?
-    var sourcePaths: [String: String]
 }
 
 extension CatalogDatabase {
@@ -82,24 +100,17 @@ final class CatalogDatabase {
         sqlite3_busy_timeout(connection, 5000)
         do {
             let version = try rows("PRAGMA user_version").first?.first ?? nil
-            guard let version, let number = Int(version), (0...8).contains(number) else { throw LocalMusicError.invalidData }
-            if number == 8 {
+            guard let version, let number = Int(version), (0...10).contains(number) else { throw LocalMusicError.invalidData }
+            if number == 10 {
                 let required: Set<String> = ["device_transfer_settings", "verified_audio_files", "retained_host_catalog",
-                    "host_connection", "host_entries", "host_playlists", "shared_audio_saves", "catalog", "entries",
-                    "received_files", "organization", "artwork_assets"]
+                    "host_connection", "host_entries", "host_playlists", "shared_audio_saves", "received_files"]
                 let existing = Set(try rows("SELECT name FROM sqlite_master WHERE type = 'table'").compactMap { $0[0] })
                 if required.isSubset(of: existing) { return }
             }
             try transaction {
-                try execute("CREATE TABLE IF NOT EXISTS catalog (singleton INTEGER PRIMARY KEY CHECK(singleton = 1), id TEXT NOT NULL, name TEXT NOT NULL, source_root TEXT)")
-                try execute("CREATE TABLE IF NOT EXISTS entries (id TEXT PRIMARY KEY, position INTEGER NOT NULL, sha256 TEXT NOT NULL, payload TEXT NOT NULL, source_path TEXT)")
-                try execute("CREATE INDEX IF NOT EXISTS entries_content ON entries(sha256)")
                 try execute("CREATE TABLE IF NOT EXISTS verified_audio_files (path TEXT PRIMARY KEY, stamp TEXT NOT NULL, hash TEXT NOT NULL)")
                 try execute("CREATE TABLE IF NOT EXISTS received_files (relative_path TEXT PRIMARY KEY, sha256 TEXT NOT NULL)")
-                try execute("CREATE TABLE IF NOT EXISTS organization (singleton INTEGER PRIMARY KEY CHECK(singleton = 1), payload TEXT NOT NULL)")
-                try execute("CREATE TABLE IF NOT EXISTS artwork_assets (id TEXT PRIMARY KEY, payload TEXT NOT NULL)")
                 try execute("CREATE TABLE IF NOT EXISTS shared_audio_saves (track TEXT NOT NULL, hash TEXT NOT NULL, PRIMARY KEY(track, hash))")
-                if number < 4 { _ = try readSnapshot() }
                 try execute("CREATE TABLE IF NOT EXISTS device_transfer_settings (singleton INTEGER PRIMARY KEY CHECK(singleton = 1), cellular INTEGER NOT NULL CHECK(cellular IN (0, 1)))")
                 if try !rows("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'cluster_transfer_settings'").isEmpty {
                     try execute("INSERT OR IGNORE INTO device_transfer_settings(singleton, cellular) SELECT singleton, cellular FROM cluster_transfer_settings")
@@ -111,13 +122,17 @@ final class CatalogDatabase {
                 if try !rows("PRAGMA table_info(host_connection)").contains(where: { $0[1] == "host_switch" }) {
                     try execute("ALTER TABLE host_connection ADD COLUMN host_switch TEXT")
                     let store = LocalMusicStore(root: root)
+                    // An unreadable entry gets no pin; throwing here would keep the database from opening at all.
                     for row in try rows("SELECT payload FROM host_entries") {
-                        let entry = try JSONDecoder().decode(LocalEntry.self, from: Data((row[0] ?? "").utf8))
+                        guard let entry = try? JSONDecoder().decode(LocalEntry.self, from: Data((row[0] ?? "").utf8)) else { continue }
                         if store.hasFile(entry) { try saveAudioPin(entry) }
                     }
                 }
                 if try !rows("PRAGMA table_info(retained_host_catalog)").contains(where: { $0[1] == "address" }) {
                     try execute("ALTER TABLE retained_host_catalog ADD COLUMN address TEXT")
+                }
+                if try !rows("PRAGMA table_info(host_connection)").contains(where: { $0[1] == "refreshed_at" }) {
+                    try execute("ALTER TABLE host_connection ADD COLUMN refreshed_at REAL")
                 }
                 for table in ["cluster_schema", "cluster_identity", "cluster_peers", "cluster_objects", "cluster_locations",
                               "cluster_pending_changes", "cluster_jobs", "cluster_registration", "cluster_signed_changes",
@@ -126,7 +141,8 @@ final class CatalogDatabase {
                               "playlist_records", "playlist_cursors", "playlist_authorities"] {
                     try execute("DROP TABLE IF EXISTS \(table)")
                 }
-                try execute("PRAGMA user_version = 8")
+                try purgeLegacyLocalLibrary()
+                try execute("PRAGMA user_version = 10")
             }
         } catch {
             sqlite3_close(connection)
@@ -197,14 +213,14 @@ final class CatalogDatabase {
 
     func snapshot() throws -> CatalogSnapshot? {
         try transaction {
-            guard try hostCatalogLibrary() != nil else { return try readSnapshot() }
+            guard try hostCatalogLibrary() != nil else { return nil }
             guard let payload = try rows("SELECT header FROM host_connection UNION ALL SELECT header FROM retained_host_catalog").first?.first ?? nil else { return nil }
             var catalog = try JSONDecoder().decode(LocalCatalog.self, from: Data(payload.utf8))
             catalog.source = .host
             catalog.entries = try rows("SELECT payload FROM host_entries ORDER BY position").map {
                 try JSONDecoder().decode(LocalEntry.self, from: Data(($0[0] ?? "").utf8))
             }
-            return CatalogSnapshot(catalog: catalog, sourceRoot: nil, sourcePaths: [:])
+            return CatalogSnapshot(catalog: catalog)
         }
     }
 
@@ -216,12 +232,39 @@ final class CatalogDatabase {
         try rows("SELECT library FROM retained_host_catalog WHERE address = ?", [address.origin.absoluteString]).first?.first ?? nil
     }
 
-    func otherCatalogFiles(for hash: String) throws -> Set<URL> {
-        let store = LocalMusicStore(root: root)
-        return Set(try rows("SELECT payload FROM entries WHERE sha256 = ?", [hash]).map { row in
-            let entry = try JSONDecoder().decode(LocalEntry.self, from: Data((row[0] ?? "").utf8))
-            return store.fileURL(entry)
-        })
+    /// Removes the library that the retired folder and import modes kept on this device.
+    /// Audio stays when a host entry or a saved-audio pin shares its content.
+    /// Files go before rows, so an interrupted run finds the same rows on the next launch.
+    /// A file that cannot be removed or a row that cannot be read is left behind, because
+    /// failing here would stop the host catalog and its saved music from opening.
+    private func purgeLegacyLocalLibrary() throws {
+        let manager = FileManager.default
+        for name in ["active", "folder.bookmark", "catalog.json"] {
+            try? manager.removeItem(at: root.appendingPathComponent(name))
+        }
+        let tables = Set(try rows("SELECT name FROM sqlite_master WHERE type = 'table'").compactMap { $0[0] })
+        if tables.contains("entries") {
+            var kept = Set(try rows("SELECT hash FROM shared_audio_saves").compactMap { $0[0] })
+            var hostEntriesReadable = true
+            for row in try rows("SELECT payload FROM host_entries") {
+                guard let entry = try? JSONDecoder().decode(LocalEntry.self, from: Data((row[0] ?? "").utf8)) else {
+                    hostEntriesReadable = false
+                    break
+                }
+                kept.insert(entry.sha256)
+            }
+            let store = LocalMusicStore(root: root)
+            for row in try rows("SELECT payload FROM entries") where hostEntriesReadable {
+                guard let entry = try? JSONDecoder().decode(LocalEntry.self, from: Data((row[0] ?? "").utf8)),
+                      LocalMusicStore.valid(entry), !kept.contains(entry.sha256) else { continue }
+                for url in store.hostFileURLs(entry) { try? manager.removeItem(at: url) }
+                try execute("DELETE FROM received_files WHERE sha256 = ?", [entry.sha256])
+                try execute("DELETE FROM verified_audio_files WHERE hash = ?", [entry.sha256])
+            }
+        }
+        for table in ["catalog", "entries", "organization", "artwork_assets"] {
+            try execute("DROP TABLE IF EXISTS \(table)")
+        }
     }
 
     private func hostCatalogLibrary() throws -> String? {
@@ -242,6 +285,18 @@ final class CatalogDatabase {
                                   hosts: JSONDecoder().decode([HostLibraryInfo.Host].self, from: Data(hosts.utf8)), etag: row[4], marker: row[5], hostSwitch: row[6])
     }
 
+    func hostRefreshedAt() throws -> Date? {
+        guard let value = try rows("SELECT refreshed_at FROM host_connection").first?.first ?? nil else { return nil }
+        return Double(value).map(Date.init(timeIntervalSince1970:))
+    }
+
+    func markHostRefreshed(_ host: HostConnection, at date: Date) throws {
+        try transaction {
+            guard try hostConnection() == host else { throw CancellationError() }
+            try execute("UPDATE host_connection SET refreshed_at = ?", [String(date.timeIntervalSince1970)])
+        }
+    }
+
     func forgetHost() throws -> String? {
         try transaction {
             try execute("INSERT OR REPLACE INTO retained_host_catalog(library,header,address) SELECT library,header,address FROM host_connection WHERE header IS NOT NULL")
@@ -250,16 +305,16 @@ final class CatalogDatabase {
         }
     }
 
-    func saveHostCatalog(_ update: CatalogUpdate, connection: HostConnection, replacing previous: HostConnection?) throws {
+    func saveHostCatalog(_ update: CatalogUpdate, connection: HostConnection, replacing previous: HostConnection?, refreshedAt: Date = .now) throws {
         try transaction {
             guard try hostConnection() == previous, update.catalog.id == connection.library else { throw CancellationError() }
             let hosts = String(decoding: try JSONEncoder().encode(connection.hosts), as: UTF8.self)
             var header = update.catalog
             header.entries = []
             try execute("DELETE FROM retained_host_catalog")
-            try execute("INSERT OR REPLACE INTO host_connection(singleton,address,library,name,hosts,etag,marker,header,host_switch) VALUES(1,?,?,?,?,?,?,?,?)",
+            try execute("INSERT OR REPLACE INTO host_connection(singleton,address,library,name,hosts,etag,marker,header,host_switch,refreshed_at) VALUES(1,?,?,?,?,?,?,?,?,?)",
                         [connection.address.origin.absoluteString, connection.library, header.name, hosts, update.etag, update.marker,
-                         String(decoding: try JSONEncoder().encode(header), as: UTF8.self), update.hostSwitch])
+                         String(decoding: try JSONEncoder().encode(header), as: UTF8.self), update.hostSwitch, String(refreshedAt.timeIntervalSince1970)])
             try execute("DELETE FROM host_entries")
             for (index, entry) in update.catalog.entries.enumerated() {
                 try Task.checkCancellation()
@@ -277,7 +332,7 @@ final class CatalogDatabase {
     }
 
     func containsCatalog() throws -> Bool {
-        try rows("SELECT CASE WHEN EXISTS(SELECT 1 FROM host_connection) THEN EXISTS(SELECT 1 FROM host_connection WHERE header IS NOT NULL) ELSE EXISTS(SELECT 1 FROM retained_host_catalog) OR EXISTS(SELECT 1 FROM catalog) END").first?.first == "1"
+        try rows("SELECT CASE WHEN EXISTS(SELECT 1 FROM host_connection) THEN EXISTS(SELECT 1 FROM host_connection WHERE header IS NOT NULL) ELSE EXISTS(SELECT 1 FROM retained_host_catalog) END").first?.first == "1"
     }
 
     func playbackEntry(_ id: String, hash: String? = nil) throws -> (library: String, entry: LocalEntry)? {
@@ -287,116 +342,13 @@ final class CatalogDatabase {
             guard hash == nil || entry.sha256 == hash else { return nil }
             return (library, entry)
         }
-        guard let row = try rows("SELECT catalog.id, entries.payload FROM catalog JOIN entries ON entries.id = ? WHERE catalog.singleton = 1", [id]).first,
-              let library = row[0], let payload = row[1] else { return nil }
-        let entry = try JSONDecoder().decode(LocalEntry.self, from: Data(payload.utf8))
-        guard entry.track.id == id, LocalMusicStore.valid(entry) else { throw LocalMusicError.invalidData }
-        return (library, entry)
+        return nil
     }
 
-
-    func localSnapshot() throws -> CatalogSnapshot? { try transaction { try readSnapshot() } }
-
-    private func readSnapshot() throws -> CatalogSnapshot? {
-        guard let header = try rows("SELECT id, name, source_root FROM catalog WHERE singleton = 1").first,
-              let id = header[0], let name = header[1] else { return nil }
-        var entries: [LocalEntry] = []
-        var paths: [String: String] = [:]
-        for row in try rows("SELECT id, payload, source_path FROM entries ORDER BY position") {
-            try Task.checkCancellation()
-            guard let trackID = row[0], let payload = row[1] else { throw LocalMusicError.invalidData }
-            let entry = try JSONDecoder().decode(LocalEntry.self, from: Data(payload.utf8))
-            guard LocalMusicStore.valid(entry), entry.track.id == trackID else { throw LocalMusicError.invalidData }
-            entries.append(entry)
-            paths[trackID] = row[2]
-        }
-        var catalog = LocalCatalog(id: id, name: name, entries: entries)
-        if let payload = try rows("SELECT payload FROM organization WHERE singleton = 1").first?.first ?? nil {
-            catalog.organization = try JSONDecoder().decode(AlbumOrganization.self, from: Data(payload.utf8))
-            if catalog.organization?.artwork != nil {
-                for row in try rows("SELECT id, payload FROM artwork_assets") {
-                    try Task.checkCancellation()
-                    guard let id = row[0], let payload = row[1], let data = Data(base64Encoded: payload) else { throw LocalMusicError.invalidData }
-                    if catalog.organization?.artwork?.assets[id] != nil { catalog.organization?.artwork?.assets[id] = data }
-                }
-            }
-            try catalog.organization?.validate()
-        }
-        let previous = catalog.organization
-        catalog.organize(folders: header[2] == nil ? [:] : paths.mapValues { ($0 as NSString).deletingLastPathComponent })
-        try catalog.organization?.validate()
-        if previous != catalog.organization {
-            try writeOrganization(catalog.organization!)
-        }
-        return CatalogSnapshot(catalog: catalog,
-            sourceRoot: header[2].map { URL(fileURLWithPath: $0, isDirectory: true) }, sourcePaths: paths)
-    }
-
-    func save(_ catalog: LocalCatalog, sourceRoot: URL? = nil, sourcePaths: [String: String]? = nil,
-              received: [LocalEntry] = []) throws {
-        guard Set(catalog.entries.map { $0.track.id }).count == catalog.entries.count,
-              catalog.entries.allSatisfy(LocalMusicStore.valid) else { throw LocalMusicError.invalidData }
-        try transaction {
-            let previous = try readSnapshot()
-            let sameLibrary = previous?.catalog.id == catalog.id
-            let root = sourceRoot ?? (sameLibrary ? previous?.sourceRoot : nil)
-            let paths = sourcePaths ?? (sameLibrary ? previous?.sourcePaths ?? [:] : [:])
-            var organized = catalog
-            if organized.organization == nil, sameLibrary { organized.organization = previous?.catalog.organization }
-            organized.organize(folders: root == nil ? [:] : paths.mapValues { ($0 as NSString).deletingLastPathComponent })
-            try organized.organization?.validate()
-            try writeOrganization(organized.organization!)
-            if sourceRoot != nil {
-                guard try hostConnection() == nil else { throw CancellationError() }
-                try execute("DELETE FROM retained_host_catalog")
-                try execute("DELETE FROM host_entries")
-                try execute("DELETE FROM host_playlists")
-            }
-            try execute("DELETE FROM entries")
-            try execute("INSERT OR REPLACE INTO catalog VALUES (1, ?, ?, ?)", [catalog.id, catalog.name, root?.path])
-            for (position, entry) in catalog.entries.enumerated() {
-                let payload = String(decoding: try JSONEncoder().encode(entry), as: UTF8.self)
-                try execute("INSERT INTO entries VALUES (?, ?, ?, ?, ?)",
-                    [entry.track.id, String(position), entry.sha256, payload, paths[entry.track.id]])
-            }
-            for entry in received { try recordReceived(entry) }
-        }
-    }
-
-    func setAlbumHidden(_ id: String, hidden: Bool, libraryID: String) throws -> AlbumOrganization {
-        try setAlbumsHidden([id], hidden: hidden, libraryID: libraryID)
-    }
-
-    func setAlbumsHidden(_ ids: Set<String>, hidden: Bool, libraryID: String) throws -> AlbumOrganization {
-        try transaction {
-            guard try hostCatalogLibrary() == nil else { throw LocalMusicError.readOnlyCatalog }
-            guard let catalog = try readSnapshot()?.catalog, catalog.id == libraryID,
-                  var organization = catalog.organization else { throw LocalMusicError.invalidData }
-            for id in ids.sorted() {
-                organization.set(subject: id, kind: "visibility", value: hidden ? "true" : "false")
-            }
-            try writeOrganization(organization)
-            return organization
-        }
-    }
 
     func recordReceived(_ entry: LocalEntry) throws {
         try execute("INSERT OR REPLACE INTO received_files VALUES (?, ?)",
             [entry.sha256 + "." + (entry.track.suffix ?? "audio"), entry.sha256])
     }
 
-    func forgetReceived(_ entry: LocalEntry) throws {
-        try execute("DELETE FROM received_files WHERE relative_path = ? AND sha256 = ?",
-            [entry.sha256 + "." + (entry.track.suffix ?? "audio"), entry.sha256])
-    }
-
-    private func writeOrganization(_ organization: AlbumOrganization) throws {
-        try organization.validate()
-        for (id, data) in organization.artwork?.assets ?? [:] {
-            try execute("INSERT OR IGNORE INTO artwork_assets VALUES (?, ?)", [id, data.base64EncodedString()])
-        }
-        var metadata = organization
-        metadata.artwork?.assets = organization.artwork?.assets.mapValues { _ in Data() } ?? [:]
-        try execute("INSERT OR REPLACE INTO organization VALUES (1, ?)", [String(decoding: try JSONEncoder().encode(metadata), as: UTF8.self)])
-    }
 }

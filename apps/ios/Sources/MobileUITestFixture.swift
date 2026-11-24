@@ -15,18 +15,13 @@
                         addedAt: 1_700_000_000_000 - Int64(index)),
                     sha256: String(repeating: "a", count: 64), artwork: nil)
             }
-            var catalog = LocalCatalog(id: "ui-fixture", name: "UI Fixture", entries: entries)
-            if ProcessInfo.processInfo.arguments.contains("--retained-host") {
-                catalog.source = .host
-                catalog.organize()
-                let database = try library.localStore.database()
-                let host = try HostConnection(address: HostAddress("https://music.example.test"), library: catalog.id,
-                                              name: catalog.name, hosts: [])
-                try database.saveHostCatalog(CatalogUpdate(catalog: catalog, etag: "fixture"), connection: host, replacing: nil)
-                _ = try database.forgetHost()
-            } else {
-                try library.openLocal(catalog)
-            }
+            var catalog = LocalCatalog(id: "ui-fixture", name: "UI Fixture", entries: entries, source: .host)
+            catalog.organize()
+            let database = try library.localStore.database()
+            let host = try HostConnection(address: HostAddress("https://music.example.test"), library: catalog.id,
+                                          name: catalog.name, hosts: [])
+            try database.saveHostCatalog(CatalogUpdate(catalog: catalog, etag: "fixture"), connection: host, replacing: nil)
+            _ = try database.forgetHost()
             return library
         }
     }

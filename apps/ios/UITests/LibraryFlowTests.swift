@@ -19,15 +19,6 @@ final class LibraryFlowTests: XCTestCase {
     }
 
     @MainActor
-    func testAlbumContextMenuRemainsAvailable() {
-        let app = launchFixture()
-        openAlbums(app)
-        album(app, 1).press(forDuration: 1)
-        XCTAssertTrue(app.buttons["非表示にする"].waitForExistence(timeout: 5))
-        app.terminate()
-    }
-
-    @MainActor
     func testArtistAlbumListScrollPerformance() {
         let app = launchFixture()
         let artists = app.descendants(matching: .any)["アーティスト"].firstMatch
@@ -66,31 +57,6 @@ final class LibraryFlowTests: XCTestCase {
     }
 
     @MainActor
-    func testCommandClickSelectsAlbumsAndSearchEndsAfterOpeningResult() {
-        let app = launchFixture()
-        openAlbums(app)
-        XCUIElement.perform(withKeyModifiers: .command) {
-            album(app, 1).tap()
-            album(app, 2).tap()
-        }
-        XCTAssertTrue(app.staticTexts["2枚を選択"].waitForExistence(timeout: 3))
-        app.buttons["完了"].tap()
-        let field = searchField(app)
-        field.tap()
-        field.typeText("Album 2")
-        album(app, 2).tap()
-        XCTAssertTrue(app.staticTexts["11曲"].waitForExistence(timeout: 5))
-        XCTAssertFalse(app.keyboards.firstMatch.exists)
-        attach(app, "Album detail")
-        app.buttons["album-play"].firstMatch.tap()
-        app.navigationBars.buttons["アルバム"].tap()
-        let restored = searchField(app)
-        app.typeKey(" ", modifierFlags: [])
-        XCTAssertEqual(restored.value as? String, "Album 2")
-        app.terminate()
-    }
-
-    @MainActor
     func testSearchAcceptsSpaceWhileEditing() {
         let app = launchFixture()
         openAlbums(app)
@@ -103,33 +69,6 @@ final class LibraryFlowTests: XCTestCase {
     }
 
     @MainActor
-    func testAlbumsCanBeSortedHiddenTogetherAndRestored() throws {
-        let app = launchFixture()
-        openAlbums(app)
-        app.buttons["並び替え"].tap()
-        XCTAssertTrue(app.buttons["アーティスト"].waitForExistence(timeout: 3))
-        app.buttons["アーティスト"].tap()
-        app.buttons["並び替え"].tap()
-        app.buttons["タイトル"].tap()
-        app.buttons["選択"].tap()
-        album(app, 1).tap()
-        album(app, 2).tap()
-        XCTAssertTrue(app.staticTexts["2枚を選択"].exists)
-        app.buttons["非表示にする"].tap()
-        XCTAssertTrue(app.staticTexts["0枚を選択"].waitForExistence(timeout: 5))
-        XCTAssertFalse(album(app, 1).exists)
-        app.buttons["完了"].tap()
-        if app.navigationBars.buttons["ライブラリ"].exists { app.navigationBars.buttons["ライブラリ"].tap() }
-        app.descendants(matching: .any)["非表示にしたアルバム"].firstMatch.tap()
-        XCTAssertTrue(album(app, 1).waitForExistence(timeout: 5))
-        app.buttons["選択"].tap()
-        album(app, 1).tap()
-        album(app, 2).tap()
-        app.buttons["非表示を解除"].tap()
-        XCTAssertTrue(app.staticTexts["非表示にしたアルバムはありません"].waitForExistence(timeout: 5))
-    }
-
-    @MainActor
     func testAlbumPlaybackFailureOffersCopyAndReturningPreservesAlbum() throws {
         let app = launchFixture()
         openAlbums(app)
@@ -138,7 +77,6 @@ final class LibraryFlowTests: XCTestCase {
         first.tap()
         XCTAssertTrue(app.staticTexts["V.A."].waitForExistence(timeout: 5))
         XCTAssertFalse(app.buttons["非表示にする"].exists)
-        XCTAssertFalse(app.buttons["album-save"].firstMatch.exists)
         let play = app.buttons["album-play"].firstMatch
         if app.tabBars.firstMatch.exists {
             XCTAssertEqual(play.frame.midX, app.windows.firstMatch.frame.midX, accuracy: 3)
@@ -164,7 +102,7 @@ final class LibraryFlowTests: XCTestCase {
 
     @MainActor
     private func openAlbums(_ app: XCUIApplication) {
-        if !app.buttons["選択"].waitForExistence(timeout: 3) {
+        if !app.buttons["並び替え"].waitForExistence(timeout: 3) {
             let albums = app.descendants(matching: .any)["アルバム"].firstMatch
             if !albums.exists, app.navigationBars.buttons["ライブラリ"].exists {
                 app.navigationBars.buttons["ライブラリ"].tap()
@@ -172,7 +110,7 @@ final class LibraryFlowTests: XCTestCase {
             XCTAssertTrue(albums.waitForExistence(timeout: 5))
             albums.tap()
         }
-        XCTAssertTrue(app.buttons["選択"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["並び替え"].waitForExistence(timeout: 5))
         attach(app, "Album browser")
     }
 

@@ -38,7 +38,7 @@ final class CatalogMigrationTests: XCTestCase {
 
     func testVersionSevenPreservesConnectedAndRetainedHostData() throws {
         for retained in [false, true] {
-            let (store, catalog) = try legacyStore()
+            let (store, catalog) = try storeWithAudio()
             let db = try store.database()
             let entry = catalog.entries[0]
             let host = HostConnection(address: try HostAddress("https://host.example.test"),
@@ -76,7 +76,7 @@ final class CatalogMigrationTests: XCTestCase {
             var statement: OpaquePointer?
             XCTAssertEqual(sqlite3_prepare_v2(connection, "PRAGMA user_version", -1, &statement, nil), SQLITE_OK)
             XCTAssertEqual(sqlite3_step(statement), SQLITE_ROW)
-            XCTAssertEqual(sqlite3_column_int(statement, 0), 8)
+            XCTAssertEqual(sqlite3_column_int(statement, 0), 10)
             sqlite3_finalize(statement)
             XCTAssertEqual(sqlite3_prepare_v2(connection, "SELECT name FROM sqlite_master WHERE type = 'table'", -1, &statement, nil), SQLITE_OK)
             var tables = Set<String>()
@@ -86,6 +86,81 @@ final class CatalogMigrationTests: XCTestCase {
             sqlite3_finalize(statement)
             XCTAssertTrue(tables.isDisjoint(with: removed + ["cluster_transfer_settings"]))
         }
+    }
+
+    func testLegacyLocalLibraryIsPurgedWithoutTouchingHostAudioOrFailingOnBrokenRows() throws {
+        let (store, catalog) = try storeWithAudio()
+        let shared = catalog.entries[0]
+        let localOnly = LocalEntry(track: Track(id: "local-only", title: "Imported", artist: "Artist", suffix: "mp3", size: 3),
+            sha256: String(repeating: "c", count: 64))
+        try Data("xyz".utf8).write(to: store.fileURL(localOnly))
+        let db = try store.database()
+        let host = HostConnection(address: try HostAddress("https://host.example.test"),
+                                  library: catalog.id, name: catalog.name, hosts: [])
+        try db.saveHostCatalog(CatalogUpdate(catalog: catalog), connection: host, replacing: nil)
+        try db.recordReceived(localOnly)
+        for name in ["active", "folder.bookmark", "catalog.json"] {
+            try Data().write(to: store.root.appendingPathComponent(name))
+        }
+        var connection: OpaquePointer?
+        XCTAssertEqual(sqlite3_open(store.root.appendingPathComponent("catalog.sqlite").path, &connection), SQLITE_OK)
+        defer { sqlite3_close(connection) }
+        let payload = { (entry: LocalEntry) in String(decoding: try JSONEncoder().encode(entry), as: UTF8.self).replacingOccurrences(of: "'", with: "''") }
+        let legacy = """
+            CREATE TABLE catalog (singleton INTEGER PRIMARY KEY, id TEXT NOT NULL, name TEXT NOT NULL, source_root TEXT);
+            CREATE TABLE entries (id TEXT PRIMARY KEY, position INTEGER NOT NULL, sha256 TEXT NOT NULL, payload TEXT NOT NULL, source_path TEXT);
+            CREATE TABLE organization (singleton INTEGER PRIMARY KEY, payload TEXT NOT NULL);
+            CREATE TABLE artwork_assets (id TEXT PRIMARY KEY, payload TEXT NOT NULL);
+            INSERT INTO catalog VALUES (1, 'local-library', 'Folder', 'Music');
+            INSERT INTO entries VALUES ('shared', 0, '\(shared.sha256)', '\(try payload(shared))', 'a.wav');
+            INSERT INTO entries VALUES ('local-only', 1, '\(localOnly.sha256)', '\(try payload(localOnly))', 'b.mp3');
+            INSERT INTO entries VALUES ('broken', 2, 'not-a-hash', '{', NULL);
+            PRAGMA user_version = 9;
+            """
+        XCTAssertEqual(sqlite3_exec(connection, legacy, nil, nil, nil), SQLITE_OK)
+
+        for _ in 0..<2 {
+            let migrated = try store.database()
+            XCTAssertEqual(try migrated.hostConnection(), host)
+            XCTAssertEqual(try migrated.snapshot()?.catalog.entries, catalog.entries)
+        }
+        XCTAssertTrue(FileManager.default.fileExists(atPath: store.fileURL(shared).path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: store.fileURL(localOnly).path))
+        for name in ["active", "folder.bookmark", "catalog.json"] {
+            XCTAssertFalse(FileManager.default.fileExists(atPath: store.root.appendingPathComponent(name).path))
+        }
+        var statement: OpaquePointer?
+        XCTAssertEqual(sqlite3_prepare_v2(connection, "SELECT name FROM sqlite_master WHERE type = 'table'", -1, &statement, nil), SQLITE_OK)
+        var tables = Set<String>()
+        while sqlite3_step(statement) == SQLITE_ROW { tables.insert(String(cString: sqlite3_column_text(statement, 0))) }
+        sqlite3_finalize(statement)
+        XCTAssertTrue(tables.isDisjoint(with: ["catalog", "entries", "organization", "artwork_assets"]))
+        XCTAssertEqual(sqlite3_prepare_v2(connection, "SELECT count(*) FROM received_files WHERE sha256 = '\(localOnly.sha256)'", -1, &statement, nil), SQLITE_OK)
+        XCTAssertEqual(sqlite3_step(statement), SQLITE_ROW)
+        XCTAssertEqual(sqlite3_column_int(statement, 0), 0)
+        sqlite3_finalize(statement)
+    }
+
+    func testPinBackfillSkipsAnUnreadableHostEntry() throws {
+        let (store, catalog) = try storeWithAudio()
+        let entry = catalog.entries[0]
+        let host = HostConnection(address: try HostAddress("https://host.example.test"),
+                                  library: catalog.id, name: catalog.name, hosts: [])
+        try store.database().saveHostCatalog(CatalogUpdate(catalog: catalog), connection: host, replacing: nil)
+        var connection: OpaquePointer?
+        XCTAssertEqual(sqlite3_open(store.root.appendingPathComponent("catalog.sqlite").path, &connection), SQLITE_OK)
+        defer { sqlite3_close(connection) }
+        // A database from before host_switch, holding one host entry that no longer decodes.
+        let legacy = """
+            ALTER TABLE host_connection DROP COLUMN host_switch;
+            INSERT INTO host_entries VALUES ('broken', 1, '{');
+            PRAGMA user_version = 7;
+            """
+        XCTAssertEqual(sqlite3_exec(connection, legacy, nil, nil, nil), SQLITE_OK)
+
+        let migrated = try store.database()
+        XCTAssertTrue(try migrated.hasAudioPin(entry))
+        XCTAssertEqual(try migrated.hostConnection()?.library, catalog.id)
     }
 
     func testVersionSevenWithOnlyASharedSnapshotOpensWithoutALibrary() throws {
@@ -126,7 +201,8 @@ final class CatalogMigrationTests: XCTestCase {
     }
 
     func testCatalogReadRetainsUnchangedArtworkFileAndRepairsMissingCopy() throws {
-        let (store, catalog) = try legacyStore()
+        let (store, catalog) = try storeWithAudio()
+        try saveHostFixture(catalog.entries, in: store)
         _ = try store.load()
         let image = store.artworkURL(catalog.entries[0])
         let originalDate = Date(timeIntervalSince1970: 1_000_000)
@@ -139,48 +215,15 @@ final class CatalogMigrationTests: XCTestCase {
     }
 
     func testCurrentSchemaMetadataAccessDoesNotDecodeEntriesButSnapshotStillValidates() throws {
-        let (store, _) = try legacyStore()
+        let (store, catalog) = try storeWithAudio()
+        try saveHostFixture(catalog.entries, in: store)
         _ = try store.load()
         var connection: OpaquePointer?
         XCTAssertEqual(sqlite3_open(store.root.appendingPathComponent("catalog.sqlite").path, &connection), SQLITE_OK)
         defer { sqlite3_close(connection) }
-        XCTAssertEqual(sqlite3_exec(connection, "UPDATE entries SET payload = 'invalid JSON'", nil, nil, nil), SQLITE_OK)
+        XCTAssertEqual(sqlite3_exec(connection, "UPDATE host_entries SET payload = 'invalid JSON'", nil, nil, nil), SQLITE_OK)
         XCTAssertTrue(try store.database().containsCatalog())
         XCTAssertThrowsError(try store.load())
-    }
-
-    func testSchemaTwoRepairIsTransactionalAndRepeatable() throws {
-        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
-        defer { try? FileManager.default.removeItem(at: root) }
-        let store = LocalMusicStore(root: root)
-        let entries = ["one", "two"].map { id in
-            LocalEntry(track: Track(id: id, title: id, artist: id, album: "Collection", suffix: "mp3", size: 3),
-                sha256: String(repeating: id == "one" ? "a" : "b", count: 64), artwork: nil,
-                importedAlbum: ImportedAlbumMetadata(title: "Collection", artist: id, compilationValues: ["1"]))
-        }
-        try store.save(LocalCatalog(id: "source", name: "Collection", entries: entries))
-        let original = try XCTUnwrap(store.load()?.organization)
-        XCTAssertEqual(original.albums.count, 2)
-        var connection: OpaquePointer?
-        XCTAssertEqual(sqlite3_open(root.appendingPathComponent("catalog.sqlite").path, &connection), SQLITE_OK)
-        defer { sqlite3_close(connection) }
-        XCTAssertEqual(sqlite3_exec(connection, "UPDATE catalog SET source_root = 'unavailable-source'; UPDATE entries SET source_path = 'Collection/' || id || '.mp3'; PRAGMA user_version = 2; CREATE TRIGGER reject_repair BEFORE UPDATE ON organization BEGIN SELECT RAISE(ABORT, 'fixture failure'); END; CREATE TRIGGER reject_insert BEFORE INSERT ON organization BEGIN SELECT RAISE(ABORT, 'fixture failure'); END;", nil, nil, nil), SQLITE_OK)
-        XCTAssertThrowsError(try store.load())
-        var statement: OpaquePointer?
-        XCTAssertEqual(sqlite3_prepare_v2(connection, "PRAGMA user_version", -1, &statement, nil), SQLITE_OK)
-        XCTAssertEqual(sqlite3_step(statement), SQLITE_ROW)
-        XCTAssertEqual(sqlite3_column_int(statement, 0), 2)
-        sqlite3_finalize(statement)
-        XCTAssertEqual(sqlite3_prepare_v2(connection, "SELECT payload FROM organization", -1, &statement, nil), SQLITE_OK)
-        XCTAssertEqual(sqlite3_step(statement), SQLITE_ROW)
-        let payload = String(cString: sqlite3_column_text(statement, 0))
-        sqlite3_finalize(statement)
-        XCTAssertEqual(try JSONDecoder().decode(AlbumOrganization.self, from: Data(payload.utf8)), original)
-        XCTAssertEqual(sqlite3_exec(connection, "DROP TRIGGER reject_repair; DROP TRIGGER reject_insert;", nil, nil, nil), SQLITE_OK)
-        let repaired = try XCTUnwrap(store.load()?.organization)
-        XCTAssertEqual(repaired.albumID(for: "one"), repaired.albumID(for: "two"))
-        XCTAssertEqual(repaired.tracks.map(\.id), original.tracks.map(\.id))
-        XCTAssertEqual(try store.load()?.organization, repaired)
     }
 
     func testHeadlessEntryJSONContractRoundTripsInNativeModel() throws {
@@ -199,7 +242,7 @@ final class CatalogMigrationTests: XCTestCase {
         XCTAssertEqual(try JSONSerialization.jsonObject(with: encoded) as? NSDictionary, original)
     }
 
-    private func legacyStore() throws -> (LocalMusicStore, LocalCatalog) {
+    private func storeWithAudio() throws -> (LocalMusicStore, LocalCatalog) {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         addTeardownBlock { try? FileManager.default.removeItem(at: root) }
         let store = LocalMusicStore(root: root)
@@ -208,61 +251,7 @@ final class CatalogMigrationTests: XCTestCase {
             sha256: "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad", artwork: Data([1, 2, 3]))
         let catalog = LocalCatalog(id: "legacy-library", name: "Music", entries: [entry])
         try Data("abc".utf8).write(to: store.fileURL(entry))
-        try JSONEncoder().encode(catalog).write(to: root.appendingPathComponent("catalog.json"))
-        try Data("bookmark fixture".utf8).write(to: root.appendingPathComponent("folder.bookmark"))
-        try Data().write(to: root.appendingPathComponent("active"))
         return (store, catalog)
     }
 
-    func testMigrationRetainsIDsAudioArtworkAndIgnoresLegacyAfterCommit() throws {
-        let (store, catalog) = try legacyStore()
-        let legacy = store.root.appendingPathComponent("catalog.json")
-        let original = try Data(contentsOf: legacy)
-        let migrated = try XCTUnwrap(store.load())
-        XCTAssertEqual(migrated.id, catalog.id)
-        XCTAssertEqual(migrated.entries, catalog.entries)
-        XCTAssertEqual(try Data(contentsOf: legacy), original)
-        XCTAssertEqual(try Data(contentsOf: store.artworkURL(catalog.entries[0])), Data([1, 2, 3]))
-        XCTAssertEqual(try Data(contentsOf: store.root.appendingPathComponent("folder.bookmark")), Data("bookmark fixture".utf8))
-        XCTAssertTrue(FileManager.default.fileExists(atPath: store.root.appendingPathComponent("active").path))
-        var updated = catalog
-        updated.name = "Renamed library"
-        try store.save(updated)
-        try Data("invalid legacy JSON".utf8).write(to: legacy)
-        let reopened = LocalMusicStore(root: store.root)
-        XCTAssertEqual(try reopened.load()?.name, "Renamed library")
-        XCTAssertEqual(try Data(contentsOf: reopened.fileURL(catalog.entries[0])), Data("abc".utf8))
-        XCTAssertTrue(reopened.hasFile(catalog.entries[0]))
-    }
-
-    func testFailedMigrationCanRetryWithoutLosingLegacyFiles() throws {
-        let (store, catalog) = try legacyStore()
-        var invalid = catalog
-        invalid.entries.append(catalog.entries[0])
-        let legacy = store.root.appendingPathComponent("catalog.json")
-        try JSONEncoder().encode(invalid).write(to: legacy)
-        XCTAssertThrowsError(try store.load())
-        XCTAssertEqual(try JSONDecoder().decode(LocalCatalog.self, from: Data(contentsOf: legacy)).entries.count, 2)
-        XCTAssertEqual(try Data(contentsOf: store.fileURL(catalog.entries[0])), Data("abc".utf8))
-        try JSONEncoder().encode(catalog).write(to: legacy)
-        XCTAssertEqual(try store.load()?.entries, catalog.entries)
-    }
-
-    func testFailedReplacementRollsBackAndCorruptDatabaseDoesNotRestoreStaleJSON() throws {
-        let (store, catalog) = try legacyStore()
-        _ = try store.load()
-        let url = store.root.appendingPathComponent("catalog.sqlite")
-        var connection: OpaquePointer?
-        XCTAssertEqual(sqlite3_open(url.path, &connection), SQLITE_OK)
-        XCTAssertEqual(sqlite3_exec(connection, "CREATE TRIGGER reject_entry BEFORE INSERT ON entries BEGIN SELECT RAISE(ABORT, 'fixture write failure'); END", nil, nil, nil), SQLITE_OK)
-        sqlite3_close(connection)
-        var updated = catalog
-        updated.name = "Must not commit"
-        XCTAssertThrowsError(try store.save(updated))
-        XCTAssertEqual(try store.load()?.name, catalog.name)
-        XCTAssertEqual(try store.load()?.entries, catalog.entries)
-        try Data("broken database".utf8).write(to: url, options: .atomic)
-        XCTAssertThrowsError(try LocalMusicStore(root: store.root).load())
-        XCTAssertTrue(store.hasFile(catalog.entries[0]))
-    }
 }

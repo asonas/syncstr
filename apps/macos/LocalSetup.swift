@@ -1,29 +1,8 @@
 import SwiftUI
-import UniformTypeIdentifiers
 #if os(iOS)
 import AVFoundation
 import VisionKit
 #endif
-
-struct AddMusicButton: View {
-    @ObservedObject var library: Library
-    @State private var importing = false
-
-    var body: some View {
-        if library.transfer.showsLibraryEditControls {
-            VStack(alignment: .leading, spacing: 4) {
-                Button("音楽ファイルを追加") { importing = true }
-                    .disabled(library.refreshing || library.transfer.busy)
-                    .fileImporter(isPresented: $importing, allowedContentTypes: [.audio], allowsMultipleSelection: true) { result in
-                        switch result {
-                        case .success(let files): Task { await library.addMusic(files) }
-                        case .failure(let error): library.message = error.localizedDescription
-                        }
-                    }
-            }
-        }
-    }
-}
 
 struct MusicImage<Content: View, Placeholder: View>: View {
     let url: URL?
@@ -43,25 +22,7 @@ struct MusicImage<Content: View, Placeholder: View>: View {
     }
 }
 
-#if os(macOS)
-struct LocalFolderButton: View {
-    @ObservedObject var library: Library
-    var body: some View {
-        Button(library.refreshing ? "音楽を読み込み中…" : "音楽フォルダを選ぶ") {
-            let panel = NSOpenPanel()
-            panel.canChooseDirectories = true
-            panel.canChooseFiles = false
-            panel.allowsMultipleSelection = false
-            panel.prompt = "選択"
-            panel.begin { response in
-                guard response == .OK, let url = panel.url else { return }
-                Task { await library.chooseFolder(url) }
-            }
-        }.disabled(library.refreshing || !library.transfer.canChooseFolder)
-    }
-}
-
-#else
+#if os(iOS)
 struct PairingScanner: UIViewControllerRepresentable {
     var onFailure: () -> Void
     var onCode: (String) -> Void

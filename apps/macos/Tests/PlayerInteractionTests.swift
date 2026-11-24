@@ -18,7 +18,7 @@ final class PlayerInteractionTests: XCTestCase {
             LocalEntry(track: Track(id: "track-\(number)", title: "Track \(number)", artist: "Artist",
                 duration: 20, suffix: "wav", size: 4), sha256: String(repeating: String(number), count: 64), artwork: nil)
         }
-        try library.openLocal(LocalCatalog(id: "fixture-library", name: "Fixture", entries: entries))
+        try showHostCatalog(LocalCatalog(id: "fixture-library", name: "Fixture", entries: entries), in: library)
         return library
     }
 
@@ -154,7 +154,7 @@ final class PlayerInteractionTests: XCTestCase {
         library.pause()
         var catalog = try XCTUnwrap(library.localCatalog)
         catalog.entries.removeAll { $0.track.id == selected.id }
-        try library.openLocal(catalog)
+        try showHostCatalog(catalog, in: library)
         XCTAssertEqual(library.current?.id, selected.id)
         XCTAssertNotNil(library.playbackFailure)
         library.resumePlayback()
@@ -201,6 +201,36 @@ final class PlayerInteractionTests: XCTestCase {
         cache.protectedURL = nil
         try cache.trim(incoming: 1_000_000_000)
         XCTAssertFalse(FileManager.default.fileExists(atPath: recent.path))
+    }
+
+    func testClearingCacheKeepsPlayingAudio() async throws {
+        let cache = PlaybackCache(root: root.appendingPathComponent("cache"))
+        try cache.store.prepare()
+        let idle = cache.store.root.appendingPathComponent(String(repeating: "a", count: 64) + ".wav")
+        let playing = cache.store.root.appendingPathComponent(String(repeating: "b", count: 64) + ".wav")
+        for url in [idle, playing] { try Data(repeating: 0, count: 6).write(to: url) }
+        cache.protectedURL = playing
+        try await cache.clear()
+        XCTAssertFalse(FileManager.default.fileExists(atPath: idle.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: playing.path))
+        XCTAssertEqual(cache.limitGB, 10)
+    }
+
+    func testVerifiedCacheFileSurvivesTrimsUntilReleased() async throws {
+        let cache = PlaybackCache(root: root.appendingPathComponent("cache"))
+        try cache.store.prepare()
+        let bytes = Data(repeating: 7, count: 6)
+        let entry = LocalEntry(track: Track(id: "cached", title: "Cached", artist: "Artist", suffix: "wav", size: UInt64(bytes.count)),
+                               sha256: LocalMusicStore.digest(bytes), artwork: nil)
+        try bytes.write(to: cache.store.fileURL(entry))
+        let verified = try await cache.fileInBackground(entry)
+        let url = try XCTUnwrap(verified)
+        // The player has not protected the file yet.
+        try await cache.clear()
+        XCTAssertTrue(FileManager.default.fileExists(atPath: url.path))
+        cache.release(url)
+        try await cache.clear()
+        XCTAssertFalse(FileManager.default.fileExists(atPath: url.path))
     }
 
     func testBackgroundAcquisitionStopsUntilExplicitForegroundRetry() async throws {

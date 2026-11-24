@@ -79,11 +79,11 @@ once on the origin album, with normal back navigation.
 
 - Use native navigation and search controls. On iPad, keep library categories in a `NavigationSplitView` sidebar and allow the system to collapse it for narrow windows. Keep navigation identity stable while resizing. iPhone keeps its library, search, and settings tabs.
 - Adapt album grid columns to the available width, using one column at accessibility text sizes. Album details use side-by-side artwork and metadata only when the content is wide enough; otherwise center them vertically.
-- Place title/artist sort and selection actions at the trailing edge of the album navigation bar. A normal tap opens details. Selection mode and Command-click support multiple albums; batch hide/restore acts on the selection. Sorting, visibility, and search do not change the playback queue.
-- Keep album visibility in the grid selection bar and context menu. Place an icon-only save action with a minimum 44-point target beside Play in details, retaining progress, cancellation, retry, and removal states. Returning from details centers the opened album.
+- Place the title/artist sort action at the trailing edge of the album navigation bar. A tap opens details. Sorting and search do not change the playback queue. Album visibility comes from the host; the apps list hidden albums but do not hide or restore them.
+- Place an icon-only save action with a minimum 44-point target beside Play in details, retaining progress, cancellation, retry, and removal states. Returning from details centers the opened album.
 - Album track rows show a play icon for the current or hovered track, with blue/white current-track styling and a preparation spinner while loading. Touch operation does not depend on hover.
 - Search does not request focus automatically. End editing when acting on content or scrolling, and preserve the query when leaving the field. Text editing retains normal space entry; playback shortcuts apply outside editing.
-- Show playback diagnostic copying next to a failure and in Settings. Preserve the shared attempt IDs, retry chain, redaction, retention limits, and JSONL export format.
+- Show playback diagnostic copying next to a failure and in the Settings diagnostics list. Preserve the shared attempt IDs, retry chain, redaction, retention limits, and JSONL export format.
 
 The [iPhone and iPad layout reference](https://www.figma.com/design/KtfBubkg9KiK5LuLHIm8Qt?node-id=123-196) uses existing Syncstr components and fictional artwork. Its flat navigation preview does not override native Liquid Glass rendering.
 
@@ -102,22 +102,33 @@ The [macOS Music-inspired exploration](https://www.figma.com/design/KtfBubkg9KiK
 ### Information and Actions
 
 - The [album selection and sorting design](https://www.figma.com/design/KtfBubkg9KiK5LuLHIm8Qt?node-id=83-3) adds a circular, icon-only sort menu beside search. Its custom three-line icon follows the Lucide specification (24-point canvas, centered 2-point strokes, round caps and joins). This approved icon is an exception to the Regen-only rule above.
-- In the macOS album grid, click opens the album immediately. Command-click adds or removes an album from the batch selection, and Return opens a single selected album. Escape clears selection. Highlight batch-selected cards with a Signal Blue outline and Iron background. Show the selection count and batch visibility action in the toolbar; the context menu acts on the selection when opened on a selected card.
+- In the macOS album grid, click opens the album immediately. The context menu offers “Open Album.”
 - Sort by title or artist, with the other field as the secondary key, in ascending or descending natural order. Sorting applies to the visible album list, including hidden albums and search results, without changing the playback queue.
 - Do not repeat the sidebar selection as a content heading such as “Albums.” Omit headings such as “Library,” “Now Playing,” or “Playback Queue” when they do not help explain an action or information. Remove spacing reserved for any removed heading.
 - Communicate selection and playback through backgrounds, colors, and icons. Do not repeat visually apparent state with “Selected” or “Playing” text. Supply VoiceOver labels and accessibility attributes such as selection state.
 - Show waiting, sending, failure, and other states needed to choose the next action. This is not a blanket rule to remove status text.
-- Keep albums, artists, tracks, music import, and “Refresh Library” in the persistent sidebar. Do not add a heading that repeats the brand or a button to close the sidebar.
-- Put host connection controls in Settings on both platforms. Put the automatic cellular transfer toggle in the saving section. On the Mac, enable local music-folder selection when no host is connected. Keep save progress and cancellation visible.
+- Keep albums, artists, tracks, and “Refresh Library” in the persistent sidebar. Do not add a heading that repeats the brand or a button to close the sidebar.
+- Put host connection controls in Settings on both platforms. Keep save progress and cancellation visible.
 
 ### Album Details
 
 Follow Music.app's information placement: group the album title, artist, and track count beside the artwork, with Play below them. The button starts with the first track in disc and track-number order. Place the track list directly below.
 
 - Place the icon-only Back action and search in a shared header inside the content column, to the right of the sidebar divider. Use 8-point horizontal header insets and 32-point content insets to distinguish navigation controls from album content. Extend this header into the hidden titlebar area so controls occupy the top row rather than leaving an empty titlebar above them. Keep sidebar content clear of the window controls. Returning to the album grid centers the album that was open.
-- Place an icon-only download action beside Play. Preserve save progress, cancellation, retry, and local-copy removal states. Keep album visibility actions in grid selection and context menus rather than in the detail header.
+- Place an icon-only download action beside Play. Preserve save progress, cancellation, retry, and local-copy removal states.
 - Abbreviate an aggregate of multiple track artists to `V.A.` in the detail header. Preserve a consistent, explicit album artist, full credits in browsing, and individual track artists.
 - In album track rows, show Play in place of the track number when hovered or when the track is current. Preserve the existing playback action. Follow the [approved track selection design](https://www.figma.com/design/KtfBubkg9KiK5LuLHIm8Qt?node-id=103-1142): Iron background on hover, Button Blue background with white text and icons for the current row. Keep song-table row styling separate.
+
+### Settings
+
+The [approved settings proposal](https://www.figma.com/design/KtfBubkg9KiK5LuLHIm8Qt?node-id=200-3) groups the settings by what a host reader manages.
+
+- iPhone and iPad use one native `Form`: Library, Saved Music, Playback Cache, Appearance, then Playback Diagnostics and the version. Appearance and diagnostics open their own screens.
+- The Mac Settings window uses tabs: General (appearance, version), Library, Storage (saved music, playback cache), and Advanced (playback diagnostics). Tab icons are SF Symbols because the tab bar is native window chrome.
+- Library shows the library name and host address, track count, last refresh time, Refresh Library, Change Host, and Disconnect. Without a host it shows only Connect to Host. Checking a changed host library appears only after a refresh finds one.
+- Saved music and the playback cache are separate sections. The separation tells that saved music does not count toward the cache limit; do not add a caption for it. The automatic cellular transfer toggle sits in Saved Music on iPhone and iPad.
+- Let grouping and placement explain. Add a caption only where an action's result could be misread: the diagnostics footer says copied records include track titles and device identifiers, and deleting all saved music or disconnecting asks for confirmation. Clearing the cache keeps the playing file and needs no confirmation.
+- Do not show a success message for actions whose result is already visible, such as the last refresh time after Refresh Library.
 
 ### Search and Windows
 

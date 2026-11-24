@@ -1,5 +1,4 @@
 import Foundation
-import SwiftUI
 
 @MainActor
 class PlaybackCache {
@@ -9,20 +8,48 @@ class PlaybackCache {
     private(set) var limitGB: Int
     private(set) var maintenance: Task<Void, Never>?
     private var maintenanceID = UUID()
+    /// Files between the start of their verification and the moment the player or a save protects them.
+    private var leases: [String: Int] = [:]
 
-    func requestTrim(after acquisition: Task<Void, Never>?, onError: @escaping (Error) -> Void) {
+    /// The playing file and every leased file. Trims and removals skip these paths.
+    var protectedPaths: Set<String> {
+        var paths = Set(leases.keys)
+        if let protectedURL { paths.insert(protectedURL.resolvingSymlinksInPath().path) }
+        return paths
+    }
+
+    func release(_ url: URL) {
+        let path = url.resolvingSymlinksInPath().path
+        guard let count = leases[path] else { return }
+        leases[path] = count > 1 ? count - 1 : nil
+    }
+
+    func lease(_ url: URL) {
+        leases[url.resolvingSymlinksInPath().path, default: 0] += 1
+    }
+
+    /// Every trim, including clearing and making room for a download, goes through this chain so two passes
+    /// never walk the folder at once. The protected paths are read when the pass starts.
+    @discardableResult
+    func requestTrim(after acquisition: Task<Void, Never>?, emptying: Bool = false, incoming: UInt64? = nil,
+                     onError: @escaping (Error) -> Void) -> Task<Void, Never> {
         let previous = maintenance
         let token = UUID()
-        maintenanceID = token
-        maintenance = Task { [weak self] in
+        // Clearing and making room report to their own caller; a routine trim reports only if it is the latest.
+        let reportsOwnError = emptying || incoming != nil
+        if !reportsOwnError { maintenanceID = token }
+        let task = Task { [weak self] in
             await previous?.value
             await acquisition?.value
             guard let self else { return }
-            do { try await Self.makeRoom(store: store, incoming: 0, limitGB: limitGB, protectedURL: protectedURL) }
-            catch {
-                if maintenanceID == token { onError(error) }
+            do {
+                try await Self.makeRoom(store: store, incoming: incoming ?? 0, limitGB: emptying ? 0 : limitGB, protected: protectedPaths)
+            } catch {
+                if maintenanceID == token || reportsOwnError { onError(error) }
             }
         }
+        maintenance = task
+        return task
     }
 
     var usedBytes: Int64 {
@@ -38,23 +65,36 @@ class PlaybackCache {
         limitGB = min(1000, max(1, limitGB))
     }
 
-    func setLimit(_ value: Int) throws {
+    func setLimit(_ value: Int, onTrimError: @escaping (Error) -> Void = { _ in }) throws {
         try store.prepare()
         limitGB = min(1000, max(1, value))
         try JSONEncoder().encode(limitGB).write(to: settings, options: .atomic)
-        try trim()
+        requestTrim(after: nil, onError: onTrimError)
     }
 
     func file(_ entry: LocalEntry, diagnostic: PlaybackDiagnosticContext? = nil) throws -> URL? {
         try Self.verifiedFile(entry, store: store, diagnostic: diagnostic)
     }
 
+    /// A returned file stays leased until the caller passes it to `release(_:)`, so a trim cannot remove it
+    /// between verification and the player or save taking it over.
     func fileInBackground(_ entry: LocalEntry, diagnostic: PlaybackDiagnosticContext? = nil) async throws -> URL? {
         // A trim scheduled by stop() may be waiting for this acquisition.
         try Task.checkCancellation()
-        await maintenance?.value
-        try Task.checkCancellation()
-        return try await Self.verifyInBackground(entry, store: store, diagnostic: diagnostic)
+        let url = store.fileURL(entry)
+        lease(url)
+        do {
+            await maintenance?.value
+            try Task.checkCancellation()
+            guard let verified = try await Self.verifyInBackground(entry, store: store, diagnostic: diagnostic) else {
+                release(url)
+                return nil
+            }
+            return verified
+        } catch {
+            release(url)
+            throw error
+        }
     }
 
     @concurrent
@@ -71,7 +111,14 @@ class PlaybackCache {
                 return nil
             }
             let url = store.fileURL(entry)
-            guard try LocalMusicStore.digest(file: url) == entry.sha256 else {
+            let digest: String
+            do { digest = try LocalMusicStore.digest(file: url) }
+            catch let error as CocoaError where error.code == .fileNoSuchFile || error.code == .fileReadNoSuchFile {
+                // A trim or clear removed the file after the size check.
+                diagnostic?.record("cache", "miss", fields: ["reason": "removed_during_verification"])
+                return nil
+            }
+            guard digest == entry.sha256 else {
                 diagnostic?.record("cache", "hash", outcome: "mismatch")
                 try FileManager.default.removeItem(at: url)
                 return nil
@@ -86,70 +133,54 @@ class PlaybackCache {
         try FileManager.default.setAttributes([.modificationDate: Date()], ofItemAtPath: url.path)
     }
 
-    func makeRoom(for entry: LocalEntry) throws {
-        try store.prepare()
-        try trim(incoming: entry.track.size ?? 0)
-    }
-
     func makeRoomInBackground(for entry: LocalEntry) async throws {
+        // Checked before joining the chain: stop() cancels the acquisition and then queues a trim that waits for it.
         try Task.checkCancellation()
-        await maintenance?.value
+        var failure: Error?
+        await requestTrim(after: nil, incoming: entry.track.size ?? 0) { failure = $0 }.value
         try Task.checkCancellation()
-        try await Self.makeRoom(store: store, incoming: entry.track.size ?? 0, limitGB: limitGB, protectedURL: protectedURL)
+        if let failure { throw failure }
     }
 
     @concurrent
-    private static func makeRoom(store: LocalMusicStore, incoming: UInt64, limitGB: Int, protectedURL: URL?) async throws {
+    private static func makeRoom(store: LocalMusicStore, incoming: UInt64, limitGB: Int, protected: Set<String>) async throws {
         try Task.checkCancellation()
         if incoming > 0 { try store.prepare() }
-        try trimFiles(store: store, incoming: incoming, limitGB: limitGB, protectedURL: protectedURL)
+        try trimFiles(store: store, incoming: incoming, limitGB: limitGB, protected: protected)
     }
 
     func trim(incoming: UInt64 = 0) throws {
-        try Self.trimFiles(store: store, incoming: incoming, limitGB: limitGB, protectedURL: protectedURL)
+        try Self.trimFiles(store: store, incoming: incoming, limitGB: limitGB, protected: protectedPaths)
     }
 
-    nonisolated private static func trimFiles(store: LocalMusicStore, incoming: UInt64, limitGB: Int, protectedURL: URL?) throws {
+    /// Keeps the file that is playing now. Saved music lives in a different store and is not touched.
+    func clear() async throws {
+        var failure: Error?
+        await requestTrim(after: nil, emptying: true) { failure = $0 }.value
+        if let failure { throw failure }
+    }
+
+    nonisolated private static func trimFiles(store: LocalMusicStore, incoming: UInt64, limitGB: Int, protected: Set<String>) throws {
         try Task.checkCancellation()
         let directory = store.root
         guard FileManager.default.fileExists(atPath: directory.path) else { return }
         let files = try FileManager.default.contentsOfDirectory(at: directory,
             includingPropertiesForKeys: [.fileSizeKey, .contentModificationDateKey, .isRegularFileKey])
-        let entries = try files.compactMap { url -> (URL, UInt64, Date)? in
-            guard SHA256Hex.isValid(url.deletingPathExtension().lastPathComponent),
-                  ["mp3", "m4a", "aac", "flac", "wav", "aiff", "aif", "alac", "audio"].contains(url.pathExtension) else { return nil }
-            let info = try url.resourceValues(forKeys: [.fileSizeKey, .contentModificationDateKey, .isRegularFileKey])
-            guard info.isRegularFile == true else { return nil }
+        let entries = files.compactMap { url -> (URL, UInt64, Date)? in
+            guard LocalMusicStore.isAudioFileName(url) else { return nil }
+            // Another pass may have removed the file after the listing.
+            guard let info = try? url.resourceValues(forKeys: [.fileSizeKey, .contentModificationDateKey, .isRegularFileKey]),
+                  info.isRegularFile == true else { return nil }
             return (url, UInt64(info.fileSize ?? 0), info.contentModificationDate ?? .distantPast)
         }.sorted { $0.2 < $1.2 }
         var total = entries.reduce(UInt64(0)) { $0 + $1.1 }
         let budget = UInt64(limitGB) * 1_000_000_000
         for (url, size, _) in entries where total + incoming > budget {
             try Task.checkCancellation()
-            guard url.resolvingSymlinksInPath().path != protectedURL?.resolvingSymlinksInPath().path else { continue }
-            try FileManager.default.removeItem(at: url)
+            guard !protected.contains(url.resolvingSymlinksInPath().path) else { continue }
+            do { try FileManager.default.removeItem(at: url) }
+            catch CocoaError.fileNoSuchFile {}
             total -= size
-        }
-    }
-}
-
-struct PlaybackStorageSettings: View {
-    @ObservedObject var library: Library
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Toggle("モバイル通信でも自動転送する", isOn: Binding(get: { library.transfer.automaticCellular }, set: library.transfer.setAutomaticCellular))
-            Stepper("再生キャッシュの上限: \(library.transfer.playbackCache.limitGB) GB", value: Binding(
-                get: { library.transfer.playbackCache.limitGB },
-                set: { value in
-                    do { try library.transfer.playbackCache.setLimit(value); library.objectWillChange.send() }
-                    catch { library.message = "キャッシュ容量を変更できませんでした。\(error.localizedDescription)" }
-                }
-            ), in: 1...1000)
-            Text("明示的に保存した音楽は、この上限と自動削除の対象外です。")
-                .font(.caption).foregroundStyle(.secondary)
-            LabeledContent("再生キャッシュ", value: ByteCountFormatter.string(fromByteCount: library.transfer.playbackCache.usedBytes, countStyle: .decimal))
-            LabeledContent("保存済み音源", value: ByteCountFormatter.string(fromByteCount: library.savedAudioBytes, countStyle: .decimal))
         }
     }
 }

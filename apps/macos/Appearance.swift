@@ -51,6 +51,9 @@ struct AppearanceSettings: View {
                 Text(appearance.title).tag(appearance)
             }
         }
+#if os(iOS)
+        .pickerStyle(.navigationLink)
+#endif
         .accessibilityIdentifier("appearance-picker")
     }
 }

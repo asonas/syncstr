@@ -22,6 +22,15 @@ struct PlaybackDiagnosticTrace: Codable, Identifiable, Sendable {
     var omittedByStage: [String: Int] = [:]
     var events: [PlaybackDiagnosticEvent] = []
     var bytes = 0
+
+    var connectionHistoryIncomplete: Bool {
+        events.contains { $0.stage == "connection_history" && (Int($0.fields["history_omitted"] ?? "0") ?? 0) > 0 }
+    }
+
+    /// Shared by the settings list and the export, so both report the same attempts as incomplete.
+    func isComplete(persistenceFailed: Bool) -> Bool {
+        omitted == 0 && !connectionHistoryIncomplete && !persistenceFailed && outcome != "interrupted"
+    }
 }
 
 struct ConnectionDiagnosticEvent: Codable, Sendable {
@@ -218,7 +227,13 @@ final class PlaybackDiagnostics: @unchecked Sendable {
         }
     }
 
-    func export(_ id: String) async -> String {
+    func export(_ id: String) async -> String { await export(id, requireRetained: false) ?? "" }
+
+    /// Returns nil when the selected attempt has already been dropped, so a copy does not report success
+    /// for a log that holds only the header.
+    func exportRetained(_ id: String) async -> String? { await export(id, requireRetained: true) }
+
+    private func export(_ id: String, requireRetained: Bool) async -> String? {
         await withCheckedContinuation { continuation in
             writer.async { [self] in
                 lock.lock(); let snapshot = traces; let failed = persistenceFailed; lock.unlock()
@@ -230,6 +245,10 @@ final class PlaybackDiagnostics: @unchecked Sendable {
                     guard let trace = snapshot.first(where: { $0.id == current }) else { missing.append(current); break }
                     chain.append(trace); next = trace.retryOf
                 }
+                if requireRetained && chain.isEmpty {
+                    continuation.resume(returning: nil)
+                    return
+                }
                 let encoder = JSONEncoder()
                 encoder.outputFormatting = [.sortedKeys]
                 func line<T: Encodable>(_ value: T) -> String {
@@ -238,13 +257,10 @@ final class PlaybackDiagnostics: @unchecked Sendable {
                 var rows = [line(["schema_version": "2", "exported_at": Self.timestamp(), "selected_attempt": id,
                     "missing_ancestors": missing.joined(separator: ","), "persistence_failed": String(failed)])]
                 for trace in chain.reversed() {
-                    let historyIncomplete = trace.events.contains {
-                        $0.stage == "connection_history" && (Int($0.fields["history_omitted"] ?? "0") ?? 0) > 0
-                    }
                     rows.append(line(["attempt_id": trace.id, "retry_of": trace.retryOf ?? "", "title": trace.title,
                         "outcome": trace.outcome, "last_stage": trace.lastStage, "omitted_records": String(trace.omitted),
                         "omitted_by_stage": line(trace.omittedByStage),
-                        "in_progress": String(trace.outcome == "active"), "complete": String(trace.omitted == 0 && !historyIncomplete && !failed && trace.outcome != "interrupted")]))
+                        "in_progress": String(trace.outcome == "active"), "complete": String(trace.isComplete(persistenceFailed: failed))]))
                     rows += trace.events.map(line)
                 }
                 continuation.resume(returning: rows.joined(separator: "\n") + "\n")
@@ -317,16 +333,23 @@ import UIKit
 struct PlaybackDiagnosticCopyButton: View {
     let attemptID: String
     let recorder: PlaybackDiagnostics
+    var title = "診断ログをコピー"
+    var onMissing: () -> Void = {}
     @State private var result: String?
     @State private var copying = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
-            Button("診断ログをコピー") {
+            Button(title) {
                 copying = true
                 let selected = attemptID
                 Task {
-                    let json = await recorder.export(selected)
+                    guard let json = await recorder.exportRetained(selected) else {
+                        result = "この記録はもう残っていません"
+                        copying = false
+                        onMissing()
+                        return
+                    }
 #if os(macOS)
                     NSPasteboard.general.clearContents()
                     result = NSPasteboard.general.setString(json, forType: .string) ? "コピーしました" : "コピーできませんでした"
@@ -342,51 +365,80 @@ struct PlaybackDiagnosticCopyButton: View {
     }
 }
 
-struct PlaybackDiagnosticSettings: View {
+
+struct PlaybackDiagnosticList: View {
     let recorder: PlaybackDiagnostics
     @State private var traces: [PlaybackDiagnosticTrace] = []
-    @State private var selected: String?
     @State private var persistenceFailed = false
+    /// Kept here because the row that reported it leaves the list when the list reloads.
+    @State private var missing: String?
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack {
-                Text("再生診断").font(.headline)
-                Spacer()
-                Button("更新") { Task {
-                    traces = await recorder.recent()
-                    persistenceFailed = await recorder.hasPersistenceFailure()
-                } }
-            }
-            if persistenceFailed {
-                Text("診断ログを保存できませんでした。コピーできる記録が一部に限られる場合があります。")
-                    .font(.caption).foregroundStyle(.secondary)
-            }
-            if traces.isEmpty {
-                Text("再生の記録はまだありません。").foregroundStyle(.secondary)
-            } else {
-                Picker("再生の試行", selection: $selected) {
-                    Text("試行を選択").tag(String?.none)
-                    ForEach(traces) { trace in
-                        Text("\(trace.started) — \(trace.title)").tag(Optional(trace.id))
+        Form {
+            Section {
+                if let missing { Text(missing).foregroundStyle(.secondary) }
+                if traces.isEmpty {
+                    Text("再生の記録はまだありません。").foregroundStyle(.secondary)
+                }
+                ForEach(traces) { trace in
+                    HStack(alignment: .firstTextBaseline, spacing: 12) {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(trace.title).lineLimit(2)
+                            HStack(spacing: 0) {
+                                Text("\(Self.started(trace))・")
+                                Text(Self.outcome(trace.outcome))
+                                    .foregroundStyle(trace.outcome == "failed" ? Color.red : .secondary)
+                                Text("・\(trace.lastStage)")
+                            }
+                            .font(.callout).foregroundStyle(.secondary)
+                            if !trace.isComplete(persistenceFailed: persistenceFailed) {
+                                Text("一部の記録がありません").font(.callout).foregroundStyle(.secondary)
+                            }
+                        }
+                        Spacer(minLength: 0)
+                        PlaybackDiagnosticCopyButton(attemptID: trace.id, recorder: recorder, title: "コピー") {
+                            missing = "「\(trace.title)」の記録はもう残っていません"
+                            Task { await load() }
+                        }
+                            .accessibilityLabel("\(trace.title)の診断ログをコピー")
                     }
                 }
-                if let trace = traces.first(where: { $0.id == selected }) {
-                    Text("\(outcome(trace.outcome))・\(trace.lastStage)").font(.caption)
-                    if trace.omitted > 0 { Text("一部の記録がありません（\(trace.omitted)件）。").font(.caption) }
-                    PlaybackDiagnosticCopyButton(attemptID: trace.id, recorder: recorder).id(trace.id)
-                }
+            } footer: {
+                VStack(alignment: .leading, spacing: 4) {
+                    if persistenceFailed { Text("診断ログを保存できませんでした。コピーできる記録が一部に限られる場合があります。") }
+                    Text("コピーした記録には曲名と端末の識別情報が含まれます。")
+                }.foregroundStyle(.secondary)
             }
-            Text("直近20試行・最大5 MBをこの端末に保存します。コピーには曲名と端末の識別情報が含まれます。")
-                .font(.caption).foregroundStyle(.secondary)
-        }.task {
-            traces = await recorder.recent()
-            selected = traces.first?.id
-            persistenceFailed = await recorder.hasPersistenceFailure()
         }
+        .formStyle(.grouped)
+#if os(macOS)
+        // The Settings window has no pull to refresh, and playback happens in another window.
+        .task {
+            while !Task.isCancelled {
+                await load()
+                try? await Task.sleep(for: .seconds(2))
+            }
+        }
+#else
+        .task { await load() }
+#endif
+#if os(iOS)
+        .navigationTitle("再生診断")
+        .refreshable { await load() }
+#endif
     }
 
-    private func outcome(_ value: String) -> String {
+    private func load() async {
+        traces = await recorder.recent()
+        persistenceFailed = await recorder.hasPersistenceFailure()
+    }
+
+    private static func started(_ trace: PlaybackDiagnosticTrace) -> String {
+        guard let date = ISO8601DateFormatter().date(from: trace.started) else { return trace.started }
+        return date.formatted(date: Calendar.current.isDateInToday(date) ? .omitted : .abbreviated, time: .shortened)
+    }
+
+    private static func outcome(_ value: String) -> String {
         switch value {
         case "active": "再生中・取得中"
         case "failed": "失敗"
