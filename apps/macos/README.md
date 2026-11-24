@@ -12,7 +12,7 @@ The Settings window has General, Library, Storage, and Advanced tabs. Storage sh
 
 ## Build and run
 
-Use Xcode's Swift compiler, macOS SDK, and XcodeGen. The build fetches TagLib 2.3.0 through Swift Package Manager. Find your development signing identity with `security find-identity -v -p codesigning` and supply it through `CODE_SIGN_IDENTITY`. Keep the same certificate and bundle ID across rebuilds to preserve Keychain access permissions. Switching from an ad-hoc build may require approving Keychain access once.
+Use Xcode's Swift compiler, macOS SDK, and XcodeGen. The project has no Swift package dependencies. Find your development signing identity with `security find-identity -v -p codesigning` and supply it through `CODE_SIGN_IDENTITY`. Keep the same certificate and bundle ID across rebuilds to preserve Keychain access permissions. Switching from an ad-hoc build may require approving Keychain access once.
 
 Local macOS builds use `as.ason.syncstr.macos` across worktrees. TestFlight and App Store builds use `as.ason.syncstr.ios`. The Keychain service names stay the same; switching from the former local bundle ID may require approving access again on the first launch.
 
@@ -44,7 +44,7 @@ an album and returning centers it in the list. The title-bar search filters the
 current section. Open an album and select a track to play it; the mini-player
 opens the Now Playing view in the same window.
 
-Click an album to select it, Command-click to add or remove albums from the selection, and double-click or press Return to open a selected album. Escape clears the selection. The toolbar and album context menu can hide selected albums together; **Hidden Albums** offers the corresponding batch restore action. These actions are available for local libraries. Host catalogs are read-only.
+Click an album to open it. **Hidden Albums** lists the albums the host hides. Host catalogs are read-only, so the app cannot hide or restore albums.
 
 The three-line menu beside search sorts albums by title or artist in ascending or descending natural order. The other field breaks ties. Sorting also applies to search results and hidden albums and does not change the playback queue.
 
