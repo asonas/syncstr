@@ -190,10 +190,11 @@ final class LocalTransfer: ObservableObject {
             try Task.checkCancellation()
             guard startingGeneration == generation else { throw CancellationError() }
             guard update.catalog.id == information.library else { return .differentLibrary(update.catalog.id) }
+            let refreshed = Date.now
             let prepared = try await CatalogStorage.shared.commitHostCatalog(update, host: host, replacing: saved,
-                store: files, didCommit: didCommit)
+                refreshedAt: refreshed, store: files, didCommit: didCommit)
             cancelActiveConnection(reason: "changing_library_host")
-            try publishHost(update, prepared: prepared, host: host, changingHost: true)
+            try publishHost(update, prepared: prepared, host: host, refreshedAt: refreshed, changingHost: true)
             resumeSaves()
             return .updated
         }
@@ -344,9 +345,10 @@ final class LocalTransfer: ObservableObject {
                     connectionEvent("refresh_host", outcome: "different_library", fields: ["connection_mode": "host", "remote_catalog_id": update.catalog.id])
                     return .differentLibrary(update.catalog.id)
                 }
+                let refreshed = Date.now
                 let prepared = try await CatalogStorage.shared.commitHostCatalog(update, host: host, replacing: host,
-                    store: files, didCommit: didCommit)
-                try publishHost(update, prepared: prepared, host: host, changingHost: false)
+                    refreshedAt: refreshed, store: files, didCommit: didCommit)
+                try publishHost(update, prepared: prepared, host: host, refreshedAt: refreshed, changingHost: false)
                 connectionEvent("refresh_host", outcome: "succeeded", fields: ["result": "updated", "remote_catalog_id": host.library])
                 return .updated
             }
@@ -359,7 +361,8 @@ final class LocalTransfer: ObservableObject {
         }
     }
 
-    private func publishHost(_ update: CatalogUpdate, prepared: PreparedLocalCatalog, host: HostConnection, changingHost: Bool) throws {
+    private func publishHost(_ update: CatalogUpdate, prepared: PreparedLocalCatalog, host: HostConnection,
+                             refreshedAt: Date, changingHost: Bool) throws {
         var host = host
         host.etag = update.etag
         host.hostSwitch = update.hostSwitch
@@ -370,7 +373,7 @@ final class LocalTransfer: ObservableObject {
             activateHost(host)
         } else { hostConnection = host }
         changedHostLibrary = nil
-        hostRefreshedAt = .now
+        hostRefreshedAt = refreshedAt
         status = nil
         catalog = update.catalog
         onHostPlaylists?(update.playlists, update.conflicts)

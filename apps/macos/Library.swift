@@ -373,14 +373,12 @@ final class Library: ObservableObject {
     /// The restore runs in a task the library owns, so the view task that started it can end without
     /// cancelling the retry.
     func restoreLibrary() async {
+        // Every activation calls this; once restored it must stay a no-op that records nothing.
+        if restoredLibrary && restoreTask == nil { return }
         transfer.connectionEvent("startup_restore_called")
         if let restoreTask {
             restoreRequested = true
             await restoreTask.value
-            return
-        }
-        guard !restoredLibrary else {
-            transfer.connectionEvent("startup_connect_skipped", fields: ["reason": "already_restored"])
             return
         }
         let task = Task { [weak self] in _ = await self?.runRestore() }

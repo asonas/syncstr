@@ -31,12 +31,12 @@ actor CatalogStorage {
         return try write()
     }
 
-    func commitHostCatalog(_ update: CatalogUpdate, host: HostConnection, replacing previous: HostConnection?,
+    func commitHostCatalog(_ update: CatalogUpdate, host: HostConnection, replacing previous: HostConnection?, refreshedAt: Date,
                            store: LocalMusicStore, didCommit: (@Sendable () async -> Void)?) async throws -> PreparedLocalCatalog {
         try Task.checkCancellation()
         let prepared = try PreparedLocalCatalog(update.catalog, store: store)
         try Task.checkCancellation()
-        try store.database().saveHostCatalog(update, connection: host, replacing: previous)
+        try store.database().saveHostCatalog(update, connection: host, replacing: previous, refreshedAt: refreshedAt)
         await didCommit?()
         return prepared
     }

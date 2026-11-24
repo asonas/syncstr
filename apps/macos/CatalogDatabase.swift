@@ -48,13 +48,6 @@ extension CatalogDatabase {
         try execute("DELETE FROM verified_audio_files WHERE hash = ?", [hash])
     }
 
-    func removeAudioPin(_ entry: LocalEntry) throws -> Bool {
-        try transaction {
-            try execute("DELETE FROM shared_audio_saves WHERE track = ? AND hash = ?", [entry.track.id, entry.sha256])
-            return try !rows("SELECT track FROM shared_audio_saves WHERE hash = ?", [entry.sha256]).isEmpty
-        }
-    }
-
 }
 
 struct SavedAudioPin: Hashable, Sendable {
@@ -129,8 +122,9 @@ final class CatalogDatabase {
                 if try !rows("PRAGMA table_info(host_connection)").contains(where: { $0[1] == "host_switch" }) {
                     try execute("ALTER TABLE host_connection ADD COLUMN host_switch TEXT")
                     let store = LocalMusicStore(root: root)
+                    // An unreadable entry gets no pin; throwing here would keep the database from opening at all.
                     for row in try rows("SELECT payload FROM host_entries") {
-                        let entry = try JSONDecoder().decode(LocalEntry.self, from: Data((row[0] ?? "").utf8))
+                        guard let entry = try? JSONDecoder().decode(LocalEntry.self, from: Data((row[0] ?? "").utf8)) else { continue }
                         if store.hasFile(entry) { try saveAudioPin(entry) }
                     }
                 }
@@ -354,11 +348,6 @@ final class CatalogDatabase {
 
     func recordReceived(_ entry: LocalEntry) throws {
         try execute("INSERT OR REPLACE INTO received_files VALUES (?, ?)",
-            [entry.sha256 + "." + (entry.track.suffix ?? "audio"), entry.sha256])
-    }
-
-    func forgetReceived(_ entry: LocalEntry) throws {
-        try execute("DELETE FROM received_files WHERE relative_path = ? AND sha256 = ?",
             [entry.sha256 + "." + (entry.track.suffix ?? "audio"), entry.sha256])
     }
 

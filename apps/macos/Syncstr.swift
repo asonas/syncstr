@@ -88,6 +88,7 @@ struct LibraryView: View {
         .toolbarBackground(.hidden, for: .windowToolbar)
         .task { await library.restoreLibrary() }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
+            Task { await library.restoreLibrary() }
             if library.transfer.hasHostActivity { library.transfer.refreshConnection() }
         }
         .modifier(OfflineSaveRemoval(library: library))

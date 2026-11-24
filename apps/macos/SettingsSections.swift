@@ -14,6 +14,9 @@ struct SavedMusicSettingsSection: View {
     @State private var confirming = false
 
     private var saved: SavedAudioSummary { library.transfer.savedAudio }
+    private var hasAnythingToDelete: Bool {
+        !saved.pins.isEmpty || saved.unpinnedFiles > 0 || !library.transfer.saveRequests.isEmpty
+    }
 
     var body: some View {
         Section("保存した音楽") {
@@ -23,12 +26,13 @@ struct SavedMusicSettingsSection: View {
 #endif
             LabeledContent("使用量", value: ByteCountFormatter.string(fromByteCount: saved.bytes, countStyle: .decimal))
             Button("保存した音楽をすべて削除", role: .destructive) { confirming = true }
-                .disabled(saved.pins.isEmpty)
+                .disabled(!hasAnythingToDelete)
                 .alert("保存した音楽をすべて削除しますか？", isPresented: $confirming) {
                     Button("キャンセル", role: .cancel) {}
                     Button("すべて削除", role: .destructive) { Task { await library.removeAllSavedMusic() } }
                 } message: {
-                    Text("\(saved.pins.count)曲をこの端末から削除します。再生中の曲は停止します。ホストのライブラリには残ります。")
+                    Text(saved.pins.isEmpty ? "保存待ちと、この端末に残っている音声を削除します。再生中の曲は停止します。ホストのライブラリには残ります。"
+                         : "\(saved.pins.count)曲をこの端末から削除します。再生中の曲は停止します。ホストのライブラリには残ります。")
                 }
         }
         .task { await library.transfer.refreshSavedAudio() }

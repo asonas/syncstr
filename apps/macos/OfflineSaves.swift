@@ -13,12 +13,8 @@ struct OfflineSaveRequest: Codable, Identifiable {
     var isPending: Bool { [.waiting, .wifi, .saving].contains(state) }
 }
 
-extension LocalCatalog {
-    var supportsOfflineSaves: Bool { source == .host }
-}
-
 extension Library {
-    var showsOfflineSaveControls: Bool { localCatalog?.supportsOfflineSaves == true }
+    var showsOfflineSaveControls: Bool { localCatalog != nil }
 
     func saveRequest(for tracks: [Track], scope: String) -> OfflineSaveRequest? {
         guard let catalog = localCatalog else { return nil }
@@ -55,7 +51,6 @@ extension LocalTransfer {
                 preparation.cancel()
             }
             guard let catalog = snapshot?.catalog else { throw LocalMusicError.invalidData }
-            guard catalog.supportsOfflineSaves else { return }
             try Task.checkCancellation()
             guard preparingSaves[scope]?.token == token else { return }
             let entries = catalog.entries.filter { ids.contains($0.track.id) }
@@ -192,15 +187,10 @@ extension LocalTransfer {
                 try Task.checkCancellation()
                 guard saveGeneration == token else { return }
                 guard let catalog = try await store.snapshotInBackground()?.catalog,
-                      catalog.source != .host || hostConnection?.library == catalog.id else { return }
+                      hostConnection?.library == catalog.id else { return }
                 try Task.checkCancellation()
                 guard saveGeneration == token else { return }
                 processableLibrary = catalog.id
-                guard catalog.supportsOfflineSaves else {
-                    let kept = saveRequests.filter { $0.library != catalog.id || !$0.isPending }
-                    if kept.count != saveRequests.count { try persistSaves(kept) }
-                    return
-                }
                 for index in saveRequests.indices {
                     guard saveRequests[index].library == catalog.id, saveRequests[index].isPending else { continue }
                     try Task.checkCancellation()
@@ -308,23 +298,31 @@ extension LocalTransfer {
 struct SavedAudioSummary: Equatable, Sendable {
     var pins: Set<SavedAudioPin> = []
     var bytes: Int64 = 0
+    /// Audio in the saved folder that no pin names, such as a file whose removal failed.
+    var unpinnedFiles = 0
 }
 
 extension LocalMusicStore {
     static let audioExtensions: Set<String> = ["mp3", "m4a", "aac", "flac", "wav", "aiff", "aif", "alac", "audio"]
+
+    /// A stored audio file is named by its content hash and an audio extension.
+    static func isAudioFileName(_ url: URL) -> Bool {
+        audioExtensions.contains(url.pathExtension) && SHA256Hex.isValid(url.deletingPathExtension().lastPathComponent)
+    }
 
     /// Every audio file in the folder by hash, or only those of `hashes`. A missing folder holds no files;
     /// any other listing failure throws, so a caller never mistakes an unreadable folder for an empty one.
     func audioFiles(for hashes: Set<String>? = nil) throws -> [String: [URL]] {
         if hashes?.isEmpty == true { return [:] }
         let urls: [URL]
-        do { urls = try FileManager.default.contentsOfDirectory(at: root, includingPropertiesForKeys: [.fileSizeKey]) }
+        do { urls = try FileManager.default.contentsOfDirectory(at: root, includingPropertiesForKeys: [.fileSizeKey, .isRegularFileKey]) }
         catch CocoaError.fileReadNoSuchFile { return [:] }
         catch CocoaError.fileNoSuchFile { return [:] }
         var files: [String: [URL]] = [:]
-        for url in urls where Self.audioExtensions.contains(url.pathExtension) {
+        for url in urls where Self.isAudioFileName(url) {
             let hash = url.deletingPathExtension().lastPathComponent
-            guard SHA256Hex.isValid(hash), hashes?.contains(hash) ?? true else { continue }
+            guard hashes?.contains(hash) ?? true,
+                  (try? url.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true else { continue }
             files[hash, default: []].append(url)
         }
         return files
@@ -332,11 +330,12 @@ extension LocalMusicStore {
 
     func savedAudioSummary() throws -> SavedAudioSummary {
         let pins = try database().savedAudioPinList()
-        let files = try audioFiles(for: Set(pins.map(\.hash)))
-        let bytes = files.values.joined().reduce(Int64(0)) { total, url in
+        let pinned = Set(pins.map(\.hash))
+        let all = try audioFiles()
+        let bytes = all.filter { pinned.contains($0.key) }.values.joined().reduce(Int64(0)) { total, url in
             total + Int64((try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0)
         }
-        return SavedAudioSummary(pins: pins, bytes: bytes)
+        return SavedAudioSummary(pins: pins, bytes: bytes, unpinnedFiles: all.keys.filter { !pinned.contains($0) }.count)
     }
 }
 

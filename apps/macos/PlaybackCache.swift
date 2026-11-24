@@ -133,11 +133,6 @@ class PlaybackCache {
         try FileManager.default.setAttributes([.modificationDate: Date()], ofItemAtPath: url.path)
     }
 
-    func makeRoom(for entry: LocalEntry) throws {
-        try store.prepare()
-        try trim(incoming: entry.track.size ?? 0)
-    }
-
     func makeRoomInBackground(for entry: LocalEntry) async throws {
         // Checked before joining the chain: stop() cancels the acquisition and then queues a trim that waits for it.
         try Task.checkCancellation()
@@ -172,8 +167,7 @@ class PlaybackCache {
         let files = try FileManager.default.contentsOfDirectory(at: directory,
             includingPropertiesForKeys: [.fileSizeKey, .contentModificationDateKey, .isRegularFileKey])
         let entries = files.compactMap { url -> (URL, UInt64, Date)? in
-            guard SHA256Hex.isValid(url.deletingPathExtension().lastPathComponent),
-                  ["mp3", "m4a", "aac", "flac", "wav", "aiff", "aif", "alac", "audio"].contains(url.pathExtension) else { return nil }
+            guard LocalMusicStore.isAudioFileName(url) else { return nil }
             // Another pass may have removed the file after the listing.
             guard let info = try? url.resourceValues(forKeys: [.fileSizeKey, .contentModificationDateKey, .isRegularFileKey]),
                   info.isRegularFile == true else { return nil }

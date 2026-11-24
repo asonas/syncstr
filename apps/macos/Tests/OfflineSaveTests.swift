@@ -413,6 +413,59 @@ final class OfflineSaveTests: XCTestCase {
         XCTAssertEqual(library.tracks.count, entries.count)
     }
 
+    func testFailedRestoreRunsAgainOnTheNextActivation() async throws {
+        let (store, entries) = try fixture()
+        _ = try store.database().forgetHost()
+        let library = makeLibrary(localStore: store)
+        var attempts = 0
+        library.transfer.beforeRestoringHost = {
+            attempts += 1
+            if attempts == 1 { library.transfer.cancel() }
+        }
+        await library.restoreLibrary()
+        XCTAssertNil(library.localCatalog)
+        // The Mac calls this whenever the app becomes active.
+        await library.restoreLibrary()
+        XCTAssertEqual(library.localCatalog?.source, .host)
+        XCTAssertEqual(library.tracks.count, entries.count)
+        let restored = attempts
+        await library.restoreLibrary()
+        XCTAssertEqual(attempts, restored)
+    }
+
+    func testDeletingAllSavedMusicCoversUnpinnedFilesAndWaitingRequests() async throws {
+        let (store, entries) = try fixture()
+        let leftover = store.root.appendingPathComponent(String(repeating: "d", count: 64) + ".mp3")
+        try Data(repeating: 9, count: 256).write(to: leftover)
+        let transfer = try await hostTransfer(store)
+        await transfer.refreshSavedAudio()
+        XCTAssertTrue(transfer.savedAudio.pins.isEmpty)
+        XCTAssertEqual(transfer.savedAudio.unpinnedFiles, 1)
+        let library = try XCTUnwrap(transfer.hostConnection?.library)
+        transfer.saveRequests = [OfflineSaveRequest(id: "track:track-1", library: library, entries: [entries[0]], state: .wifi)]
+
+        try await transfer.removeAllSavedAudio()
+
+        XCTAssertFalse(FileManager.default.fileExists(atPath: leftover.path))
+        XCTAssertTrue(transfer.saveRequests.isEmpty)
+        XCTAssertEqual(transfer.savedAudio, SavedAudioSummary())
+    }
+
+    func testDeletingAllSavedMusicLeavesADirectoryWithAnAudioName() async throws {
+        let (store, _) = try fixture()
+        let directory = store.root.appendingPathComponent(String(repeating: "f", count: 64) + ".mp3")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let inside = directory.appendingPathComponent("inside")
+        try Data([1]).write(to: inside)
+        let transfer = try await hostTransfer(store)
+        await transfer.refreshSavedAudio()
+        XCTAssertEqual(transfer.savedAudio.unpinnedFiles, 0)
+
+        try await transfer.removeAllSavedAudio()
+
+        XCTAssertTrue(FileManager.default.fileExists(atPath: inside.path))
+    }
+
     func testUsageCountsEveryFileOfTheSameAudio() async throws {
         let (store, entries) = try fixture()
         let bytes = Data(repeating: 1, count: 1024)

@@ -141,6 +141,28 @@ final class CatalogMigrationTests: XCTestCase {
         sqlite3_finalize(statement)
     }
 
+    func testPinBackfillSkipsAnUnreadableHostEntry() throws {
+        let (store, catalog) = try storeWithAudio()
+        let entry = catalog.entries[0]
+        let host = HostConnection(address: try HostAddress("https://host.example.test"),
+                                  library: catalog.id, name: catalog.name, hosts: [])
+        try store.database().saveHostCatalog(CatalogUpdate(catalog: catalog), connection: host, replacing: nil)
+        var connection: OpaquePointer?
+        XCTAssertEqual(sqlite3_open(store.root.appendingPathComponent("catalog.sqlite").path, &connection), SQLITE_OK)
+        defer { sqlite3_close(connection) }
+        // A database from before host_switch, holding one host entry that no longer decodes.
+        let legacy = """
+            ALTER TABLE host_connection DROP COLUMN host_switch;
+            INSERT INTO host_entries VALUES ('broken', 1, '{');
+            PRAGMA user_version = 7;
+            """
+        XCTAssertEqual(sqlite3_exec(connection, legacy, nil, nil, nil), SQLITE_OK)
+
+        let migrated = try store.database()
+        XCTAssertTrue(try migrated.hasAudioPin(entry))
+        XCTAssertEqual(try migrated.hostConnection()?.library, catalog.id)
+    }
+
     func testVersionSevenWithOnlyASharedSnapshotOpensWithoutALibrary() throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }
