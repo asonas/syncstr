@@ -80,22 +80,16 @@ final class CatalogDatabase {
         sqlite3_busy_timeout(connection, 5000)
         do {
             let version = try rows("PRAGMA user_version").first?.first ?? nil
-            guard let version, let number = Int(version), (0...9).contains(number) else { throw LocalMusicError.invalidData }
-            if number == 9 {
+            guard let version, let number = Int(version), (0...10).contains(number) else { throw LocalMusicError.invalidData }
+            if number == 10 {
                 let required: Set<String> = ["device_transfer_settings", "verified_audio_files", "retained_host_catalog",
-                    "host_connection", "host_entries", "host_playlists", "shared_audio_saves", "catalog", "entries",
-                    "received_files", "organization", "artwork_assets"]
+                    "host_connection", "host_entries", "host_playlists", "shared_audio_saves", "received_files"]
                 let existing = Set(try rows("SELECT name FROM sqlite_master WHERE type = 'table'").compactMap { $0[0] })
                 if required.isSubset(of: existing) { return }
             }
             try transaction {
-                try execute("CREATE TABLE IF NOT EXISTS catalog (singleton INTEGER PRIMARY KEY CHECK(singleton = 1), id TEXT NOT NULL, name TEXT NOT NULL, source_root TEXT)")
-                try execute("CREATE TABLE IF NOT EXISTS entries (id TEXT PRIMARY KEY, position INTEGER NOT NULL, sha256 TEXT NOT NULL, payload TEXT NOT NULL, source_path TEXT)")
-                try execute("CREATE INDEX IF NOT EXISTS entries_content ON entries(sha256)")
                 try execute("CREATE TABLE IF NOT EXISTS verified_audio_files (path TEXT PRIMARY KEY, stamp TEXT NOT NULL, hash TEXT NOT NULL)")
                 try execute("CREATE TABLE IF NOT EXISTS received_files (relative_path TEXT PRIMARY KEY, sha256 TEXT NOT NULL)")
-                try execute("CREATE TABLE IF NOT EXISTS organization (singleton INTEGER PRIMARY KEY CHECK(singleton = 1), payload TEXT NOT NULL)")
-                try execute("CREATE TABLE IF NOT EXISTS artwork_assets (id TEXT PRIMARY KEY, payload TEXT NOT NULL)")
                 try execute("CREATE TABLE IF NOT EXISTS shared_audio_saves (track TEXT NOT NULL, hash TEXT NOT NULL, PRIMARY KEY(track, hash))")
                 try execute("CREATE TABLE IF NOT EXISTS device_transfer_settings (singleton INTEGER PRIMARY KEY CHECK(singleton = 1), cellular INTEGER NOT NULL CHECK(cellular IN (0, 1)))")
                 if try !rows("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'cluster_transfer_settings'").isEmpty {
@@ -126,7 +120,8 @@ final class CatalogDatabase {
                               "playlist_records", "playlist_cursors", "playlist_authorities"] {
                     try execute("DROP TABLE IF EXISTS \(table)")
                 }
-                try execute("PRAGMA user_version = 9")
+                try purgeLegacyLocalLibrary()
+                try execute("PRAGMA user_version = 10")
             }
         } catch {
             sqlite3_close(connection)
@@ -216,12 +211,35 @@ final class CatalogDatabase {
         try rows("SELECT library FROM retained_host_catalog WHERE address = ?", [address.origin.absoluteString]).first?.first ?? nil
     }
 
-    func otherCatalogFiles(for hash: String) throws -> Set<URL> {
-        let store = LocalMusicStore(root: root)
-        return Set(try rows("SELECT payload FROM entries WHERE sha256 = ?", [hash]).map { row in
-            let entry = try JSONDecoder().decode(LocalEntry.self, from: Data((row[0] ?? "").utf8))
-            return store.fileURL(entry)
-        })
+    /// Removes the library that the retired folder and import modes kept on this device.
+    /// Audio stays when a host entry or a saved-audio pin shares its content.
+    /// Files go before rows, so an interrupted run finds the same rows on the next launch.
+    private func purgeLegacyLocalLibrary() throws {
+        let manager = FileManager.default
+        for name in ["active", "folder.bookmark", "catalog.json"] {
+            let url = root.appendingPathComponent(name)
+            if manager.fileExists(atPath: url.path) { try manager.removeItem(at: url) }
+        }
+        let tables = Set(try rows("SELECT name FROM sqlite_master WHERE type = 'table'").compactMap { $0[0] })
+        if tables.contains("entries") {
+            var kept = Set(try rows("SELECT hash FROM shared_audio_saves").compactMap { $0[0] })
+            for row in try rows("SELECT payload FROM host_entries") {
+                kept.insert(try JSONDecoder().decode(LocalEntry.self, from: Data((row[0] ?? "").utf8)).sha256)
+            }
+            let store = LocalMusicStore(root: root)
+            for row in try rows("SELECT payload FROM entries") {
+                let entry = try JSONDecoder().decode(LocalEntry.self, from: Data((row[0] ?? "").utf8))
+                guard LocalMusicStore.valid(entry), !kept.contains(entry.sha256) else { continue }
+                for url in store.hostFileURLs(entry) where manager.fileExists(atPath: url.path) {
+                    try manager.removeItem(at: url)
+                }
+                try execute("DELETE FROM received_files WHERE sha256 = ?", [entry.sha256])
+                try execute("DELETE FROM verified_audio_files WHERE hash = ?", [entry.sha256])
+            }
+        }
+        for table in ["catalog", "entries", "organization", "artwork_assets"] {
+            try execute("DROP TABLE IF EXISTS \(table)")
+        }
     }
 
     private func hostCatalogLibrary() throws -> String? {

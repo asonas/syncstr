@@ -476,17 +476,16 @@ final class LocalTransfer: ObservableObject {
         guard readyForLocalCopyRemoval else { throw LocalMusicError.transferBusy }
         guard LocalMusicStore.valid(entry) else { throw LocalMusicError.invalidData }
         let database = try store.database()
-        let referenced = try database.otherCatalogFiles(for: entry.sha256)
         let retained = try database.removeAudioPin(entry)
         let otherSave = saveRequests.contains { request in
             request.state != .cancelled && request.entries.contains { $0.track.id != entry.track.id && $0.sha256 == entry.sha256 }
         }
         if !retained && !otherSave {
             for url in Set(store.hostFileURLs(entry) + playbackCache.store.hostFileURLs(entry))
-                where !referenced.contains(url) && url != playbackCache.protectedURL && FileManager.default.fileExists(atPath: url.path) {
+                where url != playbackCache.protectedURL && FileManager.default.fileExists(atPath: url.path) {
                 try FileManager.default.removeItem(at: url)
             }
-            if !referenced.contains(store.fileURL(entry)) { try database.forgetReceived(entry) }
+            try database.forgetReceived(entry)
         }
         onSaved?()
     }

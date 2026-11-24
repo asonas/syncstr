@@ -76,7 +76,7 @@ final class CatalogMigrationTests: XCTestCase {
             var statement: OpaquePointer?
             XCTAssertEqual(sqlite3_prepare_v2(connection, "PRAGMA user_version", -1, &statement, nil), SQLITE_OK)
             XCTAssertEqual(sqlite3_step(statement), SQLITE_ROW)
-            XCTAssertEqual(sqlite3_column_int(statement, 0), 9)
+            XCTAssertEqual(sqlite3_column_int(statement, 0), 10)
             sqlite3_finalize(statement)
             XCTAssertEqual(sqlite3_prepare_v2(connection, "SELECT name FROM sqlite_master WHERE type = 'table'", -1, &statement, nil), SQLITE_OK)
             var tables = Set<String>()
@@ -86,6 +86,58 @@ final class CatalogMigrationTests: XCTestCase {
             sqlite3_finalize(statement)
             XCTAssertTrue(tables.isDisjoint(with: removed + ["cluster_transfer_settings"]))
         }
+    }
+
+    func testLegacyLocalLibraryIsPurgedWithoutTouchingHostAudio() throws {
+        let (store, catalog) = try storeWithAudio()
+        let shared = catalog.entries[0]
+        let localOnly = LocalEntry(track: Track(id: "local-only", title: "Imported", artist: "Artist", suffix: "mp3", size: 3),
+            sha256: String(repeating: "c", count: 64))
+        try Data("xyz".utf8).write(to: store.fileURL(localOnly))
+        let db = try store.database()
+        let host = HostConnection(address: try HostAddress("https://host.example.test"),
+                                  library: catalog.id, name: catalog.name, hosts: [])
+        try db.saveHostCatalog(CatalogUpdate(catalog: catalog), connection: host, replacing: nil)
+        try db.recordReceived(localOnly)
+        for name in ["active", "folder.bookmark", "catalog.json"] {
+            try Data().write(to: store.root.appendingPathComponent(name))
+        }
+        var connection: OpaquePointer?
+        XCTAssertEqual(sqlite3_open(store.root.appendingPathComponent("catalog.sqlite").path, &connection), SQLITE_OK)
+        defer { sqlite3_close(connection) }
+        let payload = { (entry: LocalEntry) in String(decoding: try JSONEncoder().encode(entry), as: UTF8.self).replacingOccurrences(of: "'", with: "''") }
+        let legacy = """
+            CREATE TABLE catalog (singleton INTEGER PRIMARY KEY, id TEXT NOT NULL, name TEXT NOT NULL, source_root TEXT);
+            CREATE TABLE entries (id TEXT PRIMARY KEY, position INTEGER NOT NULL, sha256 TEXT NOT NULL, payload TEXT NOT NULL, source_path TEXT);
+            CREATE TABLE organization (singleton INTEGER PRIMARY KEY, payload TEXT NOT NULL);
+            CREATE TABLE artwork_assets (id TEXT PRIMARY KEY, payload TEXT NOT NULL);
+            INSERT INTO catalog VALUES (1, 'local-library', 'Folder', 'Music');
+            INSERT INTO entries VALUES ('shared', 0, '\(shared.sha256)', '\(try payload(shared))', 'a.wav');
+            INSERT INTO entries VALUES ('local-only', 1, '\(localOnly.sha256)', '\(try payload(localOnly))', 'b.mp3');
+            PRAGMA user_version = 9;
+            """
+        XCTAssertEqual(sqlite3_exec(connection, legacy, nil, nil, nil), SQLITE_OK)
+
+        for _ in 0..<2 {
+            let migrated = try store.database()
+            XCTAssertEqual(try migrated.hostConnection(), host)
+            XCTAssertEqual(try migrated.snapshot()?.catalog.entries, catalog.entries)
+        }
+        XCTAssertTrue(FileManager.default.fileExists(atPath: store.fileURL(shared).path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: store.fileURL(localOnly).path))
+        for name in ["active", "folder.bookmark", "catalog.json"] {
+            XCTAssertFalse(FileManager.default.fileExists(atPath: store.root.appendingPathComponent(name).path))
+        }
+        var statement: OpaquePointer?
+        XCTAssertEqual(sqlite3_prepare_v2(connection, "SELECT name FROM sqlite_master WHERE type = 'table'", -1, &statement, nil), SQLITE_OK)
+        var tables = Set<String>()
+        while sqlite3_step(statement) == SQLITE_ROW { tables.insert(String(cString: sqlite3_column_text(statement, 0))) }
+        sqlite3_finalize(statement)
+        XCTAssertTrue(tables.isDisjoint(with: ["catalog", "entries", "organization", "artwork_assets"]))
+        XCTAssertEqual(sqlite3_prepare_v2(connection, "SELECT count(*) FROM received_files WHERE sha256 = '\(localOnly.sha256)'", -1, &statement, nil), SQLITE_OK)
+        XCTAssertEqual(sqlite3_step(statement), SQLITE_ROW)
+        XCTAssertEqual(sqlite3_column_int(statement, 0), 0)
+        sqlite3_finalize(statement)
     }
 
     func testVersionSevenWithOnlyASharedSnapshotOpensWithoutALibrary() throws {
