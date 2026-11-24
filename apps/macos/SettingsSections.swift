@@ -11,14 +11,9 @@ struct LibrarySettingsSection: View {
 
 struct SavedMusicSettingsSection: View {
     @ObservedObject var library: Library
-    @State private var removal: Removal?
+    @State private var removal: Set<SavedAudioPin>?
 
-    private struct Removal {
-        let library: String?
-        let tracks: [Track]
-    }
-
-    private var removable: [Track] { library.tracks.filter(library.canRemoveLocalCopy) }
+    private var saved: SavedAudioSummary { library.transfer.savedAudio }
 
     var body: some View {
         Section("保存した音楽") {
@@ -26,24 +21,20 @@ struct SavedMusicSettingsSection: View {
             Toggle("モバイル通信でも自動転送する", isOn: Binding(get: { library.transfer.automaticCellular },
                                                        set: library.transfer.setAutomaticCellular))
 #endif
-            LabeledContent("使用量", value: ByteCountFormatter.string(fromByteCount: library.savedAudioBytes, countStyle: .decimal))
-            Button("保存した音楽をすべて削除", role: .destructive) {
-                removal = Removal(library: library.localCatalog?.id, tracks: removable)
-            }
-                .disabled(removable.isEmpty)
+            LabeledContent("使用量", value: ByteCountFormatter.string(fromByteCount: saved.bytes, countStyle: .decimal))
+            // The target is fixed here, so a library switched while the alert is open cannot change it.
+            Button("保存した音楽をすべて削除", role: .destructive) { removal = saved.pins }
+                .disabled(saved.pins.isEmpty)
                 .alert("保存した音楽をすべて削除しますか？", isPresented: Binding(
                     get: { removal != nil }, set: { if !$0 { removal = nil } }
-                ), presenting: removal) { target in
+                ), presenting: removal) { pins in
                     Button("キャンセル", role: .cancel) {}
-                    Button("すべて削除", role: .destructive) {
-                        // The library can change while the alert is open, and track IDs alone could match the new one.
-                        guard library.localCatalog?.id == target.library else { return }
-                        library.removeLocalCopies(target.tracks)
-                    }
-                } message: { target in
-                    Text("\(target.tracks.count)曲をこの端末から削除します。ホストのライブラリには残ります。")
+                    Button("すべて削除", role: .destructive) { Task { await library.removeAllSavedMusic(pins) } }
+                } message: { pins in
+                    Text("\(pins.count)曲をこの端末から削除します。再生中の曲は停止します。ホストのライブラリには残ります。")
                 }
         }
+        .task { await library.transfer.refreshSavedAudio() }
     }
 }
 
@@ -60,16 +51,24 @@ struct PlaybackCacheSettingsSection: View {
                     Stepper("上限", value: Binding(
                         get: { cache.limitGB },
                         set: { value in
-                            do { try cache.setLimit(value); library.objectWillChange.send() }
-                            catch { library.message = "キャッシュ容量を変更できませんでした。\(error.localizedDescription)" }
+                            do {
+                                try cache.setLimit(value) { error in
+                                    library.message = "キャッシュを整理できませんでした。\(error.localizedDescription)"
+                                }
+                                library.objectWillChange.send()
+                                Task { await cache.maintenance?.value; library.objectWillChange.send() }
+                            } catch { library.message = "キャッシュ容量を変更できませんでした。\(error.localizedDescription)" }
                         }
                     ), in: 1...1000).labelsHidden()
                 }
             }
             LabeledContent("使用量", value: ByteCountFormatter.string(fromByteCount: cache.usedBytes, countStyle: .decimal))
             Button("キャッシュを消去") {
-                do { try cache.clear(); library.objectWillChange.send() }
-                catch { library.message = "キャッシュを消去できませんでした。\(error.localizedDescription)" }
+                Task {
+                    do { try await cache.clear() }
+                    catch { library.message = "キャッシュを消去できませんでした。\(error.localizedDescription)" }
+                    library.objectWillChange.send()
+                }
             }
             // While a track is being prepared its file is verified before it becomes the protected one.
             .disabled(cache.usedBytes == 0 || library.loading)

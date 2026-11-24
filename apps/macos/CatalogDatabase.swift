@@ -26,6 +26,28 @@ extension CatalogDatabase {
         try !rows("SELECT track FROM shared_audio_saves WHERE track = ? AND hash = ?", [entry.track.id, entry.sha256]).isEmpty
     }
 
+    func savedAudioPinList() throws -> Set<SavedAudioPin> {
+        Set(try rows("SELECT track, hash FROM shared_audio_saves").compactMap { row in
+            guard let track = row[0], let hash = row[1] else { return nil }
+            return SavedAudioPin(track: track, hash: hash)
+        })
+    }
+
+    /// Returns the hashes that other pins still hold.
+    func removeAudioPins(_ pins: Set<SavedAudioPin>) throws -> Set<String> {
+        try transaction {
+            for pin in pins {
+                try execute("DELETE FROM shared_audio_saves WHERE track = ? AND hash = ?", [pin.track, pin.hash])
+            }
+            return Set(try rows("SELECT DISTINCT hash FROM shared_audio_saves").compactMap { $0[0] })
+        }
+    }
+
+    func forgetAudio(hash: String) throws {
+        try execute("DELETE FROM received_files WHERE sha256 = ?", [hash])
+        try execute("DELETE FROM verified_audio_files WHERE hash = ?", [hash])
+    }
+
     func removeAudioPin(_ entry: LocalEntry) throws -> Bool {
         try transaction {
             try execute("DELETE FROM shared_audio_saves WHERE track = ? AND hash = ?", [entry.track.id, entry.sha256])
@@ -33,6 +55,12 @@ extension CatalogDatabase {
         }
     }
 
+}
+
+struct SavedAudioPin: Hashable, Sendable {
+    let track: String
+    let hash: String
+    var identity: String { track + ":" + hash }
 }
 
 struct CatalogSnapshot {

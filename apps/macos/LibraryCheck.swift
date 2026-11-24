@@ -20,6 +20,19 @@ struct LibraryCheck {
         throw CheckFailure(message: description)
     }
 
+    /// The fixture tracks are about 4 seconds long, so a wrap could come from playing to the end.
+    /// Pause first and require the player itself to reach the target, so a seek that does nothing fails.
+    @MainActor
+    static func seekNearEnd(_ library: Library, player: () -> AVPlayer) async throws {
+        try await wait("Track was not ready to seek") { library.canSeek }
+        if library.playing { library.togglePlayback() }
+        try await wait("Pause before seeking failed") { !library.playing }
+        library.seek(to: 3.5)
+        try await wait("Seek did not reach the target") { abs(player().currentTime().seconds - 3.5) < 0.2 }
+        library.togglePlayback()
+        try await wait("Playback did not resume after seeking") { library.playing }
+    }
+
     static func silence(at url: URL, frames: AVAudioFrameCount) throws {
         let format = AVAudioFormat(standardFormatWithSampleRate: 8000, channels: 1)!
         let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frames)!
@@ -56,8 +69,8 @@ struct LibraryCheck {
     }
 
     @MainActor
-    static func stableAlbumOrder() throws {
-        let library = Library()
+    static func stableAlbumOrder(in folder: URL) throws {
+        let library = Library(localStore: LocalMusicStore(root: folder.appendingPathComponent("order")))
         let tracks = [
             Track(id: "c", title: "Third", artist: "Artist B", album: "Unknown Album", albumId: "album-c"),
             Track(id: "b", title: "Second", artist: "Artist A", album: "Unknown Album", albumId: "album-b"),
@@ -81,17 +94,18 @@ struct LibraryCheck {
 
     @MainActor
     static func main() async throws {
-        try stableAlbumOrder()
+        // Every Library here gets a store in this folder; the default store is the person's real library.
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        try stableAlbumOrder(in: folder)
         let unset = [Track(id: "unset-a", title: "First", artist: nil, album: nil, albumId: "unset-a"),
                      Track(id: "unset-b", title: "Second", artist: nil, album: "", albumId: "unset-b")]
-        let unsetLibrary = Library()
+        let unsetLibrary = Library(localStore: LocalMusicStore(root: folder.appendingPathComponent("unset")))
         unsetLibrary.tracks = unset
         try require(unsetLibrary.albums.count == 2)
         try require(unsetLibrary.albums.map(\.title) == ["First", "Second"])
         try require(unsetLibrary.tracks == unset)
-        let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
-        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
-        defer { try? FileManager.default.removeItem(at: folder) }
         var mediaPlayers: [AVPlayer] = []
         let localFiles = LocalMusicStore(root: folder.appendingPathComponent("local"))
         try saveRetainedHostLibrary(in: localFiles, audio: folder)
@@ -180,13 +194,11 @@ struct LibraryCheck {
         try require(library.current?.title == "First")
         library.previous()
         try require(library.current?.title == "Second")
-        try await wait("Second track was not ready to seek") { library.canSeek }
-        library.seek(to: 3.5)
+        try await seekNearEnd(library, player: { mediaPlayers.last! })
         try await wait("Repeat all did not wrap at track end") { library.current?.title == "First" }
         library.repeatMode = .one
-        try await wait("First track was not ready to seek") { library.canSeek }
+        try await seekNearEnd(library, player: { mediaPlayers.last! })
         let repeatedPlayer = mediaPlayers.last!
-        library.seek(to: 3.5)
         try await wait("Repeat one did not restart") { mediaPlayers.last! !== repeatedPlayer }
         try require(library.current?.title == "First" && library.queue.map(\.title) == ["First", "Second"])
         library.repeatMode = .off

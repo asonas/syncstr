@@ -22,6 +22,15 @@ struct PlaybackDiagnosticTrace: Codable, Identifiable, Sendable {
     var omittedByStage: [String: Int] = [:]
     var events: [PlaybackDiagnosticEvent] = []
     var bytes = 0
+
+    var connectionHistoryIncomplete: Bool {
+        events.contains { $0.stage == "connection_history" && (Int($0.fields["history_omitted"] ?? "0") ?? 0) > 0 }
+    }
+
+    /// Shared by the settings list and the export, so both report the same attempts as incomplete.
+    func isComplete(persistenceFailed: Bool) -> Bool {
+        omitted == 0 && !connectionHistoryIncomplete && !persistenceFailed && outcome != "interrupted"
+    }
 }
 
 struct ConnectionDiagnosticEvent: Codable, Sendable {
@@ -238,13 +247,10 @@ final class PlaybackDiagnostics: @unchecked Sendable {
                 var rows = [line(["schema_version": "2", "exported_at": Self.timestamp(), "selected_attempt": id,
                     "missing_ancestors": missing.joined(separator: ","), "persistence_failed": String(failed)])]
                 for trace in chain.reversed() {
-                    let historyIncomplete = trace.events.contains {
-                        $0.stage == "connection_history" && (Int($0.fields["history_omitted"] ?? "0") ?? 0) > 0
-                    }
                     rows.append(line(["attempt_id": trace.id, "retry_of": trace.retryOf ?? "", "title": trace.title,
                         "outcome": trace.outcome, "last_stage": trace.lastStage, "omitted_records": String(trace.omitted),
                         "omitted_by_stage": line(trace.omittedByStage),
-                        "in_progress": String(trace.outcome == "active"), "complete": String(trace.omitted == 0 && !historyIncomplete && !failed && trace.outcome != "interrupted")]))
+                        "in_progress": String(trace.outcome == "active"), "complete": String(trace.isComplete(persistenceFailed: failed))]))
                     rows += trace.events.map(line)
                 }
                 continuation.resume(returning: rows.joined(separator: "\n") + "\n")
@@ -366,8 +372,8 @@ struct PlaybackDiagnosticList: View {
                                 Text("・\(trace.lastStage)")
                             }
                             .font(.callout).foregroundStyle(.secondary)
-                            if trace.omitted > 0 {
-                                Text("一部の記録がありません（\(trace.omitted)件）").font(.callout).foregroundStyle(.secondary)
+                            if !trace.isComplete(persistenceFailed: persistenceFailed) {
+                                Text("一部の記録がありません").font(.callout).foregroundStyle(.secondary)
                             }
                         }
                         Spacer(minLength: 0)

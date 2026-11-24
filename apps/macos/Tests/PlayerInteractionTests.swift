@@ -203,14 +203,14 @@ final class PlayerInteractionTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: recent.path))
     }
 
-    func testClearingCacheKeepsPlayingAudio() throws {
+    func testClearingCacheKeepsPlayingAudio() async throws {
         let cache = PlaybackCache(root: root.appendingPathComponent("cache"))
         try cache.store.prepare()
         let idle = cache.store.root.appendingPathComponent(String(repeating: "a", count: 64) + ".wav")
         let playing = cache.store.root.appendingPathComponent(String(repeating: "b", count: 64) + ".wav")
         for url in [idle, playing] { try Data(repeating: 0, count: 6).write(to: url) }
         cache.protectedURL = playing
-        try cache.clear()
+        try await cache.clear()
         XCTAssertFalse(FileManager.default.fileExists(atPath: idle.path))
         XCTAssertTrue(FileManager.default.fileExists(atPath: playing.path))
         XCTAssertEqual(cache.limitGB, 10)

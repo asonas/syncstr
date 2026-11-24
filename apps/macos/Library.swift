@@ -142,6 +142,8 @@ final class Library: ObservableObject {
     private var playbackErrorObserver: NSObjectProtocol?
     private var seeking: UUID?
     private var restoredLibrary = false
+    private var restoringLibrary = false
+    private var restoreRequested = false
     private var catalogGeneration = UUID()
     private(set) var inventoryTask: Task<Void, Never>?
     private var pendingLocalPlaybackTrack: (id: String, request: UUID)?
@@ -204,6 +206,7 @@ final class Library: ObservableObject {
                 pendingLocalPlaybackTrack = (current.id, playbackRequest)
             }
             refreshLocalFiles()
+            Task { await self.transfer.refreshSavedAudio() }
         }
         transferChanges = transfer.objectWillChange.sink { [weak self] in self?.objectWillChange.send() }
         removalChanges = transfer.$readyForLocalCopyRemoval.dropFirst().filter { $0 }.sink { [weak self] _ in
@@ -358,14 +361,6 @@ final class Library: ObservableObject {
     var canGoNext: Bool { currentIndex.map { $0 + 1 < queue.count || repeatMode == .all } ?? false }
     var canSeek: Bool { player?.currentItem?.status == .readyToPlay && !loading && duration > 0 }
     var playbackAction: String { loading ? "再生の準備をキャンセル" : playing || wantsPlayback ? "一時停止" : "再生" }
-    var savedAudioBytes: Int64 {
-        var counted = Set<String>()
-        return (localCatalog?.entries ?? []).reduce(0) { total, entry in
-            guard managedTracks.contains(entry.track.id), counted.insert(entry.sha256).inserted else { return total }
-            return total + Int64(entry.track.size ?? 0)
-        }
-    }
-
     func navigate(_ destination: LibraryDestination) {
         self.destination = destination
         selectedAlbum = nil
@@ -373,21 +368,30 @@ final class Library: ObservableObject {
         showingNowPlaying = false
     }
 
+    /// Going to the background cancels a running restore. A call that arrives while one runs is
+    /// remembered, so a restore that ends unfinished runs again instead of waiting for the next call.
     func restoreLibrary() async {
         transfer.connectionEvent("startup_restore_called")
+        if restoringLibrary {
+            restoreRequested = true
+            return
+        }
         guard !restoredLibrary else {
             transfer.connectionEvent("startup_connect_skipped", fields: ["reason": "already_restored"])
             return
         }
-        restoredLibrary = true
-        restoringSession = false
-        let restored = await transfer.restoreHost()
-        if transfer.usesHostCatalog {
-            if localCatalog?.source != .host { await openSavedLocalLibrary() }
-            await loadPlaylists()
-        }
-        // Going to the background cancels the restore. Allow the next foreground to try again.
-        if !restored || (transfer.usesHostCatalog && localCatalog?.source != .host) { restoredLibrary = false }
+        restoringLibrary = true
+        defer { restoringLibrary = false }
+        repeat {
+            restoreRequested = false
+            restoringSession = false
+            let restored = await transfer.restoreHost()
+            if transfer.usesHostCatalog {
+                if localCatalog?.source != .host { await openSavedLocalLibrary() }
+                await loadPlaylists()
+            }
+            restoredLibrary = restored && !(transfer.usesHostCatalog && localCatalog?.source != .host)
+        } while !restoredLibrary && restoreRequested
         if transfer.hasHostActivity { transfer.refreshConnection() }
         transfer.resumeSaves()
     }
@@ -950,6 +954,12 @@ final class Library: ObservableObject {
     func isLocalCopyRemovalPending(_ track: Track) -> Bool {
         guard localCatalog?.id == removalLibraryID else { return false }
         return pendingLocalCopyRemovals.contains { $0.id == track.id }
+    }
+
+    func removeAllSavedMusic(_ pins: Set<SavedAudioPin>) async {
+        if let current, pins.contains(where: { $0.track == current.id }) { stop() }
+        do { try await transfer.removeSavedAudio(pins) }
+        catch { message = error.localizedDescription }
     }
 
     func removeLocalCopies(_ confirmedTracks: [Track]) {

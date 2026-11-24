@@ -297,6 +297,97 @@ extension LocalTransfer {
     }
 }
 
+struct SavedAudioSummary: Equatable, Sendable {
+    var pins: Set<SavedAudioPin> = []
+    var bytes: Int64 = 0
+}
+
+extension LocalMusicStore {
+    static let audioExtensions: Set<String> = ["mp3", "m4a", "aac", "flac", "wav", "aiff", "aif", "alac", "audio"]
+
+    func audioFiles(for hashes: Set<String>) -> [String: [URL]] {
+        guard !hashes.isEmpty else { return [:] }
+        let urls = (try? FileManager.default.contentsOfDirectory(at: root, includingPropertiesForKeys: [.fileSizeKey])) ?? []
+        var files: [String: [URL]] = [:]
+        for url in urls where Self.audioExtensions.contains(url.pathExtension) {
+            let hash = url.deletingPathExtension().lastPathComponent
+            if hashes.contains(hash) { files[hash, default: []].append(url) }
+        }
+        return files
+    }
+
+    func savedAudioSummary() throws -> SavedAudioSummary {
+        let pins = try database().savedAudioPinList()
+        let files = audioFiles(for: Set(pins.map(\.hash)))
+        let bytes = files.values.reduce(Int64(0)) { total, urls in
+            total + (urls.compactMap { try? $0.resourceValues(forKeys: [.fileSizeKey]).fileSize }.max().map(Int64.init) ?? 0)
+        }
+        return SavedAudioSummary(pins: pins, bytes: bytes)
+    }
+}
+
+extension LocalTransfer {
+    nonisolated static func discardAudio(_ hashes: Set<String>, store: LocalMusicStore, cache: LocalMusicStore,
+                                         protectedURL: URL?, database: CatalogDatabase) throws {
+        let protected = protectedURL?.resolvingSymlinksInPath().path
+        for urls in Array(store.audioFiles(for: hashes).values) + Array(cache.audioFiles(for: hashes).values) {
+            for url in urls where url.resolvingSymlinksInPath().path != protected {
+                do { try FileManager.default.removeItem(at: url) }
+                catch CocoaError.fileNoSuchFile {}
+            }
+        }
+        for hash in hashes { try database.forgetAudio(hash: hash) }
+    }
+
+    func refreshSavedAudio() async {
+        let files = store
+        if let summary = try? await CatalogStorage.shared.perform({ try files.savedAudioSummary() }) { savedAudio = summary }
+    }
+
+    /// Removes the pins captured when the person confirmed. Pins saved later, for example by a library
+    /// opened in another window, are not part of the target and stay.
+    func removeSavedAudio(_ pins: Set<SavedAudioPin>) async throws {
+        guard !pins.isEmpty else { return }
+        try cancelSaves(covering: Set(pins.map(\.identity)))
+        try await waitForIdle(until: .now.advanced(by: .seconds(15)))
+        let requested = Set(saveRequests.filter { $0.state != .cancelled }.flatMap { $0.entries.map(\.sha256) })
+        let files = store
+        let cache = playbackCache.store
+        let protectedURL = playbackCache.protectedURL
+        try await CatalogStorage.shared.commit {
+            let database = try files.database()
+            let pinned = try database.removeAudioPins(pins)
+            let unused = Set(pins.map(\.hash)).subtracting(pinned).subtracting(requested)
+            try Self.discardAudio(unused, store: files, cache: cache, protectedURL: protectedURL, database: database)
+        }
+        onSaved?()
+        await refreshSavedAudio()
+        resumeSaves()
+    }
+
+    /// Cancels save work for the given track and hash pairs in every library.
+    func cancelSaves(covering identities: Set<String>) throws {
+        var updated = saveRequests
+        var tracks = Set<String>()
+        for index in updated.indices where updated[index].entries.contains(where: { identities.contains($0.trackSaveIdentity) }) {
+            tracks.formUnion(updated[index].entries.filter { identities.contains($0.trackSaveIdentity) }.map(\.track.id))
+            let remaining = updated[index].entries.filter { !identities.contains($0.trackSaveIdentity) }
+            if remaining.isEmpty {
+                updated[index].state = .cancelled
+            } else {
+                updated[index].entries = remaining
+                updated[index].completed.formIntersection(remaining.map(\.trackSaveIdentity))
+            }
+        }
+        try persistSaves(updated)
+        for (scope, preparation) in preparingSaves where !preparation.tracks.isDisjoint(with: tracks) {
+            preparation.task.cancel()
+            preparingSaves.removeValue(forKey: scope)
+        }
+        stopSaveWorker()
+    }
+}
+
 struct OfflineSaveControls: View {
     @ObservedObject var library: Library
     var tracks: [Track]

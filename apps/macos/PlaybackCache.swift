@@ -9,19 +9,24 @@ class PlaybackCache {
     private(set) var maintenance: Task<Void, Never>?
     private var maintenanceID = UUID()
 
-    func requestTrim(after acquisition: Task<Void, Never>?, onError: @escaping (Error) -> Void) {
+    /// Every trim, including clearing, goes through this chain so two passes never walk the folder at once.
+    @discardableResult
+    func requestTrim(after acquisition: Task<Void, Never>?, emptying: Bool = false,
+                     onError: @escaping (Error) -> Void) -> Task<Void, Never> {
         let previous = maintenance
         let token = UUID()
         maintenanceID = token
-        maintenance = Task { [weak self] in
+        let task = Task { [weak self] in
             await previous?.value
             await acquisition?.value
             guard let self else { return }
-            do { try await Self.makeRoom(store: store, incoming: 0, limitGB: limitGB, protectedURL: protectedURL) }
+            do { try await Self.makeRoom(store: store, incoming: 0, limitGB: emptying ? 0 : limitGB, protectedURL: protectedURL) }
             catch {
-                if maintenanceID == token { onError(error) }
+                if maintenanceID == token || emptying { onError(error) }
             }
         }
+        maintenance = task
+        return task
     }
 
     var usedBytes: Int64 {
@@ -37,11 +42,11 @@ class PlaybackCache {
         limitGB = min(1000, max(1, limitGB))
     }
 
-    func setLimit(_ value: Int) throws {
+    func setLimit(_ value: Int, onTrimError: @escaping (Error) -> Void = { _ in }) throws {
         try store.prepare()
         limitGB = min(1000, max(1, value))
         try JSONEncoder().encode(limitGB).write(to: settings, options: .atomic)
-        try trim()
+        requestTrim(after: nil, onError: onTrimError)
     }
 
     func file(_ entry: LocalEntry, diagnostic: PlaybackDiagnosticContext? = nil) throws -> URL? {
@@ -70,7 +75,14 @@ class PlaybackCache {
                 return nil
             }
             let url = store.fileURL(entry)
-            guard try LocalMusicStore.digest(file: url) == entry.sha256 else {
+            let digest: String
+            do { digest = try LocalMusicStore.digest(file: url) }
+            catch let error as CocoaError where error.code == .fileNoSuchFile || error.code == .fileReadNoSuchFile {
+                // A trim or clear removed the file after the size check.
+                diagnostic?.record("cache", "miss", fields: ["reason": "removed_during_verification"])
+                return nil
+            }
+            guard digest == entry.sha256 else {
                 diagnostic?.record("cache", "hash", outcome: "mismatch")
                 try FileManager.default.removeItem(at: url)
                 return nil
@@ -109,8 +121,10 @@ class PlaybackCache {
     }
 
     /// Keeps the file that is playing now. Saved music lives in a different store and is not touched.
-    func clear() throws {
-        try Self.trimFiles(store: store, incoming: 0, limitGB: 0, protectedURL: protectedURL)
+    func clear() async throws {
+        var failure: Error?
+        await requestTrim(after: nil, emptying: true) { failure = $0 }.value
+        if let failure { throw failure }
     }
 
     nonisolated private static func trimFiles(store: LocalMusicStore, incoming: UInt64, limitGB: Int, protectedURL: URL?) throws {
@@ -119,11 +133,12 @@ class PlaybackCache {
         guard FileManager.default.fileExists(atPath: directory.path) else { return }
         let files = try FileManager.default.contentsOfDirectory(at: directory,
             includingPropertiesForKeys: [.fileSizeKey, .contentModificationDateKey, .isRegularFileKey])
-        let entries = try files.compactMap { url -> (URL, UInt64, Date)? in
+        let entries = files.compactMap { url -> (URL, UInt64, Date)? in
             guard SHA256Hex.isValid(url.deletingPathExtension().lastPathComponent),
                   ["mp3", "m4a", "aac", "flac", "wav", "aiff", "aif", "alac", "audio"].contains(url.pathExtension) else { return nil }
-            let info = try url.resourceValues(forKeys: [.fileSizeKey, .contentModificationDateKey, .isRegularFileKey])
-            guard info.isRegularFile == true else { return nil }
+            // Another pass may have removed the file after the listing.
+            guard let info = try? url.resourceValues(forKeys: [.fileSizeKey, .contentModificationDateKey, .isRegularFileKey]),
+                  info.isRegularFile == true else { return nil }
             return (url, UInt64(info.fileSize ?? 0), info.contentModificationDate ?? .distantPast)
         }.sorted { $0.2 < $1.2 }
         var total = entries.reduce(UInt64(0)) { $0 + $1.1 }

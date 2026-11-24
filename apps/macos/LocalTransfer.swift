@@ -94,6 +94,7 @@ final class LocalTransfer: ObservableObject {
     @Published private(set) var changedHostLibrary: String?
     @Published private(set) var retainedHostLibrary: String?
     @Published private(set) var hostRefreshedAt: Date?
+    @Published var savedAudio = SavedAudioSummary()
     var retainsHostCatalog: Bool { retainedHostLibrary != nil }
     var usesHostCatalog: Bool { hostConnection != nil || retainsHostCatalog }
     private var hostPlaybackSources: [UUID: any LibrarySource] = [:]
@@ -477,15 +478,14 @@ final class LocalTransfer: ObservableObject {
         guard LocalMusicStore.valid(entry) else { throw LocalMusicError.invalidData }
         let database = try store.database()
         let retained = try database.removeAudioPin(entry)
+        // The caller cancels this library's request first. Any request still holding the hash, including
+        // one for the same track in another library, can reuse the file.
         let otherSave = saveRequests.contains { request in
-            request.state != .cancelled && request.entries.contains { $0.track.id != entry.track.id && $0.sha256 == entry.sha256 }
+            request.state != .cancelled && request.entries.contains { $0.sha256 == entry.sha256 }
         }
         if !retained && !otherSave {
-            for url in Set(store.hostFileURLs(entry) + playbackCache.store.hostFileURLs(entry))
-                where url != playbackCache.protectedURL && FileManager.default.fileExists(atPath: url.path) {
-                try FileManager.default.removeItem(at: url)
-            }
-            try database.forgetReceived(entry)
+            try Self.discardAudio([entry.sha256], store: store, cache: playbackCache.store,
+                                  protectedURL: playbackCache.protectedURL, database: database)
         }
         onSaved?()
     }
@@ -580,7 +580,7 @@ final class LocalTransfer: ObservableObject {
         }
     }
 
-    private func waitForIdle(until deadline: ContinuousClock.Instant? = nil) async throws {
+    func waitForIdle(until deadline: ContinuousClock.Instant? = nil) async throws {
         let attempt = generation
         while busy {
             try Task.checkCancellation()

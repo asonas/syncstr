@@ -107,6 +107,66 @@ final class OfflineSaveTests: XCTestCase {
 
     override func tearDown() { try? FileManager.default.removeItem(at: root) }
 
+    func testDeletingAllSavedMusicCoversPinsTheHostNoLongerListsAndKeepsAudioOthersNeed() async throws {
+        let (store, entries) = try fixture()
+        let orphanBytes = Data(repeating: 9, count: 1024)
+        let orphan = LocalEntry(track: Track(id: "removed-on-host", title: "Removed", artist: "Artist", album: "Album", suffix: "wav", size: 1024),
+                                sha256: LocalMusicStore.digest(orphanBytes), artwork: nil)
+        for (entry, bytes) in [(entries[0], Data(repeating: 1, count: 1024)), (entries[1], Data(repeating: 2, count: 1024)), (orphan, orphanBytes)] {
+            try bytes.write(to: store.fileURL(entry))
+            try store.database().saveAudioPin(entry)
+        }
+        let transfer = try await hostTransfer(store)
+        // Another library is still waiting to save the same content under its own track ID.
+        var shared = entries[1]
+        shared.track.id = "other-library-track"
+        transfer.saveRequests = [OfflineSaveRequest(id: "track:other", library: "other-library", entries: [shared])]
+        await transfer.refreshSavedAudio()
+        let confirmed = transfer.savedAudio.pins
+        XCTAssertEqual(confirmed.count, 3)
+        XCTAssertEqual(transfer.savedAudio.bytes, 3 * 1024)
+
+        // A save that finishes while the confirmation is open is not part of what the person confirmed.
+        try Data(repeating: 3, count: 1024).write(to: store.fileURL(entries[2]))
+        try store.database().saveAudioPin(entries[2])
+        try await transfer.removeSavedAudio(confirmed)
+
+        XCTAssertFalse(FileManager.default.fileExists(atPath: store.fileURL(entries[0]).path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: store.fileURL(orphan).path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: store.fileURL(entries[1]).path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: store.fileURL(entries[2]).path))
+        XCTAssertEqual(try store.database().savedAudioPinList(), [SavedAudioPin(track: entries[2].track.id, hash: entries[2].sha256)])
+        XCTAssertEqual(transfer.savedAudio.pins.count, 1)
+        XCTAssertEqual(transfer.saveRequests.first?.state, .waiting)
+    }
+
+    func testDeletingAllSavedMusicCancelsSavesForTheConfirmedTracks() async throws {
+        let (store, entries) = try fixture()
+        try Data(repeating: 1, count: 1024).write(to: store.fileURL(entries[0]))
+        try store.database().saveAudioPin(entries[0])
+        let transfer = try await hostTransfer(store)
+        let library = try XCTUnwrap(transfer.hostConnection?.library)
+        transfer.saveRequests = [OfflineSaveRequest(id: "album:a", library: library, entries: [entries[0], entries[1]])]
+        await transfer.refreshSavedAudio()
+        try await transfer.removeSavedAudio(transfer.savedAudio.pins)
+        XCTAssertEqual(transfer.saveRequests.first?.entries.map(\.track.id), [entries[1].track.id])
+        XCTAssertFalse(FileManager.default.fileExists(atPath: store.fileURL(entries[0]).path))
+    }
+
+    func testRestoreRunsAgainWhenTheAppReturnsDuringAnInterruptedRestore() async throws {
+        let (store, entries) = try fixture()
+        _ = try store.database().forgetHost()
+        let library = makeLibrary(localStore: store)
+        let first = Task { await library.restoreLibrary() }
+        await Task.yield()
+        // Going to the background cancels the transfer; returning to the foreground asks for a restore again.
+        library.transfer.cancel()
+        await library.restoreLibrary()
+        await first.value
+        XCTAssertEqual(library.localCatalog?.source, .host)
+        XCTAssertEqual(library.tracks.count, entries.count)
+    }
+
     func testBusyTransferReportsRemovalBusyInsteadOfInvalidData() throws {
         let (store, entries) = try fixture(host: false)
         let transfer = makeTransfer(store: store)
