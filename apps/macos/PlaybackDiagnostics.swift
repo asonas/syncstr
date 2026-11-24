@@ -360,14 +360,19 @@ struct PlaybackDiagnosticList: View {
                         VStack(alignment: .leading, spacing: 2) {
                             Text(trace.title).lineLimit(2)
                             HStack(spacing: 0) {
-                                Text(Self.started(trace)).foregroundStyle(.secondary)
-                                Text("・")
+                                Text("\(Self.started(trace))・")
                                 Text(Self.outcome(trace.outcome))
                                     .foregroundStyle(trace.outcome == "failed" ? Color.red : .secondary)
-                            }.font(.callout)
+                                Text("・\(trace.lastStage)")
+                            }
+                            .font(.callout).foregroundStyle(.secondary)
+                            if trace.omitted > 0 {
+                                Text("一部の記録がありません（\(trace.omitted)件）").font(.callout).foregroundStyle(.secondary)
+                            }
                         }
                         Spacer(minLength: 0)
                         PlaybackDiagnosticCopyButton(attemptID: trace.id, recorder: recorder, title: "コピー")
+                            .accessibilityLabel("\(trace.title)の診断ログをコピー")
                     }
                 }
             } footer: {
@@ -378,7 +383,17 @@ struct PlaybackDiagnosticList: View {
             }
         }
         .formStyle(.grouped)
+#if os(macOS)
+        // The Settings window has no pull to refresh, and playback happens in another window.
+        .task {
+            while !Task.isCancelled {
+                await load()
+                try? await Task.sleep(for: .seconds(2))
+            }
+        }
+#else
         .task { await load() }
+#endif
 #if os(iOS)
         .navigationTitle("再生診断")
         .refreshable { await load() }

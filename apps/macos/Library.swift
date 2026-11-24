@@ -381,11 +381,13 @@ final class Library: ObservableObject {
         }
         restoredLibrary = true
         restoringSession = false
-        await transfer.restoreHost()
+        let restored = await transfer.restoreHost()
         if transfer.usesHostCatalog {
             if localCatalog?.source != .host { await openSavedLocalLibrary() }
             await loadPlaylists()
         }
+        // Going to the background cancels the restore. Allow the next foreground to try again.
+        if !restored || (transfer.usesHostCatalog && localCatalog?.source != .host) { restoredLibrary = false }
         if transfer.hasHostActivity { transfer.refreshConnection() }
         transfer.resumeSaves()
     }

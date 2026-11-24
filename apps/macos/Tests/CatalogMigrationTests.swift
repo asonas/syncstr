@@ -88,7 +88,7 @@ final class CatalogMigrationTests: XCTestCase {
         }
     }
 
-    func testLegacyLocalLibraryIsPurgedWithoutTouchingHostAudio() throws {
+    func testLegacyLocalLibraryIsPurgedWithoutTouchingHostAudioOrFailingOnBrokenRows() throws {
         let (store, catalog) = try storeWithAudio()
         let shared = catalog.entries[0]
         let localOnly = LocalEntry(track: Track(id: "local-only", title: "Imported", artist: "Artist", suffix: "mp3", size: 3),
@@ -114,6 +114,7 @@ final class CatalogMigrationTests: XCTestCase {
             INSERT INTO catalog VALUES (1, 'local-library', 'Folder', 'Music');
             INSERT INTO entries VALUES ('shared', 0, '\(shared.sha256)', '\(try payload(shared))', 'a.wav');
             INSERT INTO entries VALUES ('local-only', 1, '\(localOnly.sha256)', '\(try payload(localOnly))', 'b.mp3');
+            INSERT INTO entries VALUES ('broken', 2, 'not-a-hash', '{', NULL);
             PRAGMA user_version = 9;
             """
         XCTAssertEqual(sqlite3_exec(connection, legacy, nil, nil, nil), SQLITE_OK)

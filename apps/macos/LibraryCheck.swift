@@ -180,9 +180,11 @@ struct LibraryCheck {
         try require(library.current?.title == "First")
         library.previous()
         try require(library.current?.title == "Second")
+        try await wait("Second track was not ready to seek") { library.canSeek }
         library.seek(to: 3.5)
         try await wait("Repeat all did not wrap at track end") { library.current?.title == "First" }
         library.repeatMode = .one
+        try await wait("First track was not ready to seek") { library.canSeek }
         let repeatedPlayer = mediaPlayers.last!
         library.seek(to: 3.5)
         try await wait("Repeat one did not restart") { mediaPlayers.last! !== repeatedPlayer }

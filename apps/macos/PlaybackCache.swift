@@ -131,7 +131,8 @@ class PlaybackCache {
         for (url, size, _) in entries where total + incoming > budget {
             try Task.checkCancellation()
             guard url.resolvingSymlinksInPath().path != protectedURL?.resolvingSymlinksInPath().path else { continue }
-            try FileManager.default.removeItem(at: url)
+            do { try FileManager.default.removeItem(at: url) }
+            catch CocoaError.fileNoSuchFile {}
             total -= size
         }
     }

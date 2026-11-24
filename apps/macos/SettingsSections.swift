@@ -11,7 +11,12 @@ struct LibrarySettingsSection: View {
 
 struct SavedMusicSettingsSection: View {
     @ObservedObject var library: Library
-    @State private var confirming = false
+    @State private var removal: Removal?
+
+    private struct Removal {
+        let library: String?
+        let tracks: [Track]
+    }
 
     private var removable: [Track] { library.tracks.filter(library.canRemoveLocalCopy) }
 
@@ -22,13 +27,21 @@ struct SavedMusicSettingsSection: View {
                                                        set: library.transfer.setAutomaticCellular))
 #endif
             LabeledContent("使用量", value: ByteCountFormatter.string(fromByteCount: library.savedAudioBytes, countStyle: .decimal))
-            Button("保存した音楽をすべて削除", role: .destructive) { confirming = true }
+            Button("保存した音楽をすべて削除", role: .destructive) {
+                removal = Removal(library: library.localCatalog?.id, tracks: removable)
+            }
                 .disabled(removable.isEmpty)
-                .alert("保存した音楽をすべて削除しますか？", isPresented: $confirming, presenting: removable) { tracks in
+                .alert("保存した音楽をすべて削除しますか？", isPresented: Binding(
+                    get: { removal != nil }, set: { if !$0 { removal = nil } }
+                ), presenting: removal) { target in
                     Button("キャンセル", role: .cancel) {}
-                    Button("すべて削除", role: .destructive) { library.removeLocalCopies(tracks) }
-                } message: { tracks in
-                    Text("\(tracks.count)曲をこの端末から削除します。ホストのライブラリには残ります。")
+                    Button("すべて削除", role: .destructive) {
+                        // The library can change while the alert is open, and track IDs alone could match the new one.
+                        guard library.localCatalog?.id == target.library else { return }
+                        library.removeLocalCopies(target.tracks)
+                    }
+                } message: { target in
+                    Text("\(target.tracks.count)曲をこの端末から削除します。ホストのライブラリには残ります。")
                 }
         }
     }
@@ -58,7 +71,8 @@ struct PlaybackCacheSettingsSection: View {
                 do { try cache.clear(); library.objectWillChange.send() }
                 catch { library.message = "キャッシュを消去できませんでした。\(error.localizedDescription)" }
             }
-            .disabled(cache.usedBytes == 0)
+            // While a track is being prepared its file is verified before it becomes the protected one.
+            .disabled(cache.usedBytes == 0 || library.loading)
         }
     }
 }

@@ -214,25 +214,29 @@ final class CatalogDatabase {
     /// Removes the library that the retired folder and import modes kept on this device.
     /// Audio stays when a host entry or a saved-audio pin shares its content.
     /// Files go before rows, so an interrupted run finds the same rows on the next launch.
+    /// A file that cannot be removed or a row that cannot be read is left behind, because
+    /// failing here would stop the host catalog and its saved music from opening.
     private func purgeLegacyLocalLibrary() throws {
         let manager = FileManager.default
         for name in ["active", "folder.bookmark", "catalog.json"] {
-            let url = root.appendingPathComponent(name)
-            if manager.fileExists(atPath: url.path) { try manager.removeItem(at: url) }
+            try? manager.removeItem(at: root.appendingPathComponent(name))
         }
         let tables = Set(try rows("SELECT name FROM sqlite_master WHERE type = 'table'").compactMap { $0[0] })
         if tables.contains("entries") {
             var kept = Set(try rows("SELECT hash FROM shared_audio_saves").compactMap { $0[0] })
+            var hostEntriesReadable = true
             for row in try rows("SELECT payload FROM host_entries") {
-                kept.insert(try JSONDecoder().decode(LocalEntry.self, from: Data((row[0] ?? "").utf8)).sha256)
+                guard let entry = try? JSONDecoder().decode(LocalEntry.self, from: Data((row[0] ?? "").utf8)) else {
+                    hostEntriesReadable = false
+                    break
+                }
+                kept.insert(entry.sha256)
             }
             let store = LocalMusicStore(root: root)
-            for row in try rows("SELECT payload FROM entries") {
-                let entry = try JSONDecoder().decode(LocalEntry.self, from: Data((row[0] ?? "").utf8))
-                guard LocalMusicStore.valid(entry), !kept.contains(entry.sha256) else { continue }
-                for url in store.hostFileURLs(entry) where manager.fileExists(atPath: url.path) {
-                    try manager.removeItem(at: url)
-                }
+            for row in try rows("SELECT payload FROM entries") where hostEntriesReadable {
+                guard let entry = try? JSONDecoder().decode(LocalEntry.self, from: Data((row[0] ?? "").utf8)),
+                      LocalMusicStore.valid(entry), !kept.contains(entry.sha256) else { continue }
+                for url in store.hostFileURLs(entry) { try? manager.removeItem(at: url) }
                 try execute("DELETE FROM received_files WHERE sha256 = ?", [entry.sha256])
                 try execute("DELETE FROM verified_audio_files WHERE hash = ?", [entry.sha256])
             }

@@ -331,8 +331,8 @@ final class LocalTransfer: ObservableObject {
                 connected = true
                 changedHostLibrary = nil
                 let refreshed = Date.now
-                try? await CatalogStorage.shared.commit { try files.database().markHostRefreshed(host, at: refreshed) }
-                if generation == attempt { hostRefreshedAt = refreshed }
+                if (try? await CatalogStorage.shared.commit({ try files.database().markHostRefreshed(host, at: refreshed) })) != nil,
+                   generation == attempt { hostRefreshedAt = refreshed }
                 connectionEvent("refresh_host", outcome: "succeeded", fields: ["result": "unchanged", "remote_catalog_id": host.library])
                 return .unchanged
             case .updated(let update):
