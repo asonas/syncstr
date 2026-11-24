@@ -127,7 +127,6 @@ struct PhoneRoot: View {
             }
             .navigationTitle("ライブラリ")
             .navigationSplitViewColumnWidth(min: 200, ideal: 240, max: 300)
-            .toolbar { AddMusicButton(library: library) }
         } detail: {
             NavigationStack {
                 Group {
@@ -230,16 +229,10 @@ struct PhoneRoot: View {
                 NavigationLink { PlaylistBrowser(library: library) } label: { categoryLabel("すべてのプレイリスト", icon: "music") }.buttonStyle(.plain)
                 VStack(alignment: .leading, spacing: 8) {
                     Text("最近追加した項目").font(.title3.bold())
-                    if !library.connected && library.transfer.showsLibraryEditControls {
-                        Text("ホストのライブラリに接続するか、この端末に音楽を追加して聴き始められます。")
+                    if !library.connected && !library.transfer.usesHostCatalog {
                         Button("ホストに接続") { hostSetup = HostSetupRequest() }
-                        AddMusicButton(library: library)
-                        if library.hasSavedLocalLibrary {
-                            Button("保存した音楽を開く") { Task { await library.openSavedLocalLibrary() } }
-                        }
                     } else if library.tracks.isEmpty {
-                        Text(library.transfer.showsLibraryEditControls ? "音楽はまだありません。音楽ファイルを追加できます。" : "音楽はまだありません。")
-                        AddMusicButton(library: library)
+                        Text("音楽はまだありません。")
                     }
                     recentAlbumGrid
                 }
@@ -250,9 +243,6 @@ struct PhoneRoot: View {
         }
         .background(PhoneStyle.graphite)
         .navigationTitle("ライブラリ")
-        .toolbar {
-            AddMusicButton(library: library)
-        }
         .toolbarTitleDisplayMode(.inlineLarge)
         .modifier(LibraryRefresh(library: library))
     }
@@ -314,13 +304,6 @@ struct PhoneRoot: View {
             }
             .buttonStyle(.plain)
             .accessibilityIdentifier("album-\(album.id)")
-            .contextMenu {
-                if library.transfer.showsLibraryEditControls {
-                    Button(library.albumVisibilityLabel(album.id)) {
-                        library.setAlbumHidden(album.id, hidden: !library.isAlbumHidden(album.id))
-                    }.disabled(library.isSavingAlbumVisibility(album.id))
-                }
-            }
         }
     }
 

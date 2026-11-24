@@ -1,5 +1,4 @@
 import SwiftUI
-import UIKit
 
 struct PhoneAlbumBrowser<Detail: View>: View {
     @ObservedObject var library: Library
@@ -8,8 +7,6 @@ struct PhoneAlbumBrowser<Detail: View>: View {
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @State private var query = ""
     @State private var searching = false
-    @State private var selecting = false
-    @State private var selected: Set<String> = []
     @State private var openedID: String?
     @State private var returnQuery: String?
     @State private var showingDetail = false
@@ -52,7 +49,6 @@ struct PhoneAlbumBrowser<Detail: View>: View {
         .searchable(text: $query, isPresented: $searching, placement: .navigationBarDrawer(displayMode: .always), prompt: "アルバムを検索")
         .searchFocused($searchFocused)
         .toolbar { browserToolbar }
-        .safeAreaInset(edge: .bottom) { selectionBar }
         .navigationDestination(isPresented: $showingDetail) {
             if let openedID, let album = library.album(id: openedID) { detail(album) }
         }
@@ -64,13 +60,7 @@ struct PhoneAlbumBrowser<Detail: View>: View {
                 if let openedID { scrollPosition.scrollTo(id: openedID, anchor: .center) }
             }
         }
-        .onChange(of: library.transfer.showsLibraryEditControls) { _, editable in
-            if !editable { selecting = false; selected.removeAll() }
-        }
-        .onChange(of: albums.map(\.id)) { _, ids in selected.formIntersection(ids) }
         .onKeyPress(.escape) {
-            selecting = false
-            selected.removeAll()
             searchFocused = false
             return .handled
         }
@@ -79,51 +69,21 @@ struct PhoneAlbumBrowser<Detail: View>: View {
     private func albumCard(_ album: Album) -> some View {
         Button {
             searchFocused = false
-            if selecting { toggle(album.id) } else { open(album) }
+            open(album)
         } label: {
             VStack(alignment: .leading, spacing: 4) {
                 PhoneArtwork(url: album.coverArt.flatMap { library.artworkURL(for: $0) })
-                    .overlay(alignment: .topTrailing) {
-                        if selecting {
-                            Image(systemName: selected.contains(album.id) ? "checkmark.circle.fill" : "circle")
-                                .font(.title2).foregroundStyle(.white, PhoneStyle.button)
-                                .padding(8)
-                        }
-                    }
                 Text(album.title).font(.subheadline.bold()).foregroundStyle(AppearanceColors.primary)
                     .lineLimit(dynamicTypeSize.isAccessibilitySize ? nil : 2)
                 Text(album.artist).font(.subheadline).foregroundStyle(PhoneStyle.secondary)
                     .lineLimit(dynamicTypeSize.isAccessibilitySize ? nil : 1)
             }
             .padding(4)
-            .background(
-                selected.contains(album.id) ? AppearanceColors.control : Color.clear, in: RoundedRectangle(cornerRadius: 8)
-            )
-            .overlay {
-                RoundedRectangle(cornerRadius: 8).strokeBorder(
-                    selected.contains(album.id) ? PhoneStyle.signal : Color.clear, lineWidth: 2)
-            }
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .gesture(
-            CommandAlbumClick {
-                guard library.transfer.showsLibraryEditControls else { return }
-                selecting = true
-                toggle(album.id)
-            }
-        )
         .accessibilityLabel("\(album.title)、\(album.artist)")
         .accessibilityIdentifier("album-\(album.id)")
-        .accessibilityAddTraits(selected.contains(album.id) ? .isSelected : [])
-        .contextMenu {
-            if library.transfer.showsLibraryEditControls {
-                let targets = selected.contains(album.id) ? selected : [album.id]
-                Button(hidden ? "非表示を解除する" : "非表示にする") {
-                    changeVisibility(targets)
-                }.disabled(library.albumsVisibilityUnavailable(targets))
-            }
-        }
     }
 
     @ToolbarContentBuilder private var browserToolbar: some ToolbarContent {
@@ -141,73 +101,14 @@ struct PhoneAlbumBrowser<Detail: View>: View {
                 Image("album-sort").resizable().renderingMode(.template).frame(width: 24, height: 24)
             }
             .accessibilityLabel("並び替え")
-            if library.transfer.showsLibraryEditControls {
-                Button(selecting ? "完了" : "選択") {
-                    searchFocused = false
-                    selecting.toggle()
-                    selected.removeAll()
-                }
-            }
         }
-    }
-
-    @ViewBuilder private var selectionBar: some View {
-        if library.transfer.showsLibraryEditControls, selecting {
-            VStack(alignment: .leading, spacing: 4) {
-                HStack {
-                    Text("\(selected.count)枚を選択")
-                    Spacer()
-                    Button(hidden ? "非表示を解除" : "非表示にする") { changeVisibility(selected) }
-                        .disabled(library.albumsVisibilityUnavailable(selected))
-                }
-            }.padding(20).background(.regularMaterial)
-        }
-    }
-
-    private func toggle(_ id: String) {
-        if selected.contains(id) { selected.remove(id) } else { selected.insert(id) }
     }
 
     private func open(_ album: Album) {
         // Ending native search clears its text; restore the filter on return.
         returnQuery = query
         searching = false
-        selected.removeAll()
         openedID = album.id
         showingDetail = true
-    }
-
-    private func changeVisibility(_ ids: Set<String>) {
-        Task {
-            await library.setAlbumsHidden(ids, hidden: !hidden).value
-        }
-    }
-}
-
-// SwiftUI's modifier-key gesture filter is macOS-only.
-private struct CommandAlbumClick: UIGestureRecognizerRepresentable {
-    var action: () -> Void
-    func makeCoordinator(converter: CoordinateSpaceConverter) -> Coordinator { Coordinator() }
-    func makeUIGestureRecognizer(context: Context) -> UITapGestureRecognizer {
-        let recognizer = UITapGestureRecognizer()
-        recognizer.delaysTouchesBegan = true
-        recognizer.delegate = context.coordinator
-        return recognizer
-    }
-    func handleUIGestureRecognizerAction(_ recognizer: UITapGestureRecognizer, context: Context) {
-        if recognizer.state == .ended { action() }
-    }
-    final class Coordinator: NSObject, UIGestureRecognizerDelegate {
-        func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldReceive event: UIEvent) -> Bool {
-            event.modifierFlags.contains(.command)
-        }
-
-        func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
-            gestureRecognizer.modifierFlags.contains(.command)
-        }
-
-        func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldBeRequiredToFailBy otherGestureRecognizer: UIGestureRecognizer) -> Bool {
-            true
-        }
     }
 }
