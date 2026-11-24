@@ -4,7 +4,7 @@ The Mac app reads a host library over HTTPS.
 
 ## Library entry and offline saves
 
-On first launch, choose **Connect to host**, enter the host address, and confirm the library. The Mac reads the catalog, playlists, artwork, and audio from the host's `/api/v1`. Earlier versions could also play a local Music folder or imported files. The first launch after updating removes that catalog and any imported audio that no host entry or saved track shares. Installs that still kept only the older `catalog.json` keep their imported audio files.
+On first launch, choose **Connect to host**, enter the host address, and confirm the library. The Mac reads the catalog, playlists, artwork, and audio from the host's `/api/v1`. Earlier versions could also play a local Music folder or imported files. The first launch after updating removes that catalog and any imported audio that no host entry or saved track shares. Installs that still kept only the older `catalog.json` keep their imported audio files until **Delete all saved music** in Settings removes them.
 
 Track and album actions save audio on this device without host selection. Pending requests and successful tracks survive restart. Unreachable sources show connection waiting; automatic resumption obeys the cellular setting. Retry fetches unfinished items, and cancellation keeps successful saves. Album requests snapshot their tracks; later additions need another Save. Removing a save deletes its managed audio and cache copy, keeps the host library entry, and confirms interruption of an affected player.
 
