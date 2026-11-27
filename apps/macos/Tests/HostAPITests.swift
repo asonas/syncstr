@@ -776,6 +776,30 @@ final class HostAPITests: XCTestCase {
         XCTAssertEqual(tags.values.last ?? "missing", nil)
     }
 
+    func testRefreshThePersonAsksForReachesTheHostWhenTheStoredHeaderBroke() async throws {
+        let (reply, _, _) = try fixture()
+        let files = store()
+        let address = try HostAddress("https://confirmed.example.test")
+        let tags = CatalogRequestTags()
+        let transfer = makeTransfer(store: files, hostConfiguration: configuration { request in
+            guard request.url?.lastPathComponent == "catalog" else { return reply }
+            let tag = request.value(forHTTPHeaderField: "If-None-Match")
+            tags.append(tag)
+            return tag == nil ? reply : HostReply(status: 304)
+        })
+        _ = try await transfer.confirmHost(address, information: hostInformation(address))
+        var connection: OpaquePointer?
+        XCTAssertEqual(sqlite3_open(files.root.appendingPathComponent("catalog.sqlite").path, &connection), SQLITE_OK)
+        XCTAssertEqual(sqlite3_exec(connection, "UPDATE host_connection SET header = '{'", nil, nil, nil), SQLITE_OK)
+        sqlite3_close(connection)
+        XCTAssertThrowsError(try files.database().snapshot())
+
+        // An unreadable stored catalog must not stop the refresh before the host is asked for the whole one.
+        _ = try await transfer.refreshHost()
+        XCTAssertEqual(tags.values.last ?? "missing", nil)
+        XCTAssertEqual(try files.database().snapshot()?.unreadableEntries, 0)
+    }
+
     func testRowStillUnreadableAfterTheWholeCatalogIsRecordedAsTheHosts() async throws {
         let (reply, _, _) = try fixture()
         let files = store()

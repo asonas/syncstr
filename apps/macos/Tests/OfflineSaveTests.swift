@@ -245,6 +245,23 @@ final class OfflineSaveTests: XCTestCase {
         XCTAssertEqual(transfer.saveRequests.map(\.id), ["track:track-1"])
     }
 
+    func testSaveAskedForDuringDeletionDoesNotBringBackTheRemovedRequest() async throws {
+        let (store, entries) = try fixture()
+        let transfer = try await hostTransfer(store)
+        let library = try XCTUnwrap(transfer.hostConnection?.library)
+        transfer.saveRequests = [OfflineSaveRequest(id: "album:a", library: library, entries: [entries[0], entries[1]], state: .waiting)]
+        let latch = Latch()
+        transfer.saveWorker = Task { await latch.wait() }
+        let removal = Task { try await transfer.removeAllSavedAudio() }
+        try await waitFor { transfer.saveWorker == nil }
+        let save = Task { await transfer.requestSave([entries[0].track], scope: "album:a") }
+        try await Task.sleep(for: .milliseconds(100))
+        latch.open()
+        try await removal.value
+        await save.value
+        XCTAssertEqual(transfer.saveRequests.map { $0.entries.map(\.track.id) }, [[entries[0].track.id]])
+    }
+
     func testSaveBeingPreparedWhenEverythingIsRemovedIsDropped() async throws {
         let (store, entries) = try fixture()
         let transfer = try await hostTransfer(store)

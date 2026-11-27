@@ -106,7 +106,7 @@ final class LocalTransfer: ObservableObject {
     /// A refresh that has started but not yet decided whether to send the ETag; a repair asked for now rides on it.
     private var hostRefreshPreparing = false
     var catalogRepairNow: () -> ContinuousClock.Instant = { .now }
-    /// Rows still unreadable after the whole catalog was fetched: the host itself sends them unusable,
+    /// Rows still unreadable when read back right after the whole catalog was written,
     /// so saves of these tracks fail until the person asks again.
     var unrepairableIDs: Set<String> = []
     /// Reached when a refresh has started and not yet decided whether to send the ETag.
@@ -196,7 +196,7 @@ final class LocalTransfer: ObservableObject {
             // Rows can break after launch, and adopting the same host reads nothing. Reconnecting is
             // explicit, so it pays for one full read when adopting skipped it.
             if try await adoptStoredHost(saved, attempt: startingGeneration) == nil {
-                let unreadable = try await CatalogStorage.shared.perform { try files.database().snapshot()?.unreadableEntries ?? 0 }
+                let unreadable = try await storedCatalogGap(files)
                 guard generation == startingGeneration else { throw CancellationError() }
                 if unreadable > 0 { markHostCatalogIncomplete(unreadable) }
             }
@@ -364,7 +364,7 @@ final class LocalTransfer: ObservableObject {
             return .updated
         }
         if try await adoptStoredHost(host, attempt: attempt) == nil, revalidate {
-            let unreadable = try await CatalogStorage.shared.perform { try files.database().snapshot()?.unreadableEntries ?? 0 }
+            let unreadable = try await storedCatalogGap(files)
             guard generation == attempt else { throw CancellationError() }
             if unreadable > 0 { markHostCatalogIncomplete(unreadable) }
         }
@@ -471,6 +471,16 @@ final class LocalTransfer: ObservableObject {
         else { hostConnection = host }
         if let unreadable, unreadable > 0 { markHostCatalogIncomplete(unreadable) }
         return unreadable
+    }
+
+    /// The number of unreadable stored rows. A stored header that no longer decodes counts as a gap, so the
+    /// refresh still asks the host for the whole catalog. Database errors are returned as they are.
+    private func storedCatalogGap(_ files: LocalMusicStore) async throws -> Int {
+        do { return try await CatalogStorage.shared.perform { try files.database().snapshot()?.unreadableEntries ?? 0 } }
+        catch is DecodingError {
+            try Task.checkCancellation()
+            return 1
+        }
     }
 
     /// Called by the save worker, which reads the stored catalog on every pass and so notices rows that

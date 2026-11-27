@@ -134,6 +134,13 @@ extension LocalTransfer {
             let catalog = snapshot.catalog
             try Task.checkCancellation()
             guard preparingSaves[scope]?.token == token else { return }
+            // A save asked for while everything is being removed is queued after the removal,
+            // and reads the earlier request only once the removal has emptied it.
+            if let removal = removingAllSaves {
+                _ = await removal.result
+                try Task.checkCancellation()
+                guard preparingSaves[scope]?.token == token else { return }
+            }
             let byID = Dictionary(catalog.entries.map { ($0.track.id, $0) }, uniquingKeysWith: { first, _ in first })
             // Asking again gives a track the host sent unusable another repair.
             unrepairableIDs.subtract(ids)
@@ -160,12 +167,6 @@ extension LocalTransfer {
                 else { throw LocalMusicError.invalidData }
             }
             guard !entries.isEmpty || !unresolved.isEmpty else { throw LocalMusicError.invalidData }
-            // A save asked for while everything is being removed is queued after the removal.
-            if let removal = removingAllSaves {
-                _ = await removal.result
-                try Task.checkCancellation()
-                guard preparingSaves[scope]?.token == token else { return }
-            }
             stopSaveWorker()
             var updated = saveRequests.filter { $0.library != catalog.id || $0.id != scope }
             var request = OfflineSaveRequest(id: scope, library: catalog.id, entries: entries, unresolved: unresolved, manual: true)
