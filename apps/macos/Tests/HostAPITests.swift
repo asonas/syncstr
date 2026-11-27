@@ -734,8 +734,11 @@ final class HostAPITests: XCTestCase {
         let blocker = Task.detached { try await CatalogStorage.shared.perform { entered.signal(); _ = hold.wait(timeout: .now() + 15) } }
         let holding = await Task.detached { entered.wait(timeout: .now() + 15) }.value
         guard holding == .success else { return XCTFail("The catalog queue was not held") }
+        let preparing = expectation(description: "refresh is being prepared")
+        transfer.onHostRefreshPreparing = { preparing.fulfill() }
         transfer.refreshConnection()
-        try await Task.sleep(for: .milliseconds(200))
+        await fulfillment(of: [preparing], timeout: 10)
+        transfer.onHostRefreshPreparing = nil
         transfer.requestCatalogRepair(1, for: libraryID)
         hold.signal()
         try await blocker.value
@@ -743,6 +746,80 @@ final class HostAPITests: XCTestCase {
         try await Task.sleep(for: .milliseconds(500))
         XCTAssertEqual(tags.values.filter { $0 == nil }.count, 1, "The repair rode on the refresh being prepared")
         XCTAssertEqual(tags.values.count, 1)
+    }
+
+    func testRefreshThePersonAsksForRepairsARowThatBrokeAfterLaunch() async throws {
+        let (reply, _, _) = try fixture()
+        let files = store()
+        let address = try HostAddress("https://confirmed.example.test")
+        let tags = CatalogRequestTags()
+        let library = makeLibrary(localStore: files, hostConfiguration: configuration { request in
+            guard request.url?.lastPathComponent == "catalog" else { return reply }
+            let tag = request.value(forHTTPHeaderField: "If-None-Match")
+            tags.append(tag)
+            return tag == nil ? reply : HostReply(status: 304)
+        })
+        _ = try await library.transfer.confirmHost(address, information: hostInformation(address))
+        // A repair ran just now, so an automatic refresh would keep the ETag for the whole interval.
+        library.transfer.catalogRepairInterval = .seconds(3600)
+        library.transfer.requestCatalogRepair(1, for: libraryID)
+        for _ in 0..<500 where tags.values.count < 2 { try await Task.sleep(for: .milliseconds(10)) }
+        try breakStoredHostEntry("track-b", in: files)
+
+        // The sidebar button and pull to refresh are the person's request: no interval, and the stored rows are checked.
+        library.reload()
+        for _ in 0..<500 {
+            if try files.database().snapshot()?.unreadableEntries == 0 { break }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertEqual(try files.database().snapshot()?.unreadableEntries, 0)
+        XCTAssertEqual(tags.values.last ?? "missing", nil)
+    }
+
+    func testRowStillUnreadableAfterTheWholeCatalogIsRecordedAsTheHosts() async throws {
+        let (reply, _, _) = try fixture()
+        let files = store()
+        let address = try HostAddress("https://confirmed.example.test")
+        let transfer = makeTransfer(store: files, hostConfiguration: configuration { request in
+            guard request.url?.lastPathComponent == "catalog" else { return reply }
+            return request.value(forHTTPHeaderField: "If-None-Match") == nil ? reply : HostReply(status: 304)
+        })
+        _ = try await transfer.confirmHost(address, information: hostInformation(address))
+        try breakStoredHostEntry("track-b", in: files)
+        // The whole catalog is written again, and the row breaks once more right after, as if the host sent it unusable.
+        let result = try await transfer.confirmHost(address, information: hostInformation(address)) {
+            try? breakStoredHostEntry("track-b", in: files)
+        }
+        XCTAssertEqual(result, .updated)
+        XCTAssertEqual(transfer.unrepairableIDs, ["track-b"])
+    }
+
+    func testAutomaticRefreshWithinTheIntervalSendsTheETag() async throws {
+        let (reply, _, _) = try fixture()
+        let files = store()
+        let address = try HostAddress("https://confirmed.example.test")
+        let initial = makeTransfer(store: files, hostConfiguration: configuration { _ in reply })
+        _ = try await initial.confirmHost(address, information: hostInformation(address))
+        try breakStoredHostEntry("track-b", in: files)
+
+        let tags = CatalogRequestTags()
+        let transfer = makeTransfer(store: files, hostConfiguration: configuration { request in
+            guard request.url?.path == "/api/v1/catalog" else { throw URLError(.unsupportedURL) }
+            tags.append(request.value(forHTTPHeaderField: "If-None-Match"))
+            throw URLError(.cannotConnectToHost)
+        })
+        let start = ContinuousClock.now
+        transfer.catalogRepairNow = { start }
+        await transfer.restoreHost()
+        transfer.refreshConnection()
+        for _ in 0..<500 where tags.values.isEmpty { try await Task.sleep(for: .milliseconds(10)) }
+        XCTAssertEqual(tags.values, [nil], "The first refresh after reading broken rows fetches the whole catalog")
+
+        // The repair failed and the interval has not passed, so the next automatic refresh keeps the ETag.
+        transfer.refreshConnection()
+        for _ in 0..<500 where tags.values.count < 2 { try await Task.sleep(for: .milliseconds(10)) }
+        XCTAssertEqual(tags.values.count, 2)
+        XCTAssertNotNil(tags.values.last ?? nil)
     }
 
     func testRowWithoutAKeyMakesReconnectingFetchTheWholeCatalog() async throws {

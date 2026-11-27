@@ -69,12 +69,21 @@ extension Library {
 
     func saveRequest(for tracks: [Track], scope: String) -> OfflineSaveRequest? {
         guard let catalog = localCatalog else { return nil }
-        return transfer.saveRequests.first { $0.library == catalog.id && $0.id == scope }
-            ?? (tracks.count == 1 ? transfer.saveRequests.last { request in
-                request.library == catalog.id
-                    && (request.entries.contains { $0.track.id == tracks[0].id } || request.unresolved.contains { $0.id == tracks[0].id })
-                    && request.state != .complete && request.state != .cancelled
-            } : nil)
+        if let own = transfer.saveRequests.first(where: { $0.library == catalog.id && $0.id == scope }) { return own }
+        guard tracks.count == 1, let track = tracks.first, !hasManagedCopy(track),
+              var request = transfer.saveRequests.last(where: { request in
+                  request.library == catalog.id
+                      && (request.entries.contains { $0.track.id == track.id } || request.unresolved.contains { $0.id == track.id }
+                          || request.failedTracks.contains(track.id))
+                      && request.state != .complete && request.state != .cancelled
+              }) else { return nil }
+        // A request of another scope, such as the album, describes this track only by the track's own state.
+        if request.failedTracks.contains(track.id) {
+            request.state = .failed
+        } else if request.state == .failed {
+            return nil
+        }
+        return request
     }
 
     /// A pending or failed save of this scope comes first: it can hold tracks that the displayed catalog lacks,
@@ -121,19 +130,33 @@ extension LocalTransfer {
             } onCancel: {
                 preparation.cancel()
             }
-            guard let catalog = snapshot?.catalog else { throw LocalMusicError.invalidData }
+            guard let snapshot else { throw LocalMusicError.invalidData }
+            let catalog = snapshot.catalog
             try Task.checkCancellation()
             guard preparingSaves[scope]?.token == token else { return }
             let byID = Dictionary(catalog.entries.map { ($0.track.id, $0) }, uniquingKeysWith: { first, _ in first })
-            // While some stored rows are unreadable, a missing track may be one of them, so it waits for the
-            // catalog to be read again instead of failing the whole save.
-            let incomplete = (snapshot?.unreadableEntries ?? 0) > 0
+            // Asking again gives a track the host sent unusable another repair.
+            unrepairableIDs.subtract(ids)
+            if tracks.contains(where: { snapshot.unreadableIDs.contains($0.id) }) { resetCatalogRepairInterval() }
+            // A retry carries the tracks of the earlier request, including ones the displayed list no longer shows.
+            let previous = saveRequests.first { $0.library == catalog.id && $0.id == scope && $0.state != .cancelled && $0.state != .complete }
+            var wanted = tracks
+            var failedTracks = Set<String>()
+            if let previous {
+                wanted += previous.entries.map(\.track) + previous.unresolved
+                let known = Set(wanted.map(\.id))
+                for id in previous.failedTracks where !known.contains(id) {
+                    if let entry = byID[id] { wanted.append(entry.track) } else { failedTracks.insert(id) }
+                }
+            }
             var entries: [LocalEntry] = []
             var unresolved: [Track] = []
             var seen = Set<String>()
-            for track in tracks where seen.insert(track.id).inserted {
+            for track in wanted where seen.insert(track.id).inserted {
                 if let entry = byID[track.id] { entries.append(entry) }
-                else if incomplete { unresolved.append(track) }
+                // A missing track may be an unreadable row, so it waits for the catalog to be read again.
+                else if snapshot.mayHold(track.id) { unresolved.append(track) }
+                else if previous != nil { failedTracks.insert(track.id) }
                 else { throw LocalMusicError.invalidData }
             }
             guard !entries.isEmpty || !unresolved.isEmpty else { throw LocalMusicError.invalidData }
@@ -145,7 +168,10 @@ extension LocalTransfer {
             }
             stopSaveWorker()
             var updated = saveRequests.filter { $0.library != catalog.id || $0.id != scope }
-            updated.append(OfflineSaveRequest(id: scope, library: catalog.id, entries: entries, unresolved: unresolved, manual: true))
+            var request = OfflineSaveRequest(id: scope, library: catalog.id, entries: entries, unresolved: unresolved, manual: true)
+            request.failedTracks = failedTracks
+            if !failedTracks.isEmpty { request.error = LocalMusicError.invalidData.localizedDescription }
+            updated.append(request)
             try persistSaves(updated)
             resumeSaves(explicit: scope)
         } catch is CancellationError {
@@ -279,10 +305,13 @@ extension LocalTransfer {
                 try Task.checkCancellation()
                 guard saveGeneration == token else { return }
                 processableLibrary = catalog.id
-                // While stored rows are unreadable, a track the catalog lacks may be one of them; it waits for the
-                // catalog to be read again. Once nothing is unreadable, a missing track has left the host.
-                let incomplete = snapshot.unreadableEntries > 0
-                if incomplete { requestCatalogRepair(snapshot.unreadableEntries, for: catalog.id) }
+                // A track the catalog lacks waits only while it may be one of the unreadable rows. A row the whole
+                // catalog left unreadable is the host's, so its save fails instead of waiting for a repair.
+                let unrepairable = unrepairableIDs
+                func waitsForRepair(_ id: String) -> Bool { snapshot.mayHold(id) && !unrepairable.contains(id) }
+                let repairable = snapshot.unreadableIDs.subtracting(unrepairable).count + snapshot.unreadableWithoutID
+                if repairable > 0 { requestCatalogRepair(repairable, for: catalog.id) }
+                let unusable = "ホストのライブラリにあるこの曲の情報を読み込めないため、保存できません。"
                 let byID = Dictionary(catalog.entries.map { ($0.track.id, $0) }, uniquingKeysWith: { first, _ in first })
                 for index in saveRequests.indices {
                     guard saveRequests[index].library == catalog.id, saveRequests[index].isPending else { continue }
@@ -297,12 +326,12 @@ extension LocalTransfer {
                     for track in saveRequests[index].unresolved {
                         if let entry = byID[track.id] {
                             if !saveRequests[index].entries.contains(where: { $0.track.id == track.id }) { saveRequests[index].entries.append(entry) }
-                        } else if incomplete {
+                        } else if waitsForRepair(track.id) {
                             stillUnresolved.append(track)
                             waiting = true
                         } else {
                             saveRequests[index].failedTracks.insert(track.id)
-                            failure = LocalMusicError.invalidData.localizedDescription
+                            failure = unrepairable.contains(track.id) ? unusable : LocalMusicError.invalidData.localizedDescription
                         }
                     }
                     saveRequests[index].unresolved = stillUnresolved
@@ -318,8 +347,12 @@ extension LocalTransfer {
                         saveRequests[index].completed.remove(entry.trackSaveIdentity)
                         do {
                             guard let current = byID[requested.track.id], current.sha256 == requested.sha256 else {
-                                if byID[requested.track.id] == nil && incomplete { waiting = true; continue }
+                                if byID[requested.track.id] == nil && waitsForRepair(requested.track.id) { waiting = true; continue }
                                 saveRequests[index].failedTracks.insert(requested.track.id)
+                                if unrepairable.contains(requested.track.id) {
+                                    failure = unusable
+                                    continue
+                                }
                                 throw LocalMusicError.invalidData
                             }
                             if hostConnection != nil {
@@ -548,11 +581,17 @@ extension LocalTransfer {
             request.unresolved = []
             guard !request.entries.isEmpty else { return nil }
             request.completed.formIntersection(request.entries.map(\.trackSaveIdentity))
+            request.failedTracks.formIntersection(request.entries.map(\.track.id))
+            // Kept only so the leftover files can be removed again; it must not start saving them.
+            if request.isPending { request.state = request.failedTracks.isEmpty ? .complete : .failed }
             return request
         }
         // The queue file sits in the same folder; when nothing could be removed, writing it would fail the same way.
-        if kept.map(\.entries) != saveRequests.map(\.entries) || saveRequests.contains(where: { !$0.unresolved.isEmpty }) {
-            try persistSaves(kept)
+        let stateOf = { (requests: [OfflineSaveRequest]) in requests.map { [$0.state.rawValue] + $0.failedTracks.sorted() } }
+        if kept.map(\.entries) != saveRequests.map(\.entries) || saveRequests.contains(where: { !$0.unresolved.isEmpty })
+            || stateOf(kept) != stateOf(saveRequests) {
+            // Kept in memory even when the write fails, so the leftovers are not saved again in this session.
+            do { try persistSaves(kept) } catch { saveRequests = kept; throw error }
         }
         if !failed.isEmpty { throw LocalMusicError.removalIncomplete }
     }

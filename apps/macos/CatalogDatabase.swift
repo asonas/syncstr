@@ -62,6 +62,9 @@ struct CatalogSnapshot {
     /// Unreadable rows with no key, which no save can be matched to.
     var unreadableWithoutID = 0
     var unreadableEntries: Int { unreadableIDs.count + unreadableWithoutID }
+
+    /// Whether a track missing from `catalog` may be one of the unreadable rows rather than gone from the host.
+    func mayHold(_ id: String) -> Bool { unreadableIDs.contains(id) || unreadableWithoutID > 0 }
 }
 
 extension CatalogDatabase {

@@ -106,6 +106,11 @@ final class LocalTransfer: ObservableObject {
     /// A refresh that has started but not yet decided whether to send the ETag; a repair asked for now rides on it.
     private var hostRefreshPreparing = false
     var catalogRepairNow: () -> ContinuousClock.Instant = { .now }
+    /// Rows still unreadable after the whole catalog was fetched: the host itself sends them unusable,
+    /// so saves of these tracks fail until the person asks again.
+    var unrepairableIDs: Set<String> = []
+    /// Reached when a refresh has started and not yet decided whether to send the ETag.
+    var onHostRefreshPreparing: (() -> Void)?
     @Published var savedAudio = SavedAudioSummary()
     var retainsHostCatalog: Bool { retainedHostLibrary != nil }
     var usesHostCatalog: Bool { hostConnection != nil || retainsHostCatalog }
@@ -231,6 +236,7 @@ final class LocalTransfer: ObservableObject {
         changedHostLibrary = nil
         hostCatalogIncomplete = false
         lastCatalogRepair = nil
+        unrepairableIDs = []
     }
 
     func disconnectHost(didCommit: (@Sendable () async -> Void)? = nil) async throws {
@@ -253,6 +259,7 @@ final class LocalTransfer: ObservableObject {
         hostRefreshedAt = nil
         hostCatalogIncomplete = false
         lastCatalogRepair = nil
+        unrepairableIDs = []
         hostAudio = HostAudioFiles()
         observedSwitch = nil
         catalog = nil
@@ -319,13 +326,25 @@ final class LocalTransfer: ObservableObject {
         }
         guard hostConnection != nil else { throw CancellationError() }
         return try await runHostOperation {
-            try await self.refreshStoredHost(confirming: false)
+            try await self.refreshStoredHost(confirming: false, revalidate: true)
         }
     }
 
-    private func refreshStoredHost(confirming: Bool, automatic: Bool = false,
+    /// A refresh the person asked for, from Settings, the sidebar or pull to refresh.
+    func refreshRequested() {
+        guard hostConnection != nil else { return }
+        Task {
+            do { _ = try await refreshHost() }
+            catch { if !isHostCancellation(error) { status = error.localizedDescription } }
+        }
+    }
+
+    /// `revalidate` reads the stored catalog when adopting it read nothing, so rows that broke after launch
+    /// are fetched again; an automatic refresh skips that read.
+    private func refreshStoredHost(confirming: Bool, automatic: Bool = false, revalidate: Bool = false,
                                    didCommit: (@Sendable () async -> Void)? = nil) async throws -> HostRefreshResult {
         hostRefreshPreparing = true
+        onHostRefreshPreparing?()
         var preparing = true
         defer { if preparing { hostRefreshPreparing = false } }
         try await waitForIdle(until: .now.advanced(by: .seconds(15)))
@@ -344,7 +363,11 @@ final class LocalTransfer: ObservableObject {
             await Task { await self.finishHostDisconnect(retained: retained) }.value
             return .updated
         }
-        try await adoptStoredHost(host, attempt: attempt)
+        if try await adoptStoredHost(host, attempt: attempt) == nil, revalidate {
+            let unreadable = try await CatalogStorage.shared.perform { try files.database().snapshot()?.unreadableEntries ?? 0 }
+            guard generation == attempt else { throw CancellationError() }
+            if unreadable > 0 { markHostCatalogIncomplete(unreadable) }
+        }
         var request = host
         // Without the ETag the host cannot answer 304, so the missing entries come back.
         // An automatic refresh drops the ETag at most once per interval, counted from the last whole fetch's start.
@@ -390,6 +413,11 @@ final class LocalTransfer: ObservableObject {
                     refreshedAt: refreshed, store: files, didCommit: didCommit)
                 try publishHost(update, prepared: prepared, host: host, refreshedAt: refreshed, changingHost: false)
                 hostCatalogIncomplete = false
+                if fetchingWhole {
+                    // Rows the whole catalog left unreadable come from the host, so fetching again would not help.
+                    let left = try? await CatalogStorage.shared.perform { try files.database().snapshot()?.unreadableIDs ?? [] }
+                    if generation == attempt { unrepairableIDs = left ?? [] }
+                }
                 connectionEvent("refresh_host", outcome: "succeeded", fields: ["result": "updated", "remote_catalog_id": host.library])
                 return .updated
             }
@@ -457,6 +485,9 @@ final class LocalTransfer: ObservableObject {
         if let last = lastCatalogRepair, catalogRepairNow() - last < catalogRepairInterval { return }
         refreshConnection()
     }
+
+    /// A save the person asks for again may repair at once instead of waiting out the interval.
+    func resetCatalogRepairInterval() { lastCatalogRepair = nil }
 
     private func markHostCatalogIncomplete(_ unreadable: Int) {
         hostCatalogIncomplete = true
