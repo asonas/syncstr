@@ -59,7 +59,9 @@ struct CatalogSnapshot {
     var catalog: LocalCatalog
     /// Track IDs (row keys) of stored host entries that could not be read and were left out of `catalog`.
     var unreadableIDs: Set<String> = []
-    var unreadableEntries: Int { unreadableIDs.count }
+    /// Unreadable rows with no key, which no save can be matched to.
+    var unreadableWithoutID = 0
+    var unreadableEntries: Int { unreadableIDs.count + unreadableWithoutID }
 }
 
 extension CatalogDatabase {
@@ -223,15 +225,19 @@ final class CatalogDatabase {
             // One damaged row must not hide the rest of the saved music. The skipped rows are recorded
             // so a connected catalog can be fetched again in full and their saves can wait for it.
             var unreadable = Set<String>()
+            var withoutID = 0
             catalog.entries = try rows("SELECT id, payload FROM host_entries ORDER BY position").compactMap { row in
-                guard let key = row[0] else { return nil }
+                guard let key = row[0] else {
+                    withoutID += 1
+                    return nil
+                }
                 guard let entry = Self.storedHostEntry(key: key, payload: row[1]) else {
                     unreadable.insert(key)
                     return nil
                 }
                 return entry
             }
-            return CatalogSnapshot(catalog: catalog, unreadableIDs: unreadable)
+            return CatalogSnapshot(catalog: catalog, unreadableIDs: unreadable, unreadableWithoutID: withoutID)
         }
     }
 

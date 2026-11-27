@@ -27,6 +27,11 @@ extension Library {
 }
 
 extension LocalEntry {
+    /// A save asked for while the track's stored row was unreadable. Its content is known only after the
+    /// catalog is fetched again, so the hash stays empty until the worker finds the track.
+    static func awaitingCatalog(_ track: Track) -> LocalEntry { LocalEntry(track: track, sha256: "") }
+    var awaitsCatalog: Bool { sha256.isEmpty && !track.id.isEmpty }
+
     var trackSaveIdentity: String { track.id + ":" + sha256 }
     var saveIdentity: String { sha256 }
 }
@@ -53,7 +58,13 @@ extension LocalTransfer {
             guard let catalog = snapshot?.catalog else { throw LocalMusicError.invalidData }
             try Task.checkCancellation()
             guard preparingSaves[scope]?.token == token else { return }
-            let entries = catalog.entries.filter { ids.contains($0.track.id) }
+            var entries: [LocalEntry] = []
+            for id in tracks.map(\.id) where !entries.contains(where: { $0.track.id == id }) {
+                if let entry = catalog.entries.first(where: { $0.track.id == id }) { entries.append(entry) }
+                else if snapshot?.unreadableIDs.contains(id) == true, let track = tracks.first(where: { $0.id == id }) {
+                    entries.append(.awaitingCatalog(track))
+                }
+            }
             guard entries.count == ids.count, !entries.isEmpty else { throw LocalMusicError.invalidData }
             // A save asked for while everything is being removed is queued after the removal.
             if let removal = removingAllSaves {
@@ -117,7 +128,7 @@ extension LocalTransfer {
             guard FileManager.default.fileExists(atPath: url.path) else { return }
             var restored = try JSONDecoder().decode([OfflineSaveRequest].self, from: Data(contentsOf: url))
             for index in restored.indices {
-                let entries = restored[index].entries.filter(LocalMusicStore.valid)
+                let entries = restored[index].entries.filter { $0.awaitsCatalog || LocalMusicStore.valid($0) }
                 if entries.count != restored[index].entries.count {
                     restored[index].entries = entries
                     restored[index].completed.formIntersection(entries.flatMap { [$0.saveIdentity, $0.trackSaveIdentity] })
@@ -192,20 +203,26 @@ extension LocalTransfer {
                 try Task.checkCancellation()
                 guard saveGeneration == token else { return }
                 processableLibrary = catalog.id
+                if snapshot.unreadableEntries > 0 { requestCatalogRepair(snapshot.unreadableEntries, for: catalog.id) }
                 for index in saveRequests.indices {
                     guard saveRequests[index].library == catalog.id, saveRequests[index].isPending else { continue }
                     try Task.checkCancellation()
                     let request = saveRequests[index]
                     let automatic = request.id != explicit
                     var failure: String?
+                    // `waiting` keeps the request pending; `holdDownloads` stops fetching for the rest of it.
+                    // A track whose row is unreadable only sets `waiting`, so healthy tracks after it still download.
                     var waiting = false
+                    var holdDownloads = false
                     for (position, requested) in request.entries.enumerated() {
                         var entry = requested
                         try Task.checkCancellation()
                         guard saveGeneration == token else { return }
                         saveRequests[index].completed.remove(entry.trackSaveIdentity)
                         do {
-                            guard let current = catalog.entries.first(where: { $0.track.id == requested.track.id && $0.sha256 == requested.sha256 }) else {
+                            guard let current = catalog.entries.first(where: {
+                                $0.track.id == requested.track.id && (requested.awaitsCatalog || $0.sha256 == requested.sha256)
+                            }) else {
                                 // An unreadable stored row comes back with the next full refresh, so only this track waits.
                                 if snapshot.unreadableIDs.contains(requested.track.id) { waiting = true; continue }
                                 throw LocalMusicError.invalidData
@@ -235,15 +252,17 @@ extension LocalTransfer {
                             if !savedFromCache {
                                 try Task.checkCancellation()
                                 guard saveGeneration == token else { return }
-                                if waiting { continue }
+                                if holdDownloads { continue }
                                 if let host = hostConnection, let deadline = hostAudioGate.deadline(for: host.address.origin),
                                    hostAudioGate.now() < deadline {
                                     waiting = true
+                                    holdDownloads = true
                                     continue
                                 }
                                 if automatic && !permitsAutomaticSaveAudio {
                                     saveRequests[index].state = savePathIsCellular ? .wifi : .waiting
                                     waiting = true
+                                    holdDownloads = true
                                     continue
                                 }
                                 saveRequests[index].state = .saving
@@ -255,6 +274,7 @@ extension LocalTransfer {
                                     try await source.download(entry, cache: nil, diagnostic: nil) { _ in }
                                 } else {
                                     waiting = true
+                                    holdDownloads = true
                                     continue
                                 }
                             }
@@ -267,9 +287,9 @@ extension LocalTransfer {
                         } catch {
                             try Task.checkCancellation()
                             guard saveGeneration == token else { return }
-                            if hostConnection != nil, error is URLError { waiting = true }
-                            else if case HostAPIError.rateLimited = error { waiting = true }
-                            else if case LocalMusicError.disconnected = error { waiting = true }
+                            if hostConnection != nil, error is URLError { waiting = true; holdDownloads = true }
+                            else if case HostAPIError.rateLimited = error { waiting = true; holdDownloads = true }
+                            else if case LocalMusicError.disconnected = error { waiting = true; holdDownloads = true }
                             else if (error as? CocoaError)?.code == .fileWriteOutOfSpace {
                                 failure = "この端末の空き容量が不足しているため保存できません。空き容量を増やして再試行してください。"
                             } else { failure = error.localizedDescription }

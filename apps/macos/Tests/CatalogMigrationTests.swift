@@ -179,6 +179,21 @@ final class CatalogMigrationTests: XCTestCase {
         XCTAssertEqual(try store.database().playbackEntry(readable.track.id)?.entry, readable)
     }
 
+    func testRowWithoutAKeyIsCountedAsUnreadable() throws {
+        let (store, catalog) = try storeWithAudio()
+        let keyless = catalog.entries[0]
+        var readable = keyless
+        readable.track.id = "readable"
+        readable.track.coverArt = "readable"
+        try saveHostFixture([keyless, readable], in: store)
+        try clearStoredHostEntryKey(keyless.track.id, in: store)
+
+        let snapshot = try XCTUnwrap(store.database().snapshot())
+        XCTAssertEqual(snapshot.catalog.entries, [readable])
+        XCTAssertEqual(snapshot.unreadableEntries, 1)
+        XCTAssertTrue(snapshot.unreadableIDs.isEmpty)
+    }
+
     func testRowNamingAnotherTrackDoesNotHideThatTrack() throws {
         let (store, catalog) = try storeWithAudio()
         let healthy = catalog.entries[0]

@@ -95,6 +95,10 @@ final class LocalTransfer: ObservableObject {
     @Published private(set) var hostRefreshedAt: Date?
     /// The stored catalog had unreadable entries, so the next refresh asks for the whole catalog.
     private var hostCatalogIncomplete = false
+    /// How often a save that meets unreadable rows may ask for the whole catalog again. A host that keeps
+    /// sending an unusable entry would otherwise be fetched in full on every save retry.
+    var catalogRepairInterval: Duration = .seconds(600)
+    private var lastCatalogRepair: ContinuousClock.Instant?
     @Published var savedAudio = SavedAudioSummary()
     var retainsHostCatalog: Bool { retainedHostLibrary != nil }
     var usesHostCatalog: Bool { hostConnection != nil || retainsHostCatalog }
@@ -177,12 +181,13 @@ final class LocalTransfer: ObservableObject {
             return .differentLibrary(information.library)
         }
         if let saved, saved.address == address, saved.library == information.library {
-            try await adoptStoredHost(saved, attempt: startingGeneration)
             // Rows can break after launch, and adopting the same host reads nothing. Reconnecting is
-            // explicit, so it pays for one full read to decide whether the catalog must be fetched whole.
-            let unreadable = try await CatalogStorage.shared.perform { try files.database().snapshot()?.unreadableEntries ?? 0 }
-            guard generation == startingGeneration else { throw CancellationError() }
-            if unreadable > 0 { markHostCatalogIncomplete(unreadable) }
+            // explicit, so it pays for one full read when adopting skipped it.
+            if try await adoptStoredHost(saved, attempt: startingGeneration) == nil {
+                let unreadable = try await CatalogStorage.shared.perform { try files.database().snapshot()?.unreadableEntries ?? 0 }
+                guard generation == startingGeneration else { throw CancellationError() }
+                if unreadable > 0 { markHostCatalogIncomplete(unreadable) }
+            }
             if saved.hosts != information.hosts {
                 try await CatalogStorage.shared.commit { try files.database().updateHosts(information.hosts, for: saved) }
                 hostConnection?.hosts = information.hosts
@@ -218,6 +223,7 @@ final class LocalTransfer: ObservableObject {
         hostConnection = host
         changedHostLibrary = nil
         hostCatalogIncomplete = false
+        lastCatalogRepair = nil
     }
 
     func disconnectHost(didCommit: (@Sendable () async -> Void)? = nil) async throws {
@@ -239,6 +245,7 @@ final class LocalTransfer: ObservableObject {
         hostConnection = nil
         hostRefreshedAt = nil
         hostCatalogIncomplete = false
+        lastCatalogRepair = nil
         hostAudio = HostAudioFiles()
         observedSwitch = nil
         catalog = nil
@@ -362,6 +369,7 @@ final class LocalTransfer: ObservableObject {
                     refreshedAt: refreshed, store: files, didCommit: didCommit)
                 try publishHost(update, prepared: prepared, host: host, refreshedAt: refreshed, changingHost: false)
                 hostCatalogIncomplete = false
+                lastCatalogRepair = nil
                 connectionEvent("refresh_host", outcome: "succeeded", fields: ["result": "updated", "remote_catalog_id": host.library])
                 return .updated
             }
@@ -393,10 +401,12 @@ final class LocalTransfer: ObservableObject {
         connected = true
     }
 
-    private func adoptStoredHost(_ host: HostConnection, attempt: UUID) async throws {
-        guard hostConnection != host || (host.etag != nil && catalog?.id != host.library) else { return }
+    /// Returns the number of unreadable entries in the catalog it read, or nil when it read none.
+    @discardableResult
+    private func adoptStoredHost(_ host: HostConnection, attempt: UUID) async throws -> Int? {
+        guard hostConnection != host || (host.etag != nil && catalog?.id != host.library) else { return nil }
         let files = store
-        var unreadable = 0
+        var unreadable: Int?
         if host.etag != nil {
             let (prepared, lists, skipped) = try await CatalogStorage.shared.perform {
                 let database = try files.database()
@@ -411,7 +421,19 @@ final class LocalTransfer: ObservableObject {
         }
         if hostConnection?.address != host.address || hostConnection?.library != host.library { activateHost(host) }
         else { hostConnection = host }
-        if unreadable > 0 { markHostCatalogIncomplete(unreadable) }
+        if let unreadable, unreadable > 0 { markHostCatalogIncomplete(unreadable) }
+        return unreadable
+    }
+
+    /// Called by the save worker, which reads the stored catalog on every pass and so notices rows that
+    /// broke after launch. Automatic refreshes do not read it, so without this they keep sending the ETag.
+    func requestCatalogRepair(_ unreadable: Int, for library: String) {
+        guard hostConnection?.library == library else { return }
+        if !hostCatalogIncomplete { markHostCatalogIncomplete(unreadable) }
+        let now = ContinuousClock.now
+        if let last = lastCatalogRepair, now - last < catalogRepairInterval { return }
+        lastCatalogRepair = now
+        refreshConnection()
     }
 
     private func markHostCatalogIncomplete(_ unreadable: Int) {

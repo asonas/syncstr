@@ -94,6 +94,19 @@ func breakStoredHostEntry(_ id: String, in store: LocalMusicStore) throws {
           sqlite3_changes(connection) == 1 else { throw LocalMusicError.invalidData }
 }
 
+/// Clears the key of one stored host entry, as a database written by an older build may hold.
+func clearStoredHostEntryKey(_ id: String, in store: LocalMusicStore) throws {
+    var connection: OpaquePointer?
+    guard sqlite3_open(store.root.appendingPathComponent("catalog.sqlite").path, &connection) == SQLITE_OK else {
+        sqlite3_close(connection)
+        throw LocalMusicError.invalidData
+    }
+    defer { sqlite3_close(connection) }
+    let id = id.replacingOccurrences(of: "'", with: "''")
+    guard sqlite3_exec(connection, "UPDATE host_entries SET id = NULL WHERE id = '\(id)'", nil, nil, nil) == SQLITE_OK,
+          sqlite3_changes(connection) == 1 else { throw LocalMusicError.invalidData }
+}
+
 /// Stores the catalog as a host's and shows it without contacting the host, for tests about browsing and playback state.
 @MainActor
 func showHostCatalog(_ catalog: LocalCatalog, in library: Library) throws {
@@ -295,6 +308,37 @@ final class OfflineSaveTests: XCTestCase {
         XCTAssertTrue(try store.database().savedAudioPinList().isEmpty)
         XCTAssertTrue(transfer.saveRequests.isEmpty)
         XCTAssertFalse(FileManager.default.fileExists(atPath: store.fileURL(entries[0]).path))
+    }
+
+    func testPartialDeletionKeepsOnlyRequestsForFilesLeftBehind() async throws {
+        let (fixtureStore, entries) = try fixture()
+        var store = fixtureStore
+        try Data(repeating: 1, count: 1024).write(to: store.fileURL(entries[0]))
+        try store.database().saveAudioPin(entries[0])
+        let undeletable = store.fileURL(entries[0])
+        store.removeFile = { url in
+            if url.lastPathComponent == undeletable.lastPathComponent { throw CocoaError(.fileWriteNoPermission) }
+            try FileManager.default.removeItem(at: url)
+        }
+        let transfer = try await hostTransfer(store)
+        try breakStoredHostEntry(entries[1].track.id, in: store)
+        let library = try XCTUnwrap(transfer.hostConnection?.library)
+        transfer.saveRequests = [
+            OfflineSaveRequest(id: "track:track-1", library: library, entries: [entries[0]],
+                               completed: [entries[0].trackSaveIdentity], state: .complete),
+            OfflineSaveRequest(id: "track:broken", library: library, entries: [.awaitingCatalog(entries[1].track)])
+        ]
+        do {
+            try await transfer.removeAllSavedAudio()
+            XCTFail("Reported success while the file remained")
+        } catch LocalMusicError.removalIncomplete {}
+        try await settled(transfer)
+        // The waiting save for the unreadable track is gone, so nothing fetches it again; the request for
+        // the file that stayed is kept so a later removal can try it.
+        XCTAssertEqual(transfer.saveRequests.map(\.id), ["track:track-1"])
+        XCTAssertEqual(transfer.saveRequests.first?.state, .complete)
+        XCTAssertNil(transfer.saveWorker)
+        transfer.store.removeFile = { try FileManager.default.removeItem(at: $0) }
     }
 
     func testDeletingAllSavedMusicDoesNotWaitForAHostRefresh() async throws {
