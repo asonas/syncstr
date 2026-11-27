@@ -80,8 +80,10 @@ final class LocalTransfer: ObservableObject {
     var removingAllSaves: Task<Void, Error>?
     /// Tests pause here to hold a restore before its first storage read.
     var beforeRestoringHost: (@MainActor () async -> Void)?
-    var savePathIsCellular: Bool { savePath?.currentPath.usesInterfaceType(.cellular) == true }
-    var permitsAutomaticSaveAudio: Bool { permitsAutomaticAudio }
+    /// Stands in for the network path in tests, since `NWPathMonitor` cannot be faked.
+    var savePathOverride: (cellular: Bool, permitsAutomatic: Bool)?
+    var savePathIsCellular: Bool { savePathOverride?.cellular ?? (savePath?.currentPath.usesInterfaceType(.cellular) == true) }
+    var permitsAutomaticSaveAudio: Bool { savePathOverride?.permitsAutomatic ?? permitsAutomaticAudio }
     private let savePath: NWPathMonitor?
     @Published private(set) var hostConnection: HostConnection? {
         didSet {
@@ -98,7 +100,10 @@ final class LocalTransfer: ObservableObject {
     /// How often a save that meets unreadable rows may ask for the whole catalog again. A host that keeps
     /// sending an unusable entry would otherwise be fetched in full on every save retry.
     var catalogRepairInterval: Duration = .seconds(600)
+    /// When the last fetch of the whole catalog started; the repair interval counts from it.
     private var lastCatalogRepair: ContinuousClock.Instant?
+    private var wholeCatalogFetchInFlight = false
+    var catalogRepairNow: () -> ContinuousClock.Instant = { .now }
     @Published var savedAudio = SavedAudioSummary()
     var retainsHostCatalog: Bool { retainedHostLibrary != nil }
     var usesHostCatalog: Bool { hostConnection != nil || retainsHostCatalog }
@@ -336,7 +341,13 @@ final class LocalTransfer: ObservableObject {
         try await adoptStoredHost(host, attempt: attempt)
         var request = host
         // Without the ETag the host cannot answer 304, so the missing entries come back.
-        if hostCatalogIncomplete { request.etag = nil }
+        let fetchingWhole = hostCatalogIncomplete
+        if fetchingWhole {
+            request.etag = nil
+            lastCatalogRepair = catalogRepairNow()
+            wholeCatalogFetchInFlight = true
+        }
+        defer { if fetchingWhole { wholeCatalogFetchInFlight = false } }
         let source = hostSource(request)
         artworkSource?.retryArtwork()
         defer { source.stop() }
@@ -369,7 +380,6 @@ final class LocalTransfer: ObservableObject {
                     refreshedAt: refreshed, store: files, didCommit: didCommit)
                 try publishHost(update, prepared: prepared, host: host, refreshedAt: refreshed, changingHost: false)
                 hostCatalogIncomplete = false
-                lastCatalogRepair = nil
                 connectionEvent("refresh_host", outcome: "succeeded", fields: ["result": "updated", "remote_catalog_id": host.library])
                 return .updated
             }
@@ -430,9 +440,11 @@ final class LocalTransfer: ObservableObject {
     func requestCatalogRepair(_ unreadable: Int, for library: String) {
         guard hostConnection?.library == library else { return }
         if !hostCatalogIncomplete { markHostCatalogIncomplete(unreadable) }
-        let now = ContinuousClock.now
-        if let last = lastCatalogRepair, now - last < catalogRepairInterval { return }
-        lastCatalogRepair = now
+        // A whole-catalog fetch already running or queued carries this repair.
+        if wholeCatalogFetchInFlight || pendingHostRefresh { return }
+        // Counted from the start of the last whole fetch, kept after it succeeds: a host that keeps sending
+        // an unusable entry must not be fetched in full on every save retry.
+        if let last = lastCatalogRepair, catalogRepairNow() - last < catalogRepairInterval { return }
         refreshConnection()
     }
 

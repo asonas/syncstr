@@ -310,6 +310,48 @@ final class OfflineSaveTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: store.fileURL(entries[0]).path))
     }
 
+    func testSaveRequestKeepsSelectionOrderWithoutDuplicates() async throws {
+        let (store, entries) = try fixture()
+        let transfer = try await hostTransfer(store)
+        let tracks = [entries[1].track, entries[0].track, entries[1].track, entries[0].track]
+        await transfer.requestSave(tracks, scope: "playlist")
+        XCTAssertEqual(transfer.saveRequests.first?.entries.map(\.track.id), [entries[1].track.id, entries[0].track.id])
+        transfer.stopSaveWorker()
+    }
+
+    func testTrackThatCannotBeSavedDoesNotEndARequestStillWaitingForAnother() async throws {
+        let (store, entries) = try fixture()
+        let transfer = try await hostTransfer(store)
+        try breakStoredHostEntry(entries[1].track.id, in: store)
+        let library = try XCTUnwrap(transfer.hostConnection?.library)
+        // The host now has other content under the first track, so that track cannot be saved; the second
+        // only waits for its unreadable row to come back.
+        let changed = LocalEntry(track: entries[0].track, sha256: String(repeating: "f", count: 64))
+        transfer.saveRequests = [OfflineSaveRequest(id: "album", library: library, entries: [changed, entries[1]])]
+        transfer.saveRetryInterval = .seconds(60)
+        transfer.resumeSaves()
+        try await settled(transfer)
+        XCTAssertEqual(transfer.saveRequests.first?.state, .waiting)
+        XCTAssertEqual(transfer.saveRequests.first?.failedTracks, [entries[0].track.id])
+        transfer.stopSaveWorker()
+    }
+
+    func testPendingSaveOfAnUnresolvedTrackKeepsTheAlbumFromLookingSaved() async throws {
+        let (store, entries) = try fixture()
+        try Data(repeating: 1, count: 1024).write(to: store.fileURL(entries[0]))
+        try store.database().saveAudioPin(entries[0])
+        let library = makeLibrary(localStore: store)
+        await library.openSavedLocalLibrary()
+        await library.inventoryTask?.value
+        XCTAssertTrue(library.hasManagedCopy(entries[0].track))
+        let catalog = try XCTUnwrap(library.localCatalog?.id)
+        library.transfer.saveRequests = [OfflineSaveRequest(id: "album", library: catalog, entries: [entries[0]],
+                                                            completed: [entries[0].trackSaveIdentity], unresolved: [entries[1].track])]
+        let progress = library.saveProgress(for: [entries[0].track], scope: "album")
+        XCTAssertEqual(progress, SaveProgress(saved: 1, total: 2, pending: true))
+        XCTAssertFalse(progress.allSaved)
+    }
+
     func testPartialDeletionKeepsOnlyRequestsForFilesLeftBehind() async throws {
         let (fixtureStore, entries) = try fixture()
         var store = fixtureStore
@@ -326,7 +368,7 @@ final class OfflineSaveTests: XCTestCase {
         transfer.saveRequests = [
             OfflineSaveRequest(id: "track:track-1", library: library, entries: [entries[0]],
                                completed: [entries[0].trackSaveIdentity], state: .complete),
-            OfflineSaveRequest(id: "track:broken", library: library, entries: [.awaitingCatalog(entries[1].track)])
+            OfflineSaveRequest(id: "track:broken", library: library, entries: [], unresolved: [entries[1].track])
         ]
         do {
             try await transfer.removeAllSavedAudio()
@@ -337,6 +379,8 @@ final class OfflineSaveTests: XCTestCase {
         // the file that stayed is kept so a later removal can try it.
         XCTAssertEqual(transfer.saveRequests.map(\.id), ["track:track-1"])
         XCTAssertEqual(transfer.saveRequests.first?.state, .complete)
+        let unresolved = try JSONDecoder().decode([UnresolvedSave].self, from: Data(contentsOf: store.root.appendingPathComponent("offline-saves-unresolved.json")))
+        XCTAssertTrue(unresolved.isEmpty)
         XCTAssertNil(transfer.saveWorker)
         transfer.store.removeFile = { try FileManager.default.removeItem(at: $0) }
     }
