@@ -189,14 +189,6 @@ extension LocalTransfer {
                 guard let snapshot = try await store.snapshotInBackground(),
                       hostConnection?.library == snapshot.catalog.id else { return }
                 let catalog = snapshot.catalog
-                if snapshot.unreadableEntries > 0 {
-                    // A track whose stored row is unreadable comes back with the next full refresh; retry instead of failing the save.
-                    let readable = Set(catalog.entries.map(\.trackSaveIdentity))
-                    if saveRequests.contains(where: { request in
-                        request.library == catalog.id && request.isPending
-                            && request.entries.contains { !readable.contains($0.trackSaveIdentity) }
-                    }) { throw LocalMusicError.invalidData }
-                }
                 try Task.checkCancellation()
                 guard saveGeneration == token else { return }
                 processableLibrary = catalog.id
@@ -214,6 +206,8 @@ extension LocalTransfer {
                         saveRequests[index].completed.remove(entry.trackSaveIdentity)
                         do {
                             guard let current = catalog.entries.first(where: { $0.track.id == requested.track.id && $0.sha256 == requested.sha256 }) else {
+                                // An unreadable stored row comes back with the next full refresh, so only this track waits.
+                                if snapshot.unreadableIDs.contains(requested.track.id) { waiting = true; continue }
                                 throw LocalMusicError.invalidData
                             }
                             if hostConnection != nil {

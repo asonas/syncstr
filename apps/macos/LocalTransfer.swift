@@ -178,6 +178,11 @@ final class LocalTransfer: ObservableObject {
         }
         if let saved, saved.address == address, saved.library == information.library {
             try await adoptStoredHost(saved, attempt: startingGeneration)
+            // Rows can break after launch, and adopting the same host reads nothing. Reconnecting is
+            // explicit, so it pays for one full read to decide whether the catalog must be fetched whole.
+            let unreadable = try await CatalogStorage.shared.perform { try files.database().snapshot()?.unreadableEntries ?? 0 }
+            guard generation == startingGeneration else { throw CancellationError() }
+            if unreadable > 0 { markHostCatalogIncomplete(unreadable) }
             if saved.hosts != information.hosts {
                 try await CatalogStorage.shared.commit { try files.database().updateHosts(information.hosts, for: saved) }
                 hostConnection?.hosts = information.hosts
@@ -406,10 +411,12 @@ final class LocalTransfer: ObservableObject {
         }
         if hostConnection?.address != host.address || hostConnection?.library != host.library { activateHost(host) }
         else { hostConnection = host }
-        if unreadable > 0 {
-            hostCatalogIncomplete = true
-            connectionEvent("host_catalog_incomplete", outcome: "observed", fields: ["unreadable_entries": String(unreadable)])
-        }
+        if unreadable > 0 { markHostCatalogIncomplete(unreadable) }
+    }
+
+    private func markHostCatalogIncomplete(_ unreadable: Int) {
+        hostCatalogIncomplete = true
+        connectionEvent("host_catalog_incomplete", outcome: "observed", fields: ["unreadable_entries": String(unreadable)])
     }
 
     private func stopHostPlayback() {

@@ -475,6 +475,26 @@ final class HostAPITests: XCTestCase {
         XCTAssertEqual(tags.values.map { $0 == nil }, [true, false])
     }
 
+    func testReconnectingToTheSameHostRepairsARowThatBrokeAfterLaunch() async throws {
+        let (reply, _, _) = try fixture()
+        let files = store()
+        let address = try HostAddress("https://confirmed.example.test")
+        let tags = CatalogRequestTags()
+        let transfer = makeTransfer(store: files, hostConfiguration: configuration { request in
+            guard request.url?.lastPathComponent == "catalog" else { return reply }
+            let tag = request.value(forHTTPHeaderField: "If-None-Match")
+            tags.append(tag)
+            return tag == nil ? reply : HostReply(status: 304)
+        })
+        _ = try await transfer.confirmHost(address, information: hostInformation(address))
+        try breakStoredHostEntry("track-b", in: files)
+
+        let result = try await transfer.confirmHost(address, information: hostInformation(address))
+        XCTAssertEqual(result, .updated)
+        XCTAssertEqual(try files.database().snapshot()?.unreadableEntries, 0)
+        XCTAssertEqual(tags.values.map { $0 == nil }, [true, true])
+    }
+
     func testCommittedSwitchIsPublishedBeforeConditionalRefresh() async throws {
         let (reply, _, _) = try fixture()
         let a = try HostAddress("https://first.example.test")

@@ -426,6 +426,8 @@ final class OfflineSaveTests: XCTestCase {
         XCTAssertEqual(library.localCatalog?.source, .host)
         XCTAssertEqual(Set(library.tracks.map(\.id)), [entries[0].track.id, entries[2].track.id])
         try await waitFor { library.localFiles[entries[0].track.id] != nil }
+        let url = try await library.transfer.playbackFile(entries[0].track, allowAcquisition: false)
+        XCTAssertEqual(url.resolvingSymlinksInPath().path, store.fileURL(entries[0]).resolvingSymlinksInPath().path)
     }
 
     func testRestoreRetriesAfterTheTaskThatStartedItIsCancelled() async throws {
@@ -675,6 +677,24 @@ final class OfflineSaveTests: XCTestCase {
         try await settled(transfer)
         XCTAssertEqual(transfer.status, status)
         XCTAssertTrue(transfer.saveRequests.isEmpty)
+    }
+
+    func testHealthySaveCompletesWhileAnUnreadableTrackWaits() async throws {
+        let (store, entries) = try fixture()
+        let transfer = try await hostTransfer(store)
+        try breakStoredHostEntry(entries[1].track.id, in: store)
+        try cache(entries[0], transfer: transfer, number: 1)
+        let library = try XCTUnwrap(transfer.hostConnection?.library)
+        transfer.saveRequests = [
+            OfflineSaveRequest(id: "track:broken", library: library, entries: [entries[1]]),
+            OfflineSaveRequest(id: "track:healthy", library: library, entries: [entries[0]])
+        ]
+        transfer.saveRetryInterval = .seconds(60)
+        transfer.resumeSaves()
+        try await settled(transfer)
+        XCTAssertEqual(transfer.saveRequests.map(\.state), [.waiting, .complete])
+        XCTAssertNotNil(transfer.saveRetry, "The unreadable track waits for the next try")
+        transfer.saveRetry?.cancel()
     }
 
     func testPendingSaveRetriesAfterUnreadableSnapshotRecovers() async throws {

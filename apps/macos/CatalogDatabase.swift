@@ -57,8 +57,9 @@ struct SavedAudioPin: Hashable, Sendable {
 
 struct CatalogSnapshot {
     var catalog: LocalCatalog
-    /// Stored host entries that could not be read and were left out of `catalog`.
-    var unreadableEntries = 0
+    /// Track IDs (row keys) of stored host entries that could not be read and were left out of `catalog`.
+    var unreadableIDs: Set<String> = []
+    var unreadableEntries: Int { unreadableIDs.count }
 }
 
 extension CatalogDatabase {
@@ -219,19 +220,18 @@ final class CatalogDatabase {
             guard let payload = try rows("SELECT header FROM host_connection UNION ALL SELECT header FROM retained_host_catalog").first?.first ?? nil else { return nil }
             var catalog = try JSONDecoder().decode(LocalCatalog.self, from: Data(payload.utf8))
             catalog.source = .host
-            // One damaged row must not hide the rest of the saved music. The skipped rows are counted
-            // so a connected catalog can be fetched again in full.
-            var ids = Set<String>()
-            var unreadable = 0
-            catalog.entries = try rows("SELECT payload FROM host_entries ORDER BY position").compactMap { row in
-                guard let entry = try? JSONDecoder().decode(LocalEntry.self, from: Data((row[0] ?? "").utf8)),
-                      LocalMusicStore.valid(entry), ids.insert(entry.track.id).inserted else {
-                    unreadable += 1
+            // One damaged row must not hide the rest of the saved music. The skipped rows are recorded
+            // so a connected catalog can be fetched again in full and their saves can wait for it.
+            var unreadable = Set<String>()
+            catalog.entries = try rows("SELECT id, payload FROM host_entries ORDER BY position").compactMap { row in
+                guard let key = row[0] else { return nil }
+                guard let entry = Self.storedHostEntry(key: key, payload: row[1]) else {
+                    unreadable.insert(key)
                     return nil
                 }
                 return entry
             }
-            return CatalogSnapshot(catalog: catalog, unreadableEntries: unreadable)
+            return CatalogSnapshot(catalog: catalog, unreadableIDs: unreadable)
         }
     }
 
@@ -346,10 +346,17 @@ final class CatalogDatabase {
         try rows("SELECT CASE WHEN EXISTS(SELECT 1 FROM host_connection) THEN EXISTS(SELECT 1 FROM host_connection WHERE header IS NOT NULL) ELSE EXISTS(SELECT 1 FROM retained_host_catalog) END").first?.first == "1"
     }
 
+    /// A row counts only when its payload decodes, is valid, and names the track its key names.
+    private static func storedHostEntry(key: String, payload: String?) -> LocalEntry? {
+        guard let payload, let entry = try? JSONDecoder().decode(LocalEntry.self, from: Data(payload.utf8)),
+              entry.track.id == key, LocalMusicStore.valid(entry) else { return nil }
+        return entry
+    }
+
     func playbackEntry(_ id: String, hash: String? = nil) throws -> (library: String, entry: LocalEntry)? {
         if let library = try hostCatalogLibrary() {
-            guard let payload = try rows("SELECT payload FROM host_entries WHERE id = ?", [id]).first?.first ?? nil,
-                  let entry = try? JSONDecoder().decode(LocalEntry.self, from: Data(payload.utf8)) else { return nil }
+            guard let entry = Self.storedHostEntry(key: id, payload: try rows("SELECT payload FROM host_entries WHERE id = ?", [id]).first?.first ?? nil)
+            else { return nil }
             guard hash == nil || entry.sha256 == hash else { return nil }
             return (library, entry)
         }
