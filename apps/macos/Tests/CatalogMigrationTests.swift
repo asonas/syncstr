@@ -163,6 +163,22 @@ final class CatalogMigrationTests: XCTestCase {
         XCTAssertEqual(try migrated.hostConnection()?.library, catalog.id)
     }
 
+    func testUnreadableHostEntryIsLeftOutOfTheSnapshot() throws {
+        let (store, catalog) = try storeWithAudio()
+        let broken = catalog.entries[0]
+        var readable = broken
+        readable.track.id = "readable"
+        readable.track.coverArt = "readable"
+        try saveHostFixture([broken, readable], in: store)
+        try breakStoredHostEntry(broken.track.id, in: store)
+
+        let snapshot = try XCTUnwrap(store.database().snapshot())
+        XCTAssertEqual(snapshot.catalog.entries, [readable])
+        XCTAssertEqual(snapshot.unreadableEntries, 1)
+        XCTAssertNil(try store.database().playbackEntry(broken.track.id))
+        XCTAssertEqual(try store.database().playbackEntry(readable.track.id)?.entry, readable)
+    }
+
     func testVersionSevenWithOnlyASharedSnapshotOpensWithoutALibrary() throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }
@@ -223,7 +239,9 @@ final class CatalogMigrationTests: XCTestCase {
         defer { sqlite3_close(connection) }
         XCTAssertEqual(sqlite3_exec(connection, "UPDATE host_entries SET payload = 'invalid JSON'", nil, nil, nil), SQLITE_OK)
         XCTAssertTrue(try store.database().containsCatalog())
-        XCTAssertThrowsError(try store.load())
+        let snapshot = try XCTUnwrap(store.database().snapshot())
+        XCTAssertTrue(snapshot.catalog.entries.isEmpty)
+        XCTAssertEqual(snapshot.unreadableEntries, catalog.entries.count)
     }
 
     func testHeadlessEntryJSONContractRoundTripsInNativeModel() throws {

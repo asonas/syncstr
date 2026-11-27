@@ -32,6 +32,14 @@ private final class PausedPlaybackCache: PlaybackCache {
     }
 }
 
+private final class CatalogRequestTags: @unchecked Sendable {
+    private let lock = NSLock()
+    private var recorded: [String?] = []
+
+    var values: [String?] { lock.withLock { recorded } }
+    func append(_ tag: String?) { lock.withLock { recorded.append(tag) } }
+}
+
 private final class HostResponseGate: @unchecked Sendable {
     private let lock = NSLock()
     private var responses: [() -> Void] = []
@@ -436,6 +444,35 @@ final class HostAPITests: XCTestCase {
         try await reopened.disconnectHost()
         XCTAssertNil(reopened.hostRefreshedAt)
         XCTAssertNil(try files.database().hostRefreshedAt())
+    }
+
+    func testUnreadableStoredEntryMakesTheNextRefreshFetchTheWholeCatalog() async throws {
+        let (reply, _, _) = try fixture()
+        let files = store()
+        let address = try HostAddress("https://confirmed.example.test")
+        let initial = makeTransfer(store: files, hostConfiguration: configuration { _ in reply })
+        _ = try await initial.confirmHost(address, information: hostInformation(address))
+        try breakStoredHostEntry("track-b", in: files)
+
+        let tags = CatalogRequestTags()
+        let reopened = makeTransfer(store: files, hostConfiguration: configuration { request in
+            guard request.url?.lastPathComponent == "catalog" else { return reply }
+            let tag = request.value(forHTTPHeaderField: "If-None-Match")
+            tags.append(tag)
+            return tag == nil ? reply : HostReply(status: 304)
+        })
+        var published: [String] = []
+        reopened.onCatalog = { published = $0.catalog.entries.map(\.track.id) }
+        await reopened.restoreHost()
+        XCTAssertEqual(published, ["track-a"])
+
+        let first = try await reopened.refreshHost()
+        XCTAssertEqual(first, .updated)
+        XCTAssertEqual(published, ["track-a", "track-b"])
+        XCTAssertEqual(try files.database().snapshot()?.unreadableEntries, 0)
+        let second = try await reopened.refreshHost()
+        XCTAssertEqual(second, .unchanged)
+        XCTAssertEqual(tags.values.map { $0 == nil }, [true, false])
     }
 
     func testCommittedSwitchIsPublishedBeforeConditionalRefresh() async throws {

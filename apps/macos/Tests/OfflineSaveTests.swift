@@ -81,6 +81,19 @@ func saveHostFixture(_ entries: [LocalEntry], in store: LocalMusicStore) throws 
                                  replacing: database.hostConnection())
 }
 
+/// Overwrites one stored host entry with a payload that cannot be decoded.
+func breakStoredHostEntry(_ id: String, in store: LocalMusicStore) throws {
+    var connection: OpaquePointer?
+    guard sqlite3_open(store.root.appendingPathComponent("catalog.sqlite").path, &connection) == SQLITE_OK else {
+        sqlite3_close(connection)
+        throw LocalMusicError.invalidData
+    }
+    defer { sqlite3_close(connection) }
+    let id = id.replacingOccurrences(of: "'", with: "''")
+    guard sqlite3_exec(connection, "UPDATE host_entries SET payload = '{' WHERE id = '\(id)'", nil, nil, nil) == SQLITE_OK,
+          sqlite3_changes(connection) == 1 else { throw LocalMusicError.invalidData }
+}
+
 /// Stores the catalog as a host's and shows it without contacting the host, for tests about browsing and playback state.
 @MainActor
 func showHostCatalog(_ catalog: LocalCatalog, in library: Library) throws {
@@ -400,6 +413,19 @@ final class OfflineSaveTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(attempts, 2)
         XCTAssertEqual(library.localCatalog?.source, .host)
         XCTAssertEqual(library.tracks.count, entries.count)
+    }
+
+    func testRetainedCatalogWithAnUnreadableEntryStillOpensItsSavedMusic() async throws {
+        let (store, entries) = try fixture()
+        try Data(repeating: 1, count: 1024).write(to: store.fileURL(entries[0]))
+        try store.database().saveAudioPin(entries[0])
+        _ = try store.database().forgetHost()
+        try breakStoredHostEntry(entries[1].track.id, in: store)
+        let library = makeLibrary(localStore: store)
+        await library.restoreLibrary()
+        XCTAssertEqual(library.localCatalog?.source, .host)
+        XCTAssertEqual(Set(library.tracks.map(\.id)), [entries[0].track.id, entries[2].track.id])
+        try await waitFor { library.localFiles[entries[0].track.id] != nil }
     }
 
     func testRestoreRetriesAfterTheTaskThatStartedItIsCancelled() async throws {

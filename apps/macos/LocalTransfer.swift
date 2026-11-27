@@ -93,6 +93,8 @@ final class LocalTransfer: ObservableObject {
     @Published private(set) var changedHostLibrary: String?
     @Published private(set) var retainedHostLibrary: String?
     @Published private(set) var hostRefreshedAt: Date?
+    /// The stored catalog had unreadable entries, so the next refresh asks for the whole catalog.
+    private var hostCatalogIncomplete = false
     @Published var savedAudio = SavedAudioSummary()
     var retainsHostCatalog: Bool { retainedHostLibrary != nil }
     var usesHostCatalog: Bool { hostConnection != nil || retainsHostCatalog }
@@ -210,6 +212,7 @@ final class LocalTransfer: ObservableObject {
         observedSwitch = host.hostSwitch
         hostConnection = host
         changedHostLibrary = nil
+        hostCatalogIncomplete = false
     }
 
     func disconnectHost(didCommit: (@Sendable () async -> Void)? = nil) async throws {
@@ -230,6 +233,7 @@ final class LocalTransfer: ObservableObject {
         stopHostPlayback()
         hostConnection = nil
         hostRefreshedAt = nil
+        hostCatalogIncomplete = false
         hostAudio = HostAudioFiles()
         observedSwitch = nil
         catalog = nil
@@ -318,7 +322,10 @@ final class LocalTransfer: ObservableObject {
             return .updated
         }
         try await adoptStoredHost(host, attempt: attempt)
-        let source = hostSource(host)
+        var request = host
+        // Without the ETag the host cannot answer 304, so the missing entries come back.
+        if hostCatalogIncomplete { request.etag = nil }
+        let source = hostSource(request)
         artworkSource?.retryArtwork()
         defer { source.stop() }
         connectionEvent("refresh_host", outcome: "started", fields: ["connection_mode": "host"])
@@ -349,6 +356,7 @@ final class LocalTransfer: ObservableObject {
                 let prepared = try await CatalogStorage.shared.commitHostCatalog(update, host: host, replacing: host,
                     refreshedAt: refreshed, store: files, didCommit: didCommit)
                 try publishHost(update, prepared: prepared, host: host, refreshedAt: refreshed, changingHost: false)
+                hostCatalogIncomplete = false
                 connectionEvent("refresh_host", outcome: "succeeded", fields: ["result": "updated", "remote_catalog_id": host.library])
                 return .updated
             }
@@ -383,19 +391,25 @@ final class LocalTransfer: ObservableObject {
     private func adoptStoredHost(_ host: HostConnection, attempt: UUID) async throws {
         guard hostConnection != host || (host.etag != nil && catalog?.id != host.library) else { return }
         let files = store
+        var unreadable = 0
         if host.etag != nil {
-            let (prepared, lists) = try await CatalogStorage.shared.perform {
+            let (prepared, lists, skipped) = try await CatalogStorage.shared.perform {
                 let database = try files.database()
                 guard try database.hostConnection() == host, let snapshot = try database.snapshot() else { throw CancellationError() }
-                return try (PreparedLocalCatalog(snapshot.catalog, store: files), database.playlistDocuments())
+                return try (PreparedLocalCatalog(snapshot.catalog, store: files), database.playlistDocuments(), snapshot.unreadableEntries)
             }
             guard generation == attempt else { throw CancellationError() }
             try onCatalog?(prepared)
             catalog = prepared.catalog
             onHostPlaylists?(lists.documents, lists.conflicts)
+            unreadable = skipped
         }
         if hostConnection?.address != host.address || hostConnection?.library != host.library { activateHost(host) }
         else { hostConnection = host }
+        if unreadable > 0 {
+            hostCatalogIncomplete = true
+            connectionEvent("host_catalog_incomplete", outcome: "observed", fields: ["unreadable_entries": String(unreadable)])
+        }
     }
 
     private func stopHostPlayback() {
