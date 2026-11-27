@@ -595,9 +595,9 @@ final class HostAPITests: XCTestCase {
         await fulfillment(of: [saved], timeout: 15)
         XCTAssertEqual(transfer.saveRequests.first?.entries.map(\.track.id), ["track-a"])
         XCTAssertEqual(transfer.saveRequests.first?.unresolved.map(\.id), ["track-b"])
-        // The queue file older versions read holds only valid entries; the unresolved track is kept apart.
-        let queue = try String(contentsOf: files.root.appendingPathComponent("offline-saves.json"), encoding: .utf8)
-        XCTAssertFalse(queue.contains("track-b"))
+        let queue = try JSONDecoder().decode([OfflineSaveRequest].self,
+                                             from: Data(contentsOf: files.root.appendingPathComponent("offline-saves.json")))
+        XCTAssertEqual(queue.first?.unresolved.map(\.id), ["track-b"])
         observation.cancel()
         transfer.stopSaveWorker()
     }
@@ -638,44 +638,6 @@ final class HostAPITests: XCTestCase {
         transfer.resumeSaves()
         await fulfillment(of: [complete], timeout: 15)
         observation.cancel()
-    }
-
-    func testOlderVersionRewritingTheQueueKeepsUnresolvedTracks() async throws {
-        let (reply, _, _) = try fixture()
-        let files = store()
-        let address = try HostAddress("https://confirmed.example.test")
-        let tags = CatalogRequestTags()
-        let config = configuration { request in
-            guard request.url?.path == "/api/v1/catalog" else { throw URLError(.unsupportedURL) }
-            let tag = request.value(forHTTPHeaderField: "If-None-Match")
-            tags.append(tag)
-            if tag == nil, tags.values.count > 1 { throw URLError(.cannotConnectToHost) }
-            return tag == nil ? reply : HostReply(status: 304)
-        }
-        let transfer = makeTransfer(store: files, hostConfiguration: config)
-        _ = try await transfer.confirmHost(address, information: hostInformation(address))
-        let entries = try XCTUnwrap(files.database().snapshot()?.catalog.entries)
-        try breakStoredHostEntry("track-b", in: files)
-        transfer.saveRetryInterval = .seconds(60)
-        await transfer.requestSave([entries[1].track], scope: "only-broken")
-        await transfer.requestSave(entries.map(\.track), scope: "album")
-        transfer.stopSaveWorker()
-
-        // An older version drops the entries it cannot validate, then the requests left empty, and writes the queue back.
-        let queue = files.root.appendingPathComponent("offline-saves.json")
-        var older = try JSONDecoder().decode([OfflineSaveRequest].self, from: Data(contentsOf: queue))
-        for index in older.indices { older[index].entries = older[index].entries.filter(LocalMusicStore.valid) }
-        older.removeAll { $0.entries.isEmpty }
-        try JSONEncoder().encode(older).write(to: queue, options: .atomic)
-        XCTAssertEqual(older.map(\.id), ["album"])
-
-        let reopened = makeTransfer(store: files, hostConfiguration: config)
-        let byID = Dictionary(uniqueKeysWithValues: reopened.saveRequests.map { ($0.id, $0) })
-        XCTAssertEqual(byID["only-broken"]?.unresolved.map(\.id), ["track-b"])
-        XCTAssertEqual(byID["only-broken"]?.manual, true)
-        XCTAssertEqual(byID["album"]?.entries.map(\.track.id), ["track-a"])
-        XCTAssertEqual(byID["album"]?.unresolved.map(\.id), ["track-b"])
-        XCTAssertTrue(byID.values.allSatisfy(\.isPending))
     }
 
     func testManualSaveStaysManualAcrossTheRepairOnCellular() async throws {
@@ -726,13 +688,16 @@ final class HostAPITests: XCTestCase {
             }
             throw URLError(.cannotConnectToHost)
         })
-        var now = ContinuousClock.now
+        let start = ContinuousClock.now
+        var now = start
         transfer.catalogRepairNow = { now }
         await transfer.restoreHost()
         transfer.refreshConnection()
         await fulfillment(of: [entered], timeout: 10)
         // The save worker asks while the whole fetch runs; it rides on that fetch instead of queueing another.
         transfer.requestCatalogRepair(1, for: libraryID)
+        // The fetch takes half an interval, so counting from its end would still hold the next repair back below.
+        now = start + transfer.catalogRepairInterval / 2
         release.signal()
         try await Task.sleep(for: .milliseconds(500))
         XCTAssertEqual(tags.values.filter { $0 == nil }.count, 1)
@@ -741,10 +706,43 @@ final class HostAPITests: XCTestCase {
         transfer.requestCatalogRepair(1, for: libraryID)
         try await Task.sleep(for: .milliseconds(300))
         XCTAssertEqual(tags.values.filter { $0 == nil }.count, 1)
-        now = now + transfer.catalogRepairInterval + .seconds(1)
+        now = start + transfer.catalogRepairInterval + .seconds(1)
         transfer.requestCatalogRepair(1, for: libraryID)
         for _ in 0..<100 where tags.values.filter({ $0 == nil }).count < 2 { try await Task.sleep(for: .milliseconds(20)) }
         XCTAssertEqual(tags.values.filter { $0 == nil }.count, 2)
+    }
+
+    func testRepairAskedForWhileARefreshIsBeingPreparedJoinsIt() async throws {
+        let (reply, _, _) = try fixture()
+        let files = store()
+        let address = try HostAddress("https://confirmed.example.test")
+        let initial = makeTransfer(store: files, hostConfiguration: configuration { _ in reply })
+        _ = try await initial.confirmHost(address, information: hostInformation(address))
+        try breakStoredHostEntry("track-b", in: files)
+
+        let tags = CatalogRequestTags()
+        let transfer = makeTransfer(store: files, hostConfiguration: configuration { request in
+            guard request.url?.path == "/api/v1/catalog" else { throw URLError(.unsupportedURL) }
+            tags.append(request.value(forHTTPHeaderField: "If-None-Match"))
+            throw URLError(.cannotConnectToHost)
+        })
+        await transfer.restoreHost()
+        // Holding the catalog queue keeps the refresh between its start and the ETag decision.
+        let hold = DispatchSemaphore(value: 0)
+        defer { hold.signal() }
+        let entered = DispatchSemaphore(value: 0)
+        let blocker = Task.detached { try await CatalogStorage.shared.perform { entered.signal(); _ = hold.wait(timeout: .now() + 15) } }
+        let holding = await Task.detached { entered.wait(timeout: .now() + 15) }.value
+        guard holding == .success else { return XCTFail("The catalog queue was not held") }
+        transfer.refreshConnection()
+        try await Task.sleep(for: .milliseconds(200))
+        transfer.requestCatalogRepair(1, for: libraryID)
+        hold.signal()
+        try await blocker.value
+        for _ in 0..<100 where tags.values.isEmpty { try await Task.sleep(for: .milliseconds(20)) }
+        try await Task.sleep(for: .milliseconds(500))
+        XCTAssertEqual(tags.values.filter { $0 == nil }.count, 1, "The repair rode on the refresh being prepared")
+        XCTAssertEqual(tags.values.count, 1)
     }
 
     func testRowWithoutAKeyMakesReconnectingFetchTheWholeCatalog() async throws {

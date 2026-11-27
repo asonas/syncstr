@@ -103,6 +103,8 @@ final class LocalTransfer: ObservableObject {
     /// When the last fetch of the whole catalog started; the repair interval counts from it.
     private var lastCatalogRepair: ContinuousClock.Instant?
     private var wholeCatalogFetchInFlight = false
+    /// A refresh that has started but not yet decided whether to send the ETag; a repair asked for now rides on it.
+    private var hostRefreshPreparing = false
     var catalogRepairNow: () -> ContinuousClock.Instant = { .now }
     @Published var savedAudio = SavedAudioSummary()
     var retainsHostCatalog: Bool { retainedHostLibrary != nil }
@@ -300,7 +302,7 @@ final class LocalTransfer: ObservableObject {
         _ = startHostOperation(automatic: true) {
             guard !self.busy else { return .unchanged }
             self.pendingHostRefresh = false
-            do { return try await self.refreshStoredHost(confirming: false) }
+            do { return try await self.refreshStoredHost(confirming: false, automatic: true) }
             catch {
                 if !Task.isCancelled && !isHostCancellation(error) { self.status = error.localizedDescription }
                 throw error
@@ -321,7 +323,11 @@ final class LocalTransfer: ObservableObject {
         }
     }
 
-    private func refreshStoredHost(confirming: Bool, didCommit: (@Sendable () async -> Void)? = nil) async throws -> HostRefreshResult {
+    private func refreshStoredHost(confirming: Bool, automatic: Bool = false,
+                                   didCommit: (@Sendable () async -> Void)? = nil) async throws -> HostRefreshResult {
+        hostRefreshPreparing = true
+        var preparing = true
+        defer { if preparing { hostRefreshPreparing = false } }
         try await waitForIdle(until: .now.advanced(by: .seconds(15)))
         try Task.checkCancellation()
         busy = true
@@ -341,7 +347,11 @@ final class LocalTransfer: ObservableObject {
         try await adoptStoredHost(host, attempt: attempt)
         var request = host
         // Without the ETag the host cannot answer 304, so the missing entries come back.
-        let fetchingWhole = hostCatalogIncomplete
+        // An automatic refresh drops the ETag at most once per interval, counted from the last whole fetch's start.
+        let repairAllowed = !automatic || lastCatalogRepair.map { catalogRepairNow() - $0 >= catalogRepairInterval } ?? true
+        let fetchingWhole = hostCatalogIncomplete && repairAllowed
+        hostRefreshPreparing = false
+        preparing = false
         if fetchingWhole {
             request.etag = nil
             lastCatalogRepair = catalogRepairNow()
@@ -441,7 +451,7 @@ final class LocalTransfer: ObservableObject {
         guard hostConnection?.library == library else { return }
         if !hostCatalogIncomplete { markHostCatalogIncomplete(unreadable) }
         // A whole-catalog fetch already running or queued carries this repair.
-        if wholeCatalogFetchInFlight || pendingHostRefresh { return }
+        if wholeCatalogFetchInFlight || pendingHostRefresh || hostRefreshPreparing { return }
         // Counted from the start of the last whole fetch, kept after it succeeds: a host that keeps sending
         // an unusable entry must not be fetched in full on every save retry.
         if let last = lastCatalogRepair, catalogRepairNow() - last < catalogRepairInterval { return }

@@ -352,6 +352,50 @@ final class OfflineSaveTests: XCTestCase {
         XCTAssertFalse(progress.allSaved)
     }
 
+    func testQueueWrittenBeforeUnresolvedTracksStillDecodes() throws {
+        let (store, entries) = try fixture()
+        let entry = String(decoding: try JSONEncoder().encode(entries[0]), as: UTF8.self)
+        let old = #"[{"id":"track:track-1","library":"library","entries":["# + entry + #"],"completed":[],"state":"waiting"}]"#
+        try store.prepare()
+        try Data(old.utf8).write(to: store.root.appendingPathComponent("offline-saves.json"))
+        let transfer = LocalTransfer(store: store, pathMonitor: nil)
+        let request = try XCTUnwrap(transfer.saveRequests.first)
+        XCTAssertEqual(request.entries, [entries[0]])
+        XCTAssertTrue(request.unresolved.isEmpty)
+        XCTAssertFalse(request.manual)
+        XCTAssertTrue(request.failedTracks.isEmpty)
+        XCTAssertEqual(request.state, .waiting)
+    }
+
+    func testRequestWithATrackGoneFromTheWholeCatalogStaysFailedAfterRestart() async throws {
+        let (store, _) = try fixture()
+        let transfer = try await hostTransfer(store)
+        let library = try XCTUnwrap(transfer.hostConnection?.library)
+        let gone = Track(id: "track-gone", title: "Gone", artist: "Artist", suffix: "mp3", size: 3)
+        // The catalog has no unreadable rows, so a track it lacks has left the host.
+        transfer.saveRequests = [OfflineSaveRequest(id: "album", library: library, entries: [], unresolved: [gone], manual: true)]
+        let failed = expectation(description: "request failed")
+        let observation = transfer.$saveRequests.filter { $0.first?.state == .failed }.first().sink { _ in failed.fulfill() }
+        transfer.resumeSaves()
+        await fulfillment(of: [failed], timeout: 15)
+        observation.cancel()
+        transfer.stopSaveWorker()
+        XCTAssertEqual(transfer.saveRequests.first?.failedTracks, [gone.id])
+
+        let reopened = LocalTransfer(store: store, pathMonitor: nil)
+        let restored = try XCTUnwrap(reopened.saveRequests.first)
+        XCTAssertEqual(restored.state, .failed)
+        XCTAssertEqual(restored.failedTracks, [gone.id])
+        XCTAssertEqual(restored.trackCount, 1)
+
+        let shown = makeLibrary(localStore: store)
+        await shown.openSavedLocalLibrary()
+        shown.transfer.saveRequests = reopened.saveRequests
+        let progress = shown.saveProgress(for: [], scope: "album")
+        XCTAssertTrue(progress.failed)
+        XCTAssertFalse(progress.allSaved)
+    }
+
     func testPartialDeletionKeepsOnlyRequestsForFilesLeftBehind() async throws {
         let (fixtureStore, entries) = try fixture()
         var store = fixtureStore
@@ -379,8 +423,9 @@ final class OfflineSaveTests: XCTestCase {
         // the file that stayed is kept so a later removal can try it.
         XCTAssertEqual(transfer.saveRequests.map(\.id), ["track:track-1"])
         XCTAssertEqual(transfer.saveRequests.first?.state, .complete)
-        let unresolved = try JSONDecoder().decode([UnresolvedSave].self, from: Data(contentsOf: store.root.appendingPathComponent("offline-saves-unresolved.json")))
-        XCTAssertTrue(unresolved.isEmpty)
+        let queue = try JSONDecoder().decode([OfflineSaveRequest].self, from: Data(contentsOf: store.root.appendingPathComponent("offline-saves.json")))
+        XCTAssertEqual(queue.map(\.id), ["track:track-1"])
+        XCTAssertTrue(queue.allSatisfy { $0.unresolved.isEmpty })
         XCTAssertNil(transfer.saveWorker)
         transfer.store.removeFile = { try FileManager.default.removeItem(at: $0) }
     }

@@ -10,8 +10,8 @@ struct OfflineSaveRequest: Codable, Identifiable {
     var state: State = .waiting
     var error: String?
     /// Tracks whose stored rows were unreadable when the save was asked for. Their content is unknown
-    /// until the catalog is read again. They are kept out of offline-saves.json, which older versions
-    /// rewrite after dropping entries they cannot validate; `UnresolvedSave` stores them instead.
+    /// until the catalog is read again. An older version decodes the queue without this field and writes it
+    /// back, so these tracks are lost after a downgrade; keeping them through one is not a requirement.
     var unresolved: [Track] = []
     /// A save the person asked for, which may use cellular data. It stays manual across retries.
     var manual = false
@@ -19,7 +19,9 @@ struct OfflineSaveRequest: Codable, Identifiable {
     var failedTracks: Set<String> = []
 
     var isPending: Bool { [.waiting, .wifi, .saving].contains(state) }
-    var trackCount: Int { entries.count + unresolved.count }
+    var trackCount: Int {
+        entries.count + unresolved.count + failedTracks.filter { id in !entries.contains { $0.track.id == id } }.count
+    }
 
     init(id: String, library: String, entries: [LocalEntry], completed: Set<String> = [], state: State = .waiting,
          error: String? = nil, unresolved: [Track] = [], manual: Bool = false) {
@@ -33,7 +35,7 @@ struct OfflineSaveRequest: Codable, Identifiable {
         self.manual = manual
     }
 
-    private enum CodingKeys: String, CodingKey { case id, library, entries, completed, state, error, manual, failedTracks }
+    private enum CodingKeys: String, CodingKey { case id, library, entries, completed, state, error, unresolved, manual, failedTracks }
 
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
@@ -43,6 +45,7 @@ struct OfflineSaveRequest: Codable, Identifiable {
         completed = try container.decode(Set<String>.self, forKey: .completed)
         state = try container.decode(State.self, forKey: .state)
         error = try container.decodeIfPresent(String.self, forKey: .error)
+        unresolved = try container.decodeIfPresent([Track].self, forKey: .unresolved) ?? []
         manual = try container.decodeIfPresent(Bool.self, forKey: .manual) ?? false
         failedTracks = try container.decodeIfPresent(Set<String>.self, forKey: .failedTracks) ?? []
     }
@@ -55,17 +58,10 @@ struct OfflineSaveRequest: Codable, Identifiable {
         try container.encode(completed, forKey: .completed)
         try container.encode(state, forKey: .state)
         try container.encodeIfPresent(error, forKey: .error)
+        try container.encode(unresolved, forKey: .unresolved)
         try container.encode(manual, forKey: .manual)
         try container.encode(failedTracks, forKey: .failedTracks)
     }
-}
-
-/// The unresolved tracks of a pending save, kept in their own file so an older version never sees them.
-struct UnresolvedSave: Codable {
-    var id: String
-    var library: String
-    var tracks: [Track]
-    var manual: Bool
 }
 
 extension Library {
@@ -81,14 +77,15 @@ extension Library {
             } : nil)
     }
 
-    /// A pending save of this scope comes first: it can hold tracks that the displayed catalog lacks while
-    /// their rows are unreadable, so the shown tracks alone would look saved.
+    /// A pending or failed save of this scope comes first: it can hold tracks that the displayed catalog lacks,
+    /// so the shown tracks alone would look saved.
     func saveProgress(for tracks: [Track], scope: String) -> SaveProgress {
         let request = saveRequest(for: tracks, scope: scope)
         let pending = request?.isPending ?? false
+        let failed = request?.state == .failed
         var total = tracks.count
-        if pending, let request, request.id == scope { total = max(total, request.trackCount) }
-        return SaveProgress(saved: tracks.filter(hasManagedCopy).count, total: total, pending: pending)
+        if pending || failed, let request, request.id == scope { total = max(total, request.trackCount) }
+        return SaveProgress(saved: tracks.filter(hasManagedCopy).count, total: total, pending: pending, failed: failed)
     }
 }
 
@@ -96,7 +93,8 @@ struct SaveProgress: Equatable {
     var saved: Int
     var total: Int
     var pending: Bool
-    var allSaved: Bool { !pending && total > 0 && saved == total }
+    var failed = false
+    var allSaved: Bool { !pending && !failed && total > 0 && saved == total }
 }
 
 extension LocalEntry {
@@ -199,28 +197,12 @@ extension LocalTransfer {
 
     func restoreSaves() {
         do {
+            // Written only by an earlier build of this change; the queue now holds everything.
+            try? FileManager.default.removeItem(at: store.root.appendingPathComponent("offline-saves-unresolved.json"))
             let url = store.root.appendingPathComponent("offline-saves.json")
-            let unresolvedURL = store.root.appendingPathComponent("offline-saves-unresolved.json")
-            // An unreadable side file must not cost the rest of the queue.
-            let unresolved = (try? JSONDecoder().decode([UnresolvedSave].self, from: Data(contentsOf: unresolvedURL))) ?? []
-            guard FileManager.default.fileExists(atPath: url.path) || !unresolved.isEmpty else { return }
-            var restored = FileManager.default.fileExists(atPath: url.path)
-                ? try JSONDecoder().decode([OfflineSaveRequest].self, from: Data(contentsOf: url)) : []
-            // An older version may have rewritten the queue and dropped a request that had only unresolved
-            // tracks, or finished one without them. The unresolved file brings those tracks back.
-            for save in unresolved {
-                if let index = restored.firstIndex(where: { $0.id == save.id && $0.library == save.library }) {
-                    guard restored[index].state != .cancelled else { continue }
-                    restored[index].unresolved = save.tracks.filter { track in !restored[index].entries.contains { $0.track.id == track.id } }
-                    restored[index].manual = restored[index].manual || save.manual
-                    if !restored[index].unresolved.isEmpty, !restored[index].isPending {
-                        restored[index].state = .waiting
-                        restored[index].error = nil
-                    }
-                } else {
-                    restored.append(OfflineSaveRequest(id: save.id, library: save.library, entries: [], unresolved: save.tracks, manual: save.manual))
-                }
-            }
+            guard FileManager.default.fileExists(atPath: url.path) else { return }
+            // A queue that cannot be decoded throws before anything is written, so the file is kept as it is.
+            var restored = try JSONDecoder().decode([OfflineSaveRequest].self, from: Data(contentsOf: url))
             for index in restored.indices {
                 let entries = restored[index].entries.filter(LocalMusicStore.valid)
                 if entries.count != restored[index].entries.count {
@@ -234,16 +216,13 @@ extension LocalTransfer {
                 }
                 if restored[index].state == .saving { restored[index].state = .waiting }
             }
-            restored.removeAll { $0.entries.isEmpty && $0.unresolved.isEmpty }
+            restored.removeAll { $0.entries.isEmpty && $0.unresolved.isEmpty && $0.failedTracks.isEmpty }
             try persistSaves(restored)
         } catch { status = "保存待ちを読み込めませんでした。\(error.localizedDescription)" }
     }
 
     private func persistSaves(_ requests: [OfflineSaveRequest]) throws {
         try store.prepare()
-        let unresolved = requests.filter { $0.isPending && !$0.unresolved.isEmpty }
-            .map { UnresolvedSave(id: $0.id, library: $0.library, tracks: $0.unresolved, manual: $0.manual) }
-        try JSONEncoder().encode(unresolved).write(to: store.root.appendingPathComponent("offline-saves-unresolved.json"), options: .atomic)
         try JSONEncoder().encode(requests).write(to: store.root.appendingPathComponent("offline-saves.json"), options: .atomic)
         saveRequests = requests
     }
@@ -418,7 +397,8 @@ extension LocalTransfer {
                         }
                     }
                     guard saveGeneration == token else { return }
-                    let finished = saveRequests[index].unresolved.isEmpty
+                    // A track that failed, including one still missing from a whole catalog, keeps the request from completing.
+                    let finished = saveRequests[index].unresolved.isEmpty && saveRequests[index].failedTracks.isEmpty
                         && saveRequests[index].entries.allSatisfy { self.saveRequests[index].completed.contains($0.trackSaveIdentity) }
                     // A request fails only when no track can still progress.
                     saveRequests[index].state = finished ? .complete : waiting ? (saveRequests[index].state == .wifi ? .wifi : .waiting) : .failed
