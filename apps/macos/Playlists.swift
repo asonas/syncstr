@@ -20,6 +20,8 @@ struct PlaylistDocument: Codable, Equatable, Identifiable {
     let definition: [String: String]
     var items: [PlaylistItem]
 
+    static let kindOrder = ["folder", "snapshot", "manual"]
+
     func validate() throws {
         func identity(_ value: String) -> Bool {
             !value.isEmpty && value.utf8.count <= 256 && value.unicodeScalars.allSatisfy { !CharacterSet.controlCharacters.contains($0) }
@@ -38,5 +40,38 @@ struct PlaylistDocument: Codable, Equatable, Identifiable {
                   item.trackId.map(identity) ?? true,
                   item.sha256.map(SHA256Hex.isValid) ?? true else { throw LocalMusicError.invalidData }
         }
+    }
+}
+
+struct PlaylistOutlineRow: Identifiable {
+    let document: PlaylistDocument
+    let depth: Int
+    var id: String { document.id }
+}
+
+extension Array where Element == PlaylistDocument {
+    func outline(expanding folders: Set<String>) -> [PlaylistOutlineRow] {
+        let children = Dictionary(grouping: self, by: \.parent)
+        // Swift compares strings by canonical equivalence, while the store's keys are byte-exact, so a
+        // folder can be its own parent here even though the host and the store hold distinct IDs.
+        func rows(under parent: String?, depth: Int, path: Set<String>) -> [PlaylistOutlineRow] {
+            let siblings = children[parent] ?? []
+            return PlaylistDocument.kindOrder.flatMap { kind in siblings.filter { $0.kind == kind } }.flatMap { document in
+                [PlaylistOutlineRow(document: document, depth: depth)]
+                    + (folders.contains(document.id) && !path.contains(document.id)
+                        ? rows(under: document.id, depth: depth + 1, path: path.union([document.id])) : [])
+            }
+        }
+        return rows(under: nil, depth: 0, path: [])
+    }
+
+    func ancestors(of id: String) -> [String] {
+        var ancestors: [String] = []
+        var parent = first { $0.id == id }?.parent
+        while let current = parent, !ancestors.contains(current) {
+            ancestors.append(current)
+            parent = first { $0.id == current }?.parent
+        }
+        return ancestors
     }
 }

@@ -27,16 +27,14 @@ enum LibraryDestination: String, CaseIterable {
     case artists = "アーティスト"
     case songs = "曲"
     case hiddenAlbums = "非表示にしたアルバム"
-    case playlists = "すべてのプレイリスト"
 
-    var symbol: String {
+    var icon: String {
         switch self {
         case .recentlyAdded: "clock"
-        case .albums: "square.stack"
-        case .artists: "person.2"
-        case .songs: "music.note.list"
-        case .hiddenAlbums: "eye.slash"
-        case .playlists: "music.note.list"
+        case .albums: "layers"
+        case .artists: "users"
+        case .songs: "music"
+        case .hiddenAlbums: "eye-off"
         }
     }
 }
@@ -49,7 +47,14 @@ enum PlaybackRepeat: String, CaseIterable, Codable {
 
 @MainActor
 final class Library: ObservableObject {
-    @Published private(set) var playlists: [PlaylistDocument] = []
+    @Published private(set) var playlists: [PlaylistDocument] = [] {
+        didSet {
+            if let id = selectedPlaylist, !playlists.contains(where: { $0.id == id }) {
+                selectedPlaylist = nil
+                search = ""
+            }
+        }
+    }
     @Published private(set) var playlistConflicts: Set<String> = []
     @Published var playlistMessage: String?
     @Published private(set) var refreshingPlaylists = false
@@ -113,6 +118,7 @@ final class Library: ObservableObject {
     @Published var albumSortField = AlbumSortField.title
     @Published var albumSortDescending = false
     @Published var selectedAlbum: String?
+    @Published var selectedPlaylist: String?
     @Published var selectedArtist: String?
     @Published var search = ""
     @Published var sidebarVisible = true
@@ -364,7 +370,20 @@ final class Library: ObservableObject {
     func navigate(_ destination: LibraryDestination) {
         self.destination = destination
         selectedAlbum = nil
+        selectedPlaylist = nil
         selectedArtist = nil
+        showingNowPlaying = false
+    }
+
+    func openPlaylist(_ id: String) {
+        navigate(destination)
+        selectedPlaylist = id
+    }
+
+    func openAlbum(_ id: String) {
+        selectedPlaylist = nil
+        selectedAlbum = id
+        search = ""
         showingNowPlaying = false
     }
 

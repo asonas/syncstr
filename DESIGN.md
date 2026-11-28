@@ -107,7 +107,7 @@ The [macOS Music-inspired exploration](https://www.figma.com/design/KtfBubkg9KiK
 - Do not repeat the sidebar selection as a content heading such as “Albums.” Omit headings such as “Library,” “Now Playing,” or “Playback Queue” when they do not help explain an action or information. Remove spacing reserved for any removed heading.
 - Communicate selection and playback through backgrounds, colors, and icons. Do not repeat visually apparent state with “Selected” or “Playing” text. Supply VoiceOver labels and accessibility attributes such as selection state.
 - Show waiting, sending, failure, and other states needed to choose the next action. This is not a blanket rule to remove status text.
-- Keep albums, artists, tracks, and “Refresh Library” in the persistent sidebar. Do not add a heading that repeats the brand or a button to close the sidebar.
+- Keep Recently Added, albums, artists, tracks, hidden albums, and the host's playlists in the persistent sidebar, each destination with its own icon. List playlists as a folder tree under a “Playlists” caption, with folders first, then smart playlist snapshots, then playlists, each in host order. A folder row expands in place, a playlist row opens the playlist detail, which reuses the album detail layout and track rows. Pin “Refresh Library” below the scrolling list. Do not add a heading that repeats the brand or a button to close the sidebar.
 - Put host connection controls in Settings on both platforms. Keep save progress and cancellation visible.
 
 ### Album Details

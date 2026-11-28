@@ -5,6 +5,12 @@ import Testing
 @testable import Syncstr
 #endif
 
+private func playlistDocument(_ name: String, kind: String, parent: String? = nil) -> PlaylistDocument {
+    PlaylistDocument(id: "library:\(name)", sourceLibrary: "library", sourcePlaylist: name,
+                     sourceFingerprint: String(repeating: "a", count: 64), name: name, kind: kind,
+                     parent: parent.map { "library:\($0)" }, definition: [:], items: [])
+}
+
 @MainActor
 struct LibraryPresentationTests {
     @Test
@@ -223,5 +229,100 @@ struct LibraryPresentationTests {
         #expect(ProcessInfo.processInfo.systemUptime - start < 0.2,
                 "Warm browsing must not rebuild the catalog for selection or playback updates")
         library.closeLibrary()
+    }
+
+    @Test
+    func selectedPlaylistClosesWhenTheHostRemovesItOrTheLibraryNavigatesAway() {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let library = Library(localStore: LocalMusicStore(root: root))
+        defer { library.closeLibrary() }
+        let folder = playlistDocument("folder", kind: "folder")
+        let playlist = playlistDocument("playlist", kind: "manual", parent: "folder")
+        library.transfer.onHostPlaylists?([folder, playlist], [])
+        library.navigate(.songs)
+        library.selectedAlbum = "album"
+        library.showingNowPlaying = true
+        library.openPlaylist(playlist.id)
+        #expect(library.selectedPlaylist == playlist.id)
+        #expect(library.selectedAlbum == nil && !library.showingNowPlaying)
+        library.transfer.onHostPlaylists?([folder, playlist], [])
+        #expect(library.selectedPlaylist == playlist.id)
+        library.transfer.onHostPlaylists?([folder], [])
+        #expect(library.selectedPlaylist == nil)
+        #expect(library.destination == .songs)
+        library.transfer.onHostPlaylists?([folder, playlist], [])
+        library.openPlaylist(playlist.id)
+        library.search = "only in the playlist"
+        library.transfer.onHostPlaylists?([folder], [])
+        #expect(library.search.isEmpty, "A removed playlist's search must not filter the screen behind it")
+        library.transfer.onHostPlaylists?([folder, playlist], [])
+        library.openPlaylist(playlist.id)
+        library.navigate(.albums)
+        #expect(library.selectedPlaylist == nil)
+    }
+
+    @Test
+    func openingAnAlbumFromAPlaylistLeavesThePlaylist() {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let library = Library(localStore: LocalMusicStore(root: root))
+        defer { library.closeLibrary() }
+        let playlist = playlistDocument("playlist", kind: "manual")
+        library.transfer.onHostPlaylists?([playlist], [])
+        library.openPlaylist(playlist.id)
+        library.search = "query"
+        library.showingNowPlaying = true
+        library.openAlbum("album")
+        #expect(library.selectedAlbum == "album")
+        #expect(library.selectedPlaylist == nil)
+        #expect(library.search.isEmpty && !library.showingNowPlaying)
+    }
+
+    @Test
+    func playlistOutlineOpensOnlyExpandedFolders() {
+        let folder = playlistDocument("folder", kind: "folder")
+        let inner = playlistDocument("inner", kind: "folder", parent: "folder")
+        let nested = playlistDocument("nested", kind: "manual", parent: "inner")
+        let top = playlistDocument("top", kind: "snapshot")
+        let documents = [folder, top, inner, nested]
+        func names(_ expanded: Set<String>) -> [String] { documents.outline(expanding: expanded).map(\.document.name) }
+        #expect(names([]) == ["folder", "top"])
+        #expect(names([folder.id]) == ["folder", "inner", "top"])
+        #expect(names([inner.id]) == ["folder", "top"])
+        #expect(names([folder.id, inner.id]) == ["folder", "inner", "nested", "top"])
+        #expect(documents.outline(expanding: [folder.id, inner.id]).map(\.depth) == [0, 1, 2, 0])
+    }
+
+    @Test
+    func playlistOutlineListsFoldersThenSnapshotsThenPlaylistsInHostOrder() {
+        let first = playlistDocument("first", kind: "manual")
+        let folder = playlistDocument("folder", kind: "folder")
+        let smart = playlistDocument("smart", kind: "snapshot")
+        let second = playlistDocument("second", kind: "manual")
+        let later = playlistDocument("later", kind: "folder")
+        let documents = [first, folder, smart, second, later]
+        #expect(documents.outline(expanding: []).map(\.document.name) == ["folder", "later", "smart", "first", "second"])
+    }
+
+    @Test
+    func playlistOutlineEndsWhenAFolderIsItsOwnParentUnderStringEquality() {
+        let composed = playlistDocument("\u{E9}", kind: "folder")
+        let decomposed = playlistDocument("e\u{301}", kind: "folder", parent: "\u{E9}")
+        let rows = [composed, decomposed].outline(expanding: [composed.id])
+        #expect(rows.map { Array($0.document.id.utf8) } == [Array(composed.id.utf8), Array(decomposed.id.utf8)])
+        #expect(rows.map(\.depth) == [0, 1])
+    }
+
+    @Test
+    func ancestorsRunFromTheParentUpAndEndOnACycle() {
+        let folder = playlistDocument("folder", kind: "folder")
+        let inner = playlistDocument("inner", kind: "folder", parent: "folder")
+        let nested = playlistDocument("nested", kind: "manual", parent: "inner")
+        #expect([folder, inner, nested].ancestors(of: nested.id) == [inner.id, folder.id])
+        #expect([folder, inner, nested].ancestors(of: folder.id).isEmpty)
+        let first = playlistDocument("first", kind: "folder", parent: "second")
+        let second = playlistDocument("second", kind: "folder", parent: "first")
+        #expect([first, second].ancestors(of: first.id).count <= 2)
     }
 }
