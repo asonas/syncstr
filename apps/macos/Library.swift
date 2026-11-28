@@ -500,9 +500,18 @@ final class Library: ObservableObject {
         downloaded = Set(localFiles.keys)
 #endif
         guard inventoryComplete else { return }
+        // Playback from the playback cache goes on when the saved copy of the same track goes away.
         if let pending = pendingLocalPlaybackTrack, pending.request == playbackRequest,
-           current?.id == pending.id, transfer.hasLibrarySource, localFiles[pending.id] == nil { stop() }
+           current?.id == pending.id, transfer.hasLibrarySource, localFiles[pending.id] == nil,
+           transfer.playbackCache.protectedURL == nil || openedSavedFile != nil { stop() }
         pendingLocalPlaybackTrack = nil
+    }
+
+    /// The file the player has open when it is in the saved folder rather than in the playback cache.
+    private var openedSavedFile: URL? {
+        guard let url = transfer.playbackCache.protectedURL?.resolvingSymlinksInPath(),
+              url.deletingLastPathComponent().path == localStore.root.resolvingSymlinksInPath().path else { return nil }
+        return url
     }
 
     func openSavedLocalLibrary() async {
@@ -969,8 +978,7 @@ final class Library: ObservableObject {
             try await transfer.removeAllSavedAudio { [weak self] in
                 guard let self else { return }
                 // A track being prepared may be reading from the saved folder too.
-                let folder = transfer.playbackCache.protectedURL?.deletingLastPathComponent().resolvingSymlinksInPath()
-                if loading || folder == localStore.root.resolvingSymlinksInPath() { stop() }
+                if loading || openedSavedFile != nil { stop() }
             }
         } catch { message = error.localizedDescription }
     }
@@ -1004,9 +1012,10 @@ final class Library: ObservableObject {
                     entries.append(entry)
                 } catch { failure = failure ?? error }
             }
-            // The player may still hold audio from before a catalog update, so compare the file it plays.
-            let playing = transfer.playbackCache.protectedURL?.deletingPathExtension().lastPathComponent
-            if entries.contains(where: { $0.sha256 == playing }) || (loading && tracks.contains { $0.id == current?.id }) { stop() }
+            // The player may still hold audio from before a catalog update, or the cache copy of the same audio,
+            // so compare the file it has open with the saved files being removed.
+            let removed = Set(entries.flatMap { localStore.hostFileURLs($0).map { $0.resolvingSymlinksInPath().path } })
+            if openedSavedFile.map({ removed.contains($0.path) }) == true || (loading && tracks.contains { $0.id == current?.id }) { stop() }
             // One file that cannot be removed does not stop the others; its pin stays so it still shows as saved.
             for entry in entries {
                 do { try transfer.removeSavedCopy(entry) }

@@ -1802,6 +1802,31 @@ final class HostAPITests: XCTestCase {
         XCTAssertFalse(library.playing)
     }
 
+    func testPlaybackFromTheCacheGoesOnWhenTheSavedCopyGoes() async throws {
+        let (reply, _, _) = try fixture()
+        let files = store()
+        let library = makeLibrary(localStore: files, hostConfiguration: configuration { _ in reply })
+        let address = try HostAddress("https://confirmed.example.test")
+        _ = try await library.transfer.confirmHost(address, information: hostInformation(address))
+        await library.inventoryTask?.value
+        let entry = try XCTUnwrap(library.localCatalog?.entries.first)
+        let url = files.fileURL(entry)
+        try Data("abc".utf8).write(to: url)
+        try files.database().saveAudioPin(entry)
+        library.refreshLocalFiles()
+        try await waitFor { library.hasManagedCopy(entry.track) }
+        library.current = entry.track
+        library.playing = true
+        // The player opened the cache copy before the track was saved.
+        library.transfer.playbackCache.protectedURL = library.transfer.playbackCache.store.fileURL(entry)
+        library.transfer.onSaved?()
+        try FileManager.default.removeItem(at: url)
+        library.refreshLocalFiles()
+        try await waitFor { !library.hasManagedCopy(entry.track) }
+        await library.inventoryTask?.value
+        XCTAssertTrue(library.playing)
+    }
+
     func testReselectingTrackPreservesNewPlaybackDuringInventory() async throws {
         let (reply, _, _) = try fixture()
         let held = HostResponseGate(started: expectation(description: "new playback requested audio"))

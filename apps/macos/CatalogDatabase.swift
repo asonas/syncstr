@@ -36,11 +36,13 @@ extension CatalogDatabase {
     /// Returns the hashes that other pins still hold.
     func removeAudioPins(_ pins: Set<SavedAudioPin>) throws -> Set<String> {
         try transaction {
-            for pin in pins {
-                try execute("DELETE FROM shared_audio_saves WHERE track = ? AND hash = ?", [pin.track, pin.hash])
-            }
+            for pin in pins { try removeAudioPin(pin) }
             return Set(try rows("SELECT DISTINCT hash FROM shared_audio_saves").compactMap { $0[0] })
         }
+    }
+
+    func removeAudioPin(_ pin: SavedAudioPin) throws {
+        try execute("DELETE FROM shared_audio_saves WHERE track = ? AND hash = ?", [pin.track, pin.hash])
     }
 
     func forgetAudio(hash: String) throws {

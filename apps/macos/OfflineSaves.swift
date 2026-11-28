@@ -203,15 +203,22 @@ extension LocalTransfer {
         let ids = Set(tracks.map(\.id))
         var updated = saveRequests
         for index in updated.indices where updated[index].entries.contains(where: { ids.contains($0.track.id) })
-            || updated[index].unresolved.contains(where: { ids.contains($0.id) }) {
+            || updated[index].unresolved.contains(where: { ids.contains($0.id) }) || !updated[index].failedTracks.isDisjoint(with: ids) {
             if let library = hostConnection?.library ?? retainedHostLibrary, updated[index].library != library { continue }
             let remaining = updated[index].entries.filter { !ids.contains($0.track.id) }
             updated[index].unresolved.removeAll { ids.contains($0.id) }
-            if remaining.isEmpty && updated[index].unresolved.isEmpty {
+            // A removed track no longer counts as failed, so a later retry of the album does not bring it back.
+            updated[index].failedTracks.subtract(ids)
+            if remaining.isEmpty && updated[index].unresolved.isEmpty && updated[index].failedTracks.isEmpty {
                 updated[index].state = .cancelled
             } else {
                 updated[index].entries = remaining
                 updated[index].completed.formIntersection(remaining.map { usesHostCatalog ? $0.trackSaveIdentity : $0.saveIdentity })
+                if updated[index].state == .failed, updated[index].failedTracks.isEmpty, updated[index].unresolved.isEmpty,
+                   remaining.allSatisfy({ updated[index].completed.contains(usesHostCatalog ? $0.trackSaveIdentity : $0.saveIdentity) }) {
+                    updated[index].state = .complete
+                    updated[index].error = nil
+                }
             }
         }
         try persistSaves(updated)
@@ -548,8 +555,10 @@ extension LocalTransfer {
                 catch { failed.insert(hash) }
             }
         }
-        _ = try database.removeAudioPins(try database.savedAudioPinList().filter { !failed.contains($0.hash) })
-        for hash in Set(files.keys).subtracting(failed) { try database.forgetAudio(hash: hash) }
+        try database.transaction {
+            for pin in try database.savedAudioPinList() where !failed.contains(pin.hash) { try database.removeAudioPin(pin) }
+            for hash in Set(files.keys).subtracting(failed) { try database.forgetAudio(hash: hash) }
+        }
         return failed
     }
 
@@ -585,13 +594,23 @@ extension LocalTransfer {
         // to the background, may still be placing a file with its pin.
         await waitForStoppedSaveWorkers()
         beforeRemoving()
+        // The queue ends every pending request before anything is removed, so a removal that stops halfway,
+        // for example on a database error, never leaves a request that fetches the removed tracks again.
+        let requests = saveRequests
+        if requests.contains(where: \.isPending) {
+            try persistSaves(requests.map { request in
+                var request = request
+                if request.isPending { request.state = .cancelled }
+                return request
+            })
+        }
         let files = store
         let protected = playbackCache.protectedPaths
         let failed = try await CatalogStorage.shared.commit {
             try Self.discardAll(store: files, protected: protected, database: files.database())
         }
         // A request stays only for files that could not be removed, so they can be removed again later.
-        let kept = saveRequests.compactMap { request -> OfflineSaveRequest? in
+        let kept = requests.compactMap { request -> OfflineSaveRequest? in
             var request = request
             request.entries = request.entries.filter { failed.contains($0.sha256) }
             request.unresolved = []

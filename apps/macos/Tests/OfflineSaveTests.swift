@@ -610,6 +610,27 @@ final class OfflineSaveTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: store.fileURL(entries[0]).path))
     }
 
+    func testRemovingOneSaveKeepsPlayingTheCacheCopyOfTheSameAudio() async throws {
+        let (store, entries) = try fixture()
+        try Data(repeating: 1, count: 1024).write(to: store.fileURL(entries[0]))
+        try store.database().saveAudioPin(entries[0])
+        let library = makeLibrary(localStore: store)
+        await library.openSavedLocalLibrary()
+        await library.inventoryTask?.value
+        let track = try XCTUnwrap(library.tracks.first { $0.id == entries[0].track.id })
+        library.current = track
+        library.playing = true
+        try library.transfer.playbackCache.store.prepare()
+        let cached = library.transfer.playbackCache.store.fileURL(entries[0])
+        try Data(repeating: 1, count: 1024).write(to: cached)
+        library.transfer.playbackCache.protectedURL = cached
+        library.removeLocalCopies([track])
+        try await waitFor { library.pendingLocalCopyRemovals.isEmpty }
+        XCTAssertTrue(library.playing)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: store.fileURL(entries[0]).path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: cached.path))
+    }
+
     func testRemovingOneSaveKeepsAudioAnotherLibraryStillWantsToSave() throws {
         let (store, entries) = try fixture(host: false)
         try Data(repeating: 1, count: 1024).write(to: store.fileURL(entries[0]))
@@ -670,6 +691,48 @@ final class OfflineSaveTests: XCTestCase {
         try transfer.removeSavedCopy(entries[0])
         XCTAssertFalse(FileManager.default.fileExists(atPath: store.fileURL(entries[0]).path))
         XCTAssertTrue(try store.database().savedAudioPinList().isEmpty)
+    }
+
+    func testDeletionThatFailsAtThePinsLeavesNoRequestToSaveAgain() async throws {
+        let (store, entries) = try fixture()
+        try Data(repeating: 1, count: 1024).write(to: store.fileURL(entries[0]))
+        try store.database().saveAudioPin(entries[0])
+        let transfer = try await hostTransfer(store)
+        let library = try XCTUnwrap(transfer.hostConnection?.library)
+        var request = OfflineSaveRequest(id: "album:fixture", library: library, entries: entries)
+        request.completed = [entries[0].trackSaveIdentity]
+        transfer.saveRequests = [request]
+        var db: OpaquePointer?
+        XCTAssertEqual(sqlite3_open(store.root.appendingPathComponent("catalog.sqlite").path, &db), SQLITE_OK)
+        defer { sqlite3_close(db) }
+        let sql = "CREATE TRIGGER reject_unpin BEFORE DELETE ON shared_audio_saves BEGIN SELECT RAISE(FAIL, 'fixture'); END"
+        XCTAssertEqual(sqlite3_exec(db, sql, nil, nil, nil), SQLITE_OK)
+        do {
+            try await transfer.removeAllSavedAudio()
+            XCTFail("The removal should report the database error")
+        } catch {}
+        XCTAssertFalse(transfer.saveRequests.contains(where: \.isPending))
+        XCTAssertNil(transfer.saveWorker)
+        let stored = try JSONDecoder().decode([OfflineSaveRequest].self,
+            from: Data(contentsOf: store.root.appendingPathComponent("offline-saves.json")))
+        XCTAssertFalse(stored.contains(where: \.isPending))
+    }
+
+    func testRemovingTheTrackThatFailedEndsItsRequest() async throws {
+        let (store, entries) = try fixture()
+        let transfer = try await hostTransfer(store)
+        let library = try XCTUnwrap(transfer.hostConnection?.library)
+        var request = OfflineSaveRequest(id: "album:fixture", library: library, entries: Array(entries[0...1]))
+        request.completed = [entries[0].trackSaveIdentity]
+        request.failedTracks = [entries[1].track.id]
+        request.state = .failed
+        request.error = "fixture"
+        transfer.saveRequests = [request]
+        try transfer.cancelSaves(containing: [entries[1].track])
+        let updated = try XCTUnwrap(transfer.saveRequests.first)
+        XCTAssertTrue(updated.failedTracks.isEmpty)
+        XCTAssertEqual(updated.state, .complete)
+        XCTAssertNil(updated.error)
     }
 
     func testSavedFileWhosePinCannotBeWrittenIsRemovedAgain() async throws {
