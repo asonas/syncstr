@@ -5,6 +5,12 @@ import Testing
 @testable import Syncstr
 #endif
 
+private func playlistDocument(_ name: String, kind: String, parent: String? = nil) -> PlaylistDocument {
+    PlaylistDocument(id: "library:\(name)", sourceLibrary: "library", sourcePlaylist: name,
+                     sourceFingerprint: String(repeating: "a", count: 64), name: name, kind: kind,
+                     parent: parent.map { "library:\($0)" }, definition: [:], items: [])
+}
+
 @MainActor
 struct LibraryPresentationTests {
     @Test
@@ -231,13 +237,8 @@ struct LibraryPresentationTests {
         defer { try? FileManager.default.removeItem(at: root) }
         let library = Library(localStore: LocalMusicStore(root: root))
         defer { library.closeLibrary() }
-        func document(_ name: String, kind: String, parent: String? = nil) -> PlaylistDocument {
-            PlaylistDocument(id: "library:\(name)", sourceLibrary: "library", sourcePlaylist: name,
-                             sourceFingerprint: String(repeating: "a", count: 64), name: name, kind: kind,
-                             parent: parent.map { "library:\($0)" }, definition: [:], items: [])
-        }
-        let folder = document("folder", kind: "folder")
-        let playlist = document("playlist", kind: "manual", parent: "folder")
+        let folder = playlistDocument("folder", kind: "folder")
+        let playlist = playlistDocument("playlist", kind: "manual", parent: "folder")
         library.transfer.onHostPlaylists?([folder, playlist], [])
         library.navigate(.songs)
         library.selectedAlbum = "album"
@@ -254,5 +255,32 @@ struct LibraryPresentationTests {
         library.openPlaylist(playlist.id)
         library.navigate(.albums)
         #expect(library.selectedPlaylist == nil)
+    }
+
+    @Test
+    func playlistOutlineKeepsHostOrderAndOpensOnlyExpandedFolders() {
+        let folder = playlistDocument("folder", kind: "folder")
+        let inner = playlistDocument("inner", kind: "folder", parent: "folder")
+        let nested = playlistDocument("nested", kind: "manual", parent: "inner")
+        let top = playlistDocument("top", kind: "snapshot")
+        let documents = [folder, top, inner, nested]
+        func names(_ expanded: Set<String>) -> [String] { documents.outline(expanding: expanded).map(\.document.name) }
+        #expect(names([]) == ["folder", "top"])
+        #expect(names([folder.id]) == ["folder", "inner", "top"])
+        #expect(names([inner.id]) == ["folder", "top"])
+        #expect(names([folder.id, inner.id]) == ["folder", "inner", "nested", "top"])
+        #expect(documents.outline(expanding: [folder.id, inner.id]).map(\.depth) == [0, 1, 2, 0])
+    }
+
+    @Test
+    func ancestorsRunFromTheParentUpAndEndOnACycle() {
+        let folder = playlistDocument("folder", kind: "folder")
+        let inner = playlistDocument("inner", kind: "folder", parent: "folder")
+        let nested = playlistDocument("nested", kind: "manual", parent: "inner")
+        #expect([folder, inner, nested].ancestors(of: nested.id) == [inner.id, folder.id])
+        #expect([folder, inner, nested].ancestors(of: folder.id).isEmpty)
+        let first = playlistDocument("first", kind: "folder", parent: "second")
+        let second = playlistDocument("second", kind: "folder", parent: "first")
+        #expect([first, second].ancestors(of: first.id).count <= 2)
     }
 }

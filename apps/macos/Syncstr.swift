@@ -36,6 +36,7 @@ struct LibraryView: View {
     @State private var hostSetup: HostSetupRequest?
     @State private var hoveredTrack: String?
     @State private var albumScrollPosition = ScrollPosition(idType: String.self)
+    @State private var expandedFolders = Set<String>()
 
     var body: some View {
         VStack(spacing: 0) {
@@ -156,7 +157,7 @@ struct LibraryView: View {
         VStack(spacing: 0) {
             ScrollView {
                 VStack(alignment: .leading, spacing: 4) {
-                    Text("ライブラリ").font(.caption).foregroundStyle(.secondary).padding(.horizontal, 8)
+                    sidebarCaption("ライブラリ")
                     ForEach(LibraryDestination.allCases, id: \.self) { destination in
                         sidebarRow(destination.rawValue, icon: destination.icon,
                                    selected: library.destination == destination && library.selectedPlaylist == nil && !library.showingNowPlaying) {
@@ -164,6 +165,8 @@ struct LibraryView: View {
                             library.search = ""
                         }
                     }
+                    sidebarCaption("プレイリスト").padding(.top, 16)
+                    playlistOutline
                 }.padding(.horizontal, 8)
             }
             VStack(spacing: 8) {
@@ -175,15 +178,65 @@ struct LibraryView: View {
         .padding(.top, 20)
         .frame(width: 208)
         .background(Studio.carbon)
+        .task { await library.refreshPlaylists() }
+        .onChange(of: library.selectedPlaylist, initial: true) { _, id in
+            if let id { expandedFolders.formUnion(library.playlists.ancestors(of: id)) }
+        }
     }
 
-    private func sidebarRow(_ title: String, icon: String, selected: Bool = false,
+    private func sidebarCaption(_ title: String) -> some View {
+        Text(title).font(.caption).foregroundStyle(.secondary).padding(.horizontal, 8)
+    }
+
+    @ViewBuilder
+    private var playlistOutline: some View {
+        if let message = library.playlistMessage { sidebarNote(message) }
+        if library.playlists.isEmpty {
+            sidebarNote(library.refreshingPlaylists ? "プレイリストを同期中…" : "プレイリストがありません。")
+        }
+        ForEach(library.playlists.outline(expanding: expandedFolders)) { row in
+            let document = row.document
+            if document.kind == "folder" {
+                let expanded = expandedFolders.contains(document.id)
+                let toggle = { expandedFolders.formSymmetricDifference([document.id]) }
+                sidebarRow(document.name, icon: "folder", depth: row.depth, expanded: expanded, action: toggle)
+                    .help(document.name)
+                    .accessibilityValue(expanded ? "展開済み" : "折りたたみ済み")
+                    .accessibilityAction(named: Text(expanded ? "折りたたむ" : "展開する"), toggle)
+            } else {
+                sidebarRow(document.name, icon: "list", depth: row.depth,
+                           selected: library.selectedPlaylist == document.id && !library.showingNowPlaying) {
+                    library.openPlaylist(document.id)
+                    library.search = ""
+                }
+                .help(document.name)
+            }
+        }
+    }
+
+    private func sidebarNote(_ text: String) -> some View {
+        HStack(spacing: 8) {
+            Color.clear.frame(width: 20, height: 0)
+            Text(text).font(.system(size: 12)).foregroundStyle(Studio.fog)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, 8)
+    }
+
+    private func sidebarRow(_ title: String, icon: String, depth: Int = 0, expanded: Bool? = nil, selected: Bool = false,
                             action: @escaping () -> Void) -> some View {
         Button(action: action) {
             HStack(spacing: 8) {
                 MacIcon(icon)
-                Text(title)
+                Text(title).lineLimit(1)
+                if let expanded {
+                    Spacer(minLength: 0)
+                    MacIcon("chevron-left", size: 16).rotationEffect(.degrees(expanded ? -90 : 180))
+                }
             }
+                // Icon width plus gap, so a child's icon sits under its folder's label.
+                .padding(.leading, 28 * CGFloat(depth))
                 .frame(maxWidth: .infinity, minHeight: 32, alignment: .leading)
                 .padding(.horizontal, 8)
                 .background(selected ? Studio.graphite : Color.clear)
@@ -215,7 +268,7 @@ struct LibraryView: View {
                   let album = library.album(id: albumID) {
             albumDetail(album)
         } else if let playlist = openPlaylist {
-            playlistDetail(playlist)
+            playlistDetail(playlist).id(playlist.id)
         } else {
             switch library.destination {
             case .recentlyAdded, .albums, .hiddenAlbums: albums

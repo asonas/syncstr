@@ -40,3 +40,32 @@ struct PlaylistDocument: Codable, Equatable, Identifiable {
         }
     }
 }
+
+struct PlaylistOutlineRow: Identifiable {
+    let document: PlaylistDocument
+    let depth: Int
+    var id: String { document.id }
+}
+
+extension Array where Element == PlaylistDocument {
+    func outline(expanding folders: Set<String>) -> [PlaylistOutlineRow] {
+        let children = Dictionary(grouping: self, by: \.parent)
+        func rows(under parent: String?, depth: Int) -> [PlaylistOutlineRow] {
+            (children[parent] ?? []).flatMap { document in
+                [PlaylistOutlineRow(document: document, depth: depth)]
+                    + (folders.contains(document.id) ? rows(under: document.id, depth: depth + 1) : [])
+            }
+        }
+        return rows(under: nil, depth: 0)
+    }
+
+    func ancestors(of id: String) -> [String] {
+        var ancestors: [String] = []
+        var parent = first { $0.id == id }?.parent
+        while let current = parent, !ancestors.contains(current) {
+            ancestors.append(current)
+            parent = first { $0.id == current }?.parent
+        }
+        return ancestors
+    }
+}
