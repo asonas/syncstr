@@ -1846,13 +1846,12 @@ final class HostAPITests: XCTestCase {
         library.current = entry.track
         library.playing = true
         library.transfer.playbackCache.protectedURL = url
-        library.transfer.onSaved?()
-        try files.database().removeAudioPin(SavedAudioPin(track: entry.track.id, hash: entry.sha256))
-        library.refreshLocalFiles()
-        try await waitFor { !library.hasManagedCopy(entry.track) }
+        library.removeLocalCopies([entry.track])
+        try await waitFor { library.pendingLocalCopyRemovals.isEmpty && !library.hasManagedCopy(entry.track) }
         await library.inventoryTask?.value
         XCTAssertTrue(library.playing)
         XCTAssertTrue(FileManager.default.fileExists(atPath: url.path))
+        XCTAssertFalse(try files.database().hasAudioPin(entry))
     }
 
     func testPlaybackOfASavedFileStopsWhenTheFileGoes() async throws {

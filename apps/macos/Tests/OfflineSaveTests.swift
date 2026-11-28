@@ -811,6 +811,8 @@ final class OfflineSaveTests: XCTestCase {
             try await transfer.removeAllSavedAudio()
             XCTFail("The removal should report the database error")
         } catch {}
+        // The removal reached the records: the file went before the transaction.
+        XCTAssertFalse(FileManager.default.fileExists(atPath: store.fileURL(entries[0]).path))
         // The pins go in the same transaction as the records, so they stay together for the next removal.
         XCTAssertEqual(try store.database().savedAudioPinList().map(\.hash), [entries[0].sha256])
         XCTAssertEqual(rowCount(db, "SELECT COUNT(*) FROM verified_audio_files"), 1)
