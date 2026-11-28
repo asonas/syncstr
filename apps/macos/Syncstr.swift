@@ -212,10 +212,11 @@ struct LibraryView: View {
         }
     }
 
+    private static let gridColumns = [GridItem(.adaptive(minimum: 180), spacing: 20, alignment: .top)]
+
     private var albums: some View {
         ScrollView {
-            LazyVGrid(columns: [GridItem(.adaptive(minimum: 180), spacing: 20, alignment: .top)],
-                      alignment: .leading, spacing: 32) {
+            LazyVGrid(columns: Self.gridColumns, alignment: .leading, spacing: 32) {
                 if library.destination == .recentlyAdded {
                     ForEach(library.visibleRecentlyAddedSections) { section in
                         Section {
@@ -239,19 +240,9 @@ struct LibraryView: View {
 
     private func albumGridItems(_ albums: [Album]) -> some View {
         ForEach(albums) { album in
-            Button {
-                openAlbum(album.id)
-            } label: {
-                gridCard(title: album.title, subtitle: album.artist) { Artwork(url: artworkURL(album.coverArt)) }
-            }
-            .buttonStyle(.plain)
-            .id(album.id)
-            .help("\(album.title)\n\(album.artist)")
-            .accessibilityLabel("\(album.title)、\(album.artist)")
-            .accessibilityAction(named: Text("アルバムを開く")) { openAlbum(album.id) }
-            .contextMenu {
-                Button("アルバムを開く") { openAlbum(album.id) }
-            }
+            gridCard(title: album.title, subtitle: album.artist, openLabel: "アルバムを開く",
+                     open: { openAlbum(album.id) }) { Artwork(url: artworkURL(album.coverArt)) }
+                .id(album.id)
         }
     }
 
@@ -260,17 +251,25 @@ struct LibraryView: View {
             .accessibilityAddTraits(.isHeader)
     }
 
-    private func gridCard<Cover: View>(title: String, subtitle: String,
+    private func gridCard<Cover: View>(title: String, subtitle: String, openLabel: String,
+                                       open: @escaping () -> Void,
                                        @ViewBuilder cover: () -> Cover) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
-            cover()
-            VStack(alignment: .leading, spacing: 4) {
-                Text(title).font(.system(size: 14)).lineLimit(2)
-                Text(subtitle).font(.system(size: 12)).foregroundStyle(Studio.fog).lineLimit(1)
+        Button(action: open) {
+            VStack(alignment: .leading, spacing: 8) {
+                cover()
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(title).font(.system(size: 14)).lineLimit(2)
+                    Text(subtitle).font(.system(size: 12)).foregroundStyle(Studio.fog).lineLimit(1)
+                }
+                .frame(maxWidth: .infinity, minHeight: 60, alignment: .topLeading)
             }
-            .frame(maxWidth: .infinity, minHeight: 60, alignment: .topLeading)
+            .contentShape(Rectangle())
         }
-        .contentShape(Rectangle())
+        .buttonStyle(.plain)
+        .help("\(title)\n\(subtitle)")
+        .accessibilityLabel("\(title)、\(subtitle)")
+        .accessibilityAction(named: Text(openLabel), open)
+        .contextMenu { Button(openLabel, action: open) }
     }
 
     private var showingAlbumGrid: Bool {
