@@ -461,7 +461,7 @@ struct LibraryView: View {
                 LazyVStack(spacing: 0, pinnedViews: [.sectionHeaders]) {
                     Section {
                         ForEach(Array(tracks.enumerated()), id: \.element.id) { index, track in
-                            trackRow(track, index: index, tracks: tracks, showArtist: wide,
+                            trackRow(track, index: index, play: { library.play(track, in: tracks) }, showArtist: wide,
                                      showAlbum: wide, dense: true, striped: index.isMultiple(of: 2))
                         }
                     } header: {
@@ -490,18 +490,20 @@ struct LibraryView: View {
 
     private func trackRowContents(_ tracks: [Track], showArtist: Bool, preservingQueue: Bool = false) -> some View {
         ForEach(Array(tracks.enumerated()), id: \.element.id) { index, track in
-            trackRow(track, index: index, tracks: preservingQueue ? nil : tracks, showArtist: showArtist)
+            trackRow(track, index: index, play: { library.play(track, in: preservingQueue ? nil : tracks) },
+                     showArtist: showArtist)
                 .overlay(alignment: .bottom) { rule }
         }
     }
 
-    private func trackRow(_ track: Track, index: Int, tracks: [Track]?, showArtist: Bool,
-                          showAlbum: Bool = false, dense: Bool = false, striped: Bool = false) -> some View {
+    private func trackRow(_ track: Track, index: Int, play: @escaping () -> Void,
+                          showArtist: Bool, showAlbum: Bool = false, dense: Bool = false,
+                          striped: Bool = false) -> some View {
         let selected = library.current?.id == track.id
         let accentSelection = selected && !dense
         let secondary = accentSelection ? Color.white : Studio.fog
         return HStack(spacing: 16) {
-            Button { library.play(track, in: tracks) } label: {
+            Button(action: play) {
                 HStack(spacing: 16) {
                     if !dense {
                         Group {
@@ -538,7 +540,7 @@ struct LibraryView: View {
                 Text("保存済み").font(.caption).foregroundStyle(.secondary)
             }
             Menu {
-                Button("再生") { library.play(track, in: tracks) }
+                Button("再生", action: play)
                 if library.showsOfflineSaveControls {
                     if library.isLocalCopyRemovalPending(track) {
                         Text("保存の解除待ち")
