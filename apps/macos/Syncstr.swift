@@ -221,13 +221,9 @@ struct LibraryView: View {
                         Section {
                             albumGridItems(section.albums)
                         } header: {
-                            Group {
-                                if let month = section.month {
-                                    Text(month, format: .dateTime.year().month(.wide))
-                                } else { Text("追加日不明") }
-                            }
-                            .font(.headline).frame(maxWidth: .infinity, alignment: .leading)
-                            .accessibilityAddTraits(.isHeader)
+                            if let month = section.month {
+                                gridHeader(Text(month, format: .dateTime.year().month(.wide)))
+                            } else { gridHeader(Text("追加日不明")) }
                         }
                     }
                 } else { albumGridItems(library.visibleAlbums) }
@@ -246,15 +242,7 @@ struct LibraryView: View {
             Button {
                 openAlbum(album.id)
             } label: {
-                VStack(alignment: .leading, spacing: 8) {
-                    Artwork(url: artworkURL(album.coverArt))
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text(album.title).font(.system(size: 14)).lineLimit(2)
-                        Text(album.artist).font(.system(size: 12)).foregroundStyle(Studio.fog).lineLimit(1)
-                    }
-                    .frame(maxWidth: .infinity, minHeight: 60, alignment: .topLeading)
-                }
-                .contentShape(Rectangle())
+                gridCard(title: album.title, subtitle: album.artist) { Artwork(url: artworkURL(album.coverArt)) }
             }
             .buttonStyle(.plain)
             .id(album.id)
@@ -265,6 +253,24 @@ struct LibraryView: View {
                 Button("アルバムを開く") { openAlbum(album.id) }
             }
         }
+    }
+
+    private func gridHeader(_ title: Text) -> some View {
+        title.font(.headline).frame(maxWidth: .infinity, alignment: .leading)
+            .accessibilityAddTraits(.isHeader)
+    }
+
+    private func gridCard<Cover: View>(title: String, subtitle: String,
+                                       @ViewBuilder cover: () -> Cover) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            cover()
+            VStack(alignment: .leading, spacing: 4) {
+                Text(title).font(.system(size: 14)).lineLimit(2)
+                Text(subtitle).font(.system(size: 12)).foregroundStyle(Studio.fog).lineLimit(1)
+            }
+            .frame(maxWidth: .infinity, minHeight: 60, alignment: .topLeading)
+        }
+        .contentShape(Rectangle())
     }
 
     private var showingAlbumGrid: Bool {
@@ -302,6 +308,29 @@ struct LibraryView: View {
     }
 
     private func albumDetail(_ album: Album) -> some View {
+        detailPage(title: album.title, tracks: album.tracks, scope: "album:" + album.id,
+                   shuffleLabel: "アルバムをシャッフル再生") {
+            Artwork(url: artworkURL(album.coverArt))
+        } details: {
+            if album.detailArtist == "V.A." {
+                Text("V.A.").font(.system(size: 20)).foregroundStyle(Studio.fog)
+            } else {
+                Button { showArtist(album.artist) } label: {
+                    Text(album.detailArtist ?? album.artist).font(.system(size: 20)).foregroundStyle(Studio.signal)
+                }.buttonStyle(.plain)
+            }
+            Text("\(album.tracks.count)曲").font(.system(size: 12)).foregroundStyle(Studio.fog)
+        } rows: { wide in
+            trackRows(album.tracks, showArtist: wide)
+        }
+    }
+
+    private func detailPage<Cover: View, Details: View, Rows: View>(
+        title: String, tracks: [Track], scope: String, shuffleLabel: String,
+        @ViewBuilder cover: @escaping () -> Cover,
+        @ViewBuilder details: @escaping () -> Details,
+        @ViewBuilder rows: @escaping (_ wide: Bool) -> Rows
+    ) -> some View {
         GeometryReader { geometry in
             ScrollView {
                 VStack(alignment: .leading, spacing: 20) {
@@ -309,39 +338,31 @@ struct LibraryView: View {
                     let layout = wide ? AnyLayout(HStackLayout(alignment: .top, spacing: 32))
                                       : AnyLayout(VStackLayout(alignment: .leading, spacing: 20))
                     layout {
-                        Artwork(url: artworkURL(album.coverArt)).frame(width: wide ? 272 : 200, height: wide ? 272 : 200)
+                        cover().frame(width: wide ? 272 : 200, height: wide ? 272 : 200)
                         VStack(alignment: .leading, spacing: 4) {
-                            Text(album.title).font(.system(size: 28, weight: .semibold))
+                            Text(title).font(.system(size: 28, weight: .semibold))
                                 .textSelection(.enabled)
                                 .padding(.top, wide ? 48 : 0)
                                 .fixedSize(horizontal: false, vertical: true).accessibilityAddTraits(.isHeader)
-                            if album.detailArtist == "V.A." {
-                                Text("V.A.").font(.system(size: 20)).foregroundStyle(Studio.fog)
-                            } else {
-                                Button { showArtist(album.artist) } label: {
-                                    Text(album.detailArtist ?? album.artist).font(.system(size: 20)).foregroundStyle(Studio.signal)
-                                }.buttonStyle(.plain)
-                            }
-                            Text("\(album.tracks.count)曲").font(.system(size: 12)).foregroundStyle(Studio.fog)
+                            details()
                             Spacer(minLength: 20)
                             HStack(alignment: .center, spacing: 16) {
-                                Button { library.startAlbum(album.tracks, shuffled: true) } label: {
+                                Button { library.startAlbum(tracks, shuffled: true) } label: {
                                     Image(systemName: "shuffle").frame(width: 36, height: 36)
                                 }
                                 .buttonStyle(.plain).foregroundStyle(AppearanceColors.primary)
                                 // The 14-point symbol sits 10 points inside its 36-point target, so pull the target out to put the glyph under the title's leading edge.
                                 .padding(.leading, -10)
-                                .accessibilityLabel("アルバムをシャッフル再生")
-                                playButton(album.tracks)
+                                .accessibilityLabel(shuffleLabel)
+                                playButton(tracks)
                                 if library.showsOfflineSaveControls {
-                                    OfflineSaveControls(library: library, tracks: album.tracks,
-                                                        scope: "album:" + album.id, iconOnly: true)
+                                    OfflineSaveControls(library: library, tracks: tracks, scope: scope, iconOnly: true)
                                 }
                             }
                         }.frame(minHeight: wide ? 272 : nil, alignment: .topLeading)
                         if wide { Spacer(minLength: 0) }
                     }
-                    trackRows(album.tracks, showArtist: wide)
+                    rows(wide)
                 }.padding(32)
             }.safeAreaPadding(.bottom, 120)
         }
