@@ -623,22 +623,45 @@ final class OfflineSaveTests: XCTestCase {
         XCTAssertTrue(FileManager.default.fileExists(atPath: store.fileURL(entries[0]).path))
     }
 
-    func testCancelledFirstSaveLeavesNoFileOutsideTheSavedTotal() async throws {
-        let (store, entries) = try fixture()
-        // The file is already in place, as after a download whose save is cancelled before it pins.
-        try Data(repeating: 1, count: 1024).write(to: store.fileURL(entries[0]))
-        try store.database().recordReceived(entries[0])
+    func testSaveStoppedRightAfterItsFileMovesStillPinsTheFile() async throws {
+        var (store, entries) = try fixture()
+        let placed = DispatchSemaphore(value: 0)
+        let hold = DispatchSemaphore(value: 0)
+        // Released on every exit, so a failure cannot leave the shared catalog queue blocked for later tests.
+        defer { hold.signal() }
+        store.afterPlacingFile = { _ in placed.signal(); hold.wait() }
         let transfer = try await hostTransfer(store)
-        let source = try XCTUnwrap(transfer.makeLibrarySource())
-        defer { source.stop() }
-        let save = Task {
-            withUnsafeCurrentTask { $0?.cancel() }
-            try await source.download(entries[0], cache: nil, diagnostic: nil) { _ in }
-        }
-        _ = await save.result
-        await transfer.refreshSavedAudio()
+        try cache(entries[0], transfer: transfer, number: 1)
+        let library = try XCTUnwrap(transfer.hostConnection?.library)
+        transfer.saveRequests = [OfflineSaveRequest(id: "track:track-1", library: library, entries: [entries[0]])]
+        transfer.resumeSaves(explicit: "track:track-1")
+        let worker = transfer.saveWorker
+        let moved = await Task.detached { placed.wait(timeout: .now() + 15) }.value
+        guard moved == .success else { return XCTFail("The cached file was not placed") }
+        // Stopping the worker cancels it between the move and the records.
+        transfer.stopSaveWorker()
+        hold.signal()
+        await worker?.value
+        XCTAssertTrue(store.hasFile(entries[0]))
         XCTAssertEqual(try store.database().savedAudioPinList(), [SavedAudioPin(track: entries[0].track.id, hash: entries[0].sha256)])
-        XCTAssertEqual(transfer.savedAudio.bytes, 1024)
+    }
+
+    func testSavedFileWhosePinCannotBeWrittenIsRemovedAgain() async throws {
+        let (store, entries) = try fixture()
+        let transfer = try await hostTransfer(store)
+        try cache(entries[0], transfer: transfer, number: 1)
+        var db: OpaquePointer?
+        XCTAssertEqual(sqlite3_open(store.root.appendingPathComponent("catalog.sqlite").path, &db), SQLITE_OK)
+        defer { sqlite3_close(db) }
+        let sql = "CREATE TRIGGER reject_pin BEFORE INSERT ON shared_audio_saves BEGIN SELECT RAISE(FAIL, 'fixture'); END"
+        XCTAssertEqual(sqlite3_exec(db, sql, nil, nil, nil), SQLITE_OK)
+        let library = try XCTUnwrap(transfer.hostConnection?.library)
+        transfer.saveRequests = [OfflineSaveRequest(id: "track:track-1", library: library, entries: [entries[0]])]
+        transfer.resumeSaves(explicit: "track:track-1")
+        await transfer.saveWorker?.value
+        XCTAssertFalse(FileManager.default.fileExists(atPath: store.fileURL(entries[0]).path))
+        XCTAssertTrue(try store.database().savedAudioPinList().isEmpty)
+        XCTAssertEqual(transfer.saveRequests.map(\.state), [.failed])
     }
 
     func testCancelledSaveReleasesTheCacheFileItWasReading() async throws {

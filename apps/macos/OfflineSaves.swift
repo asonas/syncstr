@@ -360,12 +360,15 @@ extension LocalTransfer {
                                 entry = current
                                 saveRequests[index].entries[position] = current
                             }
-                            let saved = try await CatalogStorage.shared.perform { [files = store, entry, host = hostConnection != nil] in
-                                try files.verifiedFile(entry, host: host, inventory: host ? files.database() : nil, requireHash: true) != nil
+                            let saved = try await CatalogStorage.shared.commitSavedFile { [files = store, entry, host = hostConnection != nil] in
+                                let database = host ? try files.database() : nil
+                                guard try files.verifiedFile(entry, host: host, inventory: database, requireHash: true) != nil else { return false }
+                                try database?.saveAudioPin(entry)
+                                return true
                             }
+                            try Task.checkCancellation()
                             guard saveGeneration == token else { return }
                             if saved {
-                                if hostConnection != nil { try store.database().saveAudioPin(entry) }
                                 saveRequests[index].completed.insert(entry.trackSaveIdentity)
                                 try persistSaves(saveRequests)
                                 if hostConnection != nil { onSaved?() }
@@ -409,7 +412,6 @@ extension LocalTransfer {
                             }
                             try Task.checkCancellation()
                             guard saveGeneration == token else { return }
-                            if hostConnection != nil { try store.database().saveAudioPin(entry) }
                             saveRequests[index].completed.insert(entry.trackSaveIdentity)
                             try persistSaves(saveRequests)
                             onSaved?()
@@ -440,7 +442,7 @@ extension LocalTransfer {
                     try persistSaves(saveRequests)
                 }
             } catch is CancellationError {
-                // Verified files already committed to storage remain protected.
+                // A file placed in the saved folder already has its pin, so nothing is left to protect.
             } catch {
                 snapshotReadFailed = processableLibrary == nil
                 if saveGeneration == token { status = "保存待ちを更新できませんでした。\(error.localizedDescription)" }
@@ -449,8 +451,8 @@ extension LocalTransfer {
     }
 
     private func protectCachedFile(_ url: URL, entry: LocalEntry) async throws -> Bool {
-        try await CatalogStorage.shared.perform { [store, host = hostConnection != nil] in
-            try store.importCachedFile(url, entry: entry, host: host)
+        try await CatalogStorage.shared.commitSavedFile { [store, host = hostConnection != nil] in
+            try store.importCachedFile(url, entry: entry, host: host, pin: host)
         }
     }
 }

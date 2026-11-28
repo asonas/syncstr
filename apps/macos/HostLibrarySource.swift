@@ -6,7 +6,9 @@ final class HostAudioFiles {
     private var waiters: [String: [UUID: CheckedContinuation<Void, Error>]] = [:]
     private var verified: [String: URL] = [:]
 
-    func download(_ entry: LocalEntry, into store: LocalMusicStore, recordReceipt: Bool, client: HostAPIClient,
+    /// With `save`, the file goes into the saved folder together with its pin; otherwise it goes into `store`
+    /// (the playback cache) with no records.
+    func download(_ entry: LocalEntry, into store: LocalMusicStore, save: Bool, client: HostAPIClient,
                   diagnostic: PlaybackDiagnosticContext?) async throws {
         try Task.checkCancellation()
         let hash = entry.sha256
@@ -32,16 +34,20 @@ final class HostAudioFiles {
         }
         let previous = verified[hash]
         let destination = store.fileURL(entry)
-        if let existing = try await CatalogStorage.shared.perform({
-            if let url = try store.verifiedFile(entry, host: recordReceipt) { return url }
+        let reuse: @Sendable () throws -> URL? = {
+            if let url = try store.verifiedFile(entry, host: save) {
+                if save { try store.database().saveAudioPin(entry) }
+                return url
+            }
             guard let previous, FileManager.default.fileExists(atPath: previous.path) else { return nil as URL? }
             let copy = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
             defer { try? FileManager.default.removeItem(at: copy) }
             try FileManager.default.copyItem(at: previous, to: copy)
-            do { try store.importFile(copy, entry: entry, recordReceipt: recordReceipt, host: true, diagnostic: diagnostic) }
+            do { try store.importFile(copy, entry: entry, recordReceipt: save, host: true, pin: save, diagnostic: diagnostic) }
             catch LocalMusicError.invalidData { return nil }
             return destination
-        }) {
+        }
+        if let existing = try await save ? CatalogStorage.shared.commitSavedFile(reuse) : CatalogStorage.shared.perform(reuse) {
             verified[hash] = existing
             return
         }
@@ -50,9 +56,11 @@ final class HostAudioFiles {
             let temporary = try await client.audio(sha256: hash)
             defer { try? FileManager.default.removeItem(at: temporary) }
             do {
-                try await CatalogStorage.shared.perform {
-                    try store.importFile(temporary, entry: entry, recordReceipt: recordReceipt, host: true, diagnostic: diagnostic)
+                let place: @Sendable () throws -> Void = {
+                    try store.importFile(temporary, entry: entry, recordReceipt: save, host: true, pin: save, diagnostic: diagnostic)
                 }
+                if save { try await CatalogStorage.shared.commitSavedFile(place) }
+                else { try await CatalogStorage.shared.perform(place) }
                 verified[hash] = destination
                 return
             } catch LocalMusicError.invalidData where attempt == 0 { continue }
@@ -94,21 +102,7 @@ final class HostLibrarySource: LibrarySource {
         progress(0)
         let id = UUID()
         let task = Task { [store] in
-            do {
-                try await files.download(entry, into: cache ?? store, recordReceipt: cache == nil, client: client, diagnostic: diagnostic)
-            } catch {
-                // A cancellation can land after the file is in place. Pin it so the saved size and removal
-                // still account for it; removing everything waits for this task to end. This runs detached
-                // because hashing and opening the database both stop in a cancelled task.
-                if cache == nil {
-                    await Task.detached {
-                        guard (try? store.verifiedFile(entry, host: true)) != nil else { return }
-                        try? store.database().saveAudioPin(entry)
-                    }.value
-                }
-                throw error
-            }
-            if cache == nil { try store.database().saveAudioPin(entry) }
+            try await files.download(entry, into: cache ?? store, save: cache == nil, client: client, diagnostic: diagnostic)
         }
         downloads[id] = task
         defer { downloads[id] = nil }
