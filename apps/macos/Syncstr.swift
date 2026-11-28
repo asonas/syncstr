@@ -328,7 +328,9 @@ struct LibraryView: View {
                                 Button { library.startAlbum(album.tracks, shuffled: true) } label: {
                                     Image(systemName: "shuffle").frame(width: 36, height: 36)
                                 }
-                                .buttonStyle(.plain).foregroundStyle(Studio.signal)
+                                .buttonStyle(.plain).foregroundStyle(AppearanceColors.primary)
+                                // The 14-point symbol sits 10 points inside its 36-point target, so pull the target out to put the glyph under the title's leading edge.
+                                .padding(.leading, -10)
                                 .accessibilityLabel("アルバムをシャッフル再生")
                                 playButton(album.tracks)
                                 if library.showsOfflineSaveControls {
