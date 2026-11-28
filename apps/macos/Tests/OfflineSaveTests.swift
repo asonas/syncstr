@@ -646,6 +646,32 @@ final class OfflineSaveTests: XCTestCase {
         XCTAssertEqual(try store.database().savedAudioPinList(), [SavedAudioPin(track: entries[0].track.id, hash: entries[0].sha256)])
     }
 
+    func testRemovingASavedCopyWaitsForAWorkerStoppedWhilePlacingIt() async throws {
+        var (store, entries) = try fixture()
+        let placed = DispatchSemaphore(value: 0)
+        let hold = DispatchSemaphore(value: 0)
+        defer { hold.signal() }
+        store.afterPlacingFile = { _ in placed.signal(); hold.wait() }
+        let transfer = try await hostTransfer(store)
+        try cache(entries[0], transfer: transfer, number: 1)
+        let library = try XCTUnwrap(transfer.hostConnection?.library)
+        transfer.saveRequests = [OfflineSaveRequest(id: "track:track-1", library: library, entries: [entries[0]])]
+        transfer.resumeSaves(explicit: "track:track-1")
+        let moved = await Task.detached { placed.wait(timeout: .now() + 15) }.value
+        guard moved == .success else { return XCTFail("The cached file was not placed") }
+        // Going to the background stops the worker while it is placing the file. Removing one saved copy runs on
+        // the main actor, so it waits until the stopped worker can no longer bring the file and its pin back.
+        transfer.setSavesBackgrounded(true)
+        XCTAssertNil(transfer.saveWorker)
+        XCTAssertFalse(transfer.readyForLocalCopyRemoval)
+        hold.signal()
+        try await waitFor { transfer.readyForLocalCopyRemoval }
+        try transfer.cancelSaves(containing: [entries[0].track])
+        try transfer.removeSavedCopy(entries[0])
+        XCTAssertFalse(FileManager.default.fileExists(atPath: store.fileURL(entries[0]).path))
+        XCTAssertTrue(try store.database().savedAudioPinList().isEmpty)
+    }
+
     func testSavedFileWhosePinCannotBeWrittenIsRemovedAgain() async throws {
         let (store, entries) = try fixture()
         let transfer = try await hostTransfer(store)
@@ -938,7 +964,7 @@ final class OfflineSaveTests: XCTestCase {
 
     private func settled(_ transfer: LocalTransfer) async throws {
         for _ in 0..<400 {
-            if transfer.saveWorker == nil { return }
+            if transfer.saveWorker == nil && transfer.stoppingSaveWorkers.isEmpty { return }
             try await Task.sleep(for: .milliseconds(25))
         }
         XCTFail("Save worker did not settle")

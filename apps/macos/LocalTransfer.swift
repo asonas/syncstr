@@ -67,8 +67,13 @@ final class LocalTransfer: ObservableObject {
     var saveWorker: Task<Void, Never>? {
         didSet { updateLocalCopyRemovalReadiness() }
     }
+    /// Workers that were stopped but have not ended yet. A stopped worker can still finish placing a file and
+    /// writing its pin, so removals wait for these as well as for `saveWorker`.
+    var stoppingSaveWorkers: [UUID: Task<Void, Never>] = [:] {
+        didSet { updateLocalCopyRemovalReadiness() }
+    }
     private func updateLocalCopyRemovalReadiness() {
-        let ready = !busy && saveWorker == nil
+        let ready = !busy && saveWorker == nil && stoppingSaveWorkers.isEmpty
         if readyForLocalCopyRemoval != ready { readyForLocalCopyRemoval = ready }
     }
     var saveRetry: Task<Void, Never>?
@@ -605,6 +610,7 @@ final class LocalTransfer: ObservableObject {
         stopHostPlayback()
         cancel()
         await worker?.value
+        await waitForStoppedSaveWorkers()
         await retry?.value
         _ = await refresh?.result
         await artwork?.waitForArtwork()

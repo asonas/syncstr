@@ -256,12 +256,25 @@ extension LocalTransfer {
 
     func stopSaveWorker() {
         saveGeneration = UUID()
-        saveWorker?.cancel()
+        if let worker = saveWorker {
+            worker.cancel()
+            let id = UUID()
+            stoppingSaveWorkers[id] = worker
+            Task { [weak self] in
+                await worker.value
+                self?.stoppingSaveWorkers[id] = nil
+            }
+        }
         saveWorker = nil
         saveRetry?.cancel()
         saveRetry = nil
         saveSource?.stop()
         saveSource = nil
+    }
+
+    /// Waits until every stopped worker has ended, including ones stopped before this call.
+    func waitForStoppedSaveWorkers() async {
+        while let worker = stoppingSaveWorkers.values.first { await worker.value; await Task.yield() }
     }
 
     func setSavesBackgrounded(_ backgrounded: Bool) {
@@ -567,10 +580,10 @@ extension LocalTransfer {
 
     private func discardAllSaves(beforeRemoving: @MainActor () -> Void) async throws {
         cancelSavePreparations()
-        let worker = saveWorker
         stopSaveWorker()
-        // Waiting for the worker itself, not a flag: a download finishing now pins its file before the removal.
-        await worker?.value
+        // Waiting for the workers themselves, not a flag: a worker stopped earlier, for example when the app went
+        // to the background, may still be placing a file with its pin.
+        await waitForStoppedSaveWorkers()
         beforeRemoving()
         let files = store
         let protected = playbackCache.protectedPaths
