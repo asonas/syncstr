@@ -116,6 +116,8 @@ final class LocalTransfer: ObservableObject {
     var unrepairableIDs: Set<String> = []
     /// Reached when a refresh has started and not yet decided whether to send the ETag.
     var onHostRefreshPreparing: (() -> Void)?
+    /// Reached when a save asked for during delete-all starts waiting for the removal.
+    var onSaveWaitingForRemoval: (() -> Void)?
     @Published var savedAudio = SavedAudioSummary()
     var retainsHostCatalog: Bool { retainedHostLibrary != nil }
     var usesHostCatalog: Bool { hostConnection != nil || retainsHostCatalog }

@@ -234,10 +234,12 @@ final class OfflineSaveTests: XCTestCase {
         let transfer = try await hostTransfer(store)
         let latch = Latch()
         transfer.saveWorker = Task { await latch.wait() }
+        var waiting = false
+        transfer.onSaveWaitingForRemoval = { waiting = true }
         let removal = Task { try await transfer.removeAllSavedAudio() }
         try await waitFor { transfer.saveWorker == nil }
         let save = Task { await transfer.requestSave([entries[0].track], scope: "track:track-1") }
-        try await Task.sleep(for: .milliseconds(100))
+        try await waitFor { waiting }
         XCTAssertTrue(transfer.saveRequests.isEmpty, "The save waits until the removal ends")
         latch.open()
         try await removal.value
@@ -252,10 +254,13 @@ final class OfflineSaveTests: XCTestCase {
         transfer.saveRequests = [OfflineSaveRequest(id: "album:a", library: library, entries: [entries[0], entries[1]], state: .waiting)]
         let latch = Latch()
         transfer.saveWorker = Task { await latch.wait() }
+        var waiting = false
+        transfer.onSaveWaitingForRemoval = { waiting = true }
         let removal = Task { try await transfer.removeAllSavedAudio() }
         try await waitFor { transfer.saveWorker == nil }
         let save = Task { await transfer.requestSave([entries[0].track], scope: "album:a") }
-        try await Task.sleep(for: .milliseconds(100))
+        // The save reads the earlier request only after the removal, so it must be waiting before the removal ends.
+        try await waitFor { waiting }
         latch.open()
         try await removal.value
         await save.value

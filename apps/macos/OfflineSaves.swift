@@ -137,6 +137,7 @@ extension LocalTransfer {
             // A save asked for while everything is being removed is queued after the removal,
             // and reads the earlier request only once the removal has emptied it.
             if let removal = removingAllSaves {
+                onSaveWaitingForRemoval?()
                 _ = await removal.result
                 try Task.checkCancellation()
                 guard preparingSaves[scope]?.token == token else { return }
