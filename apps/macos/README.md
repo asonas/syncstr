@@ -34,7 +34,9 @@ A per-user lock prevents concurrent launches through the script. If an abnormal 
 ## Playback
 
 The library opens on albums. Use the sidebar to switch between Recently Added,
-albums, artists, and tracks, or to refresh the library. Recently Added displays
+albums, artists, tracks, and hidden albums, or to refresh the library. The
+sidebar also lists the host's playlists in their folders; click a folder to
+expand it and a playlist to open it. Recently Added displays
 visible albums by their newest member track's shared addition time, newest first.
 Albums are grouped by calendar month. Undated legacy albums appear in an unknown-
 date section after dated additions, in stable album-ID order. Missing album
