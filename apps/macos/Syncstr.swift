@@ -808,9 +808,8 @@ private struct MacIcon: View {
     }
 }
 
-private struct Artwork: View {
+private struct ArtworkFill: View {
     let url: URL?
-    @Environment(\.displayScale) private var displayScale
 
     var body: some View {
         GeometryReader { geometry in
@@ -824,15 +823,29 @@ private struct Artwork: View {
                 }
             }
         }
-        .aspectRatio(1, contentMode: .fit)
-        .clipped()
-        .clipShape(RoundedRectangle(cornerRadius: 4))
-        .overlay {
-            RoundedRectangle(cornerRadius: 4)
-                .strokeBorder(AppearanceColors.separator, lineWidth: 1 / displayScale)
-        }
-        .accessibilityHidden(true)
     }
+}
+
+private struct ArtworkChrome: ViewModifier {
+    @Environment(\.displayScale) private var displayScale
+
+    func body(content: Content) -> some View {
+        content
+            .aspectRatio(1, contentMode: .fit)
+            .clipped()
+            .clipShape(RoundedRectangle(cornerRadius: 4))
+            .overlay {
+                RoundedRectangle(cornerRadius: 4)
+                    .strokeBorder(AppearanceColors.separator, lineWidth: 1 / displayScale)
+            }
+            .accessibilityHidden(true)
+    }
+}
+
+private struct Artwork: View {
+    let url: URL?
+
+    var body: some View { ArtworkFill(url: url).modifier(ArtworkChrome()) }
 }
 
 @main
