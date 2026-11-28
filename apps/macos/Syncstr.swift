@@ -970,6 +970,7 @@ private struct ArtworkFill: View {
             MusicImage(url: url) { image in
                 image.resizable().scaledToFill()
                     .frame(width: geometry.size.width, height: geometry.size.height)
+                    .clipped()
             } placeholder: {
                 ZStack {
                     Studio.carbon
