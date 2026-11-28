@@ -121,7 +121,18 @@ struct LibraryView: View {
                 library.selectedAlbum = nil
             })
         }
+        if !library.playlistPath.isEmpty {
+            return ("プレイリストへ戻る", {
+                library.search = ""
+                library.playlistPath.removeLast()
+            })
+        }
         return nil
+    }
+
+    private var searchPlaceholder: String {
+        guard library.destination == .playlists else { return "\(library.destination.rawValue)を検索" }
+        return openPlaylist == nil ? "プレイリストを検索" : "曲を検索"
     }
 
     private var contentHeader: some View {
@@ -139,7 +150,7 @@ struct LibraryView: View {
                 if showingAlbumGrid {
                     if library.destination != .recentlyAdded { albumSortMenu }
                 }
-                LibrarySearchField(text: $library.search, placeholder: "\(library.destination.rawValue)を検索")
+                LibrarySearchField(text: $library.search, placeholder: searchPlaceholder)
                     .frame(minWidth: 120, idealWidth: 240, maxWidth: 240)
                     .layoutPriority(-1)
             }
@@ -186,7 +197,7 @@ struct LibraryView: View {
     @ViewBuilder
     private var content: some View {
         VStack(spacing: 0) {
-            if library.destination != .playlists || library.showingNowPlaying { contentHeader }
+            contentHeader
             ZStack {
                 libraryContent
                     .opacity(library.showingNowPlaying ? 0 : 1)
@@ -207,7 +218,7 @@ struct LibraryView: View {
             case .recentlyAdded, .albums, .hiddenAlbums: albums
             case .artists: artists
             case .songs: songs
-            case .playlists: NavigationStack { PlaylistBrowser(library: library) }
+            case .playlists: playlistBrowser
             }
         }
     }
@@ -306,6 +317,158 @@ struct LibraryView: View {
         .accessibilityLabel("並び替え")
     }
 
+    private static let playlistSections: [(kind: String, title: String)] = [
+        ("folder", "フォルダ"), ("snapshot", "スマートプレイリスト"), ("manual", "プレイリスト")
+    ]
+
+    private var openPlaylist: PlaylistDocument? {
+        library.playlistPath.last.flatMap { id in library.playlists.first { $0.id == id && $0.kind != "folder" } }
+    }
+
+    private var playlistBrowser: some View {
+        ZStack {
+            if let playlist = openPlaylist { playlistDetail(playlist) } else { playlistGrid }
+        }
+        .task { await library.refreshPlaylists() }
+    }
+
+    private func pushPlaylist(_ id: String) {
+        library.search = ""
+        library.playlistPath.append(id)
+    }
+
+    private var playlistGrid: some View {
+        let siblings = library.playlists.filter { $0.parent == library.playlistPath.last }
+        let visible = library.search.isEmpty ? siblings : siblings.filter { $0.name.localizedStandardContains(library.search) }
+        let sections = Self.playlistSections.compactMap { section -> (title: String, documents: [PlaylistDocument])? in
+            let documents = visible.filter { $0.kind == section.kind }
+            return documents.isEmpty ? nil : (section.title, documents)
+        }
+        let titled = Self.playlistSections.filter { section in siblings.contains { $0.kind == section.kind } }.count > 1
+        let folderSizes = Dictionary(library.playlists.compactMap(\.parent).map { ($0, 1) }, uniquingKeysWith: +)
+        return ScrollView {
+            if let message = library.playlistMessage {
+                Text(message).foregroundStyle(Studio.fog).frame(maxWidth: .infinity, alignment: .leading)
+                    .fixedSize(horizontal: false, vertical: true).padding([.horizontal, .top], 32)
+            }
+            LazyVGrid(columns: Self.gridColumns, alignment: .leading, spacing: 32) {
+                ForEach(sections, id: \.title) { section in
+                    Section {
+                        ForEach(section.documents) { playlistCard($0, folderSize: folderSizes[$0.id, default: 0]) }
+                    } header: {
+                        if titled { gridHeader(Text(section.title)) }
+                    }
+                }
+            }.padding(32)
+            if sections.isEmpty {
+                Text(playlistEmptyText).foregroundStyle(Studio.fog).padding(32)
+            }
+        }
+        .safeAreaPadding(.bottom, 120)
+    }
+
+    private var playlistEmptyText: String {
+        if !library.search.isEmpty { return "一致するプレイリストがありません。" }
+        return library.refreshingPlaylists ? "プレイリストを同期中…" : "プレイリストがありません。"
+    }
+
+    private func playlistCard(_ document: PlaylistDocument, folderSize: Int) -> some View {
+        let folder = document.kind == "folder"
+        let size = folder ? "\(folderSize)プレイリスト" : "\(document.items.count)曲"
+        let subtitle = library.playlistConflicts.contains(document.id) ? size + "・競合があります" : size
+        return gridCard(title: document.name, subtitle: subtitle, openLabel: folder ? "フォルダを開く" : "プレイリストを開く",
+                        open: { pushPlaylist(document.id) }) {
+            if folder {
+                Studio.control.overlay { MacIcon("folder", size: 28).foregroundStyle(Studio.fog) }
+                    .modifier(ArtworkChrome())
+            } else {
+                PlaylistCover(urls: library.playlistCovers(document))
+            }
+        }
+    }
+
+    private func playlistRows(_ document: PlaylistDocument) -> [PlaylistRow] {
+        var rows: [PlaylistRow] = []
+        var queued = 0
+        for (number, item) in document.items.enumerated() {
+            let track = library.playlistTrack(item)
+            rows.append(PlaylistRow(item: item, number: number, track: track, queueIndex: track == nil ? nil : queued))
+            if track != nil { queued += 1 }
+        }
+        return rows
+    }
+
+    private func playlistDetail(_ document: PlaylistDocument) -> some View {
+        let rows = playlistRows(document)
+        let playable = rows.compactMap(\.track)
+        let conflict = library.playlistConflicts.contains(document.id)
+        let unplayable = rows.count - playable.count
+        let count = unplayable == 0 ? "\(rows.count)曲" : "\(rows.count)曲・再生できない曲 \(unplayable)"
+        return detailPage(title: document.name, tracks: playable, scope: "playlist:" + document.id,
+                          shuffleLabel: "プレイリストをシャッフル再生", actionsEnabled: !conflict) {
+            PlaylistCover(urls: library.playlistCovers(document))
+        } details: {
+            Text(count).font(.system(size: 12)).foregroundStyle(Studio.fog)
+            if document.kind == "snapshot" {
+                Text("取り込み時点の曲一覧です。条件の自動更新には未対応です。")
+                    .font(.system(size: 12)).foregroundStyle(Studio.fog)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            if conflict {
+                Text("同じプレイリストに異なる取り込みがあります。解決するまで再生できません。")
+                    .font(.system(size: 12)).fixedSize(horizontal: false, vertical: true)
+            }
+        } rows: { wide in
+            playlistTrackList(rows, playable: playable, blocked: conflict, showArtist: wide)
+        }
+    }
+
+    private func playlistTrackList(_ rows: [PlaylistRow], playable: [Track], blocked: Bool, showArtist: Bool) -> some View {
+        let shown = library.search.isEmpty ? rows : rows.filter {
+            $0.item.title.localizedStandardContains(library.search)
+                || ($0.item.artist?.localizedStandardContains(library.search) ?? false)
+        }
+        return VStack(alignment: .leading, spacing: 0) {
+            LazyVStack(spacing: 0) {
+                ForEach(shown) { row in
+                    Group {
+                        if let track = row.track, let queueIndex = row.queueIndex {
+                            trackRow(track, index: row.number, rowID: row.id,
+                                     play: { library.playPlaylist(playable, at: queueIndex) }, showArtist: showArtist)
+                        } else {
+                            unplayableRow(row, showArtist: showArtist)
+                        }
+                    }
+                    .overlay(alignment: .bottom) { rule }
+                }
+            }
+            .disabled(blocked).opacity(blocked ? 0.5 : 1)
+            if shown.isEmpty && !rows.isEmpty { Text("一致する曲がありません。").foregroundStyle(Studio.fog).padding(.top, 12) }
+        }
+    }
+
+    private func unplayableRow(_ row: PlaylistRow, showArtist: Bool) -> some View {
+        let artist = row.item.artist ?? "アーティスト不明"
+        return HStack(spacing: 16) {
+            HStack(spacing: 16) {
+                Text("\(row.number + 1)").foregroundStyle(Studio.fog).frame(width: 24)
+                Text(row.item.title).lineLimit(1).frame(maxWidth: .infinity, alignment: .leading)
+                if showArtist {
+                    Text(artist).foregroundStyle(Studio.fog).font(.system(size: 12)).lineLimit(1)
+                        .frame(width: 280, alignment: .leading)
+                }
+                Color.clear.frame(width: 40)
+            }.frame(maxWidth: .infinity, minHeight: 48)
+            Color.clear.frame(width: 32, height: 32)
+        }
+        .font(.system(size: 14))
+        .padding(.horizontal, 8)
+        .opacity(0.5)
+        .help("\(row.item.title)\n\(artist)\n再生できない曲")
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("\(row.item.title)、\(artist)、再生できない曲")
+    }
+
     private func albumDetail(_ album: Album) -> some View {
         detailPage(title: album.title, tracks: album.tracks, scope: "album:" + album.id,
                    shuffleLabel: "アルバムをシャッフル再生") {
@@ -325,7 +488,7 @@ struct LibraryView: View {
     }
 
     private func detailPage<Cover: View, Details: View, Rows: View>(
-        title: String, tracks: [Track], scope: String, shuffleLabel: String,
+        title: String, tracks: [Track], scope: String, shuffleLabel: String, actionsEnabled: Bool = true,
         @ViewBuilder cover: @escaping () -> Cover,
         @ViewBuilder details: @escaping () -> Details,
         @ViewBuilder rows: @escaping (_ wide: Bool) -> Rows
@@ -357,7 +520,7 @@ struct LibraryView: View {
                                 if library.showsOfflineSaveControls {
                                     OfflineSaveControls(library: library, tracks: tracks, scope: scope, iconOnly: true)
                                 }
-                            }
+                            }.disabled(!actionsEnabled)
                         }.frame(minHeight: wide ? 272 : nil, alignment: .topLeading)
                         if wide { Spacer(minLength: 0) }
                     }
@@ -496,18 +659,19 @@ struct LibraryView: View {
         }
     }
 
-    private func trackRow(_ track: Track, index: Int, play: @escaping () -> Void,
+    private func trackRow(_ track: Track, index: Int, rowID: String? = nil, play: @escaping () -> Void,
                           showArtist: Bool, showAlbum: Bool = false, dense: Bool = false,
                           striped: Bool = false) -> some View {
         let selected = library.current?.id == track.id
         let accentSelection = selected && !dense
         let secondary = accentSelection ? Color.white : Studio.fog
+        let hoverID = rowID ?? track.id
         return HStack(spacing: 16) {
             Button(action: play) {
                 HStack(spacing: 16) {
                     if !dense {
                         Group {
-                            if selected || hoveredTrack == track.id {
+                            if selected || hoveredTrack == hoverID {
                                 MacIcon("filled-play").foregroundStyle(accentSelection ? Color.white : Studio.signal)
                             }
                             else { Text("\(index + 1)").foregroundStyle(Studio.fog) }
@@ -565,10 +729,10 @@ struct LibraryView: View {
         .foregroundStyle(accentSelection ? Color.white : selected && dense ? Studio.signal : AppearanceColors.primary)
         .padding(.horizontal, 8)
         .background(selected ? (dense ? Studio.control : Studio.button)
-                    : hoveredTrack == track.id ? Studio.control
+                    : hoveredTrack == hoverID ? Studio.control
                     : striped ? Studio.carbon : Color.clear,
                     in: RoundedRectangle(cornerRadius: 4))
-        .onHover { hoveredTrack = $0 ? track.id : nil }
+        .onHover { hoveredTrack = $0 ? hoverID : nil }
         .help("\(track.title)\n\(track.artist ?? "アーティスト不明")")
     }
 
@@ -846,6 +1010,37 @@ private struct Artwork: View {
     let url: URL?
 
     var body: some View { ArtworkFill(url: url).modifier(ArtworkChrome()) }
+}
+
+private struct PlaylistCover: View {
+    let urls: [URL]
+
+    var body: some View {
+        if urls.count == 4 {
+            GeometryReader { geometry in
+                VStack(spacing: 0) {
+                    ForEach(0..<2) { row in
+                        HStack(spacing: 0) {
+                            ForEach(0..<2) { column in
+                                ArtworkFill(url: urls[row * 2 + column])
+                                    .frame(width: geometry.size.width / 2, height: geometry.size.height / 2)
+                            }
+                        }
+                    }
+                }
+            }.modifier(ArtworkChrome())
+        } else {
+            Artwork(url: urls.first)
+        }
+    }
+}
+
+private struct PlaylistRow: Identifiable {
+    let item: PlaylistItem
+    let number: Int
+    let track: Track?
+    let queueIndex: Int?
+    var id: String { item.id }
 }
 
 @main

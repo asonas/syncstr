@@ -1,5 +1,19 @@
 import SwiftUI
 
+extension Library {
+    func playlistCovers(_ document: PlaylistDocument) -> [URL] {
+        var seen = Set<String>()
+        var ids: [String] = []
+        for item in document.items {
+            guard let id = playlistTrack(item)?.coverArt, seen.insert(id).inserted else { continue }
+            ids.append(id)
+            if ids.count == 4 { break }
+        }
+        return ids.prefix(ids.count == 4 ? 4 : 1).compactMap { artworkURL(for: $0) }
+    }
+}
+
+#if os(iOS)
 struct PlaylistBrowser: View {
     @ObservedObject var library: Library
     var parent: String? = nil
@@ -10,19 +24,6 @@ struct PlaylistBrowser: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            #if os(macOS)
-            ViewThatFits(in: .horizontal) {
-                HStack(spacing: 20) {
-                    Text(title).font(.title2.bold()).fixedSize().accessibilityAddTraits(.isHeader)
-                    Spacer(minLength: 20)
-                    actions
-                }
-                VStack(alignment: .leading, spacing: 16) {
-                    Text(title).font(.title2.bold()).accessibilityAddTraits(.isHeader)
-                    HStack { actions; Spacer(minLength: 0) }
-                }
-            }.padding(.horizontal, 32).padding(.vertical, 20)
-            #endif
             if let message = library.playlistMessage {
                 Text(message).font(.callout).foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -33,10 +34,8 @@ struct PlaylistBrowser: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .background(AppearanceColors.content)
-        #if os(iOS)
         .navigationTitle(title)
         .toolbar { ToolbarItemGroup(placement: .primaryAction) { actions } }
-        #endif
         .task { await library.refreshPlaylists() }
     }
 
@@ -86,19 +85,9 @@ struct PlaylistBrowser: View {
 private struct PlaylistArtwork: View {
     @ObservedObject var library: Library
     let document: PlaylistDocument
-    private var covers: [URL] {
-        var seen = Set<String>()
-        var ids: [String] = []
-        for item in document.items {
-            guard let id = library.playlistTrack(item)?.coverArt, seen.insert(id).inserted else { continue }
-            ids.append(id)
-            if ids.count == 4 { break }
-        }
-        return ids.prefix(ids.count == 4 ? 4 : 1).compactMap { library.artworkURL(for: $0) }
-    }
     var body: some View {
         GeometryReader { geometry in
-            let urls = covers
+            let urls = library.playlistCovers(document)
             if urls.count >= 4 {
                 VStack(spacing: 0) {
                     ForEach(0..<2) { row in
@@ -182,3 +171,4 @@ private struct PlaylistDetail: View {
     }
 
 }
+#endif
