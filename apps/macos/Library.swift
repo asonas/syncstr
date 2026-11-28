@@ -29,14 +29,14 @@ enum LibraryDestination: String, CaseIterable {
     case hiddenAlbums = "非表示にしたアルバム"
     case playlists = "すべてのプレイリスト"
 
-    var symbol: String {
+    var icon: String {
         switch self {
         case .recentlyAdded: "clock"
-        case .albums: "square.stack"
-        case .artists: "person.2"
-        case .songs: "music.note.list"
-        case .hiddenAlbums: "eye.slash"
-        case .playlists: "music.note.list"
+        case .albums: "layers"
+        case .artists: "users"
+        case .songs: "music"
+        case .hiddenAlbums: "eye-off"
+        case .playlists: "list"
         }
     }
 }

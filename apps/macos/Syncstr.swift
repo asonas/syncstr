@@ -147,7 +147,7 @@ struct LibraryView: View {
                 }
                 Button { library.navigate(destination); library.search = "" } label: {
                     HStack(spacing: 8) {
-                        MacIcon((destination == .recentlyAdded || destination == .albums || destination == .hiddenAlbums) ? "layers" : destination == .artists ? "users" : "music")
+                        MacIcon(destination.icon)
                         Text(destination.rawValue)
                     }
                         .frame(maxWidth: .infinity, minHeight: 32, alignment: .leading)
