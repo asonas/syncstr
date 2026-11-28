@@ -507,6 +507,10 @@ final class Library: ObservableObject {
         pendingLocalPlaybackTrack = nil
     }
 
+    /// A track is being prepared and the player has no file open yet, so it may still read from the saved folder.
+    /// Once a file is open, `openedSavedFile` says where it is.
+    private var acquiringAudio: Bool { loading && transfer.playbackCache.protectedURL == nil }
+
     /// The file the player has open when it is in the saved folder rather than in the playback cache.
     private var openedSavedFile: URL? {
         guard let url = transfer.playbackCache.protectedURL?.resolvingSymlinksInPath(),
@@ -978,7 +982,7 @@ final class Library: ObservableObject {
             try await transfer.removeAllSavedAudio { [weak self] in
                 guard let self else { return }
                 // A track being prepared may be reading from the saved folder too.
-                if loading || openedSavedFile != nil { stop() }
+                if acquiringAudio || openedSavedFile != nil { stop() }
             }
         } catch { message = error.localizedDescription }
     }
@@ -1015,7 +1019,7 @@ final class Library: ObservableObject {
             // The player may still hold audio from before a catalog update, or the cache copy of the same audio,
             // so compare the file it has open with the saved files being removed.
             let removed = Set(entries.flatMap { localStore.hostFileURLs($0).map { $0.resolvingSymlinksInPath().path } })
-            if openedSavedFile.map({ removed.contains($0.path) }) == true || (loading && tracks.contains { $0.id == current?.id }) { stop() }
+            if openedSavedFile.map({ removed.contains($0.path) }) == true || (acquiringAudio && tracks.contains { $0.id == current?.id }) { stop() }
             // One file that cannot be removed does not stop the others; its pin stays so it still shows as saved.
             for entry in entries {
                 do { try transfer.removeSavedCopy(entry) }

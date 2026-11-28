@@ -629,6 +629,8 @@ final class OfflineSaveTests: XCTestCase {
         let cached = library.transfer.playbackCache.store.fileURL(entries[0])
         try Data(repeating: 1, count: 1024).write(to: cached)
         library.transfer.playbackCache.protectedURL = cached
+        // The player has the cache file open but is still preparing it.
+        library.loading = true
         library.removeLocalCopies([track])
         try await waitFor { library.pendingLocalCopyRemovals.isEmpty }
         XCTAssertTrue(library.playing)
@@ -657,6 +659,8 @@ final class OfflineSaveTests: XCTestCase {
         defer { hold.signal() }
         store.afterPlacingFile = { _ in placed.signal(); hold.wait() }
         let transfer = try await hostTransfer(store)
+        var announced = 0
+        transfer.onSaved = { announced += 1 }
         try cache(entries[0], transfer: transfer, number: 1)
         let library = try XCTUnwrap(transfer.hostConnection?.library)
         transfer.saveRequests = [OfflineSaveRequest(id: "track:track-1", library: library, entries: [entries[0]])]
@@ -670,6 +674,8 @@ final class OfflineSaveTests: XCTestCase {
         await worker?.value
         XCTAssertTrue(store.hasFile(entries[0]))
         XCTAssertEqual(try store.database().savedAudioPinList(), [SavedAudioPin(track: entries[0].track.id, hash: entries[0].sha256)])
+        // The library learns of the saved file even though the worker stopped before recording its progress.
+        XCTAssertEqual(announced, 1)
     }
 
     func testRemovingASavedCopyWaitsForAWorkerStoppedWhilePlacingIt() async throws {
@@ -702,6 +708,7 @@ final class OfflineSaveTests: XCTestCase {
         let (store, entries) = try fixture()
         try Data(repeating: 1, count: 1024).write(to: store.fileURL(entries[0]))
         try store.database().saveAudioPin(entries[0])
+        try store.database().recordReceived(entries[0])
         let transfer = try await hostTransfer(store)
         let library = try XCTUnwrap(transfer.hostConnection?.library)
         var request = OfflineSaveRequest(id: "album:fixture", library: library, entries: entries)
@@ -721,6 +728,15 @@ final class OfflineSaveTests: XCTestCase {
         let stored = try JSONDecoder().decode([OfflineSaveRequest].self,
             from: Data(contentsOf: store.root.appendingPathComponent("offline-saves.json")))
         XCTAssertFalse(stored.contains(where: \.isPending))
+        // Asking again once the database accepts the change also forgets the receipt of the file already gone.
+        XCTAssertEqual(sqlite3_exec(db, "DROP TRIGGER reject_unpin", nil, nil, nil), SQLITE_OK)
+        try await transfer.removeAllSavedAudio()
+        var statement: OpaquePointer?
+        XCTAssertEqual(sqlite3_prepare_v2(db, "SELECT COUNT(*) FROM received_files", -1, &statement, nil), SQLITE_OK)
+        defer { sqlite3_finalize(statement) }
+        XCTAssertEqual(sqlite3_step(statement), SQLITE_ROW)
+        XCTAssertEqual(sqlite3_column_int(statement, 0), 0)
+        XCTAssertTrue(try store.database().savedAudioPinList().isEmpty)
     }
 
     func testRemovingTheTrackThatFailedEndsItsRequest() async throws {
@@ -741,7 +757,10 @@ final class OfflineSaveTests: XCTestCase {
     }
 
     func testSavedFileWhosePinCannotBeWrittenIsRemovedAgain() async throws {
-        let (store, entries) = try fixture()
+        var (store, entries) = try fixture()
+        // Records that the file really was moved into place, so the assertions below cover the removal.
+        let placedFiles = Box<[URL]>([])
+        store.afterPlacingFile = { url in placedFiles.value.append(url) }
         let transfer = try await hostTransfer(store)
         try cache(entries[0], transfer: transfer, number: 1)
         var db: OpaquePointer?
@@ -753,9 +772,11 @@ final class OfflineSaveTests: XCTestCase {
         transfer.saveRequests = [OfflineSaveRequest(id: "track:track-1", library: library, entries: [entries[0]])]
         transfer.resumeSaves(explicit: "track:track-1")
         await transfer.saveWorker?.value
+        XCTAssertEqual(placedFiles.value, [store.fileURL(entries[0])])
         XCTAssertFalse(FileManager.default.fileExists(atPath: store.fileURL(entries[0]).path))
         XCTAssertTrue(try store.database().savedAudioPinList().isEmpty)
         XCTAssertEqual(transfer.saveRequests.map(\.state), [.failed])
+        XCTAssertEqual(transfer.saveRequests.first?.error?.contains("fixture"), true, "The pin trigger caused the failure")
     }
 
     func testCancelledSaveReleasesTheCacheFileItWasReading() async throws {
@@ -1328,5 +1349,16 @@ final class OfflineSaveTests: XCTestCase {
         XCTAssertTrue(library.hasManagedCopy(entries[1].track))
         XCTAssertEqual(library.saveRequest(for: [entries[1].track], scope: "track:track-2")?.state, .complete)
         XCTAssertEqual(try store.load()?.entries.map(\.track.id), entries.map(\.track.id))
+    }
+}
+
+/// Holds a value that a `@Sendable` test hook writes from the storage queue and the test reads afterwards.
+private final class Box<Value>: @unchecked Sendable {
+    private let lock = NSLock()
+    private var stored: Value
+    init(_ value: Value) { stored = value }
+    var value: Value {
+        get { lock.withLock { stored } }
+        set { lock.withLock { stored = newValue } }
     }
 }

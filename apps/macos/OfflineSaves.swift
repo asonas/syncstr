@@ -302,7 +302,10 @@ extension LocalTransfer {
             guard let self else { return }
             var snapshotReadFailed = false
             var processableLibrary: String?
+            // A file placed with its pin just before the worker was stopped is saved, so the library still learns of it.
+            var savedUnannounced = false
             defer {
+                if savedUnannounced { onSaved?() }
                 if saveGeneration == token {
                     saveWorker = nil
                     if saveRequests.contains(where: { (snapshotReadFailed || $0.library == processableLibrary) && $0.isPending }) {
@@ -387,12 +390,13 @@ extension LocalTransfer {
                                 try database?.saveAudioPin(entry)
                                 return true
                             }
+                            if saved && hostConnection != nil { savedUnannounced = true }
                             try Task.checkCancellation()
                             guard saveGeneration == token else { return }
                             if saved {
                                 saveRequests[index].completed.insert(entry.trackSaveIdentity)
                                 try persistSaves(saveRequests)
-                                if hostConnection != nil { onSaved?() }
+                                if hostConnection != nil { savedUnannounced = false; onSaved?() }
                                 continue
                             }
                             let cached = try await playbackCache.fileInBackground(entry)
@@ -402,6 +406,7 @@ extension LocalTransfer {
                             guard saveGeneration == token else { return }
                             var savedFromCache = false
                             if let cached { savedFromCache = try await protectCachedFile(cached, entry: entry) }
+                            if savedFromCache { savedUnannounced = true }
                             if !savedFromCache {
                                 try Task.checkCancellation()
                                 guard saveGeneration == token else { return }
@@ -425,6 +430,7 @@ extension LocalTransfer {
                                     saveSource = source
                                     defer { source.stop(); if saveGeneration == token { saveSource = nil } }
                                     try await source.download(entry, cache: nil, diagnostic: nil) { _ in }
+                                    savedUnannounced = true
                                 } else {
                                     waiting = true
                                     holdDownloads = true
@@ -435,6 +441,7 @@ extension LocalTransfer {
                             guard saveGeneration == token else { return }
                             saveRequests[index].completed.insert(entry.trackSaveIdentity)
                             try persistSaves(saveRequests)
+                            savedUnannounced = false
                             onSaved?()
                         } catch {
                             try Task.checkCancellation()
@@ -557,8 +564,10 @@ extension LocalTransfer {
             }
         }
         try database.transaction {
-            for pin in try database.savedAudioPinList() where !failed.contains(pin.hash) { try database.removeAudioPin(pin) }
-            for hash in Set(files.keys).subtracting(failed) { try database.forgetAudio(hash: hash) }
+            let removed = try database.savedAudioPinList().filter { !failed.contains($0.hash) }
+            for pin in removed { try database.removeAudioPin(pin) }
+            // A retry after a failed transaction finds the files already gone, so the pins name what to forget too.
+            for hash in Set(files.keys).union(removed.map(\.hash)).subtracting(failed) { try database.forgetAudio(hash: hash) }
         }
         return failed
     }
