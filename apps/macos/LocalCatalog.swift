@@ -31,6 +31,16 @@ actor CatalogStorage {
         return try write()
     }
 
+    /// Runs a write that places a saved file and records its pin. Cancellation is checked only before it starts:
+    /// the write runs in a task that the caller's cancellation does not reach, because opening the database and
+    /// hashing stop in a cancelled task and would leave a placed file without its pin. Callers still wait for it.
+    func commitSavedFile<T: Sendable>(_ write: @escaping @Sendable () throws -> T) async throws -> T {
+        try Task.checkCancellation()
+        return try await Task { try self.run(write) }.value
+    }
+
+    private func run<T: Sendable>(_ write: @Sendable () throws -> T) throws -> T { try write() }
+
     func commitHostCatalog(_ update: CatalogUpdate, host: HostConnection, replacing previous: HostConnection?, refreshedAt: Date,
                            store: LocalMusicStore, didCommit: (@Sendable () async -> Void)?) async throws -> PreparedLocalCatalog {
         try Task.checkCancellation()
@@ -154,6 +164,8 @@ struct LocalMusicStore {
     /// Tests make a removal fail through this. Folder permissions cannot: on iOS a read-only folder also
     /// fails the database's own setup before any removal is tried.
     var removeFile: @Sendable (URL) throws -> Void = { try FileManager.default.removeItem(at: $0) }
+    /// Tests stop a save here, after `importFile` has moved a file into place and before it writes the records.
+    var afterPlacingFile: @Sendable (URL) -> Void = { _ in }
     var root = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
         .appendingPathComponent("LocalMusic", isDirectory: true)
 
@@ -287,7 +299,7 @@ struct LocalMusicStore {
         return size.uint64Value == entry.track.size
     }
 
-    func importCachedFile(_ source: URL, entry: LocalEntry, host: Bool) throws -> Bool {
+    func importCachedFile(_ source: URL, entry: LocalEntry, host: Bool, pin: Bool = false) throws -> Bool {
         let temporary = root.appendingPathComponent(".cache-save-" + UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: temporary) }
         do {
@@ -296,11 +308,16 @@ struct LocalMusicStore {
             if access(source.path, F_OK) == -1, errno == ENOENT { return false }
             throw error
         }
-        try importFile(temporary, entry: entry, host: host)
+        try importFile(temporary, entry: entry, host: host, pin: pin)
         return true
     }
 
-    func importFile(_ temporary: URL, entry: LocalEntry, recordReceipt: Bool = true, host: Bool = false, diagnostic: PlaybackDiagnosticContext? = nil) throws {
+    /// Verifies `temporary` and moves it into the store. With `recordReceipt`, the receipt, the verification and,
+    /// with `pin`, the saved pin are written in one transaction; if that fails, a file this call placed is removed
+    /// again, so a saved file never stays without its pin. Run it through `CatalogStorage.commitSavedFile` when a
+    /// cancellation must not stop it between the move and the records.
+    func importFile(_ temporary: URL, entry: LocalEntry, recordReceipt: Bool = true, host: Bool = false, pin: Bool = false,
+                    diagnostic: PlaybackDiagnosticContext? = nil) throws {
         var stage = "verification"
         do {
             guard Self.valid(entry) else { throw LocalMusicError.invalidData }
@@ -315,19 +332,31 @@ struct LocalMusicStore {
             stage = "save"
             try prepare()
             let destination = fileURL(entry)
+            var placed = false
             if FileManager.default.fileExists(atPath: destination.path) {
                 if try Self.digest(file: destination) != entry.sha256 {
                     _ = try FileManager.default.replaceItemAt(destination, withItemAt: temporary)
+                    placed = true
                 }
             } else {
                 try FileManager.default.moveItem(at: temporary, to: destination)
+                placed = true
             }
+            if placed { afterPlacingFile(destination) }
             if recordReceipt {
-                let database = try database()
-                try database.recordReceived(entry)
-                if host, let attributes = try? FileManager.default.attributesOfItem(atPath: destination.path),
-                   let stamp = fileStamp(attributes) {
-                    database.recordVerifiedAudio(destination, stamp: stamp, hash: entry.sha256)
+                do {
+                    let database = try database()
+                    try database.transaction {
+                        try database.recordReceived(entry)
+                        if host, let attributes = try? FileManager.default.attributesOfItem(atPath: destination.path),
+                           let stamp = fileStamp(attributes) {
+                            database.recordVerifiedAudio(destination, stamp: stamp, hash: entry.sha256)
+                        }
+                        if pin { try database.saveAudioPin(entry) }
+                    }
+                } catch {
+                    if placed && pin { try? removeFile(destination) }
+                    throw error
                 }
             }
             diagnostic?.record("save", "import", outcome: "succeeded")

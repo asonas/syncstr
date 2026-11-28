@@ -1802,6 +1802,83 @@ final class HostAPITests: XCTestCase {
         XCTAssertFalse(library.playing)
     }
 
+    func testPlaybackFromTheCacheGoesOnWhenTheSavedCopyGoes() async throws {
+        let (reply, _, _) = try fixture()
+        let files = store()
+        let library = makeLibrary(localStore: files, hostConfiguration: configuration { _ in reply })
+        let address = try HostAddress("https://confirmed.example.test")
+        _ = try await library.transfer.confirmHost(address, information: hostInformation(address))
+        await library.inventoryTask?.value
+        let entry = try XCTUnwrap(library.localCatalog?.entries.first)
+        let url = files.fileURL(entry)
+        try Data("abc".utf8).write(to: url)
+        try files.database().saveAudioPin(entry)
+        library.refreshLocalFiles()
+        try await waitFor { library.hasManagedCopy(entry.track) }
+        library.current = entry.track
+        library.playing = true
+        // The player opened the cache copy before the track was saved.
+        library.transfer.playbackCache.protectedURL = library.transfer.playbackCache.store.fileURL(entry)
+        library.transfer.onSaved?()
+        try FileManager.default.removeItem(at: url)
+        library.refreshLocalFiles()
+        try await waitFor { !library.hasManagedCopy(entry.track) }
+        await library.inventoryTask?.value
+        XCTAssertTrue(library.playing)
+    }
+
+    func testPlaybackOfASavedFileGoesOnWhenAnotherSaveStillHoldsItsAudio() async throws {
+        let (reply, _, _) = try fixture()
+        let files = store()
+        let library = makeLibrary(localStore: files, hostConfiguration: configuration { _ in reply })
+        let address = try HostAddress("https://confirmed.example.test")
+        _ = try await library.transfer.confirmHost(address, information: hostInformation(address))
+        await library.inventoryTask?.value
+        let entry = try XCTUnwrap(library.localCatalog?.entries.first)
+        let url = files.fileURL(entry)
+        try Data("abc".utf8).write(to: url)
+        try files.database().saveAudioPin(entry)
+        // Another track saved the same audio, so its file stays when this track's pin goes.
+        try files.database().saveAudioPin(LocalEntry(track: Track(id: "track-other", title: "Other", artist: "Artist", suffix: "wav", size: 3),
+                                                     sha256: entry.sha256, artwork: nil))
+        library.refreshLocalFiles()
+        try await waitFor { library.hasManagedCopy(entry.track) }
+        library.current = entry.track
+        library.playing = true
+        library.transfer.playbackCache.protectedURL = url
+        library.removeLocalCopies([entry.track])
+        try await waitFor { library.pendingLocalCopyRemovals.isEmpty && !library.hasManagedCopy(entry.track) }
+        await library.inventoryTask?.value
+        XCTAssertTrue(library.playing)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: url.path))
+        XCTAssertFalse(try files.database().hasAudioPin(entry))
+    }
+
+    func testPlaybackOfASavedFileStopsWhenTheFileGoes() async throws {
+        let (reply, _, _) = try fixture()
+        let files = store()
+        let library = makeLibrary(localStore: files, hostConfiguration: configuration { _ in reply })
+        let address = try HostAddress("https://confirmed.example.test")
+        _ = try await library.transfer.confirmHost(address, information: hostInformation(address))
+        await library.inventoryTask?.value
+        let entry = try XCTUnwrap(library.localCatalog?.entries.first)
+        let url = files.fileURL(entry)
+        try Data("abc".utf8).write(to: url)
+        try files.database().saveAudioPin(entry)
+        library.refreshLocalFiles()
+        try await waitFor { library.hasManagedCopy(entry.track) }
+        library.current = entry.track
+        library.playing = true
+        library.transfer.playbackCache.protectedURL = url
+        library.transfer.onSaved?()
+        try FileManager.default.removeItem(at: url)
+        try files.database().removeAudioPin(SavedAudioPin(track: entry.track.id, hash: entry.sha256))
+        library.refreshLocalFiles()
+        try await waitFor { !library.hasManagedCopy(entry.track) }
+        await library.inventoryTask?.value
+        XCTAssertFalse(library.playing)
+    }
+
     func testReselectingTrackPreservesNewPlaybackDuringInventory() async throws {
         let (reply, _, _) = try fixture()
         let held = HostResponseGate(started: expectation(description: "new playback requested audio"))

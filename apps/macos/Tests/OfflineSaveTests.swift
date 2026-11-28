@@ -191,20 +191,27 @@ final class OfflineSaveTests: XCTestCase {
         let library = try XCTUnwrap(transfer.hostConnection?.library)
         transfer.saveRequests = [OfflineSaveRequest(id: "track:track-1", library: library, entries: [entries[0]], state: .saving)]
         let latch = Latch()
-        // A download that has already written its file pins it even though the save was just cancelled.
+        defer { latch.open() }
+        // A download that has already started committing its file pins it even though the save was just cancelled,
+        // as commitSavedFile does: the write runs where the cancellation does not reach.
         transfer.saveWorker = Task {
             await latch.wait()
-            try? Data(repeating: 1, count: 1024).write(to: store.fileURL(entries[0]))
-            try? store.database().saveAudioPin(entries[0])
+            await Task {
+                try? Data(repeating: 1, count: 1024).write(to: store.fileURL(entries[0]))
+                try? store.database().saveAudioPin(entries[0])
+            }.value
         }
         let pinning = transfer.saveWorker
-        let removal = Task { try await transfer.removeAllSavedAudio() }
+        var pinnedBeforeRemoval = false
+        let removal = Task {
+            try await transfer.removeAllSavedAudio { pinnedBeforeRemoval = (try? store.database().hasAudioPin(entries[0])) == true }
+        }
         try await waitFor { transfer.saveWorker == nil }
-        // Long enough for a removal that does not wait for the worker to finish first.
-        try await Task.sleep(for: .milliseconds(200))
         latch.open()
         try await removal.value
         await pinning?.value
+        // The removal ran after the worker's pin, and removed it.
+        XCTAssertTrue(pinnedBeforeRemoval)
         XCTAssertTrue(try store.database().savedAudioPinList().isEmpty)
         XCTAssertFalse(FileManager.default.fileExists(atPath: store.fileURL(entries[0]).path))
     }
@@ -233,11 +240,14 @@ final class OfflineSaveTests: XCTestCase {
         let (store, entries) = try fixture()
         let transfer = try await hostTransfer(store)
         let latch = Latch()
+        defer { latch.open() }
         transfer.saveWorker = Task { await latch.wait() }
+        var waiting = false
+        transfer.onSaveWaitingForRemoval = { waiting = true }
         let removal = Task { try await transfer.removeAllSavedAudio() }
         try await waitFor { transfer.saveWorker == nil }
         let save = Task { await transfer.requestSave([entries[0].track], scope: "track:track-1") }
-        try await Task.sleep(for: .milliseconds(100))
+        try await waitFor { waiting }
         XCTAssertTrue(transfer.saveRequests.isEmpty, "The save waits until the removal ends")
         latch.open()
         try await removal.value
@@ -251,11 +261,15 @@ final class OfflineSaveTests: XCTestCase {
         let library = try XCTUnwrap(transfer.hostConnection?.library)
         transfer.saveRequests = [OfflineSaveRequest(id: "album:a", library: library, entries: [entries[0], entries[1]], state: .waiting)]
         let latch = Latch()
+        defer { latch.open() }
         transfer.saveWorker = Task { await latch.wait() }
+        var waiting = false
+        transfer.onSaveWaitingForRemoval = { waiting = true }
         let removal = Task { try await transfer.removeAllSavedAudio() }
         try await waitFor { transfer.saveWorker == nil }
         let save = Task { await transfer.requestSave([entries[0].track], scope: "album:a") }
-        try await Task.sleep(for: .milliseconds(100))
+        // The save reads the earlier request only after the removal, so it must be waiting before the removal ends.
+        try await waitFor { waiting }
         latch.open()
         try await removal.value
         await save.value
@@ -610,6 +624,70 @@ final class OfflineSaveTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: store.fileURL(entries[0]).path))
     }
 
+    func testRemovingOneSaveStopsTheSavedFileItPlaysUnderAnEarlierExtension() async throws {
+        let (store, entries) = try fixture()
+        try Data(repeating: 1, count: 1024).write(to: store.fileURL(entries[0]))
+        try store.database().saveAudioPin(entries[0])
+        let library = makeLibrary(localStore: store)
+        await library.openSavedLocalLibrary()
+        await library.inventoryTask?.value
+        let track = try XCTUnwrap(library.tracks.first { $0.id == entries[0].track.id })
+        library.current = track
+        library.playing = true
+        // The player opened the same audio saved before a catalog update changed its extension.
+        let earlier = store.root.appendingPathComponent(entries[0].sha256 + ".mp3")
+        try Data(repeating: 1, count: 1024).write(to: earlier)
+        library.transfer.playbackCache.protectedURL = earlier
+        library.removeLocalCopies([track])
+        try await waitFor { library.pendingLocalCopyRemovals.isEmpty }
+        XCTAssertFalse(library.playing)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: earlier.path))
+    }
+
+    func testRemovingOneSaveKeepsPlayingAudioAnotherSaveStillHolds() async throws {
+        let (store, entries) = try fixture()
+        try Data(repeating: 1, count: 1024).write(to: store.fileURL(entries[0]))
+        try store.database().saveAudioPin(entries[0])
+        // Another track saved the same audio, so its file stays.
+        try store.database().saveAudioPin(LocalEntry(track: Track(id: "track-other", title: "Other", artist: "Artist", suffix: "wav", size: 1024),
+                                                      sha256: entries[0].sha256, artwork: nil))
+        let library = makeLibrary(localStore: store)
+        await library.openSavedLocalLibrary()
+        await library.inventoryTask?.value
+        let track = try XCTUnwrap(library.tracks.first { $0.id == entries[0].track.id })
+        library.current = track
+        library.playing = true
+        library.transfer.playbackCache.protectedURL = store.fileURL(entries[0])
+        library.removeLocalCopies([track])
+        try await waitFor { library.pendingLocalCopyRemovals.isEmpty }
+        XCTAssertTrue(library.playing)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: store.fileURL(entries[0]).path))
+        XCTAssertFalse(try store.database().hasAudioPin(entries[0]))
+    }
+
+    func testRemovingOneSaveKeepsPlayingTheCacheCopyOfTheSameAudio() async throws {
+        let (store, entries) = try fixture()
+        try Data(repeating: 1, count: 1024).write(to: store.fileURL(entries[0]))
+        try store.database().saveAudioPin(entries[0])
+        let library = makeLibrary(localStore: store)
+        await library.openSavedLocalLibrary()
+        await library.inventoryTask?.value
+        let track = try XCTUnwrap(library.tracks.first { $0.id == entries[0].track.id })
+        library.current = track
+        library.playing = true
+        try library.transfer.playbackCache.store.prepare()
+        let cached = library.transfer.playbackCache.store.fileURL(entries[0])
+        try Data(repeating: 1, count: 1024).write(to: cached)
+        library.transfer.playbackCache.protectedURL = cached
+        // The player has the cache file open but is still preparing it.
+        library.loading = true
+        library.removeLocalCopies([track])
+        try await waitFor { library.pendingLocalCopyRemovals.isEmpty }
+        XCTAssertTrue(library.playing)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: store.fileURL(entries[0]).path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: cached.path))
+    }
+
     func testRemovingOneSaveKeepsAudioAnotherLibraryStillWantsToSave() throws {
         let (store, entries) = try fixture(host: false)
         try Data(repeating: 1, count: 1024).write(to: store.fileURL(entries[0]))
@@ -623,22 +701,181 @@ final class OfflineSaveTests: XCTestCase {
         XCTAssertTrue(FileManager.default.fileExists(atPath: store.fileURL(entries[0]).path))
     }
 
-    func testCancelledFirstSaveLeavesNoFileOutsideTheSavedTotal() async throws {
-        let (store, entries) = try fixture()
-        // The file is already in place, as after a download whose save is cancelled before it pins.
-        try Data(repeating: 1, count: 1024).write(to: store.fileURL(entries[0]))
-        try store.database().recordReceived(entries[0])
+    func testSaveStoppedRightAfterItsFileMovesStillPinsTheFile() async throws {
+        var (store, entries) = try fixture()
+        let placed = DispatchSemaphore(value: 0)
+        let hold = DispatchSemaphore(value: 0)
+        // Released on every exit, so a failure cannot leave the shared catalog queue blocked for later tests.
+        defer { hold.signal() }
+        store.afterPlacingFile = { _ in placed.signal(); hold.wait() }
         let transfer = try await hostTransfer(store)
-        let source = try XCTUnwrap(transfer.makeLibrarySource())
-        defer { source.stop() }
-        let save = Task {
-            withUnsafeCurrentTask { $0?.cancel() }
-            try await source.download(entries[0], cache: nil, diagnostic: nil) { _ in }
-        }
-        _ = await save.result
-        await transfer.refreshSavedAudio()
+        var announced = 0
+        transfer.onSaved = { announced += 1 }
+        try cache(entries[0], transfer: transfer, number: 1)
+        let library = try XCTUnwrap(transfer.hostConnection?.library)
+        transfer.saveRequests = [OfflineSaveRequest(id: "track:track-1", library: library, entries: [entries[0]])]
+        transfer.resumeSaves(explicit: "track:track-1")
+        let worker = transfer.saveWorker
+        let moved = await Task.detached { placed.wait(timeout: .now() + 15) }.value
+        guard moved == .success else { return XCTFail("The cached file was not placed") }
+        // Stopping the worker cancels it between the move and the records.
+        transfer.stopSaveWorker()
+        hold.signal()
+        await worker?.value
+        XCTAssertTrue(store.hasFile(entries[0]))
         XCTAssertEqual(try store.database().savedAudioPinList(), [SavedAudioPin(track: entries[0].track.id, hash: entries[0].sha256)])
-        XCTAssertEqual(transfer.savedAudio.bytes, 1024)
+        // The library learns of the saved file even though the worker stopped before recording its progress.
+        XCTAssertEqual(announced, 1)
+    }
+
+    func testRemovingASavedCopyWaitsForAWorkerStoppedWhilePlacingIt() async throws {
+        var (store, entries) = try fixture()
+        let placed = DispatchSemaphore(value: 0)
+        let hold = DispatchSemaphore(value: 0)
+        defer { hold.signal() }
+        store.afterPlacingFile = { _ in placed.signal(); hold.wait() }
+        let transfer = try await hostTransfer(store)
+        try cache(entries[0], transfer: transfer, number: 1)
+        let library = try XCTUnwrap(transfer.hostConnection?.library)
+        transfer.saveRequests = [OfflineSaveRequest(id: "track:track-1", library: library, entries: [entries[0]])]
+        transfer.resumeSaves(explicit: "track:track-1")
+        let moved = await Task.detached { placed.wait(timeout: .now() + 15) }.value
+        guard moved == .success else { return XCTFail("The cached file was not placed") }
+        // Going to the background stops the worker while it is placing the file. Removing one saved copy runs on
+        // the main actor, so it waits until the stopped worker can no longer bring the file and its pin back.
+        transfer.setSavesBackgrounded(true)
+        XCTAssertNil(transfer.saveWorker)
+        XCTAssertFalse(transfer.readyForLocalCopyRemoval)
+        hold.signal()
+        try await waitFor { transfer.readyForLocalCopyRemoval }
+        try transfer.cancelSaves(containing: [entries[0].track])
+        try transfer.removeSavedCopy(entries[0])
+        XCTAssertFalse(FileManager.default.fileExists(atPath: store.fileURL(entries[0]).path))
+        XCTAssertTrue(try store.database().savedAudioPinList().isEmpty)
+    }
+
+    func testDeletionThatFailsAtThePinsLeavesNoRequestToSaveAgain() async throws {
+        let (store, entries) = try fixture()
+        try Data(repeating: 1, count: 1024).write(to: store.fileURL(entries[0]))
+        try store.database().saveAudioPin(entries[0])
+        try store.database().recordReceived(entries[0])
+        // A file whose save stopped before its pin in an earlier version has a receipt and no pin.
+        try Data(repeating: 2, count: 1024).write(to: store.fileURL(entries[1]))
+        try store.database().recordReceived(entries[1])
+        // A verification can outlive its file and pin as well.
+        try store.database().recordVerifiedAudio(store.fileURL(entries[2]), stamp: "fixture", hash: entries[2].sha256)
+        let transfer = try await hostTransfer(store)
+        let library = try XCTUnwrap(transfer.hostConnection?.library)
+        var request = OfflineSaveRequest(id: "album:fixture", library: library, entries: entries)
+        request.completed = [entries[0].trackSaveIdentity]
+        transfer.saveRequests = [request]
+        var db: OpaquePointer?
+        XCTAssertEqual(sqlite3_open(store.root.appendingPathComponent("catalog.sqlite").path, &db), SQLITE_OK)
+        defer { sqlite3_close(db) }
+        let sql = "CREATE TRIGGER reject_unpin BEFORE DELETE ON shared_audio_saves BEGIN SELECT RAISE(FAIL, 'fixture'); END"
+        XCTAssertEqual(sqlite3_exec(db, sql, nil, nil, nil), SQLITE_OK)
+        do {
+            try await transfer.removeAllSavedAudio()
+            XCTFail("The removal should report the database error")
+        } catch {}
+        XCTAssertFalse(transfer.saveRequests.contains(where: \.isPending))
+        XCTAssertNil(transfer.saveWorker)
+        let stored = try JSONDecoder().decode([OfflineSaveRequest].self,
+            from: Data(contentsOf: store.root.appendingPathComponent("offline-saves.json")))
+        XCTAssertFalse(stored.contains(where: \.isPending))
+        // The files went, and the records stayed with the failed transaction.
+        XCTAssertFalse(FileManager.default.fileExists(atPath: store.fileURL(entries[0]).path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: store.fileURL(entries[1]).path))
+        XCTAssertEqual(rowCount(db, "SELECT COUNT(*) FROM received_files"), 2)
+        XCTAssertEqual(rowCount(db, "SELECT COUNT(*) FROM verified_audio_files"), 1)
+        // Asking again once the database accepts the change also forgets the records of files already gone.
+        XCTAssertEqual(sqlite3_exec(db, "DROP TRIGGER reject_unpin", nil, nil, nil), SQLITE_OK)
+        try await transfer.removeAllSavedAudio()
+        XCTAssertEqual(rowCount(db, "SELECT COUNT(*) FROM received_files"), 0)
+        XCTAssertEqual(rowCount(db, "SELECT COUNT(*) FROM verified_audio_files"), 0)
+        XCTAssertTrue(try store.database().savedAudioPinList().isEmpty)
+    }
+
+    func testDeletionThatFailsAtTheRecordsKeepsThePins() async throws {
+        let (store, entries) = try fixture()
+        try Data(repeating: 1, count: 1024).write(to: store.fileURL(entries[0]))
+        try store.database().saveAudioPin(entries[0])
+        try store.database().recordVerifiedAudio(store.fileURL(entries[0]), stamp: "fixture", hash: entries[0].sha256)
+        let transfer = try await hostTransfer(store)
+        var db: OpaquePointer?
+        XCTAssertEqual(sqlite3_open(store.root.appendingPathComponent("catalog.sqlite").path, &db), SQLITE_OK)
+        defer { sqlite3_close(db) }
+        let sql = "CREATE TRIGGER reject_forget BEFORE DELETE ON verified_audio_files BEGIN SELECT RAISE(FAIL, 'fixture'); END"
+        XCTAssertEqual(sqlite3_exec(db, sql, nil, nil, nil), SQLITE_OK)
+        do {
+            try await transfer.removeAllSavedAudio()
+            XCTFail("The removal should report the database error")
+        } catch {}
+        // The removal reached the records: the file went before the transaction.
+        XCTAssertFalse(FileManager.default.fileExists(atPath: store.fileURL(entries[0]).path))
+        // The pins go in the same transaction as the records, so they stay together for the next removal.
+        XCTAssertEqual(try store.database().savedAudioPinList().map(\.hash), [entries[0].sha256])
+        XCTAssertEqual(rowCount(db, "SELECT COUNT(*) FROM verified_audio_files"), 1)
+    }
+
+    private func rowCount(_ db: OpaquePointer?, _ sql: String) -> Int32 {
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else { return -1 }
+        defer { sqlite3_finalize(statement) }
+        guard sqlite3_step(statement) == SQLITE_ROW else { return -1 }
+        return sqlite3_column_int(statement, 0)
+    }
+
+    func testRemovingTheTrackThatFailedEndsItsRequest() async throws {
+        let (store, entries) = try fixture()
+        let transfer = try await hostTransfer(store)
+        let library = try XCTUnwrap(transfer.hostConnection?.library)
+        var request = OfflineSaveRequest(id: "album:fixture", library: library, entries: Array(entries[0...1]))
+        request.completed = [entries[0].trackSaveIdentity]
+        request.failedTracks = [entries[1].track.id]
+        request.state = .failed
+        request.error = "fixture"
+        transfer.saveRequests = [request]
+        try transfer.cancelSaves(containing: [entries[1].track])
+        let updated = try XCTUnwrap(transfer.saveRequests.first)
+        XCTAssertTrue(updated.failedTracks.isEmpty)
+        XCTAssertEqual(updated.state, .complete)
+        XCTAssertNil(updated.error)
+    }
+
+    func testSavedFileWhosePinCannotBeWrittenIsRemovedAgain() async throws {
+        var (store, entries) = try fixture()
+        // Records that the file really was moved into place, so the assertions below cover the removal.
+        let placedFiles = Box<[URL]>([])
+        store.afterPlacingFile = { url in placedFiles.value.append(url) }
+        let transfer = try await hostTransfer(store)
+        try cache(entries[0], transfer: transfer, number: 1)
+        var db: OpaquePointer?
+        XCTAssertEqual(sqlite3_open(store.root.appendingPathComponent("catalog.sqlite").path, &db), SQLITE_OK)
+        defer { sqlite3_close(db) }
+        let sql = "CREATE TRIGGER reject_pin BEFORE INSERT ON shared_audio_saves BEGIN SELECT RAISE(FAIL, 'fixture'); END"
+        XCTAssertEqual(sqlite3_exec(db, sql, nil, nil, nil), SQLITE_OK)
+        let library = try XCTUnwrap(transfer.hostConnection?.library)
+        transfer.saveRequests = [OfflineSaveRequest(id: "track:track-1", library: library, entries: [entries[0]])]
+        transfer.resumeSaves(explicit: "track:track-1")
+        await transfer.saveWorker?.value
+        XCTAssertEqual(placedFiles.value, [store.fileURL(entries[0])])
+        XCTAssertFalse(FileManager.default.fileExists(atPath: store.fileURL(entries[0]).path))
+        XCTAssertTrue(try store.database().savedAudioPinList().isEmpty)
+        XCTAssertEqual(transfer.saveRequests.map(\.state), [.failed])
+        XCTAssertEqual(transfer.saveRequests.first?.error?.contains("fixture"), true, "The pin trigger caused the failure")
+        // The receipt and the verification were written in the same transaction as the pin, so they are gone too.
+        let hash = entries[0].sha256
+        XCTAssertEqual(rowCount(db, "SELECT COUNT(*) FROM received_files WHERE sha256 = '\(hash)'"), 0)
+        XCTAssertEqual(rowCount(db, "SELECT COUNT(*) FROM verified_audio_files WHERE hash = '\(hash)'"), 0)
+        // The same save writes both once the pin is accepted, so their absence above is the rollback's doing.
+        XCTAssertEqual(sqlite3_exec(db, "DROP TRIGGER reject_pin", nil, nil, nil), SQLITE_OK)
+        transfer.saveRequests = [OfflineSaveRequest(id: "track:track-1", library: library, entries: [entries[0]])]
+        transfer.resumeSaves(explicit: "track:track-1")
+        await transfer.saveWorker?.value
+        XCTAssertEqual(rowCount(db, "SELECT COUNT(*) FROM received_files WHERE sha256 = '\(hash)'"), 1)
+        XCTAssertEqual(rowCount(db, "SELECT COUNT(*) FROM verified_audio_files WHERE hash = '\(hash)'"), 1)
+        XCTAssertTrue(try store.database().hasAudioPin(entries[0]))
     }
 
     func testCancelledSaveReleasesTheCacheFileItWasReading() async throws {
@@ -915,7 +1152,7 @@ final class OfflineSaveTests: XCTestCase {
 
     private func settled(_ transfer: LocalTransfer) async throws {
         for _ in 0..<400 {
-            if transfer.saveWorker == nil { return }
+            if transfer.saveWorker == nil && transfer.stoppingSaveWorkers.isEmpty { return }
             try await Task.sleep(for: .milliseconds(25))
         }
         XCTFail("Save worker did not settle")
@@ -1211,5 +1448,16 @@ final class OfflineSaveTests: XCTestCase {
         XCTAssertTrue(library.hasManagedCopy(entries[1].track))
         XCTAssertEqual(library.saveRequest(for: [entries[1].track], scope: "track:track-2")?.state, .complete)
         XCTAssertEqual(try store.load()?.entries.map(\.track.id), entries.map(\.track.id))
+    }
+}
+
+/// Holds a value that a `@Sendable` test hook writes from the storage queue and the test reads afterwards.
+private final class Box<Value>: @unchecked Sendable {
+    private let lock = NSLock()
+    private var stored: Value
+    init(_ value: Value) { stored = value }
+    var value: Value {
+        get { lock.withLock { stored } }
+        set { lock.withLock { stored = newValue } }
     }
 }
