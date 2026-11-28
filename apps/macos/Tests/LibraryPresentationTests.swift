@@ -226,7 +226,7 @@ struct LibraryPresentationTests {
     }
 
     @Test
-    func playlistPathFollowsTheHostAndEndsWhenLeavingPlaylists() {
+    func selectedPlaylistClosesWhenTheHostRemovesItOrTheLibraryNavigatesAway() {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }
         let library = Library(localStore: LocalMusicStore(root: root))
@@ -239,16 +239,20 @@ struct LibraryPresentationTests {
         let folder = document("folder", kind: "folder")
         let playlist = document("playlist", kind: "manual", parent: "folder")
         library.transfer.onHostPlaylists?([folder, playlist], [])
-        library.playlistPath = [folder.id, playlist.id]
-        library.transfer.onHostPlaylists?([folder, playlist], [])
-        #expect(library.playlistPath == [folder.id, playlist.id])
-        library.transfer.onHostPlaylists?([folder], [])
-        #expect(library.playlistPath == [folder.id])
-        library.transfer.onHostPlaylists?([], [])
-        #expect(library.playlistPath.isEmpty)
-        library.transfer.onHostPlaylists?([folder, playlist], [])
-        library.playlistPath = [folder.id, playlist.id]
         library.navigate(.songs)
-        #expect(library.playlistPath.isEmpty)
+        library.selectedAlbum = "album"
+        library.showingNowPlaying = true
+        library.openPlaylist(playlist.id)
+        #expect(library.selectedPlaylist == playlist.id)
+        #expect(library.selectedAlbum == nil && !library.showingNowPlaying)
+        library.transfer.onHostPlaylists?([folder, playlist], [])
+        #expect(library.selectedPlaylist == playlist.id)
+        library.transfer.onHostPlaylists?([folder], [])
+        #expect(library.selectedPlaylist == nil)
+        #expect(library.destination == .songs)
+        library.transfer.onHostPlaylists?([folder, playlist], [])
+        library.openPlaylist(playlist.id)
+        library.navigate(.albums)
+        #expect(library.selectedPlaylist == nil)
     }
 }

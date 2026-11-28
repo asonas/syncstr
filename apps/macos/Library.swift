@@ -27,7 +27,6 @@ enum LibraryDestination: String, CaseIterable {
     case artists = "アーティスト"
     case songs = "曲"
     case hiddenAlbums = "非表示にしたアルバム"
-    case playlists = "すべてのプレイリスト"
 
     var icon: String {
         switch self {
@@ -36,7 +35,6 @@ enum LibraryDestination: String, CaseIterable {
         case .artists: "users"
         case .songs: "music"
         case .hiddenAlbums: "eye-off"
-        case .playlists: "list"
         }
     }
 }
@@ -51,8 +49,7 @@ enum PlaybackRepeat: String, CaseIterable, Codable {
 final class Library: ObservableObject {
     @Published private(set) var playlists: [PlaylistDocument] = [] {
         didSet {
-            let kept = playlistPath.prefix { id in playlists.contains { $0.id == id } }
-            if kept.count != playlistPath.count { playlistPath = Array(kept) }
+            if let id = selectedPlaylist, !playlists.contains(where: { $0.id == id }) { selectedPlaylist = nil }
         }
     }
     @Published private(set) var playlistConflicts: Set<String> = []
@@ -118,8 +115,7 @@ final class Library: ObservableObject {
     @Published var albumSortField = AlbumSortField.title
     @Published var albumSortDescending = false
     @Published var selectedAlbum: String?
-    /// Document IDs from the playlist root to the open folder or playlist; empty at the root.
-    @Published var playlistPath: [String] = []
+    @Published var selectedPlaylist: String?
     @Published var selectedArtist: String?
     @Published var search = ""
     @Published var sidebarVisible = true
@@ -371,9 +367,14 @@ final class Library: ObservableObject {
     func navigate(_ destination: LibraryDestination) {
         self.destination = destination
         selectedAlbum = nil
-        playlistPath = []
+        selectedPlaylist = nil
         selectedArtist = nil
         showingNowPlaying = false
+    }
+
+    func openPlaylist(_ id: String) {
+        navigate(destination)
+        selectedPlaylist = id
     }
 
     /// Going to the background cancels a running restore. A call that arrives while one runs is

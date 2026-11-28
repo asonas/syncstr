@@ -36,7 +36,6 @@ struct LibraryView: View {
     @State private var hostSetup: HostSetupRequest?
     @State private var hoveredTrack: String?
     @State private var albumScrollPosition = ScrollPosition(idType: String.self)
-    @State private var playlistScrollPosition = ScrollPosition(idType: String.self)
 
     var body: some View {
         VStack(spacing: 0) {
@@ -122,19 +121,11 @@ struct LibraryView: View {
                 library.selectedAlbum = nil
             })
         }
-        if let popped = library.playlistPath.last {
-            return ("プレイリストへ戻る", {
-                playlistScrollPosition = ScrollPosition(id: popped, anchor: .center)
-                library.search = ""
-                library.playlistPath.removeLast()
-            })
-        }
         return nil
     }
 
     private var searchPlaceholder: String {
-        guard library.destination == .playlists else { return "\(library.destination.rawValue)を検索" }
-        return openPlaylist == nil ? "プレイリストを検索" : "曲を検索"
+        library.selectedPlaylist == nil ? "\(library.destination.rawValue)を検索" : "曲を検索"
     }
 
     private var contentHeader: some View {
@@ -165,9 +156,7 @@ struct LibraryView: View {
         VStack(alignment: .leading, spacing: 4) {
             Text("ライブラリ").font(.caption).foregroundStyle(.secondary).padding(.horizontal, 8)
             ForEach(LibraryDestination.allCases, id: \.self) { destination in
-                if destination == .playlists {
-                    Text("プレイリスト").font(.caption).foregroundStyle(.secondary).padding(.horizontal, 8).padding(.top, 16)
-                }
+                let selected = library.destination == destination && library.selectedPlaylist == nil && !library.showingNowPlaying
                 Button { library.navigate(destination); library.search = "" } label: {
                     HStack(spacing: 8) {
                         MacIcon(destination.icon)
@@ -175,12 +164,12 @@ struct LibraryView: View {
                     }
                         .frame(maxWidth: .infinity, minHeight: 32, alignment: .leading)
                         .padding(.horizontal, 8)
-                        .background(library.destination == destination && !library.showingNowPlaying ? Studio.graphite : Color.clear)
-                        .foregroundStyle(library.destination == destination && !library.showingNowPlaying ? Studio.signal : AppearanceColors.primary)
+                        .background(selected ? Studio.graphite : Color.clear)
+                        .foregroundStyle(selected ? Studio.signal : AppearanceColors.primary)
                         .clipShape(RoundedRectangle(cornerRadius: 4))
                         .contentShape(Rectangle())
                 }.buttonStyle(.plain)
-                .accessibilityAddTraits(library.destination == destination && !library.showingNowPlaying ? .isSelected : [])
+                .accessibilityAddTraits(selected ? .isSelected : [])
             }
             rule.padding(.vertical, 16)
             Button(action: library.reload) {
@@ -215,12 +204,13 @@ struct LibraryView: View {
         if library.search.isEmpty, let albumID = library.selectedAlbum,
                   let album = library.album(id: albumID) {
             albumDetail(album)
+        } else if let playlist = openPlaylist {
+            playlistDetail(playlist)
         } else {
             switch library.destination {
             case .recentlyAdded, .albums, .hiddenAlbums: albums
             case .artists: artists
             case .songs: songs
-            case .playlists: playlistBrowser
             }
         }
     }
@@ -286,7 +276,8 @@ struct LibraryView: View {
     }
 
     private var showingAlbumGrid: Bool {
-        !library.showingNowPlaying && (library.destination == .recentlyAdded || library.destination == .albums || library.destination == .hiddenAlbums)
+        !library.showingNowPlaying && library.selectedPlaylist == nil
+            && (library.destination == .recentlyAdded || library.destination == .albums || library.destination == .hiddenAlbums)
             && (library.selectedAlbum == nil || !library.search.isEmpty)
     }
 
@@ -319,80 +310,8 @@ struct LibraryView: View {
         .accessibilityLabel("並び替え")
     }
 
-    private static let playlistSections: [(kind: String, title: String)] = [
-        ("folder", "フォルダ"), ("snapshot", "スマートプレイリスト"), ("manual", "プレイリスト")
-    ]
-
     private var openPlaylist: PlaylistDocument? {
-        library.playlistPath.last.flatMap { id in library.playlists.first { $0.id == id && $0.kind != "folder" } }
-    }
-
-    private var playlistBrowser: some View {
-        ZStack {
-            if let playlist = openPlaylist { playlistDetail(playlist) } else { playlistGrid }
-        }
-        .task { await library.refreshPlaylists() }
-    }
-
-    private func pushPlaylist(_ id: String) {
-        playlistScrollPosition = ScrollPosition(idType: String.self)
-        library.search = ""
-        library.playlistPath.append(id)
-    }
-
-    private var playlistGrid: some View {
-        let siblings = library.playlists.filter { $0.parent == library.playlistPath.last }
-        let visible = library.search.isEmpty ? siblings : siblings.filter { $0.name.localizedStandardContains(library.search) }
-        let sections = Self.playlistSections.compactMap { section -> (title: String, documents: [PlaylistDocument])? in
-            let documents = visible.filter { $0.kind == section.kind }
-            return documents.isEmpty ? nil : (section.title, documents)
-        }
-        let titled = Self.playlistSections.filter { section in siblings.contains { $0.kind == section.kind } }.count > 1
-        let folderSizes = Dictionary(library.playlists.compactMap(\.parent).map { ($0, 1) }, uniquingKeysWith: +)
-        func cards(_ documents: [PlaylistDocument]) -> some View {
-            ForEach(documents) { playlistCard($0, folderSize: folderSizes[$0.id, default: 0]).id($0.id) }
-        }
-        return ScrollView {
-            if let message = library.playlistMessage {
-                Text(message).foregroundStyle(Studio.fog).frame(maxWidth: .infinity, alignment: .leading)
-                    .fixedSize(horizontal: false, vertical: true).padding([.horizontal, .top], 32)
-            }
-            LazyVGrid(columns: Self.gridColumns, alignment: .leading, spacing: 32) {
-                if titled {
-                    ForEach(sections, id: \.title) { section in
-                        Section { cards(section.documents) } header: { gridHeader(Text(section.title)) }
-                    }
-                } else {
-                    cards(visible)
-                }
-            }.scrollTargetLayout().padding(32)
-            if visible.isEmpty {
-                Text(playlistEmptyText).foregroundStyle(Studio.fog).padding(32)
-            }
-        }
-        .id(library.playlistPath.last)
-        .scrollPosition($playlistScrollPosition)
-        .safeAreaPadding(.bottom, 120)
-    }
-
-    private var playlistEmptyText: String {
-        if !library.search.isEmpty { return "一致するプレイリストがありません。" }
-        return library.refreshingPlaylists ? "プレイリストを同期中…" : "プレイリストがありません。"
-    }
-
-    private func playlistCard(_ document: PlaylistDocument, folderSize: Int) -> some View {
-        let folder = document.kind == "folder"
-        let size = folder ? "\(folderSize)プレイリスト" : "\(document.items.count)曲"
-        let subtitle = library.playlistConflicts.contains(document.id) ? size + "・競合があります" : size
-        return gridCard(title: document.name, subtitle: subtitle, openLabel: folder ? "フォルダを開く" : "プレイリストを開く",
-                        open: { pushPlaylist(document.id) }) {
-            if folder {
-                Studio.control.overlay { MacIcon("folder", size: 28).foregroundStyle(Studio.fog) }
-                    .modifier(ArtworkChrome())
-            } else {
-                PlaylistCover(urls: library.playlistCovers(document))
-            }
-        }
+        library.selectedPlaylist.flatMap { id in library.playlists.first { $0.id == id } }
     }
 
     private func playlistRows(_ document: PlaylistDocument) -> [PlaylistRow] {
