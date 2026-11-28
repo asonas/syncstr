@@ -50,7 +50,7 @@ struct PlaylistBrowser: View {
                 Text(library.refreshingPlaylists ? "プレイリストを同期中…" : "プレイリストはありません")
                     .foregroundStyle(.secondary)
             }
-            ForEach(["folder", "snapshot", "manual"], id: \.self) { kind in
+            ForEach(PlaylistDocument.kindOrder, id: \.self) { kind in
                 let values = children.filter { $0.kind == kind }
                 if !values.isEmpty {
                     Section(kind == "folder" ? "フォルダ" : kind == "snapshot" ? "スマートプレイリストのスナップショット" : "プレイリスト") {

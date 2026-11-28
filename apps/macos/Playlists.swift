@@ -20,6 +20,8 @@ struct PlaylistDocument: Codable, Equatable, Identifiable {
     let definition: [String: String]
     var items: [PlaylistItem]
 
+    static let kindOrder = ["folder", "snapshot", "manual"]
+
     func validate() throws {
         func identity(_ value: String) -> Bool {
             !value.isEmpty && value.utf8.count <= 256 && value.unicodeScalars.allSatisfy { !CharacterSet.controlCharacters.contains($0) }
@@ -51,7 +53,8 @@ extension Array where Element == PlaylistDocument {
     func outline(expanding folders: Set<String>) -> [PlaylistOutlineRow] {
         let children = Dictionary(grouping: self, by: \.parent)
         func rows(under parent: String?, depth: Int) -> [PlaylistOutlineRow] {
-            (children[parent] ?? []).flatMap { document in
+            let siblings = children[parent] ?? []
+            return PlaylistDocument.kindOrder.flatMap { kind in siblings.filter { $0.kind == kind } }.flatMap { document in
                 [PlaylistOutlineRow(document: document, depth: depth)]
                     + (folders.contains(document.id) ? rows(under: document.id, depth: depth + 1) : [])
             }

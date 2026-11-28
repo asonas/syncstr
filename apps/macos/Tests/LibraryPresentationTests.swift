@@ -258,7 +258,7 @@ struct LibraryPresentationTests {
     }
 
     @Test
-    func playlistOutlineKeepsHostOrderAndOpensOnlyExpandedFolders() {
+    func playlistOutlineOpensOnlyExpandedFolders() {
         let folder = playlistDocument("folder", kind: "folder")
         let inner = playlistDocument("inner", kind: "folder", parent: "folder")
         let nested = playlistDocument("nested", kind: "manual", parent: "inner")
@@ -270,6 +270,17 @@ struct LibraryPresentationTests {
         #expect(names([inner.id]) == ["folder", "top"])
         #expect(names([folder.id, inner.id]) == ["folder", "inner", "nested", "top"])
         #expect(documents.outline(expanding: [folder.id, inner.id]).map(\.depth) == [0, 1, 2, 0])
+    }
+
+    @Test
+    func playlistOutlineListsFoldersThenSnapshotsThenPlaylistsInHostOrder() {
+        let first = playlistDocument("first", kind: "manual")
+        let folder = playlistDocument("folder", kind: "folder")
+        let smart = playlistDocument("smart", kind: "snapshot")
+        let second = playlistDocument("second", kind: "manual")
+        let later = playlistDocument("later", kind: "folder")
+        let documents = [first, folder, smart, second, later]
+        #expect(documents.outline(expanding: []).map(\.document.name) == ["folder", "later", "smart", "first", "second"])
     }
 
     @Test
