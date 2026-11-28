@@ -224,4 +224,31 @@ struct LibraryPresentationTests {
                 "Warm browsing must not rebuild the catalog for selection or playback updates")
         library.closeLibrary()
     }
+
+    @Test
+    func playlistPathFollowsTheHostAndEndsWhenLeavingPlaylists() {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let library = Library(localStore: LocalMusicStore(root: root))
+        defer { library.closeLibrary() }
+        func document(_ name: String, kind: String, parent: String? = nil) -> PlaylistDocument {
+            PlaylistDocument(id: "library:\(name)", sourceLibrary: "library", sourcePlaylist: name,
+                             sourceFingerprint: String(repeating: "a", count: 64), name: name, kind: kind,
+                             parent: parent.map { "library:\($0)" }, definition: [:], items: [])
+        }
+        let folder = document("folder", kind: "folder")
+        let playlist = document("playlist", kind: "manual", parent: "folder")
+        library.transfer.onHostPlaylists?([folder, playlist], [])
+        library.playlistPath = [folder.id, playlist.id]
+        library.transfer.onHostPlaylists?([folder, playlist], [])
+        #expect(library.playlistPath == [folder.id, playlist.id])
+        library.transfer.onHostPlaylists?([folder], [])
+        #expect(library.playlistPath == [folder.id])
+        library.transfer.onHostPlaylists?([], [])
+        #expect(library.playlistPath.isEmpty)
+        library.transfer.onHostPlaylists?([folder, playlist], [])
+        library.playlistPath = [folder.id, playlist.id]
+        library.navigate(.songs)
+        #expect(library.playlistPath.isEmpty)
+    }
 }

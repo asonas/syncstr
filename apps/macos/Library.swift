@@ -49,7 +49,12 @@ enum PlaybackRepeat: String, CaseIterable, Codable {
 
 @MainActor
 final class Library: ObservableObject {
-    @Published private(set) var playlists: [PlaylistDocument] = []
+    @Published private(set) var playlists: [PlaylistDocument] = [] {
+        didSet {
+            let kept = playlistPath.prefix { id in playlists.contains { $0.id == id } }
+            if kept.count != playlistPath.count { playlistPath = Array(kept) }
+        }
+    }
     @Published private(set) var playlistConflicts: Set<String> = []
     @Published var playlistMessage: String?
     @Published private(set) var refreshingPlaylists = false
@@ -113,6 +118,8 @@ final class Library: ObservableObject {
     @Published var albumSortField = AlbumSortField.title
     @Published var albumSortDescending = false
     @Published var selectedAlbum: String?
+    /// Document IDs from the playlist root to the open folder or playlist; empty at the root.
+    @Published var playlistPath: [String] = []
     @Published var selectedArtist: String?
     @Published var search = ""
     @Published var sidebarVisible = true
@@ -364,6 +371,7 @@ final class Library: ObservableObject {
     func navigate(_ destination: LibraryDestination) {
         self.destination = destination
         selectedAlbum = nil
+        playlistPath = []
         selectedArtist = nil
         showingNowPlaying = false
     }
