@@ -306,6 +306,14 @@ struct LibraryPresentationTests {
     }
 
     @Test
+    func playlistOutlineEndsWhenAFolderIsItsOwnParentUnderStringEquality() {
+        let composed = playlistDocument("\u{E9}", kind: "folder")
+        let decomposed = playlistDocument("e\u{301}", kind: "folder", parent: "\u{E9}")
+        let rows = [composed, decomposed].outline(expanding: [composed.id])
+        #expect(rows.count <= 2)
+    }
+
+    @Test
     func ancestorsRunFromTheParentUpAndEndOnACycle() {
         let folder = playlistDocument("folder", kind: "folder")
         let inner = playlistDocument("inner", kind: "folder", parent: "folder")
