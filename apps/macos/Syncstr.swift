@@ -153,36 +153,46 @@ struct LibraryView: View {
     }
 
     private var sidebar: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text("ライブラリ").font(.caption).foregroundStyle(.secondary).padding(.horizontal, 8)
-            ForEach(LibraryDestination.allCases, id: \.self) { destination in
-                let selected = library.destination == destination && library.selectedPlaylist == nil && !library.showingNowPlaying
-                Button { library.navigate(destination); library.search = "" } label: {
-                    HStack(spacing: 8) {
-                        MacIcon(destination.icon)
-                        Text(destination.rawValue)
+        VStack(spacing: 0) {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("ライブラリ").font(.caption).foregroundStyle(.secondary).padding(.horizontal, 8)
+                    ForEach(LibraryDestination.allCases, id: \.self) { destination in
+                        sidebarRow(destination.rawValue, icon: destination.icon,
+                                   selected: library.destination == destination && library.selectedPlaylist == nil && !library.showingNowPlaying) {
+                            library.navigate(destination)
+                            library.search = ""
+                        }
                     }
-                        .frame(maxWidth: .infinity, minHeight: 32, alignment: .leading)
-                        .padding(.horizontal, 8)
-                        .background(selected ? Studio.graphite : Color.clear)
-                        .foregroundStyle(selected ? Studio.signal : AppearanceColors.primary)
-                        .clipShape(RoundedRectangle(cornerRadius: 4))
-                        .contentShape(Rectangle())
-                }.buttonStyle(.plain)
-                .accessibilityAddTraits(selected ? .isSelected : [])
+                }.padding(.horizontal, 8)
             }
-            rule.padding(.vertical, 16)
-            Button(action: library.reload) {
-                HStack(spacing: 8) { MacIcon("refresh"); Text(library.refreshing ? "更新中…" : "ライブラリを更新") }
-                    .frame(maxWidth: .infinity, minHeight: 32, alignment: .leading)
-                    .padding(.horizontal, 8).contentShape(Rectangle())
-            }
-            .buttonStyle(.plain).disabled(library.refreshing || library.transfer.retainsHostCatalog)
-            Spacer()
+            VStack(spacing: 8) {
+                rule
+                sidebarRow(library.refreshing ? "更新中…" : "ライブラリを更新", icon: "refresh", action: library.reload)
+                    .disabled(library.refreshing || library.transfer.retainsHostCatalog)
+            }.padding(8)
         }
-        .padding(.horizontal, 8).padding(.top, 20)
+        .padding(.top, 20)
         .frame(width: 208)
         .background(Studio.carbon)
+    }
+
+    private func sidebarRow(_ title: String, icon: String, selected: Bool = false,
+                            action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            HStack(spacing: 8) {
+                MacIcon(icon)
+                Text(title)
+            }
+                .frame(maxWidth: .infinity, minHeight: 32, alignment: .leading)
+                .padding(.horizontal, 8)
+                .background(selected ? Studio.graphite : Color.clear)
+                .foregroundStyle(selected ? Studio.signal : AppearanceColors.primary)
+                .clipShape(RoundedRectangle(cornerRadius: 4))
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityAddTraits(selected ? .isSelected : [])
     }
 
     @ViewBuilder
