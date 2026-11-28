@@ -1017,9 +1017,10 @@ final class Library: ObservableObject {
                 } catch { failure = failure ?? error }
             }
             // The player may still hold audio from before a catalog update, or the cache copy of the same audio,
-            // so compare the file it has open with the saved files being removed.
-            let removed = Set(entries.flatMap { localStore.hostFileURLs($0).map { $0.resolvingSymlinksInPath().path } })
-            if openedSavedFile.map({ removed.contains($0.path) }) == true || (acquiringAudio && tracks.contains { $0.id == current?.id }) { stop() }
+            // so compare the audio of the saved file it has open, whatever its extension, with the audio being removed.
+            let removed = Set(entries.map(\.sha256))
+            if openedSavedFile.map({ removed.contains($0.deletingPathExtension().lastPathComponent) }) == true
+                || (acquiringAudio && tracks.contains { $0.id == current?.id }) { stop() }
             // One file that cannot be removed does not stop the others; its pin stays so it still shows as saved.
             for entry in entries {
                 do { try transfer.removeSavedCopy(entry) }

@@ -45,6 +45,11 @@ extension CatalogDatabase {
         try execute("DELETE FROM shared_audio_saves WHERE track = ? AND hash = ?", [pin.track, pin.hash])
     }
 
+    /// Hashes that a receipt or a verification still names, whether or not their file is still there.
+    func recordedAudioHashes() throws -> Set<String> {
+        Set(try rows("SELECT sha256 FROM received_files UNION SELECT hash FROM verified_audio_files").compactMap { $0[0] })
+    }
+
     func forgetAudio(hash: String) throws {
         try execute("DELETE FROM received_files WHERE sha256 = ?", [hash])
         try execute("DELETE FROM verified_audio_files WHERE hash = ?", [hash])

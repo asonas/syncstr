@@ -566,8 +566,10 @@ extension LocalTransfer {
         try database.transaction {
             let removed = try database.savedAudioPinList().filter { !failed.contains($0.hash) }
             for pin in removed { try database.removeAudioPin(pin) }
-            // A retry after a failed transaction finds the files already gone, so the pins name what to forget too.
-            for hash in Set(files.keys).union(removed.map(\.hash)).subtracting(failed) { try database.forgetAudio(hash: hash) }
+            // A retry after a failed transaction finds the files already gone, so the pins and the records themselves
+            // name what to forget too.
+            let forgotten = Set(files.keys).union(removed.map(\.hash)).union(try database.recordedAudioHashes()).subtracting(failed)
+            for hash in forgotten { try database.forgetAudio(hash: hash) }
         }
         return failed
     }
