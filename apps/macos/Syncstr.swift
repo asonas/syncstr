@@ -395,7 +395,7 @@ struct LibraryView: View {
         let unplayable = rows.count - playable.count
         let count = unplayable == 0 ? "\(rows.count)曲" : "\(rows.count)曲・再生できない曲 \(unplayable)"
         return detailPage(title: document.name, tracks: playable, scope: "playlist:" + document.id,
-                          shuffleLabel: "プレイリストをシャッフル再生", actionsEnabled: !conflict) {
+                          shuffleLabel: "プレイリストをシャッフル再生", actionsEnabled: !conflict && !playable.isEmpty) {
             PlaylistCover(urls: library.playlistCovers(document))
         } details: {
             Text(count).font(.system(size: 12)).foregroundStyle(Studio.fog)
@@ -415,8 +415,8 @@ struct LibraryView: View {
 
     private func playlistTrackList(_ rows: [PlaylistRow], playable: [Track], blocked: Bool, showArtist: Bool) -> some View {
         let shown = library.search.isEmpty ? rows : rows.filter {
-            $0.item.title.localizedStandardContains(library.search)
-                || ($0.item.artist?.localizedStandardContains(library.search) ?? false)
+            ($0.track?.title ?? $0.item.title).localizedStandardContains(library.search)
+                || (($0.track?.artist ?? $0.item.artist)?.localizedStandardContains(library.search) ?? false)
         }
         return VStack(alignment: .leading, spacing: 0) {
             LazyVStack(spacing: 0) {
