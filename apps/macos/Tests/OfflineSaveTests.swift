@@ -81,6 +81,32 @@ func saveHostFixture(_ entries: [LocalEntry], in store: LocalMusicStore) throws 
                                  replacing: database.hostConnection())
 }
 
+/// Overwrites one stored host entry with a payload that cannot be decoded.
+func breakStoredHostEntry(_ id: String, in store: LocalMusicStore) throws {
+    var connection: OpaquePointer?
+    guard sqlite3_open(store.root.appendingPathComponent("catalog.sqlite").path, &connection) == SQLITE_OK else {
+        sqlite3_close(connection)
+        throw LocalMusicError.invalidData
+    }
+    defer { sqlite3_close(connection) }
+    let id = id.replacingOccurrences(of: "'", with: "''")
+    guard sqlite3_exec(connection, "UPDATE host_entries SET payload = '{' WHERE id = '\(id)'", nil, nil, nil) == SQLITE_OK,
+          sqlite3_changes(connection) == 1 else { throw LocalMusicError.invalidData }
+}
+
+/// Clears the key of one stored host entry, as a database written by an older build may hold.
+func clearStoredHostEntryKey(_ id: String, in store: LocalMusicStore) throws {
+    var connection: OpaquePointer?
+    guard sqlite3_open(store.root.appendingPathComponent("catalog.sqlite").path, &connection) == SQLITE_OK else {
+        sqlite3_close(connection)
+        throw LocalMusicError.invalidData
+    }
+    defer { sqlite3_close(connection) }
+    let id = id.replacingOccurrences(of: "'", with: "''")
+    guard sqlite3_exec(connection, "UPDATE host_entries SET id = NULL WHERE id = '\(id)'", nil, nil, nil) == SQLITE_OK,
+          sqlite3_changes(connection) == 1 else { throw LocalMusicError.invalidData }
+}
+
 /// Stores the catalog as a host's and shows it without contacting the host, for tests about browsing and playback state.
 @MainActor
 func showHostCatalog(_ catalog: LocalCatalog, in library: Library) throws {
@@ -219,6 +245,23 @@ final class OfflineSaveTests: XCTestCase {
         XCTAssertEqual(transfer.saveRequests.map(\.id), ["track:track-1"])
     }
 
+    func testSaveAskedForDuringDeletionDoesNotBringBackTheRemovedRequest() async throws {
+        let (store, entries) = try fixture()
+        let transfer = try await hostTransfer(store)
+        let library = try XCTUnwrap(transfer.hostConnection?.library)
+        transfer.saveRequests = [OfflineSaveRequest(id: "album:a", library: library, entries: [entries[0], entries[1]], state: .waiting)]
+        let latch = Latch()
+        transfer.saveWorker = Task { await latch.wait() }
+        let removal = Task { try await transfer.removeAllSavedAudio() }
+        try await waitFor { transfer.saveWorker == nil }
+        let save = Task { await transfer.requestSave([entries[0].track], scope: "album:a") }
+        try await Task.sleep(for: .milliseconds(100))
+        latch.open()
+        try await removal.value
+        await save.value
+        XCTAssertEqual(transfer.saveRequests.map { $0.entries.map(\.track.id) }, [[entries[0].track.id]])
+    }
+
     func testSaveBeingPreparedWhenEverythingIsRemovedIsDropped() async throws {
         let (store, entries) = try fixture()
         let transfer = try await hostTransfer(store)
@@ -282,6 +325,241 @@ final class OfflineSaveTests: XCTestCase {
         XCTAssertTrue(try store.database().savedAudioPinList().isEmpty)
         XCTAssertTrue(transfer.saveRequests.isEmpty)
         XCTAssertFalse(FileManager.default.fileExists(atPath: store.fileURL(entries[0]).path))
+    }
+
+    func testSaveRequestKeepsSelectionOrderWithoutDuplicates() async throws {
+        let (store, entries) = try fixture()
+        let transfer = try await hostTransfer(store)
+        let tracks = [entries[1].track, entries[0].track, entries[1].track, entries[0].track]
+        await transfer.requestSave(tracks, scope: "playlist")
+        XCTAssertEqual(transfer.saveRequests.first?.entries.map(\.track.id), [entries[1].track.id, entries[0].track.id])
+        transfer.stopSaveWorker()
+    }
+
+    func testTrackThatCannotBeSavedDoesNotEndARequestStillWaitingForAnother() async throws {
+        let (store, entries) = try fixture()
+        let transfer = try await hostTransfer(store)
+        try breakStoredHostEntry(entries[1].track.id, in: store)
+        let library = try XCTUnwrap(transfer.hostConnection?.library)
+        // The host now has other content under the first track, so that track cannot be saved; the second
+        // only waits for its unreadable row to come back.
+        let changed = LocalEntry(track: entries[0].track, sha256: String(repeating: "f", count: 64))
+        transfer.saveRequests = [OfflineSaveRequest(id: "album", library: library, entries: [changed, entries[1]])]
+        transfer.saveRetryInterval = .seconds(60)
+        transfer.resumeSaves()
+        try await settled(transfer)
+        XCTAssertEqual(transfer.saveRequests.first?.state, .waiting)
+        XCTAssertEqual(transfer.saveRequests.first?.failedTracks, [entries[0].track.id])
+        transfer.stopSaveWorker()
+    }
+
+    func testPendingSaveOfAnUnresolvedTrackKeepsTheAlbumFromLookingSaved() async throws {
+        let (store, entries) = try fixture()
+        try Data(repeating: 1, count: 1024).write(to: store.fileURL(entries[0]))
+        try store.database().saveAudioPin(entries[0])
+        let library = makeLibrary(localStore: store)
+        await library.openSavedLocalLibrary()
+        await library.inventoryTask?.value
+        XCTAssertTrue(library.hasManagedCopy(entries[0].track))
+        let catalog = try XCTUnwrap(library.localCatalog?.id)
+        library.transfer.saveRequests = [OfflineSaveRequest(id: "album", library: catalog, entries: [entries[0]],
+                                                            completed: [entries[0].trackSaveIdentity], unresolved: [entries[1].track])]
+        let progress = library.saveProgress(for: [entries[0].track], scope: "album")
+        XCTAssertEqual(progress, SaveProgress(saved: 1, total: 2, pending: true))
+        XCTAssertFalse(progress.allSaved)
+    }
+
+    func testRetryKeepsATrackTheListNoLongerShowsAsFailed() async throws {
+        let (store, entries) = try fixture()
+        let transfer = try await hostTransfer(store)
+        let library = try XCTUnwrap(transfer.hostConnection?.library)
+        // The album failed because one track left the host; the list now shows only the track that remains.
+        var failed = OfflineSaveRequest(id: "album", library: library, entries: [entries[0]], state: .failed)
+        failed.failedTracks = ["track-gone"]
+        transfer.saveRequests = [failed]
+        await transfer.requestSave([entries[0].track], scope: "album")
+        transfer.stopSaveWorker()
+        let retried = try XCTUnwrap(transfer.saveRequests.first)
+        XCTAssertEqual(retried.entries.map(\.track.id), [entries[0].track.id])
+        XCTAssertEqual(retried.failedTracks, ["track-gone"])
+        XCTAssertEqual(retried.trackCount, 2)
+        XCTAssertNotEqual(retried.state, .complete)
+    }
+
+    func testOnlyUnreadableRowsKeepAMissingTrackWaiting() async throws {
+        let (store, entries) = try fixture()
+        try breakStoredHostEntry(entries[1].track.id, in: store)
+        let transfer = try await hostTransfer(store)
+        transfer.catalogRepairInterval = .seconds(3600)
+        let library = try XCTUnwrap(transfer.hostConnection?.library)
+        let gone = Track(id: "track-gone", title: "Gone", artist: "Artist", suffix: "wav", size: 3)
+        transfer.saveRequests = [OfflineSaveRequest(id: "album", library: library, entries: [],
+                                                    unresolved: [entries[1].track, gone], manual: true)]
+        let settledState = expectation(description: "worker finished one pass")
+        let observation = transfer.$saveRequests.filter { $0.first?.failedTracks.isEmpty == false }.first()
+            .sink { _ in settledState.fulfill() }
+        transfer.resumeSaves()
+        await fulfillment(of: [settledState], timeout: 15)
+        observation.cancel()
+        transfer.stopSaveWorker()
+        let request = try XCTUnwrap(transfer.saveRequests.first)
+        // The keyed unreadable row waits; a track that is simply gone does not.
+        XCTAssertEqual(request.failedTracks, [gone.id])
+        XCTAssertEqual(request.unresolved.map(\.id), [entries[1].track.id])
+        XCTAssertEqual(request.state, .waiting)
+    }
+
+    func testRowTheWholeCatalogLeftUnreadableFailsUntilAskedAgain() async throws {
+        let (store, entries) = try fixture()
+        try breakStoredHostEntry(entries[1].track.id, in: store)
+        let transfer = try await hostTransfer(store)
+        transfer.catalogRepairInterval = .seconds(3600)
+        transfer.unrepairableIDs = [entries[1].track.id]
+        let library = try XCTUnwrap(transfer.hostConnection?.library)
+        transfer.saveRequests = [OfflineSaveRequest(id: "track", library: library, entries: [],
+                                                    unresolved: [entries[1].track], manual: true)]
+        let failed = expectation(description: "save failed")
+        let observation = transfer.$saveRequests.filter { $0.first?.state == .failed }.first().sink { _ in failed.fulfill() }
+        transfer.resumeSaves()
+        await fulfillment(of: [failed], timeout: 15)
+        observation.cancel()
+        transfer.stopSaveWorker()
+        XCTAssertEqual(transfer.saveRequests.first?.failedTracks, [entries[1].track.id])
+        XCTAssertEqual(transfer.saveRequests.first?.error, "ホストのライブラリにあるこの曲の情報を読み込めないため、保存できません。")
+
+        // Asking again gives the row another repair, so the save waits for it instead of failing at once.
+        await transfer.requestSave([entries[1].track], scope: "track")
+        transfer.stopSaveWorker()
+        XCTAssertTrue(transfer.unrepairableIDs.isEmpty)
+        XCTAssertEqual(transfer.saveRequests.first?.unresolved.map(\.id), [entries[1].track.id])
+        XCTAssertTrue(transfer.saveRequests.first?.isPending ?? false)
+    }
+
+    func testTrackMenuDescribesAnAlbumRequestByThatTracksOwnState() async throws {
+        let (store, entries) = try fixture()
+        try Data(repeating: 1, count: 1024).write(to: store.fileURL(entries[0]))
+        try store.database().saveAudioPin(entries[0])
+        let library = makeLibrary(localStore: store)
+        await library.openSavedLocalLibrary()
+        await library.inventoryTask?.value
+        let catalog = try XCTUnwrap(library.localCatalog?.id)
+        var album = OfflineSaveRequest(id: "album", library: catalog, entries: Array(entries.prefix(3)),
+                                       completed: [entries[0].trackSaveIdentity], state: .failed)
+        album.failedTracks = [entries[1].track.id]
+        library.transfer.saveRequests = [album]
+        // Saved, so the album's failure is not this track's.
+        XCTAssertNil(library.saveRequest(for: [entries[0].track], scope: "track:\(entries[0].track.id)"))
+        XCTAssertEqual(library.saveRequest(for: [entries[1].track], scope: "track:\(entries[1].track.id)")?.state, .failed)
+        // Not saved and not failed: it can be saved on its own.
+        XCTAssertNil(library.saveRequest(for: [entries[2].track], scope: "track:\(entries[2].track.id)"))
+    }
+
+    func testPartialDeletionKeepsLeftoverRequestsFromSavingAgain() async throws {
+        let (fixtureStore, entries) = try fixture()
+        var store = fixtureStore
+        try Data(repeating: 1, count: 1024).write(to: store.fileURL(entries[0]))
+        try store.database().saveAudioPin(entries[0])
+        let undeletable = store.fileURL(entries[0])
+        store.removeFile = { url in
+            if url.lastPathComponent == undeletable.lastPathComponent { throw CocoaError(.fileWriteNoPermission) }
+            try FileManager.default.removeItem(at: url)
+        }
+        let transfer = try await hostTransfer(store)
+        let library = try XCTUnwrap(transfer.hostConnection?.library)
+        var album = OfflineSaveRequest(id: "album", library: library, entries: [entries[0], entries[1]], state: .waiting)
+        album.failedTracks = [entries[1].track.id]
+        transfer.saveRequests = [album]
+        do {
+            try await transfer.removeAllSavedAudio()
+            XCTFail("Reported success while the file remained")
+        } catch LocalMusicError.removalIncomplete {}
+        try await settled(transfer)
+        let kept = try XCTUnwrap(transfer.saveRequests.first)
+        XCTAssertEqual(kept.entries.map(\.track.id), [entries[0].track.id])
+        XCTAssertTrue(kept.failedTracks.isEmpty, "The failure of a track whose request was removed does not stay")
+        XCTAssertFalse(kept.isPending)
+        XCTAssertNil(transfer.saveWorker)
+        let queue = try JSONDecoder().decode([OfflineSaveRequest].self, from: Data(contentsOf: store.root.appendingPathComponent("offline-saves.json")))
+        XCTAssertEqual(queue.first?.isPending, false)
+        transfer.store.removeFile = { try FileManager.default.removeItem(at: $0) }
+    }
+
+    func testQueueWrittenBeforeUnresolvedTracksStillDecodes() throws {
+        let (store, entries) = try fixture()
+        let entry = String(decoding: try JSONEncoder().encode(entries[0]), as: UTF8.self)
+        let old = #"[{"id":"track:track-1","library":"library","entries":["# + entry + #"],"completed":[],"state":"waiting"}]"#
+        try store.prepare()
+        try Data(old.utf8).write(to: store.root.appendingPathComponent("offline-saves.json"))
+        let transfer = LocalTransfer(store: store, pathMonitor: nil)
+        let request = try XCTUnwrap(transfer.saveRequests.first)
+        XCTAssertEqual(request.entries, [entries[0]])
+        XCTAssertTrue(request.unresolved.isEmpty)
+        XCTAssertFalse(request.manual)
+        XCTAssertTrue(request.failedTracks.isEmpty)
+        XCTAssertEqual(request.state, .waiting)
+    }
+
+    func testRequestWithATrackGoneFromTheWholeCatalogStaysFailedAfterRestart() async throws {
+        let (store, _) = try fixture()
+        let transfer = try await hostTransfer(store)
+        let library = try XCTUnwrap(transfer.hostConnection?.library)
+        let gone = Track(id: "track-gone", title: "Gone", artist: "Artist", suffix: "mp3", size: 3)
+        // The catalog has no unreadable rows, so a track it lacks has left the host.
+        transfer.saveRequests = [OfflineSaveRequest(id: "album", library: library, entries: [], unresolved: [gone], manual: true)]
+        let failed = expectation(description: "request failed")
+        let observation = transfer.$saveRequests.filter { $0.first?.state == .failed }.first().sink { _ in failed.fulfill() }
+        transfer.resumeSaves()
+        await fulfillment(of: [failed], timeout: 15)
+        observation.cancel()
+        transfer.stopSaveWorker()
+        XCTAssertEqual(transfer.saveRequests.first?.failedTracks, [gone.id])
+
+        let reopened = LocalTransfer(store: store, pathMonitor: nil)
+        let restored = try XCTUnwrap(reopened.saveRequests.first)
+        XCTAssertEqual(restored.state, .failed)
+        XCTAssertEqual(restored.failedTracks, [gone.id])
+        XCTAssertEqual(restored.trackCount, 1)
+
+        let shown = makeLibrary(localStore: store)
+        await shown.openSavedLocalLibrary()
+        shown.transfer.saveRequests = reopened.saveRequests
+        let progress = shown.saveProgress(for: [], scope: "album")
+        XCTAssertTrue(progress.failed)
+        XCTAssertFalse(progress.allSaved)
+    }
+
+    func testPartialDeletionKeepsOnlyRequestsForFilesLeftBehind() async throws {
+        let (fixtureStore, entries) = try fixture()
+        var store = fixtureStore
+        try Data(repeating: 1, count: 1024).write(to: store.fileURL(entries[0]))
+        try store.database().saveAudioPin(entries[0])
+        let undeletable = store.fileURL(entries[0])
+        store.removeFile = { url in
+            if url.lastPathComponent == undeletable.lastPathComponent { throw CocoaError(.fileWriteNoPermission) }
+            try FileManager.default.removeItem(at: url)
+        }
+        let transfer = try await hostTransfer(store)
+        try breakStoredHostEntry(entries[1].track.id, in: store)
+        let library = try XCTUnwrap(transfer.hostConnection?.library)
+        transfer.saveRequests = [
+            OfflineSaveRequest(id: "track:track-1", library: library, entries: [entries[0]],
+                               completed: [entries[0].trackSaveIdentity], state: .complete),
+            OfflineSaveRequest(id: "track:broken", library: library, entries: [], unresolved: [entries[1].track])
+        ]
+        do {
+            try await transfer.removeAllSavedAudio()
+            XCTFail("Reported success while the file remained")
+        } catch LocalMusicError.removalIncomplete {}
+        try await settled(transfer)
+        // The waiting save for the unreadable track is gone, so nothing fetches it again; the request for
+        // the file that stayed is kept so a later removal can try it.
+        XCTAssertEqual(transfer.saveRequests.map(\.id), ["track:track-1"])
+        XCTAssertEqual(transfer.saveRequests.first?.state, .complete)
+        let queue = try JSONDecoder().decode([OfflineSaveRequest].self, from: Data(contentsOf: store.root.appendingPathComponent("offline-saves.json")))
+        XCTAssertEqual(queue.map(\.id), ["track:track-1"])
+        XCTAssertTrue(queue.allSatisfy { $0.unresolved.isEmpty })
+        XCTAssertNil(transfer.saveWorker)
+        transfer.store.removeFile = { try FileManager.default.removeItem(at: $0) }
     }
 
     func testDeletingAllSavedMusicDoesNotWaitForAHostRefresh() async throws {
@@ -400,6 +678,21 @@ final class OfflineSaveTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(attempts, 2)
         XCTAssertEqual(library.localCatalog?.source, .host)
         XCTAssertEqual(library.tracks.count, entries.count)
+    }
+
+    func testRetainedCatalogWithAnUnreadableEntryStillOpensItsSavedMusic() async throws {
+        let (store, entries) = try fixture()
+        try Data(repeating: 1, count: 1024).write(to: store.fileURL(entries[0]))
+        try store.database().saveAudioPin(entries[0])
+        _ = try store.database().forgetHost()
+        try breakStoredHostEntry(entries[1].track.id, in: store)
+        let library = makeLibrary(localStore: store)
+        await library.restoreLibrary()
+        XCTAssertEqual(library.localCatalog?.source, .host)
+        XCTAssertEqual(Set(library.tracks.map(\.id)), [entries[0].track.id, entries[2].track.id])
+        try await waitFor { library.localFiles[entries[0].track.id] != nil }
+        let url = try await library.transfer.playbackFile(entries[0].track, allowAcquisition: false)
+        XCTAssertEqual(url.resolvingSymlinksInPath().path, store.fileURL(entries[0]).resolvingSymlinksInPath().path)
     }
 
     func testRestoreRetriesAfterTheTaskThatStartedItIsCancelled() async throws {
@@ -649,6 +942,24 @@ final class OfflineSaveTests: XCTestCase {
         try await settled(transfer)
         XCTAssertEqual(transfer.status, status)
         XCTAssertTrue(transfer.saveRequests.isEmpty)
+    }
+
+    func testHealthySaveCompletesWhileAnUnreadableTrackWaits() async throws {
+        let (store, entries) = try fixture()
+        let transfer = try await hostTransfer(store)
+        try breakStoredHostEntry(entries[1].track.id, in: store)
+        try cache(entries[0], transfer: transfer, number: 1)
+        let library = try XCTUnwrap(transfer.hostConnection?.library)
+        transfer.saveRequests = [
+            OfflineSaveRequest(id: "track:broken", library: library, entries: [entries[1]]),
+            OfflineSaveRequest(id: "track:healthy", library: library, entries: [entries[0]])
+        ]
+        transfer.saveRetryInterval = .seconds(60)
+        transfer.resumeSaves()
+        try await settled(transfer)
+        XCTAssertEqual(transfer.saveRequests.map(\.state), [.waiting, .complete])
+        XCTAssertNotNil(transfer.saveRetry, "The unreadable track waits for the next try")
+        transfer.saveRetry?.cancel()
     }
 
     func testPendingSaveRetriesAfterUnreadableSnapshotRecovers() async throws {

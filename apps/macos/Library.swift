@@ -405,7 +405,7 @@ final class Library: ObservableObject {
     func reload() {
         guard !transfer.retainsHostCatalog else { return }
         transfer.connectionEvent("library_reload_called")
-        if transfer.hasLibrarySource { transfer.refreshConnection() }
+        transfer.refreshRequested()
     }
 
     private func applyLocal(_ prepared: PreparedLocalCatalog) throws {

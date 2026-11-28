@@ -512,7 +512,7 @@ struct LibraryView: View {
                         Text("保存の解除待ち")
                     } else if let request = library.saveRequest(for: [track], scope: "track:" + track.id),
                        [.waiting, .wifi, .saving].contains(request.state) {
-                        Button(request.entries.count > 1 ? "アルバム保存を中止" : "保存を中止") { library.transfer.cancelSave(request) }
+                        Button(request.trackCount > 1 ? "アルバム保存を中止" : "保存を中止") { library.transfer.cancelSave(request) }
                     } else if library.localFiles[track.id] == nil {
                         Button("この端末に保存") { Task { await library.transfer.requestSave([track], scope: "track:" + track.id) } }
                     }

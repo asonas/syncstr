@@ -359,10 +359,12 @@ struct PhoneRoot: View {
                             }
                         }
                         .overlay(alignment: .bottom) {
-                            if library.showsOfflineSaveControls, let request = library.saveRequest(for: album.tracks, scope: "album:" + album.id),
-                               [.waiting, .wifi, .saving].contains(request.state) {
-                                Text("\(album.tracks.filter { library.localFiles[$0.id] != nil }.count)/\(album.tracks.count)曲を保存済み")
-                                    .font(.caption).foregroundStyle(.secondary).offset(y: 20)
+                            if library.showsOfflineSaveControls {
+                                let progress = library.saveProgress(for: album.tracks, scope: "album:" + album.id)
+                                if progress.pending {
+                                    Text("\(progress.saved)/\(progress.total)曲を保存済み")
+                                        .font(.caption).foregroundStyle(.secondary).offset(y: 20)
+                                }
                             }
                         }
                     }

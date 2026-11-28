@@ -32,6 +32,24 @@ private final class PausedPlaybackCache: PlaybackCache {
     }
 }
 
+private final class CatalogRequestTags: @unchecked Sendable {
+    private let lock = NSLock()
+    private var recorded: [String?] = []
+
+    var values: [String?] { lock.withLock { recorded } }
+    func append(_ tag: String?) { lock.withLock { recorded.append(tag) } }
+}
+
+private final class LockedFlag: @unchecked Sendable {
+    private let lock = NSLock()
+    private var stored = false
+
+    var value: Bool {
+        get { lock.withLock { stored } }
+        set { lock.withLock { stored = newValue } }
+    }
+}
+
 private final class HostResponseGate: @unchecked Sendable {
     private let lock = NSLock()
     private var responses: [() -> Void] = []
@@ -436,6 +454,417 @@ final class HostAPITests: XCTestCase {
         try await reopened.disconnectHost()
         XCTAssertNil(reopened.hostRefreshedAt)
         XCTAssertNil(try files.database().hostRefreshedAt())
+    }
+
+    func testUnreadableStoredEntryMakesTheNextRefreshFetchTheWholeCatalog() async throws {
+        let (reply, _, _) = try fixture()
+        let files = store()
+        let address = try HostAddress("https://confirmed.example.test")
+        let initial = makeTransfer(store: files, hostConfiguration: configuration { _ in reply })
+        _ = try await initial.confirmHost(address, information: hostInformation(address))
+        try breakStoredHostEntry("track-b", in: files)
+
+        let tags = CatalogRequestTags()
+        let reopened = makeTransfer(store: files, hostConfiguration: configuration { request in
+            guard request.url?.lastPathComponent == "catalog" else { return reply }
+            let tag = request.value(forHTTPHeaderField: "If-None-Match")
+            tags.append(tag)
+            return tag == nil ? reply : HostReply(status: 304)
+        })
+        var published: [String] = []
+        reopened.onCatalog = { published = $0.catalog.entries.map(\.track.id) }
+        await reopened.restoreHost()
+        XCTAssertEqual(published, ["track-a"])
+
+        let first = try await reopened.refreshHost()
+        XCTAssertEqual(first, .updated)
+        XCTAssertEqual(published, ["track-a", "track-b"])
+        XCTAssertEqual(try files.database().snapshot()?.unreadableEntries, 0)
+        let second = try await reopened.refreshHost()
+        XCTAssertEqual(second, .unchanged)
+        XCTAssertEqual(tags.values.map { $0 == nil }, [true, false])
+    }
+
+    func testReconnectingToTheSameHostRepairsARowThatBrokeAfterLaunch() async throws {
+        let (reply, _, _) = try fixture()
+        let files = store()
+        let address = try HostAddress("https://confirmed.example.test")
+        let tags = CatalogRequestTags()
+        let transfer = makeTransfer(store: files, hostConfiguration: configuration { request in
+            guard request.url?.lastPathComponent == "catalog" else { return reply }
+            let tag = request.value(forHTTPHeaderField: "If-None-Match")
+            tags.append(tag)
+            return tag == nil ? reply : HostReply(status: 304)
+        })
+        _ = try await transfer.confirmHost(address, information: hostInformation(address))
+        try breakStoredHostEntry("track-b", in: files)
+
+        let result = try await transfer.confirmHost(address, information: hostInformation(address))
+        XCTAssertEqual(result, .updated)
+        XCTAssertEqual(try files.database().snapshot()?.unreadableEntries, 0)
+        XCTAssertEqual(tags.values.map { $0 == nil }, [true, true])
+    }
+
+    func testHealthyTrackAfterABrokenOneInTheSameAlbumStillDownloads() async throws {
+        let (reply, _, _) = try fixture()
+        let files = store()
+        let address = try HostAddress("https://confirmed.example.test")
+        let tags = CatalogRequestTags()
+        let transfer = makeTransfer(store: files, hostConfiguration: configuration { request in
+            switch request.url?.path {
+            case "/api/v1/catalog":
+                // Only the first fetch succeeds, so a repair fails and the broken track stays unreadable.
+                let tag = request.value(forHTTPHeaderField: "If-None-Match")
+                tags.append(tag)
+                if tag == nil, tags.values.count > 1 { throw URLError(.cannotConnectToHost) }
+                return tag == nil ? reply : HostReply(status: 304)
+            case "/api/v1/audio/" + self.audioSHA256: return HostReply(data: Data("abc".utf8))
+            default: throw URLError(.unsupportedURL)
+            }
+        })
+        _ = try await transfer.confirmHost(address, information: hostInformation(address))
+        let entries = try XCTUnwrap(files.database().snapshot()?.catalog.entries)
+        try breakStoredHostEntry("track-a", in: files)
+        transfer.saveRetryInterval = .seconds(60)
+        transfer.saveRequests = [OfflineSaveRequest(id: "album", library: libraryID, entries: entries)]
+        let saved = expectation(description: "healthy track saved")
+        let observation = transfer.$saveRequests
+            .filter { $0.first?.state == .waiting && $0.first?.completed.contains(entries[1].trackSaveIdentity) == true }
+            .first().sink { _ in saved.fulfill() }
+        transfer.resumeSaves(explicit: "album")
+        await fulfillment(of: [saved], timeout: 15)
+        XCTAssertTrue(try files.database().hasAudioPin(entries[1]))
+        observation.cancel()
+        transfer.stopSaveWorker()
+    }
+
+    func testSavingAnUnreadableTrackRepairsTheCatalogAndThenSavesIt() async throws {
+        let (reply, _, _) = try fixture()
+        let files = store()
+        let address = try HostAddress("https://confirmed.example.test")
+        let tags = CatalogRequestTags()
+        let transfer = makeTransfer(store: files, hostConfiguration: configuration { request in
+            switch request.url?.path {
+            case "/api/v1/catalog":
+                let tag = request.value(forHTTPHeaderField: "If-None-Match")
+                tags.append(tag)
+                return tag == nil ? reply : HostReply(status: 304)
+            case "/api/v1/audio/" + self.audioSHA256: return HostReply(data: Data("abc".utf8))
+            default: throw URLError(.unsupportedURL)
+            }
+        })
+        _ = try await transfer.confirmHost(address, information: hostInformation(address))
+        let track = try XCTUnwrap(files.database().snapshot()?.catalog.entries.last?.track)
+        try breakStoredHostEntry(track.id, in: files)
+        transfer.saveRetryInterval = .milliseconds(200)
+        let complete = expectation(description: "save completed after the repair")
+        let observation = transfer.$saveRequests.filter { $0.first?.state == .complete }.first().sink { _ in complete.fulfill() }
+        await transfer.requestSave([track], scope: "track")
+        await fulfillment(of: [complete], timeout: 15)
+        XCTAssertEqual(try files.database().snapshot()?.unreadableEntries, 0)
+        XCTAssertTrue(tags.values.dropFirst().contains(nil), "The repair asked for the whole catalog")
+        observation.cancel()
+    }
+
+    func testSaveAskedForWithAnUnreadableTrackKeepsItWaitingAndSavesTheRest() async throws {
+        let (reply, _, _) = try fixture()
+        let files = store()
+        let address = try HostAddress("https://confirmed.example.test")
+        let tags = CatalogRequestTags()
+        let transfer = makeTransfer(store: files, hostConfiguration: configuration { request in
+            switch request.url?.path {
+            case "/api/v1/catalog":
+                // Only the first fetch succeeds, so a repair fails and the broken track stays unreadable.
+                let tag = request.value(forHTTPHeaderField: "If-None-Match")
+                tags.append(tag)
+                if tag == nil, tags.values.count > 1 { throw URLError(.cannotConnectToHost) }
+                return tag == nil ? reply : HostReply(status: 304)
+            case "/api/v1/audio/" + self.audioSHA256: return HostReply(data: Data("abc".utf8))
+            default: throw URLError(.unsupportedURL)
+            }
+        })
+        _ = try await transfer.confirmHost(address, information: hostInformation(address))
+        let entries = try XCTUnwrap(files.database().snapshot()?.catalog.entries)
+        try breakStoredHostEntry("track-b", in: files)
+        transfer.saveRetryInterval = .seconds(60)
+        let saved = expectation(description: "readable track saved")
+        let observation = transfer.$saveRequests
+            .filter { $0.first?.state == .waiting && $0.first?.completed.contains(entries[0].trackSaveIdentity) == true }
+            .first().sink { _ in saved.fulfill() }
+        await transfer.requestSave(entries.map(\.track), scope: "album")
+        await fulfillment(of: [saved], timeout: 15)
+        XCTAssertEqual(transfer.saveRequests.first?.entries.map(\.track.id), ["track-a"])
+        XCTAssertEqual(transfer.saveRequests.first?.unresolved.map(\.id), ["track-b"])
+        let queue = try JSONDecoder().decode([OfflineSaveRequest].self,
+                                             from: Data(contentsOf: files.root.appendingPathComponent("offline-saves.json")))
+        XCTAssertEqual(queue.first?.unresolved.map(\.id), ["track-b"])
+        observation.cancel()
+        transfer.stopSaveWorker()
+    }
+
+    func testSavesOfAKeylessRowWaitUntilTheCatalogIsWholeAgain() async throws {
+        let (reply, _, _) = try fixture()
+        let files = store()
+        let address = try HostAddress("https://confirmed.example.test")
+        let tags = CatalogRequestTags()
+        let repairable = LockedFlag()
+        let transfer = makeTransfer(store: files, hostConfiguration: configuration { request in
+            switch request.url?.path {
+            case "/api/v1/catalog":
+                let tag = request.value(forHTTPHeaderField: "If-None-Match")
+                tags.append(tag)
+                if tag == nil, tags.values.count > 1, !repairable.value { throw URLError(.cannotConnectToHost) }
+                return tag == nil ? reply : HostReply(status: 304)
+            case "/api/v1/audio/" + self.audioSHA256: return HostReply(data: Data("abc".utf8))
+            default: throw URLError(.unsupportedURL)
+            }
+        })
+        _ = try await transfer.confirmHost(address, information: hostInformation(address))
+        let entries = try XCTUnwrap(files.database().snapshot()?.catalog.entries)
+        try clearStoredHostEntryKey("track-b", in: files)
+        transfer.saveRetryInterval = .milliseconds(100)
+        transfer.catalogRepairInterval = .zero
+        transfer.saveRequests = [OfflineSaveRequest(id: "existing", library: libraryID, entries: [entries[1]])]
+        await transfer.requestSave([entries[1].track], scope: "new")
+        XCTAssertEqual(transfer.saveRequests.first { $0.id == "new" }?.unresolved.map(\.id), ["track-b"])
+        try await Task.sleep(for: .milliseconds(400))
+        XCTAssertEqual(Set(transfer.saveRequests.map(\.state)), [.waiting], "Neither save fails while the row has no key")
+
+        repairable.value = true
+        let complete = expectation(description: "both saves complete after the repair")
+        let observation = transfer.$saveRequests
+            .filter { $0.count == 2 && $0.allSatisfy { $0.state == .complete } }
+            .first().sink { _ in complete.fulfill() }
+        transfer.resumeSaves()
+        await fulfillment(of: [complete], timeout: 15)
+        observation.cancel()
+    }
+
+    func testManualSaveStaysManualAcrossTheRepairOnCellular() async throws {
+        let (reply, _, _) = try fixture()
+        let files = store()
+        let address = try HostAddress("https://confirmed.example.test")
+        let transfer = makeTransfer(store: files, hostConfiguration: configuration { request in
+            switch request.url?.path {
+            case "/api/v1/catalog":
+                return request.value(forHTTPHeaderField: "If-None-Match") == nil ? reply : HostReply(status: 304)
+            case "/api/v1/audio/" + self.audioSHA256: return HostReply(data: Data("abc".utf8))
+            default: throw URLError(.unsupportedURL)
+            }
+        })
+        _ = try await transfer.confirmHost(address, information: hostInformation(address))
+        let track = try XCTUnwrap(files.database().snapshot()?.catalog.entries.last?.track)
+        try breakStoredHostEntry(track.id, in: files)
+        // Cellular with automatic transfer off: only a save the person asked for may download.
+        transfer.savePathOverride = (cellular: true, permitsAutomatic: false)
+        transfer.saveRetryInterval = .milliseconds(100)
+        let complete = expectation(description: "manual save completed after the repair")
+        let observation = transfer.$saveRequests.filter { $0.first?.state == .complete }.first().sink { _ in complete.fulfill() }
+        await transfer.requestSave([track], scope: "track")
+        await fulfillment(of: [complete], timeout: 15)
+        XCTAssertTrue(try files.database().hasAudioPin(XCTUnwrap(files.database().snapshot()?.catalog.entries.last)))
+        observation.cancel()
+    }
+
+    func testRepairJoinsTheWholeCatalogFetchAlreadyRunning() async throws {
+        let (reply, _, _) = try fixture()
+        let files = store()
+        let address = try HostAddress("https://confirmed.example.test")
+        let initial = makeTransfer(store: files, hostConfiguration: configuration { _ in reply })
+        _ = try await initial.confirmHost(address, information: hostInformation(address))
+        try breakStoredHostEntry("track-b", in: files)
+
+        let tags = CatalogRequestTags()
+        let entered = expectation(description: "whole fetch started")
+        let release = DispatchSemaphore(value: 0)
+        defer { release.signal() }
+        let transfer = makeTransfer(store: files, hostConfiguration: configuration { request in
+            guard request.url?.path == "/api/v1/catalog" else { throw URLError(.unsupportedURL) }
+            let tag = request.value(forHTTPHeaderField: "If-None-Match")
+            tags.append(tag)
+            if tag == nil, tags.values.filter({ $0 == nil }).count == 1 {
+                entered.fulfill()
+                _ = release.wait(timeout: .now() + 10)
+            }
+            throw URLError(.cannotConnectToHost)
+        })
+        let start = ContinuousClock.now
+        var now = start
+        transfer.catalogRepairNow = { now }
+        await transfer.restoreHost()
+        transfer.refreshConnection()
+        await fulfillment(of: [entered], timeout: 10)
+        // The save worker asks while the whole fetch runs; it rides on that fetch instead of queueing another.
+        transfer.requestCatalogRepair(1, for: libraryID)
+        // The fetch takes half an interval, so counting from its end would still hold the next repair back below.
+        now = start + transfer.catalogRepairInterval / 2
+        release.signal()
+        try await Task.sleep(for: .milliseconds(500))
+        XCTAssertEqual(tags.values.filter { $0 == nil }.count, 1)
+
+        // The interval counts from the start of that fetch.
+        transfer.requestCatalogRepair(1, for: libraryID)
+        try await Task.sleep(for: .milliseconds(300))
+        XCTAssertEqual(tags.values.filter { $0 == nil }.count, 1)
+        now = start + transfer.catalogRepairInterval + .seconds(1)
+        transfer.requestCatalogRepair(1, for: libraryID)
+        for _ in 0..<100 where tags.values.filter({ $0 == nil }).count < 2 { try await Task.sleep(for: .milliseconds(20)) }
+        XCTAssertEqual(tags.values.filter { $0 == nil }.count, 2)
+    }
+
+    func testRepairAskedForWhileARefreshIsBeingPreparedJoinsIt() async throws {
+        let (reply, _, _) = try fixture()
+        let files = store()
+        let address = try HostAddress("https://confirmed.example.test")
+        let initial = makeTransfer(store: files, hostConfiguration: configuration { _ in reply })
+        _ = try await initial.confirmHost(address, information: hostInformation(address))
+        try breakStoredHostEntry("track-b", in: files)
+
+        let tags = CatalogRequestTags()
+        let transfer = makeTransfer(store: files, hostConfiguration: configuration { request in
+            guard request.url?.path == "/api/v1/catalog" else { throw URLError(.unsupportedURL) }
+            tags.append(request.value(forHTTPHeaderField: "If-None-Match"))
+            throw URLError(.cannotConnectToHost)
+        })
+        await transfer.restoreHost()
+        // Holding the catalog queue keeps the refresh between its start and the ETag decision.
+        let hold = DispatchSemaphore(value: 0)
+        defer { hold.signal() }
+        let entered = DispatchSemaphore(value: 0)
+        let blocker = Task.detached { try await CatalogStorage.shared.perform { entered.signal(); _ = hold.wait(timeout: .now() + 15) } }
+        let holding = await Task.detached { entered.wait(timeout: .now() + 15) }.value
+        guard holding == .success else { return XCTFail("The catalog queue was not held") }
+        let preparing = expectation(description: "refresh is being prepared")
+        transfer.onHostRefreshPreparing = { preparing.fulfill() }
+        transfer.refreshConnection()
+        await fulfillment(of: [preparing], timeout: 10)
+        transfer.onHostRefreshPreparing = nil
+        transfer.requestCatalogRepair(1, for: libraryID)
+        hold.signal()
+        try await blocker.value
+        for _ in 0..<100 where tags.values.isEmpty { try await Task.sleep(for: .milliseconds(20)) }
+        try await Task.sleep(for: .milliseconds(500))
+        XCTAssertEqual(tags.values.filter { $0 == nil }.count, 1, "The repair rode on the refresh being prepared")
+        XCTAssertEqual(tags.values.count, 1)
+    }
+
+    func testRefreshThePersonAsksForRepairsARowThatBrokeAfterLaunch() async throws {
+        let (reply, _, _) = try fixture()
+        let files = store()
+        let address = try HostAddress("https://confirmed.example.test")
+        let tags = CatalogRequestTags()
+        let library = makeLibrary(localStore: files, hostConfiguration: configuration { request in
+            guard request.url?.lastPathComponent == "catalog" else { return reply }
+            let tag = request.value(forHTTPHeaderField: "If-None-Match")
+            tags.append(tag)
+            return tag == nil ? reply : HostReply(status: 304)
+        })
+        _ = try await library.transfer.confirmHost(address, information: hostInformation(address))
+        // A repair ran just now, so an automatic refresh would keep the ETag for the whole interval.
+        library.transfer.catalogRepairInterval = .seconds(3600)
+        library.transfer.requestCatalogRepair(1, for: libraryID)
+        for _ in 0..<500 where tags.values.count < 2 { try await Task.sleep(for: .milliseconds(10)) }
+        try breakStoredHostEntry("track-b", in: files)
+
+        // The sidebar button and pull to refresh are the person's request: no interval, and the stored rows are checked.
+        library.reload()
+        for _ in 0..<500 {
+            if try files.database().snapshot()?.unreadableEntries == 0 { break }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertEqual(try files.database().snapshot()?.unreadableEntries, 0)
+        XCTAssertEqual(tags.values.last ?? "missing", nil)
+    }
+
+    func testRefreshThePersonAsksForReachesTheHostWhenTheStoredHeaderBroke() async throws {
+        let (reply, _, _) = try fixture()
+        let files = store()
+        let address = try HostAddress("https://confirmed.example.test")
+        let tags = CatalogRequestTags()
+        let transfer = makeTransfer(store: files, hostConfiguration: configuration { request in
+            guard request.url?.lastPathComponent == "catalog" else { return reply }
+            let tag = request.value(forHTTPHeaderField: "If-None-Match")
+            tags.append(tag)
+            return tag == nil ? reply : HostReply(status: 304)
+        })
+        _ = try await transfer.confirmHost(address, information: hostInformation(address))
+        var connection: OpaquePointer?
+        XCTAssertEqual(sqlite3_open(files.root.appendingPathComponent("catalog.sqlite").path, &connection), SQLITE_OK)
+        XCTAssertEqual(sqlite3_exec(connection, "UPDATE host_connection SET header = '{'", nil, nil, nil), SQLITE_OK)
+        sqlite3_close(connection)
+        XCTAssertThrowsError(try files.database().snapshot())
+
+        // An unreadable stored catalog must not stop the refresh before the host is asked for the whole one.
+        _ = try await transfer.refreshHost()
+        XCTAssertEqual(tags.values.last ?? "missing", nil)
+        XCTAssertEqual(try files.database().snapshot()?.unreadableEntries, 0)
+    }
+
+    func testRowStillUnreadableAfterTheWholeCatalogIsRecordedAsTheHosts() async throws {
+        let (reply, _, _) = try fixture()
+        let files = store()
+        let address = try HostAddress("https://confirmed.example.test")
+        let transfer = makeTransfer(store: files, hostConfiguration: configuration { request in
+            guard request.url?.lastPathComponent == "catalog" else { return reply }
+            return request.value(forHTTPHeaderField: "If-None-Match") == nil ? reply : HostReply(status: 304)
+        })
+        _ = try await transfer.confirmHost(address, information: hostInformation(address))
+        try breakStoredHostEntry("track-b", in: files)
+        // The whole catalog is written again, and the row breaks once more right after, as if the host sent it unusable.
+        let result = try await transfer.confirmHost(address, information: hostInformation(address)) {
+            try? breakStoredHostEntry("track-b", in: files)
+        }
+        XCTAssertEqual(result, .updated)
+        XCTAssertEqual(transfer.unrepairableIDs, ["track-b"])
+    }
+
+    func testAutomaticRefreshWithinTheIntervalSendsTheETag() async throws {
+        let (reply, _, _) = try fixture()
+        let files = store()
+        let address = try HostAddress("https://confirmed.example.test")
+        let initial = makeTransfer(store: files, hostConfiguration: configuration { _ in reply })
+        _ = try await initial.confirmHost(address, information: hostInformation(address))
+        try breakStoredHostEntry("track-b", in: files)
+
+        let tags = CatalogRequestTags()
+        let transfer = makeTransfer(store: files, hostConfiguration: configuration { request in
+            guard request.url?.path == "/api/v1/catalog" else { throw URLError(.unsupportedURL) }
+            tags.append(request.value(forHTTPHeaderField: "If-None-Match"))
+            throw URLError(.cannotConnectToHost)
+        })
+        let start = ContinuousClock.now
+        transfer.catalogRepairNow = { start }
+        await transfer.restoreHost()
+        transfer.refreshConnection()
+        for _ in 0..<500 where tags.values.isEmpty { try await Task.sleep(for: .milliseconds(10)) }
+        XCTAssertEqual(tags.values, [nil], "The first refresh after reading broken rows fetches the whole catalog")
+
+        // The repair failed and the interval has not passed, so the next automatic refresh keeps the ETag.
+        transfer.refreshConnection()
+        for _ in 0..<500 where tags.values.count < 2 { try await Task.sleep(for: .milliseconds(10)) }
+        XCTAssertEqual(tags.values.count, 2)
+        XCTAssertNotNil(tags.values.last ?? nil)
+    }
+
+    func testRowWithoutAKeyMakesReconnectingFetchTheWholeCatalog() async throws {
+        let (reply, _, _) = try fixture()
+        let files = store()
+        let address = try HostAddress("https://confirmed.example.test")
+        let tags = CatalogRequestTags()
+        let transfer = makeTransfer(store: files, hostConfiguration: configuration { request in
+            guard request.url?.lastPathComponent == "catalog" else { return reply }
+            let tag = request.value(forHTTPHeaderField: "If-None-Match")
+            tags.append(tag)
+            return tag == nil ? reply : HostReply(status: 304)
+        })
+        _ = try await transfer.confirmHost(address, information: hostInformation(address))
+        try clearStoredHostEntryKey("track-b", in: files)
+        XCTAssertEqual(try files.database().snapshot()?.unreadableEntries, 1)
+
+        let result = try await transfer.confirmHost(address, information: hostInformation(address))
+        XCTAssertEqual(result, .updated)
+        XCTAssertEqual(try files.database().snapshot()?.unreadableEntries, 0)
+        XCTAssertEqual(tags.values.map { $0 == nil }, [true, true])
     }
 
     func testCommittedSwitchIsPublishedBeforeConditionalRefresh() async throws {

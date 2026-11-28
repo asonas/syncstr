@@ -9,8 +9,59 @@ struct OfflineSaveRequest: Codable, Identifiable {
     var completed: Set<String> = []
     var state: State = .waiting
     var error: String?
+    /// Tracks whose stored rows were unreadable when the save was asked for. Their content is unknown
+    /// until the catalog is read again. An older version decodes the queue without this field and writes it
+    /// back, so these tracks are lost after a downgrade; keeping them through one is not a requirement.
+    var unresolved: [Track] = []
+    /// A save the person asked for, which may use cellular data. It stays manual across retries.
+    var manual = false
+    /// Track IDs that cannot be saved, such as a track the host removed. They are not tried again in this request.
+    var failedTracks: Set<String> = []
 
     var isPending: Bool { [.waiting, .wifi, .saving].contains(state) }
+    var trackCount: Int {
+        entries.count + unresolved.count + failedTracks.filter { id in !entries.contains { $0.track.id == id } }.count
+    }
+
+    init(id: String, library: String, entries: [LocalEntry], completed: Set<String> = [], state: State = .waiting,
+         error: String? = nil, unresolved: [Track] = [], manual: Bool = false) {
+        self.id = id
+        self.library = library
+        self.entries = entries
+        self.completed = completed
+        self.state = state
+        self.error = error
+        self.unresolved = unresolved
+        self.manual = manual
+    }
+
+    private enum CodingKeys: String, CodingKey { case id, library, entries, completed, state, error, unresolved, manual, failedTracks }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(String.self, forKey: .id)
+        library = try container.decode(String.self, forKey: .library)
+        entries = try container.decode([LocalEntry].self, forKey: .entries)
+        completed = try container.decode(Set<String>.self, forKey: .completed)
+        state = try container.decode(State.self, forKey: .state)
+        error = try container.decodeIfPresent(String.self, forKey: .error)
+        unresolved = try container.decodeIfPresent([Track].self, forKey: .unresolved) ?? []
+        manual = try container.decodeIfPresent(Bool.self, forKey: .manual) ?? false
+        failedTracks = try container.decodeIfPresent(Set<String>.self, forKey: .failedTracks) ?? []
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(id, forKey: .id)
+        try container.encode(library, forKey: .library)
+        try container.encode(entries, forKey: .entries)
+        try container.encode(completed, forKey: .completed)
+        try container.encode(state, forKey: .state)
+        try container.encodeIfPresent(error, forKey: .error)
+        try container.encode(unresolved, forKey: .unresolved)
+        try container.encode(manual, forKey: .manual)
+        try container.encode(failedTracks, forKey: .failedTracks)
+    }
 }
 
 extension Library {
@@ -18,12 +69,41 @@ extension Library {
 
     func saveRequest(for tracks: [Track], scope: String) -> OfflineSaveRequest? {
         guard let catalog = localCatalog else { return nil }
-        return transfer.saveRequests.first { $0.library == catalog.id && $0.id == scope }
-            ?? (tracks.count == 1 ? transfer.saveRequests.last { request in
-                request.library == catalog.id && request.entries.contains { $0.track.id == tracks[0].id }
-                    && request.state != .complete && request.state != .cancelled
-            } : nil)
+        if let own = transfer.saveRequests.first(where: { $0.library == catalog.id && $0.id == scope }) { return own }
+        guard tracks.count == 1, let track = tracks.first, !hasManagedCopy(track),
+              var request = transfer.saveRequests.last(where: { request in
+                  request.library == catalog.id
+                      && (request.entries.contains { $0.track.id == track.id } || request.unresolved.contains { $0.id == track.id }
+                          || request.failedTracks.contains(track.id))
+                      && request.state != .complete && request.state != .cancelled
+              }) else { return nil }
+        // A request of another scope, such as the album, describes this track only by the track's own state.
+        if request.failedTracks.contains(track.id) {
+            request.state = .failed
+        } else if request.state == .failed {
+            return nil
+        }
+        return request
     }
+
+    /// A pending or failed save of this scope comes first: it can hold tracks that the displayed catalog lacks,
+    /// so the shown tracks alone would look saved.
+    func saveProgress(for tracks: [Track], scope: String) -> SaveProgress {
+        let request = saveRequest(for: tracks, scope: scope)
+        let pending = request?.isPending ?? false
+        let failed = request?.state == .failed
+        var total = tracks.count
+        if pending || failed, let request, request.id == scope { total = max(total, request.trackCount) }
+        return SaveProgress(saved: tracks.filter(hasManagedCopy).count, total: total, pending: pending, failed: failed)
+    }
+}
+
+struct SaveProgress: Equatable {
+    var saved: Int
+    var total: Int
+    var pending: Bool
+    var failed = false
+    var allSaved: Bool { !pending && !failed && total > 0 && saved == total }
 }
 
 extension LocalEntry {
@@ -50,20 +130,49 @@ extension LocalTransfer {
             } onCancel: {
                 preparation.cancel()
             }
-            guard let catalog = snapshot?.catalog else { throw LocalMusicError.invalidData }
+            guard let snapshot else { throw LocalMusicError.invalidData }
+            let catalog = snapshot.catalog
             try Task.checkCancellation()
             guard preparingSaves[scope]?.token == token else { return }
-            let entries = catalog.entries.filter { ids.contains($0.track.id) }
-            guard entries.count == ids.count, !entries.isEmpty else { throw LocalMusicError.invalidData }
-            // A save asked for while everything is being removed is queued after the removal.
+            // A save asked for while everything is being removed is queued after the removal,
+            // and reads the earlier request only once the removal has emptied it.
             if let removal = removingAllSaves {
                 _ = await removal.result
                 try Task.checkCancellation()
                 guard preparingSaves[scope]?.token == token else { return }
             }
+            let byID = Dictionary(catalog.entries.map { ($0.track.id, $0) }, uniquingKeysWith: { first, _ in first })
+            // Asking again gives a track the host sent unusable another repair.
+            unrepairableIDs.subtract(ids)
+            if tracks.contains(where: { snapshot.unreadableIDs.contains($0.id) }) { resetCatalogRepairInterval() }
+            // A retry carries the tracks of the earlier request, including ones the displayed list no longer shows.
+            let previous = saveRequests.first { $0.library == catalog.id && $0.id == scope && $0.state != .cancelled && $0.state != .complete }
+            var wanted = tracks
+            var failedTracks = Set<String>()
+            if let previous {
+                wanted += previous.entries.map(\.track) + previous.unresolved
+                let known = Set(wanted.map(\.id))
+                for id in previous.failedTracks where !known.contains(id) {
+                    if let entry = byID[id] { wanted.append(entry.track) } else { failedTracks.insert(id) }
+                }
+            }
+            var entries: [LocalEntry] = []
+            var unresolved: [Track] = []
+            var seen = Set<String>()
+            for track in wanted where seen.insert(track.id).inserted {
+                if let entry = byID[track.id] { entries.append(entry) }
+                // A missing track may be an unreadable row, so it waits for the catalog to be read again.
+                else if snapshot.mayHold(track.id) { unresolved.append(track) }
+                else if previous != nil { failedTracks.insert(track.id) }
+                else { throw LocalMusicError.invalidData }
+            }
+            guard !entries.isEmpty || !unresolved.isEmpty else { throw LocalMusicError.invalidData }
             stopSaveWorker()
             var updated = saveRequests.filter { $0.library != catalog.id || $0.id != scope }
-            updated.append(OfflineSaveRequest(id: scope, library: catalog.id, entries: entries))
+            var request = OfflineSaveRequest(id: scope, library: catalog.id, entries: entries, unresolved: unresolved, manual: true)
+            request.failedTracks = failedTracks
+            if !failedTracks.isEmpty { request.error = LocalMusicError.invalidData.localizedDescription }
+            updated.append(request)
             try persistSaves(updated)
             resumeSaves(explicit: scope)
         } catch is CancellationError {
@@ -93,10 +202,12 @@ extension LocalTransfer {
     func cancelSaves(containing tracks: [Track]) throws {
         let ids = Set(tracks.map(\.id))
         var updated = saveRequests
-        for index in updated.indices where updated[index].entries.contains(where: { ids.contains($0.track.id) }) {
+        for index in updated.indices where updated[index].entries.contains(where: { ids.contains($0.track.id) })
+            || updated[index].unresolved.contains(where: { ids.contains($0.id) }) {
             if let library = hostConnection?.library ?? retainedHostLibrary, updated[index].library != library { continue }
             let remaining = updated[index].entries.filter { !ids.contains($0.track.id) }
-            if remaining.isEmpty {
+            updated[index].unresolved.removeAll { ids.contains($0.id) }
+            if remaining.isEmpty && updated[index].unresolved.isEmpty {
                 updated[index].state = .cancelled
             } else {
                 updated[index].entries = remaining
@@ -113,8 +224,11 @@ extension LocalTransfer {
 
     func restoreSaves() {
         do {
+            // Written only by an earlier build of this change; the queue now holds everything.
+            try? FileManager.default.removeItem(at: store.root.appendingPathComponent("offline-saves-unresolved.json"))
             let url = store.root.appendingPathComponent("offline-saves.json")
             guard FileManager.default.fileExists(atPath: url.path) else { return }
+            // A queue that cannot be decoded throws before anything is written, so the file is kept as it is.
             var restored = try JSONDecoder().decode([OfflineSaveRequest].self, from: Data(contentsOf: url))
             for index in restored.indices {
                 let entries = restored[index].entries.filter(LocalMusicStore.valid)
@@ -129,7 +243,7 @@ extension LocalTransfer {
                 }
                 if restored[index].state == .saving { restored[index].state = .waiting }
             }
-            restored.removeAll { $0.entries.isEmpty }
+            restored.removeAll { $0.entries.isEmpty && $0.unresolved.isEmpty && $0.failedTracks.isEmpty }
             try persistSaves(restored)
         } catch { status = "保存待ちを読み込めませんでした。\(error.localizedDescription)" }
     }
@@ -186,25 +300,60 @@ extension LocalTransfer {
             do {
                 try Task.checkCancellation()
                 guard saveGeneration == token else { return }
-                guard let catalog = try await store.snapshotInBackground()?.catalog,
-                      hostConnection?.library == catalog.id else { return }
+                guard let snapshot = try await store.snapshotInBackground(),
+                      hostConnection?.library == snapshot.catalog.id else { return }
+                let catalog = snapshot.catalog
                 try Task.checkCancellation()
                 guard saveGeneration == token else { return }
                 processableLibrary = catalog.id
+                // A track the catalog lacks waits only while it may be one of the unreadable rows. A row the whole
+                // catalog left unreadable is the host's, so its save fails instead of waiting for a repair.
+                let unrepairable = unrepairableIDs
+                func waitsForRepair(_ id: String) -> Bool { snapshot.mayHold(id) && !unrepairable.contains(id) }
+                let repairable = snapshot.unreadableIDs.subtracting(unrepairable).count + snapshot.unreadableWithoutID
+                if repairable > 0 { requestCatalogRepair(repairable, for: catalog.id) }
+                let unusable = "ホストのライブラリにあるこの曲の情報を読み込めないため、保存できません。"
+                let byID = Dictionary(catalog.entries.map { ($0.track.id, $0) }, uniquingKeysWith: { first, _ in first })
                 for index in saveRequests.indices {
                     guard saveRequests[index].library == catalog.id, saveRequests[index].isPending else { continue }
                     try Task.checkCancellation()
-                    let request = saveRequests[index]
-                    let automatic = request.id != explicit
+                    let automatic = !saveRequests[index].manual && saveRequests[index].id != explicit
                     var failure: String?
+                    // `waiting` keeps the request pending; `holdDownloads` stops fetching for the rest of it.
+                    // A track that waits for the catalog only sets `waiting`, so healthy tracks after it still download.
                     var waiting = false
+                    var holdDownloads = false
+                    var stillUnresolved: [Track] = []
+                    for track in saveRequests[index].unresolved {
+                        if let entry = byID[track.id] {
+                            if !saveRequests[index].entries.contains(where: { $0.track.id == track.id }) { saveRequests[index].entries.append(entry) }
+                        } else if waitsForRepair(track.id) {
+                            stillUnresolved.append(track)
+                            waiting = true
+                        } else {
+                            saveRequests[index].failedTracks.insert(track.id)
+                            failure = unrepairable.contains(track.id) ? unusable : LocalMusicError.invalidData.localizedDescription
+                        }
+                    }
+                    saveRequests[index].unresolved = stillUnresolved
+                    let request = saveRequests[index]
                     for (position, requested) in request.entries.enumerated() {
                         var entry = requested
                         try Task.checkCancellation()
                         guard saveGeneration == token else { return }
+                        if request.failedTracks.contains(requested.track.id) {
+                            failure = failure ?? request.error ?? LocalMusicError.invalidData.localizedDescription
+                            continue
+                        }
                         saveRequests[index].completed.remove(entry.trackSaveIdentity)
                         do {
-                            guard let current = catalog.entries.first(where: { $0.track.id == requested.track.id && $0.sha256 == requested.sha256 }) else {
+                            guard let current = byID[requested.track.id], current.sha256 == requested.sha256 else {
+                                if byID[requested.track.id] == nil && waitsForRepair(requested.track.id) { waiting = true; continue }
+                                saveRequests[index].failedTracks.insert(requested.track.id)
+                                if unrepairable.contains(requested.track.id) {
+                                    failure = unusable
+                                    continue
+                                }
                                 throw LocalMusicError.invalidData
                             }
                             if hostConnection != nil {
@@ -232,15 +381,17 @@ extension LocalTransfer {
                             if !savedFromCache {
                                 try Task.checkCancellation()
                                 guard saveGeneration == token else { return }
-                                if waiting { continue }
+                                if holdDownloads { continue }
                                 if let host = hostConnection, let deadline = hostAudioGate.deadline(for: host.address.origin),
                                    hostAudioGate.now() < deadline {
                                     waiting = true
+                                    holdDownloads = true
                                     continue
                                 }
                                 if automatic && !permitsAutomaticSaveAudio {
                                     saveRequests[index].state = savePathIsCellular ? .wifi : .waiting
                                     waiting = true
+                                    holdDownloads = true
                                     continue
                                 }
                                 saveRequests[index].state = .saving
@@ -252,6 +403,7 @@ extension LocalTransfer {
                                     try await source.download(entry, cache: nil, diagnostic: nil) { _ in }
                                 } else {
                                     waiting = true
+                                    holdDownloads = true
                                     continue
                                 }
                             }
@@ -264,18 +416,26 @@ extension LocalTransfer {
                         } catch {
                             try Task.checkCancellation()
                             guard saveGeneration == token else { return }
-                            if hostConnection != nil, error is URLError { waiting = true }
-                            else if case HostAPIError.rateLimited = error { waiting = true }
-                            else if case LocalMusicError.disconnected = error { waiting = true }
-                            else if (error as? CocoaError)?.code == .fileWriteOutOfSpace {
-                                failure = "この端末の空き容量が不足しているため保存できません。空き容量を増やして再試行してください。"
-                            } else { failure = error.localizedDescription }
+                            if hostConnection != nil, error is URLError { waiting = true; holdDownloads = true }
+                            else if case HostAPIError.rateLimited = error { waiting = true; holdDownloads = true }
+                            else if case LocalMusicError.disconnected = error { waiting = true; holdDownloads = true }
+                            else {
+                                // A track that cannot be saved is not tried again in this request, so a request
+                                // still waiting for other tracks does not repeat a download that fails.
+                                saveRequests[index].failedTracks.insert(requested.track.id)
+                                failure = (error as? CocoaError)?.code == .fileWriteOutOfSpace
+                                    ? "この端末の空き容量が不足しているため保存できません。空き容量を増やして再試行してください。"
+                                    : error.localizedDescription
+                            }
                             saveRequests[index].error = error.localizedDescription
                         }
                     }
                     guard saveGeneration == token else { return }
-                    let finished = saveRequests[index].entries.allSatisfy { self.saveRequests[index].completed.contains($0.trackSaveIdentity) }
-                    saveRequests[index].state = finished ? .complete : failure != nil ? .failed : waiting ? (saveRequests[index].state == .wifi ? .wifi : .waiting) : .failed
+                    // A track that failed, including one still missing from a whole catalog, keeps the request from completing.
+                    let finished = saveRequests[index].unresolved.isEmpty && saveRequests[index].failedTracks.isEmpty
+                        && saveRequests[index].entries.allSatisfy { self.saveRequests[index].completed.contains($0.trackSaveIdentity) }
+                    // A request fails only when no track can still progress.
+                    saveRequests[index].state = finished ? .complete : waiting ? (saveRequests[index].state == .wifi ? .wifi : .waiting) : .failed
                     if let failure { saveRequests[index].error = failure }
                     try persistSaves(saveRequests)
                 }
@@ -419,12 +579,21 @@ extension LocalTransfer {
         let kept = saveRequests.compactMap { request -> OfflineSaveRequest? in
             var request = request
             request.entries = request.entries.filter { failed.contains($0.sha256) }
+            request.unresolved = []
             guard !request.entries.isEmpty else { return nil }
             request.completed.formIntersection(request.entries.map(\.trackSaveIdentity))
+            request.failedTracks.formIntersection(request.entries.map(\.track.id))
+            // Kept only so the leftover files can be removed again; it must not start saving them.
+            if request.isPending { request.state = request.failedTracks.isEmpty ? .complete : .failed }
             return request
         }
         // The queue file sits in the same folder; when nothing could be removed, writing it would fail the same way.
-        if kept.map(\.entries) != saveRequests.map(\.entries) { try persistSaves(kept) }
+        let stateOf = { (requests: [OfflineSaveRequest]) in requests.map { [$0.state.rawValue] + $0.failedTracks.sorted() } }
+        if kept.map(\.entries) != saveRequests.map(\.entries) || saveRequests.contains(where: { !$0.unresolved.isEmpty })
+            || stateOf(kept) != stateOf(saveRequests) {
+            // Kept in memory even when the write fails, so the leftovers are not saved again in this session.
+            do { try persistSaves(kept) } catch { saveRequests = kept; throw error }
+        }
         if !failed.isEmpty { throw LocalMusicError.removalIncomplete }
     }
 }
@@ -437,8 +606,11 @@ struct OfflineSaveControls: View {
     var iconOnly = false
 
     private var request: OfflineSaveRequest? { library.saveRequest(for: tracks, scope: scope) }
-    private var saved: Int { tracks.filter { library.hasManagedCopy($0) }.count }
-    private var pending: Bool { request.map { [.waiting, .wifi, .saving].contains($0.state) } ?? false }
+    private var progress: SaveProgress { library.saveProgress(for: tracks, scope: scope) }
+    private var saved: Int { progress.saved }
+    private var pending: Bool { progress.pending }
+    private var total: Int { progress.total }
+    private var allSaved: Bool { progress.allSaved }
     private var removalPending: Bool { tracks.contains(where: library.isLocalCopyRemovalPending) }
 
     var body: some View {
@@ -448,10 +620,10 @@ struct OfflineSaveControls: View {
                 if !removalPending {
                     if let request, let error = request.error { Text(error) }
                     if pending, let request {
-                        Button(request.entries.count > tracks.count ? "アルバム全体の保存を中止" : "保存を中止") {
+                        Button(request.trackCount > tracks.count ? "アルバム全体の保存を中止" : "保存を中止") {
                             library.transfer.cancelSave(request)
                         }
-                    } else if saved < tracks.count {
+                    } else if saved < total {
                         Button(request?.state == .failed ? "保存を再試行" : "この端末に保存") {
                             Task { await library.transfer.requestSave(tracks, scope: scope) }
                         }
@@ -462,10 +634,10 @@ struct OfflineSaveControls: View {
                 }
             } label: {
                 Group {
-                    if removalPending || (pending && saved < tracks.count) {
+                    if removalPending || (pending && saved < total) {
                         ProgressView().controlSize(.small)
                     } else {
-                        Image(saved == tracks.count && !tracks.isEmpty ? "regen-circle-check" : request?.state == .failed ? "regen-circle-alert" : compact ? "regen-dots" : "regen-cloud-download")
+                        Image(allSaved ? "regen-circle-check" : request?.state == .failed ? "regen-circle-alert" : compact ? "regen-dots" : "regen-cloud-download")
                             .resizable().renderingMode(.template).scaledToFit().frame(width: 20, height: 20)
                     }
                 }
@@ -489,13 +661,13 @@ struct OfflineSaveControls: View {
             } else if pending, let request {
                 Text(request.state == .wifi ? "Wi-Fi接続待ち" : request.state == .saving ? "保存中" : "接続待ち")
                     .font(.caption).foregroundStyle(.secondary)
-                if !compact { Text("\(saved)/\(tracks.count)曲を保存済み").font(.caption).monospacedDigit() }
-                Button(compact && request.entries.count > 1 ? "アルバム保存を中止" : "保存を中止") { library.transfer.cancelSave(request) }
+                if !compact { Text("\(saved)/\(total)曲を保存済み").font(.caption).monospacedDigit() }
+                Button(compact && request.trackCount > 1 ? "アルバム保存を中止" : "保存を中止") { library.transfer.cancelSave(request) }
                 if !compact, let error = request.error { Text(error).font(.caption).foregroundStyle(.secondary) }
-            } else if saved == tracks.count && !tracks.isEmpty {
+            } else if allSaved {
                 Text(compact ? "保存済み" : "\(saved)曲を保存済み").font(.caption).foregroundStyle(.secondary)
             } else {
-                if saved > 0 { Text("\(saved)/\(tracks.count)曲を保存済み").font(.caption) }
+                if saved > 0 { Text("\(saved)/\(total)曲を保存済み").font(.caption) }
                 if let request, request.state == .failed {
                     Text(compact ? "保存できませんでした" : request.error ?? "保存できませんでした").font(.caption).foregroundStyle(.secondary)
                         .help(request.error ?? "保存できませんでした")
@@ -530,13 +702,13 @@ struct OfflineSaveControls: View {
 
     private var saveStatus: String {
         if removalPending { return "保存の解除待ち" }
-        if saved == tracks.count && !tracks.isEmpty { return "保存済み" }
+        if allSaved { return "保存済み" }
         switch request?.state {
         case .wifi: return "Wi-Fi接続待ち"
         case .waiting: return "接続待ち"
-        case .saving: return "保存中・\(saved)/\(tracks.count)曲を保存済み"
+        case .saving: return "保存中・\(saved)/\(total)曲を保存済み"
         case .failed: return "保存できませんでした"
-        default: return saved > 0 ? "\(saved)/\(tracks.count)曲を保存済み" : "未保存"
+        default: return saved > 0 ? "\(saved)/\(total)曲を保存済み" : "未保存"
         }
     }
 }

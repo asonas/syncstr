@@ -71,7 +71,7 @@ struct PhoneNowPlaying: View {
                                     } else if let request = library.saveRequest(for: [track], scope: "track:" + track.id),
                                        [.waiting, .wifi, .saving].contains(request.state) {
                                         Text(request.state == .wifi ? "Wi-Fi接続待ち" : request.state == .saving ? "保存中" : "接続待ち")
-                                        Button(request.entries.count > 1 ? "アルバム保存を中止" : "保存を中止") { library.transfer.cancelSave(request) }
+                                        Button(request.trackCount > 1 ? "アルバム保存を中止" : "保存を中止") { library.transfer.cancelSave(request) }
                                     } else if library.localFiles[track.id] == nil {
                                         if let request = library.saveRequest(for: [track], scope: "track:" + track.id), let error = request.error { Text(error) }
                                         Button(library.saveRequest(for: [track], scope: "track:" + track.id)?.state == .failed ? "保存を再試行" : "この端末に保存") {
