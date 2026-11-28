@@ -253,8 +253,30 @@ struct LibraryPresentationTests {
         #expect(library.destination == .songs)
         library.transfer.onHostPlaylists?([folder, playlist], [])
         library.openPlaylist(playlist.id)
+        library.search = "only in the playlist"
+        library.transfer.onHostPlaylists?([folder], [])
+        #expect(library.search.isEmpty, "A removed playlist's search must not filter the screen behind it")
+        library.transfer.onHostPlaylists?([folder, playlist], [])
+        library.openPlaylist(playlist.id)
         library.navigate(.albums)
         #expect(library.selectedPlaylist == nil)
+    }
+
+    @Test
+    func openingAnAlbumFromAPlaylistLeavesThePlaylist() {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let library = Library(localStore: LocalMusicStore(root: root))
+        defer { library.closeLibrary() }
+        let playlist = playlistDocument("playlist", kind: "manual")
+        library.transfer.onHostPlaylists?([playlist], [])
+        library.openPlaylist(playlist.id)
+        library.search = "query"
+        library.showingNowPlaying = true
+        library.openAlbum("album")
+        #expect(library.selectedAlbum == "album")
+        #expect(library.selectedPlaylist == nil)
+        #expect(library.search.isEmpty && !library.showingNowPlaying)
     }
 
     @Test

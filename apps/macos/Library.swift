@@ -49,7 +49,10 @@ enum PlaybackRepeat: String, CaseIterable, Codable {
 final class Library: ObservableObject {
     @Published private(set) var playlists: [PlaylistDocument] = [] {
         didSet {
-            if let id = selectedPlaylist, !playlists.contains(where: { $0.id == id }) { selectedPlaylist = nil }
+            if let id = selectedPlaylist, !playlists.contains(where: { $0.id == id }) {
+                selectedPlaylist = nil
+                search = ""
+            }
         }
     }
     @Published private(set) var playlistConflicts: Set<String> = []
@@ -375,6 +378,13 @@ final class Library: ObservableObject {
     func openPlaylist(_ id: String) {
         navigate(destination)
         selectedPlaylist = id
+    }
+
+    func openAlbum(_ id: String) {
+        selectedPlaylist = nil
+        selectedAlbum = id
+        search = ""
+        showingNowPlaying = false
     }
 
     /// Going to the background cancels a running restore. A call that arrives while one runs is

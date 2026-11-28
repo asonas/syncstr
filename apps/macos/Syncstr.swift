@@ -708,7 +708,7 @@ struct LibraryView: View {
                         Button("この端末の保存を解除", role: .destructive) { library.localCopiesToRemove = [track] }.disabled(library.transfer.busy)
                     }
                 }
-                Button("アルバムを表示") { library.selectedAlbum = track.albumKey; library.search = ""; library.showingNowPlaying = false }
+                Button("アルバムを表示") { library.openAlbum(track.albumKey) }
                 Button("アーティストを表示") { self.showArtist(track.artist ?? "アーティスト不明") }
             } label: { Text("\(track.title)のその他の操作").hidden().frame(width: 32, height: 32) }
             .menuStyle(.borderlessButton).menuIndicator(.hidden).frame(width: 32, height: 32)
