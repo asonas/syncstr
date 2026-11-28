@@ -644,6 +644,27 @@ final class OfflineSaveTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: earlier.path))
     }
 
+    func testRemovingOneSaveKeepsPlayingAudioAnotherSaveStillHolds() async throws {
+        let (store, entries) = try fixture()
+        try Data(repeating: 1, count: 1024).write(to: store.fileURL(entries[0]))
+        try store.database().saveAudioPin(entries[0])
+        // Another track saved the same audio, so its file stays.
+        try store.database().saveAudioPin(LocalEntry(track: Track(id: "track-other", title: "Other", artist: "Artist", suffix: "wav", size: 1024),
+                                                      sha256: entries[0].sha256, artwork: nil))
+        let library = makeLibrary(localStore: store)
+        await library.openSavedLocalLibrary()
+        await library.inventoryTask?.value
+        let track = try XCTUnwrap(library.tracks.first { $0.id == entries[0].track.id })
+        library.current = track
+        library.playing = true
+        library.transfer.playbackCache.protectedURL = store.fileURL(entries[0])
+        library.removeLocalCopies([track])
+        try await waitFor { library.pendingLocalCopyRemovals.isEmpty }
+        XCTAssertTrue(library.playing)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: store.fileURL(entries[0]).path))
+        XCTAssertFalse(try store.database().hasAudioPin(entries[0]))
+    }
+
     func testRemovingOneSaveKeepsPlayingTheCacheCopyOfTheSameAudio() async throws {
         let (store, entries) = try fixture()
         try Data(repeating: 1, count: 1024).write(to: store.fileURL(entries[0]))
@@ -741,6 +762,8 @@ final class OfflineSaveTests: XCTestCase {
         // A file whose save stopped before its pin in an earlier version has a receipt and no pin.
         try Data(repeating: 2, count: 1024).write(to: store.fileURL(entries[1]))
         try store.database().recordReceived(entries[1])
+        // A verification can outlive its file and pin as well.
+        try store.database().recordVerifiedAudio(store.fileURL(entries[2]), stamp: "fixture", hash: entries[2].sha256)
         let transfer = try await hostTransfer(store)
         let library = try XCTUnwrap(transfer.hostConnection?.library)
         var request = OfflineSaveRequest(id: "album:fixture", library: library, entries: entries)
@@ -760,15 +783,25 @@ final class OfflineSaveTests: XCTestCase {
         let stored = try JSONDecoder().decode([OfflineSaveRequest].self,
             from: Data(contentsOf: store.root.appendingPathComponent("offline-saves.json")))
         XCTAssertFalse(stored.contains(where: \.isPending))
-        // Asking again once the database accepts the change also forgets the receipt of the file already gone.
+        // The files went, and the records stayed with the failed transaction.
+        XCTAssertFalse(FileManager.default.fileExists(atPath: store.fileURL(entries[0]).path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: store.fileURL(entries[1]).path))
+        XCTAssertEqual(rowCount(db, "SELECT COUNT(*) FROM received_files"), 2)
+        XCTAssertEqual(rowCount(db, "SELECT COUNT(*) FROM verified_audio_files"), 1)
+        // Asking again once the database accepts the change also forgets the records of files already gone.
         XCTAssertEqual(sqlite3_exec(db, "DROP TRIGGER reject_unpin", nil, nil, nil), SQLITE_OK)
         try await transfer.removeAllSavedAudio()
-        var statement: OpaquePointer?
-        XCTAssertEqual(sqlite3_prepare_v2(db, "SELECT COUNT(*) FROM received_files", -1, &statement, nil), SQLITE_OK)
-        defer { sqlite3_finalize(statement) }
-        XCTAssertEqual(sqlite3_step(statement), SQLITE_ROW)
-        XCTAssertEqual(sqlite3_column_int(statement, 0), 0)
+        XCTAssertEqual(rowCount(db, "SELECT COUNT(*) FROM received_files"), 0)
+        XCTAssertEqual(rowCount(db, "SELECT COUNT(*) FROM verified_audio_files"), 0)
         XCTAssertTrue(try store.database().savedAudioPinList().isEmpty)
+    }
+
+    private func rowCount(_ db: OpaquePointer?, _ sql: String) -> Int32 {
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else { return -1 }
+        defer { sqlite3_finalize(statement) }
+        guard sqlite3_step(statement) == SQLITE_ROW else { return -1 }
+        return sqlite3_column_int(statement, 0)
     }
 
     func testRemovingTheTrackThatFailedEndsItsRequest() async throws {
@@ -810,7 +843,17 @@ final class OfflineSaveTests: XCTestCase {
         XCTAssertEqual(transfer.saveRequests.map(\.state), [.failed])
         XCTAssertEqual(transfer.saveRequests.first?.error?.contains("fixture"), true, "The pin trigger caused the failure")
         // The receipt and the verification were written in the same transaction as the pin, so they are gone too.
-        XCTAssertFalse(try store.database().recordedAudioHashes().contains(entries[0].sha256))
+        let hash = entries[0].sha256
+        XCTAssertEqual(rowCount(db, "SELECT COUNT(*) FROM received_files WHERE sha256 = '\(hash)'"), 0)
+        XCTAssertEqual(rowCount(db, "SELECT COUNT(*) FROM verified_audio_files WHERE hash = '\(hash)'"), 0)
+        // The same save writes both once the pin is accepted, so their absence above is the rollback's doing.
+        XCTAssertEqual(sqlite3_exec(db, "DROP TRIGGER reject_pin", nil, nil, nil), SQLITE_OK)
+        transfer.saveRequests = [OfflineSaveRequest(id: "track:track-1", library: library, entries: [entries[0]])]
+        transfer.resumeSaves(explicit: "track:track-1")
+        await transfer.saveWorker?.value
+        XCTAssertEqual(rowCount(db, "SELECT COUNT(*) FROM received_files WHERE sha256 = '\(hash)'"), 1)
+        XCTAssertEqual(rowCount(db, "SELECT COUNT(*) FROM verified_audio_files WHERE hash = '\(hash)'"), 1)
+        XCTAssertTrue(try store.database().hasAudioPin(entries[0]))
     }
 
     func testCancelledSaveReleasesTheCacheFileItWasReading() async throws {

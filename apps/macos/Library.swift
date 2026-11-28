@@ -1017,8 +1017,9 @@ final class Library: ObservableObject {
                 } catch { failure = failure ?? error }
             }
             // The player may still hold audio from before a catalog update, or the cache copy of the same audio,
-            // so compare the audio of the saved file it has open, whatever its extension, with the audio being removed.
-            let removed = Set(entries.map(\.sha256))
+            // so compare the audio of the saved file it has open, whatever its extension, with the audio whose files go.
+            // Audio another saved track still holds keeps its file, so playing it goes on.
+            let removed = try transfer.audioRemoved(with: entries)
             if openedSavedFile.map({ removed.contains($0.deletingPathExtension().lastPathComponent) }) == true
                 || (acquiringAudio && tracks.contains { $0.id == current?.id }) { stop() }
             // One file that cannot be removed does not stop the others; its pin stays so it still shows as saved.

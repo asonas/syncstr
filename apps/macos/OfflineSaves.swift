@@ -530,12 +530,24 @@ extension LocalMusicStore {
 }
 
 extension LocalTransfer {
+    /// The audio whose files go when these pins are removed: no other pin and no save in the queue still holds it.
+    nonisolated static func unusedAudio(removing pins: Set<SavedAudioPin>, keeping requested: Set<String>,
+                                        database: CatalogDatabase) throws -> Set<String> {
+        let held = Set(try database.savedAudioPinList().subtracting(pins).map(\.hash)).union(requested)
+        return Set(pins.map(\.hash)).subtracting(held)
+    }
+
+    /// The audio that removing these entries' saved copies would delete, once their requests are cancelled.
+    func audioRemoved(with entries: [LocalEntry]) throws -> Set<String> {
+        try Self.unusedAudio(removing: Set(entries.map { SavedAudioPin(track: $0.track.id, hash: $0.sha256) }),
+                             keeping: requestedAudio, database: store.database())
+    }
+
     /// Removes the files before the pins. A pin whose file could not be removed stays, so the saved music
     /// keeps showing as saved and a later removal can try again. Returns those pins.
     nonisolated static func discard(_ pins: Set<SavedAudioPin>, keeping requested: Set<String>, store: LocalMusicStore,
                                     cache: LocalMusicStore, protected: Set<String>, database: CatalogDatabase) throws -> Set<SavedAudioPin> {
-        let held = Set(try database.savedAudioPinList().subtracting(pins).map(\.hash)).union(requested)
-        let unused = Set(pins.map(\.hash)).subtracting(held)
+        let unused = try unusedAudio(removing: pins, keeping: requested, database: database)
         var failed = Set<String>()
         for (hash, urls) in try store.audioFiles(for: unused).merging(try cache.audioFiles(for: unused), uniquingKeysWith: +) {
             for url in urls where !protected.contains(url.resolvingSymlinksInPath().path) {
