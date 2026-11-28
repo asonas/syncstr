@@ -307,7 +307,7 @@ struct LibraryView: View {
     private func albumGridItems(_ albums: [Album]) -> some View {
         ForEach(albums) { album in
             gridCard(title: album.title, subtitle: album.artist, openLabel: "アルバムを開く",
-                     open: { openAlbum(album.id) }) { Artwork(url: artworkURL(album.coverArt)) }
+                     open: { library.openAlbum(album.id) }) { Artwork(url: artworkURL(album.coverArt)) }
                 .id(album.id)
         }
     }
@@ -342,11 +342,6 @@ struct LibraryView: View {
         !library.showingNowPlaying && library.selectedPlaylist == nil
             && (library.destination == .recentlyAdded || library.destination == .albums || library.destination == .hiddenAlbums)
             && (library.selectedAlbum == nil || !library.search.isEmpty)
-    }
-
-    private func openAlbum(_ id: String) {
-        library.search = ""
-        library.selectedAlbum = id
     }
 
     private var albumSortMenu: some View {
@@ -601,7 +596,7 @@ struct LibraryView: View {
     }
 
     private func artistAlbumTitle(_ album: Album) -> some View {
-        Button { library.selectedAlbum = album.id; library.search = "" } label: {
+        Button { library.openAlbum(album.id) } label: {
             Text(album.title).font(.system(size: 20, weight: .semibold))
                 .fixedSize(horizontal: false, vertical: true)
         }.buttonStyle(.plain)
