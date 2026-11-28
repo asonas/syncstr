@@ -414,9 +414,10 @@ struct LibraryView: View {
     }
 
     private func playlistTrackList(_ rows: [PlaylistRow], playable: [Track], blocked: Bool, showArtist: Bool) -> some View {
-        let shown = library.search.isEmpty ? rows : rows.filter {
-            ($0.track?.title ?? $0.item.title).localizedStandardContains(library.search)
-                || (($0.track?.artist ?? $0.item.artist)?.localizedStandardContains(library.search) ?? false)
+        let shown = library.search.isEmpty ? rows : rows.filter { row in
+            let artist = (row.track != nil ? row.track?.artist : row.item.artist) ?? "アーティスト不明"
+            return (row.track?.title ?? row.item.title).localizedStandardContains(library.search)
+                || artist.localizedStandardContains(library.search)
         }
         return VStack(alignment: .leading, spacing: 0) {
             LazyVStack(spacing: 0) {
