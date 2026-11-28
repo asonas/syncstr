@@ -111,19 +111,29 @@ struct LibraryView: View {
 
     private var rule: some View { Rectangle().fill(Studio.iron).frame(height: 1) }
 
+    private var headerBack: (label: String, action: () -> Void)? {
+        if library.showingNowPlaying {
+            return ("ライブラリへ戻る", { library.showingNowPlaying = false })
+        }
+        if library.search.isEmpty, let albumID = library.selectedAlbum {
+            return ("アルバムへ戻る", {
+                albumScrollPosition = ScrollPosition(id: albumID, anchor: .center)
+                library.selectedAlbum = nil
+            })
+        }
+        return nil
+    }
+
     private var contentHeader: some View {
         VStack(alignment: .leading, spacing: 4) {
             HStack(spacing: 16) {
-                if !library.showingNowPlaying, library.search.isEmpty, let albumID = library.selectedAlbum {
-                    Button {
-                        albumScrollPosition = ScrollPosition(id: albumID, anchor: .center)
-                        library.selectedAlbum = nil
-                    } label: {
+                if let back = headerBack {
+                    Button(action: back.action) {
                         MacIcon("chevron-left").frame(width: 32, height: 32)
                     }
                     .buttonBorderShape(.circle)
-                    .help("アルバムへ戻る")
-                    .accessibilityLabel("アルバムへ戻る")
+                    .help(back.label)
+                    .accessibilityLabel(back.label)
                 }
                 Spacer(minLength: 0)
                 if showingAlbumGrid {
@@ -557,21 +567,14 @@ struct LibraryView: View {
         }.buttonStyle(.plain).disabled(tracks.isEmpty)
     }
 
-    private func backButton(_ title: String, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            HStack(spacing: 8) { MacIcon("chevron-left"); Text(title) }.frame(minHeight: 32)
-        }.buttonStyle(.plain).foregroundStyle(Studio.signal)
-    }
-
     private var nowPlaying: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 20) {
-                backButton("ライブラリへ戻る") { library.showingNowPlaying = false }
                 if let current = library.current {
                     HStack(spacing: 20) {
                         Artwork(url: artworkURL(current.coverArt)).frame(width: 120, height: 120)
-                        VStack(alignment: .leading, spacing: 8) {
-                            Text(current.title).font(.system(size: 28)).accessibilityAddTraits(.isHeader)
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text(current.title).font(.system(size: 28, weight: .semibold)).accessibilityAddTraits(.isHeader)
                             Text(current.artist ?? "アーティスト不明").foregroundStyle(Studio.fog)
                         }
                     }
