@@ -310,7 +310,8 @@ struct LibraryPresentationTests {
         let composed = playlistDocument("\u{E9}", kind: "folder")
         let decomposed = playlistDocument("e\u{301}", kind: "folder", parent: "\u{E9}")
         let rows = [composed, decomposed].outline(expanding: [composed.id])
-        #expect(rows.count <= 2)
+        #expect(rows.map { Array($0.document.id.utf8) } == [Array(composed.id.utf8), Array(decomposed.id.utf8)])
+        #expect(rows.map(\.depth) == [0, 1])
     }
 
     @Test
