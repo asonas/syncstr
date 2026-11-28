@@ -500,10 +500,12 @@ final class Library: ObservableObject {
         downloaded = Set(localFiles.keys)
 #endif
         guard inventoryComplete else { return }
-        // Playback from the playback cache goes on when the saved copy of the same track goes away.
+        // Playback from the playback cache goes on when the saved copy of the same track goes away, and so does
+        // playback of a saved file that stays because another saved track still holds its audio.
         if let pending = pendingLocalPlaybackTrack, pending.request == playbackRequest,
            current?.id == pending.id, transfer.hasLibrarySource, localFiles[pending.id] == nil,
-           transfer.playbackCache.protectedURL == nil || openedSavedFile != nil { stop() }
+           transfer.playbackCache.protectedURL == nil
+            || openedSavedFile.map({ !FileManager.default.fileExists(atPath: $0.path) }) == true { stop() }
         pendingLocalPlaybackTrack = nil
     }
 
@@ -1019,7 +1021,8 @@ final class Library: ObservableObject {
             // The player may still hold audio from before a catalog update, or the cache copy of the same audio,
             // so compare the audio of the saved file it has open, whatever its extension, with the audio whose files go.
             // Audio another saved track still holds keeps its file, so playing it goes on.
-            let removed = try transfer.audioRemoved(with: entries)
+            // When the pins cannot be read, the removal below still runs, and playback of any of this audio stops.
+            let removed = (try? transfer.audioRemoved(with: entries)) ?? Set(entries.map(\.sha256))
             if openedSavedFile.map({ removed.contains($0.deletingPathExtension().lastPathComponent) }) == true
                 || (acquiringAudio && tracks.contains { $0.id == current?.id }) { stop() }
             // One file that cannot be removed does not stop the others; its pin stays so it still shows as saved.

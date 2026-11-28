@@ -796,6 +796,26 @@ final class OfflineSaveTests: XCTestCase {
         XCTAssertTrue(try store.database().savedAudioPinList().isEmpty)
     }
 
+    func testDeletionThatFailsAtTheRecordsKeepsThePins() async throws {
+        let (store, entries) = try fixture()
+        try Data(repeating: 1, count: 1024).write(to: store.fileURL(entries[0]))
+        try store.database().saveAudioPin(entries[0])
+        try store.database().recordVerifiedAudio(store.fileURL(entries[0]), stamp: "fixture", hash: entries[0].sha256)
+        let transfer = try await hostTransfer(store)
+        var db: OpaquePointer?
+        XCTAssertEqual(sqlite3_open(store.root.appendingPathComponent("catalog.sqlite").path, &db), SQLITE_OK)
+        defer { sqlite3_close(db) }
+        let sql = "CREATE TRIGGER reject_forget BEFORE DELETE ON verified_audio_files BEGIN SELECT RAISE(FAIL, 'fixture'); END"
+        XCTAssertEqual(sqlite3_exec(db, sql, nil, nil, nil), SQLITE_OK)
+        do {
+            try await transfer.removeAllSavedAudio()
+            XCTFail("The removal should report the database error")
+        } catch {}
+        // The pins go in the same transaction as the records, so they stay together for the next removal.
+        XCTAssertEqual(try store.database().savedAudioPinList().map(\.hash), [entries[0].sha256])
+        XCTAssertEqual(rowCount(db, "SELECT COUNT(*) FROM verified_audio_files"), 1)
+    }
+
     private func rowCount(_ db: OpaquePointer?, _ sql: String) -> Int32 {
         var statement: OpaquePointer?
         guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else { return -1 }
