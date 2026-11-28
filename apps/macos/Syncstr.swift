@@ -36,6 +36,7 @@ struct LibraryView: View {
     @State private var hostSetup: HostSetupRequest?
     @State private var hoveredTrack: String?
     @State private var albumScrollPosition = ScrollPosition(idType: String.self)
+    @State private var playlistScrollPosition = ScrollPosition(idType: String.self)
 
     var body: some View {
         VStack(spacing: 0) {
@@ -121,8 +122,9 @@ struct LibraryView: View {
                 library.selectedAlbum = nil
             })
         }
-        if !library.playlistPath.isEmpty {
+        if let popped = library.playlistPath.last {
             return ("プレイリストへ戻る", {
+                playlistScrollPosition = ScrollPosition(id: popped, anchor: .center)
                 library.search = ""
                 library.playlistPath.removeLast()
             })
@@ -333,6 +335,7 @@ struct LibraryView: View {
     }
 
     private func pushPlaylist(_ id: String) {
+        playlistScrollPosition = ScrollPosition(idType: String.self)
         library.search = ""
         library.playlistPath.append(id)
     }
@@ -346,24 +349,29 @@ struct LibraryView: View {
         }
         let titled = Self.playlistSections.filter { section in siblings.contains { $0.kind == section.kind } }.count > 1
         let folderSizes = Dictionary(library.playlists.compactMap(\.parent).map { ($0, 1) }, uniquingKeysWith: +)
+        func cards(_ documents: [PlaylistDocument]) -> some View {
+            ForEach(documents) { playlistCard($0, folderSize: folderSizes[$0.id, default: 0]).id($0.id) }
+        }
         return ScrollView {
             if let message = library.playlistMessage {
                 Text(message).foregroundStyle(Studio.fog).frame(maxWidth: .infinity, alignment: .leading)
                     .fixedSize(horizontal: false, vertical: true).padding([.horizontal, .top], 32)
             }
             LazyVGrid(columns: Self.gridColumns, alignment: .leading, spacing: 32) {
-                ForEach(sections, id: \.title) { section in
-                    Section {
-                        ForEach(section.documents) { playlistCard($0, folderSize: folderSizes[$0.id, default: 0]) }
-                    } header: {
-                        if titled { gridHeader(Text(section.title)) }
+                if titled {
+                    ForEach(sections, id: \.title) { section in
+                        Section { cards(section.documents) } header: { gridHeader(Text(section.title)) }
                     }
+                } else {
+                    cards(visible)
                 }
-            }.padding(32)
-            if sections.isEmpty {
+            }.scrollTargetLayout().padding(32)
+            if visible.isEmpty {
                 Text(playlistEmptyText).foregroundStyle(Studio.fog).padding(32)
             }
         }
+        .id(library.playlistPath.last)
+        .scrollPosition($playlistScrollPosition)
         .safeAreaPadding(.bottom, 120)
     }
 
@@ -439,10 +447,11 @@ struct LibraryView: View {
                             unplayableRow(row, showArtist: showArtist)
                         }
                     }
+                    .opacity(blocked || row.track == nil ? 0.5 : 1)
                     .overlay(alignment: .bottom) { rule }
                 }
             }
-            .disabled(blocked).opacity(blocked ? 0.5 : 1)
+            .disabled(blocked)
             if shown.isEmpty && !rows.isEmpty { Text("一致する曲がありません。").foregroundStyle(Studio.fog).padding(.top, 12) }
         }
     }
@@ -463,7 +472,6 @@ struct LibraryView: View {
         }
         .font(.system(size: 14))
         .padding(.horizontal, 8)
-        .opacity(0.5)
         .help("\(row.item.title)\n\(artist)\n再生できない曲")
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("\(row.item.title)、\(artist)、再生できない曲")
